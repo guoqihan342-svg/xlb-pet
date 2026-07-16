@@ -1,0 +1,9 @@
+bin/
+obj/
+tmp/
+tests/**/bin/
+tests/**/obj/
+.vs/
+*.user
+*.suo
+Assets/luban.png
