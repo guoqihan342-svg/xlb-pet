@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 
 from PIL import Image
 
@@ -15,6 +17,46 @@ DISPLAY_WIDTH = 145
 DISPLAY_HEIGHT = 185
 TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1024
+
+
+def replace_with_retry(temporary: Path, destination: Path) -> None:
+    for attempt in range(5):
+        try:
+            temporary.replace(destination)
+            return
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def save_png_atomically(image: Image.Image, destination: Path) -> None:
+    temporary = destination.with_name(
+        f".{destination.stem}.{os.getpid()}.tmp.png"
+    )
+    temporary.unlink(missing_ok=True)
+    try:
+        image.save(
+            temporary,
+            format="PNG",
+            optimize=True,
+            compress_level=9,
+        )
+        replace_with_retry(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_text_atomically(destination: Path, content: str) -> None:
+    temporary = destination.with_name(
+        f".{destination.stem}.{os.getpid()}.tmp{destination.suffix}"
+    )
+    temporary.unlink(missing_ok=True)
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        replace_with_retry(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @dataclass
@@ -31,7 +73,7 @@ class PackedSprite:
 
 def resource_paths() -> list[str]:
     paths = ["Assets/luban-idle.png"]
-    paths.extend(f"Assets/luban-wake-{number:02}.png" for number in range(1, 13))
+    paths.extend(f"Assets/luban-wake-{number:02}.png" for number in range(1, 15))
     for edge in ("left", "top", "bottom"):
         paths.extend(
             f"Assets/luban-edge-{edge}-{number:02}.png"
@@ -48,8 +90,8 @@ def resource_paths() -> list[str]:
             f"Assets/luban-{action}-frame-{number:02}.png"
             for number in range(1, 25)
         )
-    if len(paths) != 289 or len(set(paths)) != len(paths):
-        raise RuntimeError(f"Expected 289 unique resources, got {len(paths)}")
+    if len(paths) != 291 or len(set(paths)) != len(paths):
+        raise RuntimeError(f"Expected 291 unique resources, got {len(paths)}")
     return paths
 
 
@@ -189,7 +231,7 @@ def pack_sprites(sprites: list[PackedSprite]) -> tuple[int, int]:
 
 def page_resource_paths() -> dict[str, list[str]]:
     idle = "Assets/luban-idle.png"
-    wake = [f"Assets/luban-wake-{number:02}.png" for number in range(1, 13)]
+    wake = [f"Assets/luban-wake-{number:02}.png" for number in range(1, 15)]
     pages: dict[str, list[str]] = {"idle": [idle]}
     for action in ("yawn", "cry", "run", "cute", "like", "eat", "wave", "think"):
         pages[f"action-{action}"] = [idle, *wake, *[
@@ -244,7 +286,7 @@ def build_page(
 
     ordered_frames = {path: frames[path] for path in paths}
     atlas_path.parent.mkdir(parents=True, exist_ok=True)
-    atlas.save(atlas_path, format="PNG", optimize=True, compress_level=9)
+    save_png_atomically(atlas, atlas_path)
     print(
         f"  {page_name}: {atlas_width}x{atlas_height}, "
         f"{len(ordered_frames)} frames, {len(sprites)} unique"
@@ -285,9 +327,9 @@ def write_outputs(
         "pages": manifest_pages,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(
+    write_text_atomically(
+        manifest_path,
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
-        encoding="utf-8",
     )
     print(
         f"Wrote {manifest_path}; {manifest['sourceFrameCount']} source frames, "

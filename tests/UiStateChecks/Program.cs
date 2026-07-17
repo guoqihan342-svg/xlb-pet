@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Resources;
@@ -50,9 +51,13 @@ internal static class Program
 
             AssertDisplayFrameContract(window);
             AssertRoamAssetSequenceContract(window);
+            AssertRoamVisualTransitionContract(window);
             AssertMotionTimelineContract(window);
+            AssertRunLoopVisualRegistrationContract();
+            AssertMotionAssetScaleContract();
             AssertExactEdgeContactContract();
             AssertRoamPerimeterAndFullLap(window);
+            AssertUserInterruptedRoamIsRescheduled(window);
             AssertRandomActivityBag(window);
             AssertMonitorWorkAreaContract(window);
             AssertOwnedTodoWindowContract(window);
@@ -80,6 +85,8 @@ internal static class Program
     {
         var petImage = GetField<Rectangle>(window, "PetImage");
         var spriteBrush = GetField<ImageBrush>(window, "PetSpriteBrush");
+        var transitionImage = GetField<Rectangle>(window, "PetRoamTransitionImage");
+        var transitionBrush = GetField<ImageBrush>(window, "PetRoamTransitionBrush");
         var viewport = GetField<Canvas>(window, "PetFrameViewport");
         var pageMap = GetField<IDictionary>(window, "_spritePages");
         var spritePageBuffer = GetField<WriteableBitmap>(window, "_spritePageBuffer");
@@ -90,8 +97,8 @@ internal static class Program
             .Max(page => GetProperty<int>(page, "Width"));
         var maximumPageHeight = pageMap.Values.Cast<object>()
             .Max(page => GetProperty<int>(page, "Height"));
-        Assert(maximumPageWidth == 1023 && maximumPageHeight == 815,
-            $"13页限制在1024像素宽后最大尺寸应为1023×815，实际 {maximumPageWidth}×{maximumPageHeight}");
+        Assert(maximumPageWidth <= 1024 && maximumPageHeight <= 700,
+            $"13页图集不得超过1024×700像素，实际 {maximumPageWidth}×{maximumPageHeight}");
         var bitmapFields = typeof(MainWindow).GetFields(InstanceFlags)
                 .Select(field => field.GetValue(window))
                 .OfType<BitmapSource>()
@@ -107,13 +114,19 @@ internal static class Program
         Assert(ReferenceEquals(petImage.Fill, spriteBrush) &&
                ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer),
             "PetImage必须永久使用绑定_spritePageBuffer的PetSpriteBrush");
+        Assert(ReferenceEquals(transitionImage.Fill, transitionBrush) &&
+               ReferenceEquals(transitionBrush.ImageSource, spritePageBuffer),
+            "绕屏转角叠层必须复用同一个_spritePageBuffer，不得新增常驻位图");
+        Assert(transitionImage.Visibility == Visibility.Collapsed &&
+               transitionImage.Opacity == 0,
+            "绕屏转角叠层默认必须完全隐藏");
         Assert(spriteBrush.ViewboxUnits == BrushMappingMode.Absolute &&
                spriteBrush.Stretch == Stretch.Fill,
             "分页裁剪必须使用Absolute Viewbox并填充PetImage");
         Assert(window.FindName("PetImageBuffer") is null &&
                window.FindName("PetSpriteBufferBrush") is null &&
                window.FindName("PetImageOverlay") is null,
-            "单缓冲方案不得保留第二Surface或旧Overlay图层");
+            "不得恢复旧双位图Surface或旧Overlay图层");
 
         AssertClose(viewport.Width, 145, "逻辑帧视口宽度");
         AssertClose(viewport.Height, 185, "逻辑帧视口高度");
@@ -177,8 +190,8 @@ internal static class Program
                 spriteBrush);
         }
 
-        Assert(totalPageFrames == 385,
-            $"13个分页应共包含385个PageFrame，实际 {totalPageFrames}");
+        Assert(totalPageFrames == 401,
+            $"13个分页应共包含401个PageFrame，实际 {totalPageFrames}");
         AssertSameFrameReturnsEarly(
             window,
             petImage,
@@ -360,10 +373,10 @@ internal static class Program
         Assert(root.GetProperty("displayWidth").GetInt32() == 145 &&
                root.GetProperty("displayHeight").GetInt32() == 185,
             "分页图集显示视口必须为145×185");
-        Assert(root.GetProperty("sourceFrameCount").GetInt32() == 289,
-            "分页清单sourceFrameCount必须为289");
-        Assert(root.GetProperty("pageFrameCount").GetInt32() == 385,
-            "分页清单pageFrameCount必须为385");
+        Assert(root.GetProperty("sourceFrameCount").GetInt32() == 291,
+            "分页清单sourceFrameCount必须为291");
+        Assert(root.GetProperty("pageFrameCount").GetInt32() == 401,
+            "分页清单pageFrameCount必须为401");
 
         var manifestPages = root.GetProperty("pages");
         Assert(manifestPages.EnumerateObject().Count() == 13 && pages.Length == 13,
@@ -436,9 +449,9 @@ internal static class Program
                 $"分页uniqueSpriteCount必须与实际区域数一致：{manifestPageEntry.Name}");
         }
 
-        Assert(totalPageFrames == 385 && sourceFrames.Count == 289 &&
+        Assert(totalPageFrames == 401 && sourceFrames.Count == 291 &&
                pageResources.Count == 13,
-            "13页必须覆盖385个PageFrame和289个源逻辑帧");
+            "13页必须覆盖401个PageFrame和291个源逻辑帧");
         AssertProjectAndAssemblyResourceContract(pageResources);
     }
 
@@ -461,7 +474,7 @@ internal static class Program
                 (include.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
                  include.EndsWith("*.png", StringComparison.OrdinalIgnoreCase) &&
                  !include.Contains("sprite-pages/", StringComparison.OrdinalIgnoreCase))),
-            "csproj不得重新嵌入289张源PNG或旧单atlas");
+            "csproj不得重新嵌入291张源PNG或旧单atlas");
 
         var assembly = typeof(MainWindow).Assembly;
         var generatedResourceName = assembly.GetManifestResourceNames()
@@ -490,7 +503,7 @@ internal static class Program
                 key.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (!key.Contains("sprite-pages/", StringComparison.OrdinalIgnoreCase) &&
                  key.EndsWith(".png", StringComparison.OrdinalIgnoreCase))),
-            "主程序集不得包含旧单atlas或289张源PNG");
+            "主程序集不得包含旧单atlas或291张源PNG");
     }
 
     private static void AssertRoamAssetSequenceContract(MainWindow window)
@@ -533,6 +546,65 @@ internal static class Program
                 }
             }
         }
+    }
+
+    private static void AssertRoamVisualTransitionContract(MainWindow window)
+    {
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(window, "_edgeRoamingEnabled", true);
+        SetField(window, "_roamApproaching", false);
+        SetField(window, "_roamClockwise", true);
+        SetField(window, "_roamMode", GetNestedEnum("RoamMode", "Wriggle"));
+        SetField(window, "_roamEdge", GetNestedEnum("EdgeDock", "Top"));
+        SetField(window, "_roamVisualEdge", GetNestedEnum("EdgeDock", "None"));
+        SetField(window, "_roamVisualDirection",
+            GetNestedEnum("RoamVisualDirection", "None"));
+        GetField<Stopwatch>(window, "_roamStopwatch").Restart();
+
+        Invoke(window, "UpdateRoamVisual");
+        var horizontalFrame = GetSpriteFrameInfo(
+            GetField<object>(window, "_currentSpriteFrame"));
+        Assert(horizontalFrame.Name.EndsWith("horizontal-01.png", StringComparison.Ordinal),
+            "绕屏首次进入横边时必须从接触相位第1帧开始");
+
+        SetField(window, "_roamEdge", GetNestedEnum("EdgeDock", "Right"));
+        Invoke(window, "UpdateRoamVisual");
+        var verticalFrame = GetSpriteFrameInfo(
+            GetField<object>(window, "_currentSpriteFrame"));
+        Assert(verticalFrame.Name.EndsWith("vertical-down-01.png", StringComparison.Ordinal),
+            "横向转竖向时必须重置到新方向第1帧，不能继承随机相位");
+
+        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
+        var overlayBrush = GetField<ImageBrush>(window, "PetRoamTransitionBrush");
+        Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 1,
+            "方向切换时旧姿势必须进入短交叉过渡叠层");
+        Assert(ReferenceEquals(
+                overlayBrush.ImageSource,
+                GetField<WriteableBitmap>(window, "_spritePageBuffer")),
+            "交叉过渡不得分配第二张位图");
+
+        var startedAt = GetField<TimeSpan>(window, "_roamVisualTransitionStartedAt");
+        Invoke(
+            window,
+            "UpdateRoamVisualTransition",
+            startedAt + TimeSpan.FromMilliseconds(90));
+        Assert(overlay.Visibility == Visibility.Visible &&
+               overlay.Opacity > 0.45 && overlay.Opacity < 0.55,
+            "180ms 转角过渡的中点必须平滑淡出，不能瞬切");
+        Invoke(
+            window,
+            "UpdateRoamVisualTransition",
+            startedAt + TimeSpan.FromMilliseconds(181));
+        Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0,
+            "转角过渡结束后叠层必须完全收回，避免残影和内存滞留");
+
+        Invoke(
+            window,
+            "StopEdgeRoaming",
+            "测试清理",
+            false,
+            false,
+            true);
     }
 
     private static SpriteFrameInfo GetSpriteFrameInfo(object frame) => new(
@@ -584,10 +656,13 @@ internal static class Program
             Assert(spriteFrames.All(frame => frame.PageName == expectedPageName),
                 $"{actionName} 的 idle、wake 和动作帧必须全部来自 {expectedPageName} 分页");
 
-            var expectedResourceNames = Enumerable.Range(1, 12)
+            var expectedActionFrameNumbers = actionName == "run"
+                ? Enumerable.Range(9, 16)
+                : Enumerable.Range(1, 24);
+            var expectedResourceNames = Enumerable.Range(1, 14)
                 .Select(frameNumber => $"Assets/luban-wake-{frameNumber:00}.png")
                 .Prepend("Assets/luban-idle.png")
-                .Concat(Enumerable.Range(1, 24)
+                .Concat(expectedActionFrameNumbers
                     .Select(frameNumber =>
                         $"Assets/luban-{actionName}-frame-{frameNumber:00}.png"))
                 .ToHashSet(StringComparer.Ordinal);
@@ -595,16 +670,18 @@ internal static class Program
                 .Select(frame => frame.Name)
                 .ToHashSet(StringComparer.Ordinal);
             Assert(actualResourceNames.SetEquals(expectedResourceNames),
-                $"{actionName} 分页动作应完整使用 idle、12 帧 wake 和 24 帧动作资源");
+                actionName == "run"
+                    ? "run 应只使用 idle、14 帧 wake 和新生成的 9-24 十六相位循环，避开姿态异常的旧跑步帧"
+                    : $"{actionName} 分页动作应完整使用 idle、14 帧 wake 和 24 帧动作资源");
         }
 
         foreach (var clip in clips.Where(clip => GetProperty<string>(clip, "ActionName") != "run"))
         {
             var frames = GetClipFrames(clip).Cast<object>().ToArray();
-            Assert(frames.Length == 104, "普通动作应为 36 帧进入 + 32 帧微循环 + 36 帧返回");
-            Assert(frames.Take(36).All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(85)),
+            Assert(frames.Length == 108, "普通动作应为 38 帧进入 + 32 帧微循环 + 38 帧返回");
+            Assert(frames.Take(38).All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(85)),
                 "普通动作进入阶段必须使用 85ms 帧间隔");
-            Assert(frames.Skip(frames.Length - 36)
+            Assert(frames.Skip(frames.Length - 38)
                     .All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(85)),
                 "普通动作返回阶段必须使用 85ms 帧间隔");
         }
@@ -617,23 +694,50 @@ internal static class Program
             .Where(name => name.StartsWith("luban-run-frame-", StringComparison.Ordinal))
             .Select(ParseFrameNumber)
             .ToArray();
-        var expectedRunNumbers = Enumerable.Range(1, 16)
-            .Concat(Enumerable.Range(0, 8).SelectMany(_ => Enumerable.Range(17, 8)))
-            .Append(17)
-            .Concat(Enumerable.Range(1, 16).Reverse())
+        var expectedRunNumbers = Enumerable.Range(0, 6)
+            .SelectMany(_ => Enumerable.Range(9, 16))
+            .Append(9)
             .ToArray();
 
         Assert(runNumbers.SequenceEqual(expectedRunNumbers),
-            "run 应进入 1-16、正向循环 17-24、从 17 衔接退出，再反向 16-1；不得倒放 24-17");
-        Assert(runFrames.Take(28)
+            "run 应正向循环 9-24，并落到下一周期的 9 接触相位；不得倒放跑步或混入旧踢腿姿势");
+        Assert(runFrames.Length == 126,
+            "run 应为 14 帧苏醒 + 96 帧十六相位循环 + 1 帧落稳 + 15 帧自然收尾");
+        Assert(runFrames.Take(14)
                 .All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(85)),
-            "run 的苏醒和 1-16 进入阶段必须为 85ms");
-        Assert(runFrames.Skip(28).Take(65)
-                .All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(110)),
-            "run 的 17-24 八相位循环和退出衔接应使用 110ms");
-        Assert(runFrames.Skip(93)
+            "run 的苏醒阶段必须为 85ms");
+        Assert(runFrames.Skip(14).Take(97)
+                .All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(70)),
+            "run 的 9-24 十六相位循环和接触落稳帧必须使用 70ms");
+        Assert(runFrames.Skip(111)
                 .All(frame => GetFrameDuration(frame) == TimeSpan.FromMilliseconds(85)),
-            "run 返回阶段必须为 85ms");
+            "run 的苏醒逆向收尾必须为 85ms");
+
+        var todoEnterFrames = GetClipFrames(GetField<object>(window, "_todoEnterClip"))
+            .Cast<object>()
+            .ToArray();
+        var todoExitFrames = GetClipFrames(GetField<object>(window, "_todoExitClip"))
+            .Cast<object>()
+            .ToArray();
+        var expectedTodoNames = Enumerable.Range(1, 14)
+            .Select(frameNumber => $"Assets/luban-wake-{frameNumber:00}.png")
+            .Prepend("Assets/luban-idle.png")
+            .Append("Assets/luban-think-frame-24.png")
+            .ToArray();
+        var actualTodoEnterNames = todoEnterFrames
+            .Select(frame => GetSpriteFrameInfo(GetProperty<object>(frame, "Image")))
+            .ToArray();
+        Assert(actualTodoEnterNames.Length == 16 &&
+               actualTodoEnterNames.Select(frame => frame.Name)
+                   .SequenceEqual(expectedTodoNames) &&
+               actualTodoEnterNames.All(frame => frame.PageName == "action-think"),
+            "Todo 入场必须在 action-think 同一分页内按 idle→wake01..14→think24 播放");
+        Assert(todoExitFrames
+                .Select(frame => GetProperty<string>(frame, "Name"))
+                .SequenceEqual(todoEnterFrames
+                    .Select(frame => GetProperty<string>(frame, "Name"))
+                    .Reverse()),
+            "Todo 入场和收起必须严格互为反序，快速切换时才能映射到同一姿势");
     }
 
     private static int ParseFrameNumber(string name)
@@ -646,6 +750,349 @@ internal static class Program
         GetProperty<TimeSpan>(frame, "HoldDuration");
 
     private static Array GetClipFrames(object clip) => GetProperty<Array>(clip, "Frames");
+
+    private static void AssertRunLoopVisualRegistrationContract()
+    {
+        var metrics = Enumerable.Range(9, 16)
+            .Select(frameNumber => ReadRunAlphaMetrics(
+                FindWorkspaceFile(
+                    "Assets",
+                    $"luban-run-frame-{frameNumber:00}.png"),
+                frameNumber))
+            .ToArray();
+
+        Assert(metrics.Max(metric => metric.HeadWidth) -
+               metrics.Min(metric => metric.HeadWidth) <= 5,
+            "16 相位跑步的头部宽度波动必须控制在 5 个源像素内");
+        Assert(metrics.Max(metric => metric.HeadCenterX) -
+               metrics.Min(metric => metric.HeadCenterX) <= 1,
+            "16 相位跑步的头部水平锚点必须稳定在 1 个源像素内");
+        Assert(metrics.Max(metric => metric.HeadTop) -
+               metrics.Min(metric => metric.HeadTop) <= 13,
+            "16 相位跑步的头部上下起伏必须控制在约 4 个显示像素内");
+        Assert(metrics.Max(metric => metric.CentroidX) -
+               metrics.Min(metric => metric.CentroidX) <= 11,
+            "16 相位跑步的整体水平重心摆动必须控制在约 4 个显示像素内");
+        Assert(metrics.Max(metric => metric.CentroidY) -
+               metrics.Min(metric => metric.CentroidY) <= 21,
+            "16 相位跑步的整体垂直重心摆动必须控制在约 7 个显示像素内");
+
+        var first = metrics[0];
+        var last = metrics[^1];
+        Assert(Math.Abs(first.CentroidX - last.CentroidX) <= 4 &&
+               Math.Abs(first.CentroidY - last.CentroidY) <= 10,
+            "16 -> 1 循环接缝的重心位移必须与普通相邻帧一样平滑");
+    }
+
+    private static RunAlphaMetrics ReadRunAlphaMetrics(string path, int frameNumber)
+    {
+        BitmapSource bitmap;
+        using (var stream = File.OpenRead(path))
+        {
+            bitmap = BitmapDecoder.Create(
+                stream,
+                BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad).Frames[0];
+        }
+
+        if (bitmap.Format != PixelFormats.Bgra32)
+        {
+            bitmap = new FormatConvertedBitmap(
+                bitmap,
+                PixelFormats.Bgra32,
+                null,
+                0);
+        }
+
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        var left = bitmap.PixelWidth;
+        var top = bitmap.PixelHeight;
+        var right = -1;
+        var bottom = -1;
+        for (var y = 0; y < bitmap.PixelHeight; y++)
+        {
+            for (var x = 0; x < bitmap.PixelWidth; x++)
+            {
+                if (pixels[y * stride + x * 4 + 3] <= 16)
+                {
+                    continue;
+                }
+
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+
+        Assert(right >= left && bottom >= top,
+            $"run-frame-{frameNumber:00} 必须包含可见像素");
+        var headBottom = top + Math.Max(1, (bottom - top + 1) / 2);
+        var headLeft = bitmap.PixelWidth;
+        var headRight = -1;
+        long centroidXSum = 0;
+        long centroidYSum = 0;
+        long centroidCount = 0;
+        for (var y = top; y <= bottom; y++)
+        {
+            for (var x = left; x <= right; x++)
+            {
+                var alpha = pixels[y * stride + x * 4 + 3];
+                if (y < headBottom && alpha > 16)
+                {
+                    headLeft = Math.Min(headLeft, x);
+                    headRight = Math.Max(headRight, x);
+                }
+
+                if (alpha < 128)
+                {
+                    continue;
+                }
+
+                centroidXSum += x;
+                centroidYSum += y;
+                centroidCount++;
+            }
+        }
+
+        Assert(headRight >= headLeft && centroidCount > 0,
+            $"run-frame-{frameNumber:00} 必须包含稳定的头部与不透明主体");
+        return new RunAlphaMetrics(
+            frameNumber,
+            headRight - headLeft + 1,
+            (headLeft + headRight) / 2d,
+            top,
+            centroidXSum / (double)centroidCount,
+            centroidYSum / (double)centroidCount);
+    }
+
+    private static void AssertMotionAssetScaleContract()
+    {
+        var idle = ReadSpriteVisualMetrics(
+            FindWorkspaceFile("Assets", "luban-idle.png"));
+        var wake = Enumerable.Range(1, 14)
+            .Select(frameNumber => ReadSpriteVisualMetrics(FindWorkspaceFile(
+                "Assets",
+                $"luban-wake-{frameNumber:00}.png")))
+            .ToArray();
+        Assert(wake.Max(metric => metric.BrimWidth) -
+               wake.Min(metric => metric.BrimWidth) <= 8,
+            "14 帧起身动画的帽檐尺度波动必须小于 5%，不能站起时突然变大");
+        Assert(Math.Abs(wake[0].BrimWidth - idle.BrimWidth) <= 10 &&
+               Math.Abs(wake[^1].BrimWidth - idle.BrimWidth) <= 10,
+            "起身首尾头部尺度必须与趴枕头待机一致");
+        Assert(wake.Zip(wake.Skip(1))
+                .Max(pair => Math.Abs(pair.First.Top - pair.Second.Top)) <= 40,
+            "起身相邻姿态的头顶位移不得超过约 13 个显示像素");
+
+        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
+        {
+            var actionMetrics = Enumerable.Range(1, 24)
+                .Select(frameNumber => ReadSpriteVisualMetrics(FindWorkspaceFile(
+                    "Assets",
+                    $"luban-{action}-frame-{frameNumber:00}.png")))
+                .ToArray();
+            Assert(actionMetrics.Max(metric => metric.BrimWidth) -
+                   actionMetrics.Min(metric => metric.BrimWidth) <= 4,
+                $"{action} 的 24 帧帽檐尺度必须稳定，不能在动作内部忽大忽小");
+            Assert(Math.Abs(actionMetrics[0].BrimWidth - idle.BrimWidth) <= 10 &&
+                   Math.Abs(actionMetrics.Average(metric => metric.BrimWidth) -
+                            idle.BrimWidth) <= 10,
+                $"{action} 的头部尺度必须与同一个待机人物接近");
+            Assert(actionMetrics[0].VisibleHeight >= wake[^1].VisibleHeight * 0.88 &&
+                   actionMetrics[0].VisibleHeight <= wake[^1].VisibleHeight * 1.05,
+                $"起身末帧接到 {action} 首帧时全身高度不得突然变大或变矮");
+            Assert(actionMetrics.Max(metric => Math.Abs(metric.BrimCenterX - 225)) <= 2,
+                $"{action} 的帽檐水平锚点必须稳定在画布中心");
+            Assert(actionMetrics.Zip(actionMetrics.Skip(1))
+                    .Max(pair => Math.Abs(pair.First.Top - pair.Second.Top)) <= 35,
+                $"{action} 相邻帧头顶移动不得超过约 11 个显示像素");
+            Assert(actionMetrics.Max(metric => metric.VisibleWidth) <= 325 &&
+                   actionMetrics.Max(metric => metric.VisibleHeight) <=
+                   wake[^1].VisibleHeight + 20,
+                $"{action} 不得通过放大整个人物来填满 450×550 源画布");
+        }
+
+        var todoPose = ReadSpriteVisualMetrics(FindWorkspaceFile(
+            "Assets",
+            "luban-think-frame-24.png"));
+        Assert(Math.Abs(todoPose.BrimWidth - idle.BrimWidth) <= 10 &&
+               Math.Abs(todoPose.VisibleHeight - wake[^1].VisibleHeight) <= 20,
+            "Todo 思考姿势的头部和全身尺度必须与待机/起身保持连续");
+
+        var leftPeek = Enumerable.Range(1, 4)
+            .Select(frameNumber => ReadSpriteVisualMetrics(FindWorkspaceFile(
+                "Assets",
+                $"luban-edge-left-{frameNumber:00}.png")))
+            .ToArray();
+        var bottomPeek = Enumerable.Range(1, 4)
+            .Select(frameNumber => ReadSpriteVisualMetrics(FindWorkspaceFile(
+                "Assets",
+                $"luban-edge-bottom-{frameNumber:00}.png")))
+            .ToArray();
+        Assert(Math.Abs(leftPeek.Average(metric => metric.BrimWidth) - idle.BrimWidth) <= 35 &&
+               Math.Abs(bottomPeek.Average(metric => metric.BrimWidth) - idle.BrimWidth) <= 35,
+            "左、下边缘探头的头部不得再比待机放大约 75%-80%");
+        Assert(leftPeek.Max(metric => metric.BrimWidth) -
+               leftPeek.Min(metric => metric.BrimWidth) <= 10 &&
+               bottomPeek.Max(metric => metric.BrimWidth) -
+               bottomPeek.Min(metric => metric.BrimWidth) <= 10,
+            "探头四帧内部尺度必须稳定");
+
+        foreach (var mode in new[] { "wriggle", "crawl", "hop" })
+        {
+            var directionAverages = new List<double>();
+            foreach (var direction in new[] { "horizontal", "vertical-up", "vertical-down" })
+            {
+                var metrics = Enumerable.Range(1, 8)
+                    .Select(frameNumber => ReadSpriteVisualMetrics(FindWorkspaceFile(
+                        "Assets",
+                        $"luban-roam-{mode}-{direction}-{frameNumber:00}.png")))
+                    .ToArray();
+                directionAverages.Add(metrics.Average(metric => metric.BrimWidth));
+                Assert(metrics.Max(metric => metric.VisibleWidth) -
+                       metrics.Min(metric => metric.VisibleWidth) <= 36 &&
+                       metrics.Max(metric => metric.VisibleHeight) -
+                       metrics.Min(metric => metric.VisibleHeight) <= 12,
+                    $"{mode}/{direction} 循环内部不得忽大忽小");
+            }
+
+            Assert(directionAverages.Max() - directionAverages.Min() <= 20,
+                $"{mode} 绕过拐角时横向、上行、下行头部尺度必须接近");
+        }
+    }
+
+    private static SpriteVisualMetrics ReadSpriteVisualMetrics(string path)
+    {
+        BitmapSource bitmap;
+        using (var stream = File.OpenRead(path))
+        {
+            bitmap = BitmapDecoder.Create(
+                stream,
+                BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad).Frames[0];
+        }
+
+        if (bitmap.Format != PixelFormats.Bgra32)
+        {
+            bitmap = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
+        }
+
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        var left = bitmap.PixelWidth;
+        var top = bitmap.PixelHeight;
+        var right = -1;
+        var bottom = -1;
+        for (var y = 0; y < bitmap.PixelHeight; y++)
+        {
+            for (var x = 0; x < bitmap.PixelWidth; x++)
+            {
+                if (pixels[y * stride + x * 4 + 3] <= 16)
+                {
+                    continue;
+                }
+
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+
+        Assert(right >= left && bottom >= top, $"精灵必须包含可见像素：{path}");
+        var headLimit = top + Math.Max(1, (int)Math.Ceiling((bottom - top + 1) * 0.58));
+        var mask = new byte[bitmap.PixelWidth * bitmap.PixelHeight];
+        for (var y = top; y < headLimit; y++)
+        {
+            for (var x = left; x <= right; x++)
+            {
+                var offset = y * stride + x * 4;
+                var blue = pixels[offset];
+                var green = pixels[offset + 1];
+                var red = pixels[offset + 2];
+                var alpha = pixels[offset + 3];
+                if (alpha > 24 && blue >= 95 && green >= 55 &&
+                    blue * 100 >= red * 122 && blue * 100 >= green * 108)
+                {
+                    mask[y * bitmap.PixelWidth + x] = 1;
+                }
+            }
+        }
+
+        var visited = new byte[mask.Length];
+        long bestScore = -1;
+        var bestWidth = 0;
+        var bestLeft = 0;
+        var bestRight = 0;
+        for (var startY = top; startY < headLimit; startY++)
+        {
+            for (var startX = left; startX <= right; startX++)
+            {
+                var start = startY * bitmap.PixelWidth + startX;
+                if (mask[start] == 0 || visited[start] != 0)
+                {
+                    continue;
+                }
+
+                var queue = new Queue<int>();
+                queue.Enqueue(start);
+                visited[start] = 1;
+                var count = 0;
+                var componentLeft = startX;
+                var componentRight = startX;
+                while (queue.Count > 0)
+                {
+                    var index = queue.Dequeue();
+                    var x = index % bitmap.PixelWidth;
+                    var y = index / bitmap.PixelWidth;
+                    count++;
+                    componentLeft = Math.Min(componentLeft, x);
+                    componentRight = Math.Max(componentRight, x);
+                    for (var nextY = Math.Max(top, y - 1);
+                         nextY <= Math.Min(headLimit - 1, y + 1);
+                         nextY++)
+                    {
+                        for (var nextX = Math.Max(left, x - 1);
+                             nextX <= Math.Min(right, x + 1);
+                             nextX++)
+                        {
+                            var next = nextY * bitmap.PixelWidth + nextX;
+                            if (mask[next] == 0 || visited[next] != 0)
+                            {
+                                continue;
+                            }
+
+                            visited[next] = 1;
+                            queue.Enqueue(next);
+                        }
+                    }
+                }
+
+                var width = componentRight - componentLeft + 1;
+                var score = (long)count * width;
+                if (count >= 18 && width >= 12 && score > bestScore)
+                {
+                    bestScore = score;
+                    bestWidth = width;
+                    bestLeft = componentLeft;
+                    bestRight = componentRight;
+                }
+            }
+        }
+
+        Assert(bestWidth > 0, $"精灵必须包含可检测的蓝色帽檐：{path}");
+        return new SpriteVisualMetrics(
+            bestWidth,
+            (bestLeft + bestRight) / 2d,
+            left,
+            top,
+            right,
+            bottom);
+    }
 
     private static void AssertExactEdgeContactContract()
     {
@@ -661,8 +1108,6 @@ internal static class Program
                 new Rect(1.0, safeY, width, height)),
             new EdgeCase("Right", new Rect(workArea.Right - width - 1.1, safeY, width, height),
                 new Rect(workArea.Right - width - 1.0, safeY, width, height)),
-            new EdgeCase("Top", new Rect(safeX, 1.1, width, height),
-                new Rect(safeX, 1.0, width, height)),
             new EdgeCase("Bottom", new Rect(safeX, workArea.Bottom - height - 1.1, width, height),
                 new Rect(safeX, workArea.Bottom - height - 1.0, width, height))
         };
@@ -687,6 +1132,70 @@ internal static class Program
             Assert(touching.ToString() == edgeCase.Edge,
                 $"{edgeCase.Edge} 距边界 1.0 DIP 时必须吸附");
         }
+
+        foreach (var top in new[]
+                 {
+                     new Rect(safeX, 1, width, height),
+                     new Rect(safeX, 0, width, height),
+                     new Rect(safeX, -5, width, height)
+                 })
+        {
+            var topResult = InvokeStatic(
+                typeof(MainWindow),
+                "FindTouchedEdge",
+                workArea,
+                top,
+                1d)!;
+            Assert(topResult.ToString() == "None",
+                "拖到屏幕顶部、贴顶或轻微越界都不得触发手动吸附");
+        }
+
+        var topLeftCorner = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(0, 0, width, height),
+            1d)!;
+        var topRightCorner = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(workArea.Right - width, 0, width, height),
+            1d)!;
+        Assert(topLeftCorner.ToString() == "Left" &&
+               topRightCorner.ToString() == "Right",
+            "顶部左右角仍应分别保留左、右吸附");
+    }
+
+    private static void AssertUserInterruptedRoamIsRescheduled(MainWindow window)
+    {
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(window, "_edgeRoamingEnabled", true);
+        SetField(window, "_roamBoundaryTargetDistance", 1000d);
+        SetField(window, "_roamBoundaryTravelled", 120d);
+        SetField(window, "_nextRoamDueUtc", DateTimeOffset.UtcNow - TimeSpan.FromSeconds(1));
+        GetField<DispatcherTimer>(window, "_roamTimer").Start();
+
+        var interruptedAt = DateTimeOffset.UtcNow;
+        Invoke(
+            window,
+            "StopEdgeRoaming",
+            "测试用户点击或拖动",
+            false,
+            true,
+            true);
+        Assert(!GetField<bool>(window, "_isEdgeRoaming") &&
+               !GetField<DispatcherTimer>(window, "_roamTimer").IsEnabled,
+            "用户点击或拖动必须立即停止绕屏及其 Render Timer");
+        var nextDue = GetField<DateTimeOffset>(window, "_nextRoamDueUtc");
+        Assert(nextDue >= interruptedAt + TimeSpan.FromMinutes(10) &&
+               nextDue <= DateTimeOffset.UtcNow + TimeSpan.FromMinutes(20.1),
+            "用户打断绕屏后下一圈必须重新安排到 10-20 分钟后");
+
+        Invoke(window, "RestartAutomaticCountdown");
+        PumpDispatcher(TimeSpan.FromMilliseconds(250));
+        Assert(!GetField<bool>(window, "_isEdgeRoaming"),
+            "用户打断后 RestartAutomaticCountdown 不得在 100ms 内重新启动绕屏");
     }
 
     private static void AssertRoamPerimeterAndFullLap(MainWindow window)
@@ -833,6 +1342,16 @@ internal static class Program
             "待办窗口必须是 MainWindow 的 Owned Window");
         Assert(!todoWindow.IsVisible, "待办窗口不得在主窗口启动时自动显示");
 
+        var reactionClip = GetField<Array>(window, "_reactionClips").GetValue(0)!;
+        var reactionStarted = (bool)Invoke(
+            window,
+            "TryStartReaction",
+            reactionClip,
+            false)!;
+        Assert(reactionStarted, "打开待办前应能启动一段普通动作作为抢占测试");
+        Assert(GetRawField(window, "_activeClip") is not null,
+            "抢占测试开始后应存在活动动作");
+
         var originalRight = window.Left + window.Width;
         var originalBottom = window.Top + window.Height;
         Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
@@ -847,12 +1366,100 @@ internal static class Program
         AssertClose(window.Left + window.Width, originalRight, "显示待办时主窗口右边界");
         AssertClose(window.Top + window.Height, originalBottom, "显示待办时主窗口下边界");
 
+        var idleFrame = GetSpriteFrameInfo(GetField<object>(window, "_idleFrame"));
+        var todoFrameObject = GetField<object>(window, "_todoFrame");
+        var todoFrame = GetSpriteFrameInfo(todoFrameObject);
+        Assert(todoFrame.PageName == "action-think" &&
+               todoFrame.Name == "Assets/luban-think-frame-24.png",
+            "Todo 状态应使用专用的全身思考姿势");
+        Assert(todoFrame.Height >= idleFrame.Height + 30,
+            "Todo 姿势的可见高度应显著高于趴枕头待机，不能产生突然缩小的错觉");
+        var todoEnterClip = GetRawField(window, "_activeClip")!;
+        Assert(GetProperty<string>(todoEnterClip, "ActionName") == "todo-open",
+            "打开 Todo 必须抢占普通动作并启动平滑起身入场");
+        Assert(GetField<DispatcherTimer>(window, "_frameTimer").IsEnabled,
+            "Todo 起身入场期间动作计时器必须运行");
+
+        var entryIndex = GetField<int>(window, "_activeFrameIndex");
+        var entryFrame = GetField<object>(window, "_currentSpriteFrame");
+        var todoClipLength = GetClipFrames(todoEnterClip).Length;
+        Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
+        var interruptedExit = GetRawField(window, "_activeClip")!;
+        Assert(GetProperty<string>(interruptedExit, "ActionName") == "todo-close" &&
+               GetField<int>(window, "_activeFrameIndex") ==
+               todoClipLength - 1 - entryIndex &&
+               Equals(GetField<object>(window, "_currentSpriteFrame"), entryFrame),
+            "Todo 入场中途收起必须从当前对应姿势反向播放，不能闪到站立端点");
+        Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
+        Assert(GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName") ==
+               "todo-open" &&
+               GetField<int>(window, "_activeFrameIndex") == entryIndex &&
+               Equals(GetField<object>(window, "_currentSpriteFrame"), entryFrame),
+            "Todo 收起中途重新打开必须映射回同一姿势，不能闪到待机端点");
+
+        PumpDispatcher(TimeSpan.FromMilliseconds(1750));
+        Assert(GetRawField(window, "_activeClip") is null &&
+               !GetField<DispatcherTimer>(window, "_frameTimer").IsEnabled,
+            "Todo 起身入场完成后必须停止换帧并释放活动 clip");
+        Assert(Equals(GetField<object>(window, "_currentSpriteFrame"), todoFrameObject),
+            "Todo 起身入场完成后应稳定停在专用思考姿势");
+
+        var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
+        var petScale = GetField<ScaleTransform>(window, "PetScale");
+        var cornerScale = GetField<ScaleTransform>(window, "PetCornerScale");
+        var roamBaseOffset = GetField<TranslateTransform>(window, "PetRoamBaseOffset");
+        var roamOffset = GetField<TranslateTransform>(window, "PetRoamOffset");
+        AssertClose(facingScale.ScaleX, 1, "Todo 状态水平朝向缩放");
+        AssertClose(facingScale.ScaleY, 1, "Todo 状态垂直朝向缩放");
+        AssertClose(petScale.ScaleX, 1, "Todo 状态呼吸水平缩放");
+        AssertClose(petScale.ScaleY, 1, "Todo 状态呼吸垂直缩放");
+        AssertClose(cornerScale.ScaleX, 1, "Todo 状态转角水平缩放");
+        AssertClose(cornerScale.ScaleY, 1, "Todo 状态转角垂直缩放");
+        AssertClose(roamBaseOffset.X, 0, "Todo 状态绕屏基础 X 偏移");
+        AssertClose(roamBaseOffset.Y, 0, "Todo 状态绕屏基础 Y 偏移");
+        AssertClose(roamOffset.X, 0, "Todo 状态绕屏动作 X 偏移");
+        AssertClose(roamOffset.Y, 0, "Todo 状态绕屏动作 Y 偏移");
+        PumpDispatcher(TimeSpan.FromMilliseconds(220));
+        Assert(Equals(GetField<object>(window, "_currentSpriteFrame"), todoFrameObject),
+            "Todo 打开期间经过多个动作帧间隔后仍应保持专用思考姿势");
+
+        var monitorType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
+        var workArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
+        window.Left = workArea.Left;
+        window.Top = Math.Clamp(
+            window.Top,
+            workArea.Top,
+            workArea.Bottom - window.ActualHeight);
+        Invoke(window, "UpdateEdgeDockAfterDrag");
+        PumpDispatcher(TimeSpan.FromMilliseconds(30));
+        Assert(GetField<object>(window, "_edgeDock").ToString() == "None",
+            "Todo 打开时拖到屏幕边缘不得启动探头状态");
+        Assert(!GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
+            "Todo 打开时边缘探头计时器必须保持停止");
+        Assert(Equals(GetField<object>(window, "_currentSpriteFrame"), todoFrameObject),
+            "Todo 打开时拖到屏幕边缘仍应保持专用思考姿势");
+
+        SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "Left"));
+        GetField<DispatcherTimer>(window, "_edgePeekTimer").Start();
+        Invoke(window, "EdgePeekTimer_Tick", null, EventArgs.Empty);
+        Assert(GetField<object>(window, "_edgeDock").ToString() == "None" &&
+               !GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
+            "即使有在途边缘 Tick，Todo 也必须防御性清理探头状态");
+        Assert(Equals(GetField<object>(window, "_currentSpriteFrame"), todoFrameObject),
+            "清理在途边缘 Tick 后必须恢复 Todo 专用姿势");
+
         todoWindow.Close();
         PumpDispatcher(TimeSpan.FromMilliseconds(30));
         Assert(!todoWindow.IsVisible,
             "Alt+F4/系统关闭待办窗口时应取消销毁并安全隐藏");
         Assert(GetField<object>(window, "_bubbleMode").ToString() == "None",
             "Alt+F4 收起后 MainWindow 的 BubbleMode 必须同步为 None");
+        Assert(GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName") == "todo-close",
+            "收起 Todo 应启动专用平滑回待机过渡");
+        Assert(!GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
+            "Todo 收起过渡与边缘探头计时器不得并行写画面");
 
         Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
         PumpDispatcher(TimeSpan.FromMilliseconds(30));
@@ -866,6 +1473,11 @@ internal static class Program
         Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
         PumpDispatcher(TimeSpan.FromMilliseconds(20));
         Assert(!todoWindow.IsVisible, "收起 Todo 模式应隐藏而非销毁独立待办窗口");
+        Assert(GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName") == "todo-close",
+            "右键或外部点击收起 Todo 都应播放同一段平滑过渡");
+        PumpDispatcher(TimeSpan.FromMilliseconds(1750));
+        Assert(GetRawField(window, "_activeClip") is null,
+            "Todo 收起过渡完成后必须清理活动动作");
     }
 
     private static void AssertTodoWindowLayoutApiAndIme()
@@ -1090,6 +1702,13 @@ internal static class Program
                 $"字段 {instance.GetType().Name}.{name} 类型不正确或为空");
     }
 
+    private static object? GetRawField(object instance, string name)
+    {
+        var field = instance.GetType().GetField(name, InstanceFlags)
+            ?? throw new InvalidOperationException($"找不到字段 {instance.GetType().Name}.{name}");
+        return field.GetValue(instance);
+    }
+
     private static void SetField(object instance, string name, object? value)
     {
         var field = instance.GetType().GetField(name, InstanceFlags)
@@ -1152,6 +1771,26 @@ internal static class Program
         int DestinationY,
         string PageName,
         string Name);
+
+    private sealed record RunAlphaMetrics(
+        int FrameNumber,
+        int HeadWidth,
+        double HeadCenterX,
+        int HeadTop,
+        double CentroidX,
+        double CentroidY);
+
+    private sealed record SpriteVisualMetrics(
+        int BrimWidth,
+        double BrimCenterX,
+        int Left,
+        int Top,
+        int Right,
+        int Bottom)
+    {
+        public int VisibleWidth => Right - Left + 1;
+        public int VisibleHeight => Bottom - Top + 1;
+    }
 
     private sealed record RuntimePage(
         string Name,
