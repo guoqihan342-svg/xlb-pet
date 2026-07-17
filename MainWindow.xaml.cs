@@ -44,7 +44,7 @@ public partial class MainWindow : Window
     private static readonly TimeSpan RoamRenderInterval = TimeSpan.FromMilliseconds(16);
     private static readonly TimeSpan RoamSpriteFrameInterval = TimeSpan.FromMilliseconds(90);
     private static readonly TimeSpan RoamCornerTurnDuration = TimeSpan.FromMilliseconds(320);
-    private static readonly TimeSpan RoamVisualTransitionDuration = TimeSpan.FromMilliseconds(180);
+    private static readonly TimeSpan RoamVisualTransitionDuration = TimeSpan.FromMilliseconds(260);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MinimumRoamScheduleDelay = TimeSpan.FromMinutes(10);
@@ -52,6 +52,9 @@ public partial class MainWindow : Window
 
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly WriteableBitmap _spritePageBuffer;
+    private readonly WriteableBitmap _roamTransitionFrameBuffer;
+    private readonly byte[] _roamTransitionPixels =
+        new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
     private readonly SpriteFrame _idleFrame;
     private readonly SpriteFrame _todoFrame;
     private readonly SpriteFrame[] _edgeLeftFrames;
@@ -104,6 +107,10 @@ public partial class MainWindow : Window
     private TimeSpan _roamCornerTurnElapsed;
     private TimeSpan _roamVisualPhaseStartedAt;
     private TimeSpan _roamVisualTransitionStartedAt;
+    private TimeSpan _roamBaseOffsetTransitionStartedAt;
+    private Point _roamBaseOffsetTransitionStart;
+    private Point _roamBaseOffsetTransitionTarget;
+    private long _roamVisualTransitionGeneration;
     private double _roamBoundaryTargetDistance;
     private double _roamBoundaryTravelled;
     private DateTimeOffset _nextRoamDueUtc;
@@ -111,6 +118,7 @@ public partial class MainWindow : Window
     private bool _roamApproaching;
     private bool _isRoamCornerTurning;
     private bool _isRoamVisualTransitioning;
+    private bool _isRoamBaseOffsetTransitioning;
     private bool _isEdgeRoaming;
     private bool _edgeRoamingEnabled;
     private bool _automaticAnimationEnabled;
@@ -133,8 +141,15 @@ public partial class MainWindow : Window
             96,
             PixelFormats.Pbgra32,
             null);
+        _roamTransitionFrameBuffer = new WriteableBitmap(
+            DisplayPixelWidth,
+            DisplayPixelHeight,
+            96,
+            96,
+            PixelFormats.Pbgra32,
+            null);
         PetSpriteBrush.ImageSource = _spritePageBuffer;
-        PetRoamTransitionBrush.ImageSource = _spritePageBuffer;
+        PetRoamTransitionBrush.ImageSource = _roamTransitionFrameBuffer;
         _idleFrame = GetSpriteFrame("idle", "Assets/luban-idle.png");
         _todoFrame = GetSpriteFrame(
             "action-think",
@@ -913,6 +928,10 @@ public partial class MainWindow : Window
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         PetCornerScale.ScaleX = 1;
         PetCornerScale.ScaleY = 1;
+        _isRoamBaseOffsetTransitioning = false;
+        _roamBaseOffsetTransitionStartedAt = TimeSpan.Zero;
+        _roamBaseOffsetTransitionStart = new Point(0, 0);
+        _roamBaseOffsetTransitionTarget = new Point(0, 0);
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.XProperty, null);
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.YProperty, null);
         PetRoamBaseOffset.X = 0;
@@ -1134,6 +1153,7 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
+        HideRoamVisualTransition();
         if (_activeClip is { } activeClip)
         {
             _frameTimer.Stop();
@@ -1275,6 +1295,14 @@ public partial class MainWindow : Window
         _isRoamCornerTurning = false;
         _roamVisualDirection = RoamVisualDirection.None;
         _roamVisualPhaseStartedAt = TimeSpan.Zero;
+        _isRoamBaseOffsetTransitioning = false;
+        _roamBaseOffsetTransitionStartedAt = TimeSpan.Zero;
+        _roamBaseOffsetTransitionStart = new Point(0, 0);
+        _roamBaseOffsetTransitionTarget = new Point(0, 0);
+        PetRoamBaseOffset.BeginAnimation(TranslateTransform.XProperty, null);
+        PetRoamBaseOffset.BeginAnimation(TranslateTransform.YProperty, null);
+        PetRoamBaseOffset.X = 0;
+        PetRoamBaseOffset.Y = 0;
         HideRoamVisualTransition();
         PetCornerScale.ScaleX = 1;
         PetCornerScale.ScaleY = 1;
@@ -1302,8 +1330,54 @@ public partial class MainWindow : Window
             return;
         }
 
+        var exitFrame = restoreIdleFrame &&
+                        _activeClip is null &&
+                        _edgeDock == EdgeDock.None &&
+                        _currentSpriteFrame is { } currentFrame &&
+                        currentFrame != _idleFrame
+            ? currentFrame
+            : (SpriteFrame?)null;
+        var exitFacingX = PetFacingScale.ScaleX;
+        var exitBaseOffset = new Point(
+            PetRoamBaseOffset.X,
+            PetRoamBaseOffset.Y);
         _roamTimer.Stop();
         _roamStopwatch.Stop();
+        var hasExitTransition = false;
+        if (exitFrame is { } frameToCapture)
+        {
+            // A pointer interruption can land in the middle of a corner crossfade.
+            // Preserve the exact two-layer viewport in that case so stopping never
+            // drops one pose for a frame before the exit fade begins.
+            if (_isRoamVisualTransitioning &&
+                PetRoamTransitionImage.Visibility == Visibility.Visible)
+            {
+                try
+                {
+                    hasExitTransition = CaptureRoamCompositeTransitionFrame();
+                }
+                catch (Exception exception)
+                {
+                    // Rendering can fail when WPF is tearing down a presentation
+                    // source. Fall back to the already-loaded main sprite below.
+                    AppLogger.Error("绕屏合成退出快照失败，正在回退到当前帧", exception);
+                }
+            }
+
+            if (!hasExitTransition)
+            {
+                try
+                {
+                    hasExitTransition = CaptureRoamTransitionFrame(frameToCapture);
+                }
+                catch (Exception exception)
+                {
+                    // A best-effort visual snapshot must never prevent an actual
+                    // click/drag from stopping movement and scheduling the next lap.
+                    AppLogger.Error("绕屏退出快照失败，已直接恢复待机", exception);
+                }
+            }
+        }
         _isEdgeRoaming = false;
         _roamApproaching = false;
         _roamCornerTurnElapsed = TimeSpan.Zero;
@@ -1312,6 +1386,10 @@ public partial class MainWindow : Window
         _roamVisualEdge = EdgeDock.None;
         _roamVisualDirection = RoamVisualDirection.None;
         _roamVisualPhaseStartedAt = TimeSpan.Zero;
+        _isRoamBaseOffsetTransitioning = false;
+        _roamBaseOffsetTransitionStartedAt = TimeSpan.Zero;
+        _roamBaseOffsetTransitionStart = new Point(0, 0);
+        _roamBaseOffsetTransitionTarget = new Point(0, 0);
         HideRoamVisualTransition();
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.XProperty, null);
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.YProperty, null);
@@ -1326,6 +1404,14 @@ public partial class MainWindow : Window
         if (restoreIdleFrame && _activeClip is null && _edgeDock == EdgeDock.None)
         {
             ShowStableFrame(_idleFrame);
+            if (hasExitTransition)
+            {
+                BeginRoamVisualTransition(
+                    exitFacingX,
+                    exitBaseOffset,
+                    _roamStopwatch.Elapsed);
+                BeginRoamVisualTransitionFadeOut();
+            }
         }
 
         AppLogger.Info(
@@ -1588,8 +1674,8 @@ public partial class MainWindow : Window
 
         if (horizontal)
         {
-            // 横向原画朝左；向右移动时镜像，帧循环顺序保持不变。
-            PetFacingScale.ScaleX = movingPositive ? -1 : 1;
+            // 横向原画朝右；朝左移动时镜像，始终让脸朝向前进方向。
+            PetFacingScale.ScaleX = movingPositive ? 1 : -1;
         }
         else
         {
@@ -1597,26 +1683,30 @@ public partial class MainWindow : Window
         }
 
         PetFacingScale.ScaleY = 1;
-        var visualEdge = _roamApproaching ? EdgeDock.None : _roamEdge;
+        var visualEdge = _roamApproaching
+            ? EdgeDock.None
+            : _isRoamCornerTurning && _roamCornerTargetEdge != EdgeDock.None
+                ? _roamCornerTargetEdge
+                : _roamEdge;
         if (visualEdge != _roamVisualEdge)
         {
-            AnimateRoamBaseOffset(visualEdge);
+            AnimateRoamBaseOffset(visualEdge, elapsed);
             _roamVisualEdge = visualEdge;
         }
+        UpdateRoamBaseOffsetTransition(elapsed);
 
         PetRoamOffset.X = 0;
         PetRoamOffset.Y = 0;
 
-        ShowStableFrame(frames[frameIndex]);
-        if (directionChanged && previousDirection != RoamVisualDirection.None &&
-            previousFrame is { } transitionFrame &&
-            string.Equals(
-                transitionFrame.PageName,
-                frames[0].PageName,
-                StringComparison.Ordinal))
+        var nextFrame = frames[frameIndex];
+        var hasTransitionFrame = directionChanged &&
+                                 previousFrame is { } transitionFrame &&
+                                 transitionFrame != nextFrame &&
+                                 CaptureRoamTransitionFrame(transitionFrame);
+        ShowStableFrame(nextFrame);
+        if (hasTransitionFrame && previousFrame is not null)
         {
             BeginRoamVisualTransition(
-                transitionFrame,
                 previousFacingX,
                 previousBaseOffset,
                 elapsed);
@@ -1629,21 +1719,117 @@ public partial class MainWindow : Window
         UpdateRoamVisualTransition(elapsed);
     }
 
+    private bool CaptureRoamTransitionFrame(SpriteFrame frame)
+    {
+        if (!string.Equals(
+                _loadedSpritePageName,
+                frame.PageName,
+                StringComparison.Ordinal) ||
+            frame.Width <= 0 || frame.Height <= 0)
+        {
+            return false;
+        }
+
+        var visibleLeft = Math.Max(0, frame.DestinationX);
+        var visibleTop = Math.Max(0, frame.DestinationY);
+        var visibleRight = Math.Min(
+            DisplayPixelWidth,
+            frame.DestinationX + frame.Width);
+        var visibleBottom = Math.Min(
+            DisplayPixelHeight,
+            frame.DestinationY + frame.Height);
+        var visibleWidth = visibleRight - visibleLeft;
+        var visibleHeight = visibleBottom - visibleTop;
+        if (visibleWidth <= 0 || visibleHeight <= 0)
+        {
+            return false;
+        }
+
+        // The atlas keeps a small transparent gutter on a few frames (for
+        // example idle is 147 px wide at X=-1). Capture the 145x185 viewport,
+        // not the raw atlas crop, so those frames can crossfade too and stale
+        // pixels from a larger previous capture cannot leak through.
+        var stride = checked(DisplayPixelWidth * 4);
+        Array.Clear(_roamTransitionPixels);
+        var sourceBounds = new Int32Rect(
+            frame.X + visibleLeft - frame.DestinationX,
+            frame.Y + visibleTop - frame.DestinationY,
+            visibleWidth,
+            visibleHeight);
+        _spritePageBuffer.CopyPixels(
+            sourceBounds,
+            _roamTransitionPixels,
+            stride,
+            checked(visibleTop * stride + visibleLeft * 4));
+        _roamTransitionFrameBuffer.WritePixels(
+            new Int32Rect(0, 0, DisplayPixelWidth, DisplayPixelHeight),
+            _roamTransitionPixels,
+            stride,
+            0);
+        return true;
+    }
+
+    private bool CaptureRoamCompositeTransitionFrame()
+    {
+        if (PresentationSource.FromVisual(PetFrameViewport) is null)
+        {
+            return false;
+        }
+
+        PetFrameViewport.UpdateLayout();
+        var snapshot = new RenderTargetBitmap(
+            DisplayPixelWidth,
+            DisplayPixelHeight,
+            96,
+            96,
+            PixelFormats.Pbgra32);
+        snapshot.Render(PetFrameViewport);
+
+        var stride = checked(DisplayPixelWidth * 4);
+        snapshot.CopyPixels(_roamTransitionPixels, stride, 0);
+        var hasVisibleAlpha = false;
+        for (var index = 3;
+             index < _roamTransitionPixels.Length;
+             index += 4)
+        {
+            if (_roamTransitionPixels[index] == 0)
+            {
+                continue;
+            }
+
+            hasVisibleAlpha = true;
+            break;
+        }
+
+        if (!hasVisibleAlpha)
+        {
+            return false;
+        }
+
+        _roamTransitionFrameBuffer.WritePixels(
+            new Int32Rect(0, 0, DisplayPixelWidth, DisplayPixelHeight),
+            _roamTransitionPixels,
+            stride,
+            0);
+        return true;
+    }
+
     private void BeginRoamVisualTransition(
-        SpriteFrame previousFrame,
         double previousFacingX,
         Point previousBaseOffset,
         TimeSpan elapsed)
     {
+        _roamVisualTransitionGeneration++;
+        PetRoamTransitionImage.BeginAnimation(UIElement.OpacityProperty, null);
         PetRoamTransitionBrush.Viewbox = new Rect(
-            previousFrame.X,
-            previousFrame.Y,
-            previousFrame.Width,
-            previousFrame.Height);
-        PetRoamTransitionImage.Width = previousFrame.Width;
-        PetRoamTransitionImage.Height = previousFrame.Height;
-        Canvas.SetLeft(PetRoamTransitionImage, previousFrame.DestinationX);
-        Canvas.SetTop(PetRoamTransitionImage, previousFrame.DestinationY);
+            0,
+            0,
+            DisplayPixelWidth,
+            DisplayPixelHeight);
+        PetRoamTransitionImage.Width = DisplayPixelWidth;
+        PetRoamTransitionImage.Height = DisplayPixelHeight;
+        Canvas.SetLeft(PetRoamTransitionImage, 0);
+        Canvas.SetTop(PetRoamTransitionImage, 0);
 
         var currentFacingX = Math.Abs(PetFacingScale.ScaleX) < 0.001
             ? 1
@@ -1658,6 +1844,34 @@ public partial class MainWindow : Window
         PetRoamTransitionImage.Visibility = Visibility.Visible;
         _roamVisualTransitionStartedAt = elapsed;
         _isRoamVisualTransitioning = true;
+    }
+
+    private void BeginRoamVisualTransitionFadeOut()
+    {
+        var transitionGeneration = _roamVisualTransitionGeneration;
+        var animation = new DoubleAnimation(
+            1,
+            0,
+            new Duration(RoamVisualTransitionDuration))
+        {
+            EasingFunction = new SineEase
+            {
+                EasingMode = EasingMode.EaseInOut
+            },
+            FillBehavior = FillBehavior.Stop
+        };
+        animation.Completed += (_, _) =>
+        {
+            if (transitionGeneration == _roamVisualTransitionGeneration &&
+                !_isEdgeRoaming)
+            {
+                HideRoamVisualTransition();
+            }
+        };
+        PetRoamTransitionImage.BeginAnimation(
+            UIElement.OpacityProperty,
+            animation,
+            HandoffBehavior.SnapshotAndReplace);
     }
 
     private void UpdateRoamVisualTransition(TimeSpan elapsed)
@@ -1684,8 +1898,10 @@ public partial class MainWindow : Window
 
     private void HideRoamVisualTransition()
     {
+        _roamVisualTransitionGeneration++;
         _isRoamVisualTransitioning = false;
         _roamVisualTransitionStartedAt = TimeSpan.Zero;
+        PetRoamTransitionImage.BeginAnimation(UIElement.OpacityProperty, null);
         PetRoamTransitionImage.Opacity = 0;
         PetRoamTransitionImage.Visibility = Visibility.Collapsed;
         PetRoamTransitionFacing.ScaleX = 1;
@@ -1694,7 +1910,7 @@ public partial class MainWindow : Window
         PetRoamTransitionOffset.Y = 0;
     }
 
-    private void AnimateRoamBaseOffset(EdgeDock edge)
+    private void AnimateRoamBaseOffset(EdgeDock edge, TimeSpan elapsed)
     {
         var target = edge switch
         {
@@ -1704,12 +1920,54 @@ public partial class MainWindow : Window
             EdgeDock.Right => new Point(27, 0),
             _ => new Point(0, 0)
         };
-        // 位图在分数像素上连续缩放/平移会产生边缘亮纹。绕到转角时只使用
-        // 整数偏移切换锚点，人物窗口本身仍按 60 FPS 连续移动。
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.XProperty, null);
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.YProperty, null);
-        PetRoamBaseOffset.X = Math.Round(target.X);
-        PetRoamBaseOffset.Y = Math.Round(target.Y);
+        _roamBaseOffsetTransitionStart = new Point(
+            PetRoamBaseOffset.X,
+            PetRoamBaseOffset.Y);
+        _roamBaseOffsetTransitionTarget = new Point(
+            Math.Round(target.X),
+            Math.Round(target.Y));
+        _roamBaseOffsetTransitionStartedAt = elapsed;
+        _isRoamBaseOffsetTransitioning =
+            Math.Abs(_roamBaseOffsetTransitionStart.X -
+                     _roamBaseOffsetTransitionTarget.X) > 0.1 ||
+            Math.Abs(_roamBaseOffsetTransitionStart.Y -
+                     _roamBaseOffsetTransitionTarget.Y) > 0.1;
+        if (!_isRoamBaseOffsetTransitioning)
+        {
+            PetRoamBaseOffset.X = _roamBaseOffsetTransitionTarget.X;
+            PetRoamBaseOffset.Y = _roamBaseOffsetTransitionTarget.Y;
+        }
+    }
+
+    private void UpdateRoamBaseOffsetTransition(TimeSpan elapsed)
+    {
+        if (!_isRoamBaseOffsetTransitioning)
+        {
+            return;
+        }
+
+        var progress = Math.Clamp(
+            (elapsed - _roamBaseOffsetTransitionStartedAt).TotalMilliseconds /
+            RoamCornerTurnDuration.TotalMilliseconds,
+            0,
+            1);
+        var easedProgress = progress * progress * (3 - 2 * progress);
+        PetRoamBaseOffset.X = Math.Round(
+            _roamBaseOffsetTransitionStart.X +
+            (_roamBaseOffsetTransitionTarget.X -
+             _roamBaseOffsetTransitionStart.X) * easedProgress);
+        PetRoamBaseOffset.Y = Math.Round(
+            _roamBaseOffsetTransitionStart.Y +
+            (_roamBaseOffsetTransitionTarget.Y -
+             _roamBaseOffsetTransitionStart.Y) * easedProgress);
+        if (progress >= 1)
+        {
+            _isRoamBaseOffsetTransitioning = false;
+            PetRoamBaseOffset.X = _roamBaseOffsetTransitionTarget.X;
+            PetRoamBaseOffset.Y = _roamBaseOffsetTransitionTarget.Y;
+        }
     }
 
     private EdgeDock FindNearestEdge(Rect workArea)
@@ -2285,6 +2543,10 @@ public partial class MainWindow : Window
         PetScale.ScaleY = 1;
         PetCornerScale.ScaleX = 1;
         PetCornerScale.ScaleY = 1;
+        _isRoamBaseOffsetTransitioning = false;
+        _roamBaseOffsetTransitionStartedAt = TimeSpan.Zero;
+        _roamBaseOffsetTransitionStart = new Point(0, 0);
+        _roamBaseOffsetTransitionTarget = new Point(0, 0);
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.XProperty, null);
         PetRoamBaseOffset.BeginAnimation(TranslateTransform.YProperty, null);
         PetRoamBaseOffset.X = 0;

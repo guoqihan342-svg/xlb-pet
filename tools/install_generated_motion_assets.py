@@ -4,6 +4,7 @@ import argparse
 from collections import deque
 import os
 from pathlib import Path
+from statistics import median
 import time
 
 from PIL import Image
@@ -23,11 +24,12 @@ RUNTIME_CANVAS_SIZE = (450, 550)
 V2_RUN_SCALE = 1.42
 V2_RUN_LOOP_SCALE = 1.12
 V5_RUN_SOURCE_NAME = "run-loop-v5-16-sheet-alpha.png"
+V6_RUN_BRIDGE_SOURCE_NAME = "run-bridge-v6-2-sheet-alpha.png"
 V5_RUN_TARGET_HEAD_WIDTH = 248
 V5_RUN_HEAD_REGION_FRACTION = 0.5
 V5_RUN_TARGET_HEAD_TOPS = (
     128, 131, 130, 126, 124, 122, 124, 119,
-    128, 131, 130, 126, 124, 122, 124, 119,
+    126, 131, 130, 126, 124, 122, 124, 119,
 )
 V3_DOWN_SPEED_LINE_BOXES = {
     4: (
@@ -50,8 +52,7 @@ V6_WAKE_CRAWL_SOURCE_NAME = "wake-v5-crawl-to-kneel-4-sheet-alpha.png"
 V6_WAKE_GAP_SOURCE_NAME = "wake-v6-gap-2-sheet-alpha.png"
 V6_EDGE_SOURCE_NAME = "edge-v2-12-sheet-alpha.png"
 V6_ROAM_HORIZONTAL_SOURCE_NAME = "roam-horizontal-v5-24-sheet-alpha.png"
-V6_ROAM_VERTICAL_UP_SOURCE_NAME = "roam-vertical-up-v3-25-sheet-alpha.png"
-V6_ROAM_VERTICAL_DOWN_SOURCE_NAME = "roam-vertical-down-v3-8-sheet-alpha.png"
+V7_ROAM_VERTICAL_SOURCE_NAME = "roam-vertical-v7-24-sheet-alpha.png"
 V6_SCALE_REGISTERED_ACTIONS = tuple(
     action for action in ACTIONS if action != "run"
 )
@@ -64,6 +65,7 @@ V6_ACTION_SOURCE_NAMES = {
 V6_RUNTIME_INSET = 5
 V6_RUNTIME_BOTTOM = RUNTIME_CANVAS_SIZE[1] - 10
 V6_WAKE_TARGET_BRIM_WIDTH = 172
+V7_EDGE_TARGET_BRIM_WIDTH = 180
 # The older action sheets use several different head/body proportions.  A
 # single brim target either enlarges the head or makes the standing body pop
 # shorter.  These per-group targets keep the first action pose within about
@@ -74,7 +76,7 @@ V6_ACTION_TARGET_BRIM_WIDTHS = {
     "cry": 180,
     "cute": 180,
     "like": 181,
-    "eat": 190,
+    "eat": 180,
     "wave": 180,
     "think": 180,
 }
@@ -98,30 +100,7 @@ V6_WAKE_SEQUENCE = (
 V6_WAKE_TARGET_HEAD_CENTERS = (
     206, 206, 207, 204, 202, 198, 200, 200, 202, 205, 210, 215, 221, 225,
 )
-V6_ROAM_SEQUENCE_INDICES = {
-    ("wriggle", "horizontal"): (0, 1, 2, 3, 4, 5, 6, 7),
-    ("crawl", "horizontal"): (0, 1, 2, 3, 4, 5, 6, 7),
-    ("hop", "horizontal"): (0, 1, 2, 3, 4, 3, 2, 1),
-    ("wriggle", "vertical-up"): (0, 1, 2, 3, 2, 1, 0, 1),
-    ("crawl", "vertical-up"): (0, 1, 2, 3, 4, 3, 2, 1),
-    ("hop", "vertical-up"): (0, 1, 2, 3, 4, 5, 6, 7),
-    ("wriggle", "vertical-down"): (0, 1, 6, 7, 0, 1, 6, 7),
-    ("crawl", "vertical-down"): (0, 1, 6, 7, 0, 1, 6, 7),
-    ("hop", "vertical-down"): (0, 1, 6, 7, 0, 1, 6, 7),
-}
-# The compact V5 horizontal sheet matches the V3 up sheet at source scale.  The
-# down-facing perspective is larger, so it is reduced once offline.
-V6_ROAM_GROUP_SCALE = {
-    ("wriggle", "horizontal"): 1.000,
-    ("crawl", "horizontal"): 1.000,
-    ("hop", "horizontal"): 1.000,
-    ("wriggle", "vertical-up"): 1.000,
-    ("crawl", "vertical-up"): 1.000,
-    ("hop", "vertical-up"): 1.000,
-    ("wriggle", "vertical-down"): 0.670,
-    ("crawl", "vertical-down"): 0.670,
-    ("hop", "vertical-down"): 0.670,
-}
+V7_ROAM_SEQUENCE_INDICES = tuple(range(8))
 
 
 def resolve_generated_source(source_directory: Path, name: str) -> Path:
@@ -795,6 +774,23 @@ def install_v5_run(source_directory: Path, assets_directory: Path) -> None:
     if len(cells) != 16:
         raise ValueError("V5 run sheet must contain exactly sixteen cells")
 
+    bridge_cells, _ = load_cells(
+        resolve_generated_source(
+            source_directory,
+            V6_RUN_BRIDGE_SOURCE_NAME,
+        ),
+        columns=2,
+        rows=1,
+        snap_to_transparent_gaps=True,
+    )
+    if len(bridge_cells) != 2:
+        raise ValueError("V6 run bridge sheet must contain exactly two cells")
+    # The original cell 8 jumps directly from a gathered-foot contact pose to
+    # a fully split airborne stride. Replace only that runtime frame (17) with
+    # the generated early-push-off bridge; the loop stays at sixteen phases and
+    # therefore adds no runtime bitmap or atlas memory.
+    cells[8] = bridge_cells[0]
+
     for frame_number, target_head_top, cell in zip(
         range(9, 25),
         V5_RUN_TARGET_HEAD_TOPS,
@@ -943,7 +939,7 @@ def install_v6_actions(
 
 
 def install_v6_edge(source_directory: Path, assets_directory: Path) -> None:
-    """Reduce edge-peek heads to the same perceived scale as idle/wake."""
+    """Register every edge-peek frame to the same cap scale as idle/actions."""
 
     cells, _ = load_cells(
         resolve_generated_source(source_directory, V6_EDGE_SOURCE_NAME),
@@ -954,15 +950,20 @@ def install_v6_edge(source_directory: Path, assets_directory: Path) -> None:
     )
     if len(cells) != 12:
         raise ValueError("V6 edge source must contain twelve cells")
-    base_scale = get_direct_runtime_registration_scale(cells)
     groups = (
-        ("left", cells[0:4], 0.60, "left"),
-        ("top", cells[4:8], 0.60, "top"),
-        ("bottom", cells[8:12], 0.59, "bottom"),
+        ("left", cells[0:4], "left"),
+        ("top", cells[4:8], "top"),
+        ("bottom", cells[8:12], "bottom"),
     )
-    for edge_name, edge_cells, group_scale, anchor in groups:
+    for edge_name, edge_cells, anchor in groups:
         for frame_number, cell in enumerate(edge_cells, start=1):
-            sprite = resize_sprite(cell, base_scale * group_scale)
+            sprite = crop_visible(cell)
+            brim_box = get_blue_brim_box(sprite)
+            brim_width = brim_box[2] - brim_box[0]
+            sprite = resize_sprite(
+                sprite,
+                V7_EDGE_TARGET_BRIM_WIDTH / brim_width,
+            )
             frame = place_runtime_sprite(sprite, anchor=anchor)
             save_png_atomically(
                 frame,
@@ -971,9 +972,9 @@ def install_v6_edge(source_directory: Path, assets_directory: Path) -> None:
 
 
 def install_v6_roam(source_directory: Path, assets_directory: Path) -> None:
-    """Normalize V3 roam scale and remove the known discontinuous source poses."""
+    """Install three distinct, scale-registered 8-frame loops in every direction."""
 
-    horizontal_cells, horizontal_cell_width = load_cells(
+    horizontal_cells, _ = load_cells(
         resolve_generated_source(
             source_directory,
             V6_ROAM_HORIZONTAL_SOURCE_NAME,
@@ -982,78 +983,68 @@ def install_v6_roam(source_directory: Path, assets_directory: Path) -> None:
         rows=6,
         snap_to_transparent_gaps=True,
     )
-    vertical_up_cells, vertical_up_cell_width = load_cells(
+    vertical_cells, _ = load_cells(
         resolve_generated_source(
             source_directory,
-            V6_ROAM_VERTICAL_UP_SOURCE_NAME,
-        ),
-        columns=5,
-        rows=5,
-        snap_to_transparent_gaps=True,
-    )
-    vertical_down_cells, vertical_down_cell_width = load_cells(
-        resolve_generated_source(
-            source_directory,
-            V6_ROAM_VERTICAL_DOWN_SOURCE_NAME,
+            V7_ROAM_VERTICAL_SOURCE_NAME,
         ),
         columns=4,
-        rows=2,
-        preserve_border_components=True,
+        rows=6,
         snap_to_transparent_gaps=True,
     )
-    if len(horizontal_cells) != 24 or len(vertical_up_cells) != 25:
-        raise ValueError("V6 roam horizontal/up sources must contain 24/25 cells")
-    if len(vertical_down_cells) != 8:
-        raise ValueError("V6 roam down source must contain eight cells")
+    if len(horizontal_cells) != 24 or len(vertical_cells) != 24:
+        raise ValueError("V7 roam horizontal/vertical sources must each contain 24 cells")
 
-    vertical_up_cells = vertical_up_cells[:24]
-    vertical_down_cells = remove_v3_down_speed_lines(vertical_down_cells)
-    reference_cell_width = max(
-        horizontal_cell_width,
-        vertical_up_cell_width,
-        vertical_down_cell_width,
-    )
-    horizontal_cells = resize_cells_to_width(
-        horizontal_cells,
-        horizontal_cell_width,
-        reference_cell_width,
-    )
-    vertical_up_cells = resize_cells_to_width(
-        vertical_up_cells,
-        vertical_up_cell_width,
-        reference_cell_width,
-    )
-    vertical_down_cells = resize_cells_to_width(
-        vertical_down_cells,
-        vertical_down_cell_width,
-        reference_cell_width,
-    )
-    base_scale = get_direct_runtime_registration_scale(
-        horizontal_cells + vertical_up_cells + vertical_down_cells
-    )
-
-    source_groups: dict[tuple[str, str], list[Image.Image]] = {}
+    # Keep the approved horizontal V5 size as the reference.  Every generated
+    # vertical loop uses one median cap registration per movement mode, avoiding
+    # both cross-direction scale pops and per-frame rescaling.  Downward motion
+    # is the exact 180-degree counterpart of that mode's upward loop, so the
+    # three modes cannot silently share one generic pose set.
+    base_scale = get_direct_runtime_registration_scale(horizontal_cells)
     for mode_index, mode in enumerate(ROAM_MODES):
         start = mode_index * 8
-        source_groups[(mode, "horizontal")] = horizontal_cells[start:start + 8]
-        source_groups[(mode, "vertical-up")] = vertical_up_cells[start:start + 8]
-        source_groups[(mode, "vertical-down")] = vertical_down_cells
+        mode_horizontal_cells = horizontal_cells[start:start + 8]
+        mode_vertical_cells = vertical_cells[start:start + 8]
+        horizontal_sprites = [
+            resize_sprite(cell, base_scale)
+            for cell in mode_horizontal_cells
+        ]
+        horizontal_brim_width = median(
+            get_blue_brim_box(sprite)[2] - get_blue_brim_box(sprite)[0]
+            for sprite in horizontal_sprites
+        )
+        vertical_brim_width = median(
+            get_blue_brim_box(crop_visible(cell))[2] -
+            get_blue_brim_box(crop_visible(cell))[0]
+            for cell in mode_vertical_cells
+        )
+        vertical_group_scale = horizontal_brim_width / vertical_brim_width
+        for frame_number, source_index in enumerate(
+            V7_ROAM_SEQUENCE_INDICES,
+            start=1,
+        ):
+            horizontal_sprite = horizontal_sprites[source_index]
+            vertical_source = crop_visible(mode_vertical_cells[source_index])
+            vertical_up_sprite = resize_sprite(
+                vertical_source,
+                vertical_group_scale,
+            )
+            vertical_down_sprite = vertical_up_sprite.transpose(
+                Image.Transpose.ROTATE_180
+            )
 
-    for (mode, direction), cells in source_groups.items():
-        sequence = V6_ROAM_SEQUENCE_INDICES[(mode, direction)]
-        group_scale = V6_ROAM_GROUP_SCALE[(mode, direction)]
-        for frame_number, source_index in enumerate(sequence, start=1):
-            cell = cells[source_index]
-            sprite = resize_sprite(
-                cell,
-                base_scale * group_scale,
-            )
-            frame = place_runtime_sprite(sprite)
-            save_png_atomically(
-                frame,
-                assets_directory /
-                f"luban-roam-{mode}-{direction}-{frame_number:02d}.png",
-            )
+            direction_sprites = {
+                "horizontal": horizontal_sprite,
+                "vertical-up": vertical_up_sprite,
+                "vertical-down": vertical_down_sprite,
+            }
+            for direction, sprite in direction_sprites.items():
+                frame = place_runtime_sprite(sprite)
+                save_png_atomically(
+                    frame,
+                    assets_directory /
+                    f"luban-roam-{mode}-{direction}-{frame_number:02d}.png",
+                )
 
     for mode in ROAM_MODES:
         for frame_number in range(1, 5):

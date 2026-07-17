@@ -56,8 +56,11 @@ internal static class Program
             AssertRunLoopVisualRegistrationContract();
             AssertMotionAssetScaleContract();
             AssertExactEdgeContactContract();
+            AssertManualTopDockIntegration(window);
+            AssertStaleRoamFadeCannotHideNewTransition(window);
             AssertRoamPerimeterAndFullLap(window);
             AssertUserInterruptedRoamIsRescheduled(window);
+            AssertPointerDownInterruptsRoam(window);
             AssertRandomActivityBag(window);
             AssertMonitorWorkAreaContract(window);
             AssertOwnedTodoWindowContract(window);
@@ -90,6 +93,8 @@ internal static class Program
         var viewport = GetField<Canvas>(window, "PetFrameViewport");
         var pageMap = GetField<IDictionary>(window, "_spritePages");
         var spritePageBuffer = GetField<WriteableBitmap>(window, "_spritePageBuffer");
+        var transitionFrameBuffer =
+            GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer");
 
         Assert(pageMap.Count == 13,
             $"运行时必须登记13个图集分页，实际 {pageMap.Count}");
@@ -103,9 +108,10 @@ internal static class Program
                 .Select(field => field.GetValue(window))
                 .OfType<BitmapSource>()
                 .ToArray();
-        Assert(bitmapFields.Length == 1 &&
-               ReferenceEquals(bitmapFields[0], spritePageBuffer),
-            "MainWindow必须只常驻一个_spritePageBuffer位图字段");
+        Assert(bitmapFields.Length == 2 &&
+               bitmapFields.Contains(spritePageBuffer) &&
+               bitmapFields.Contains(transitionFrameBuffer),
+            "MainWindow只能常驻分页缓冲和一张145×185的小型过渡快照");
         Assert(spritePageBuffer.PixelWidth == maximumPageWidth &&
                spritePageBuffer.PixelHeight == maximumPageHeight &&
                spritePageBuffer.Format == PixelFormats.Pbgra32 &&
@@ -115,8 +121,11 @@ internal static class Program
                ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer),
             "PetImage必须永久使用绑定_spritePageBuffer的PetSpriteBrush");
         Assert(ReferenceEquals(transitionImage.Fill, transitionBrush) &&
-               ReferenceEquals(transitionBrush.ImageSource, spritePageBuffer),
-            "绕屏转角叠层必须复用同一个_spritePageBuffer，不得新增常驻位图");
+               ReferenceEquals(transitionBrush.ImageSource, transitionFrameBuffer) &&
+               transitionFrameBuffer.PixelWidth == 145 &&
+               transitionFrameBuffer.PixelHeight == 185 &&
+               transitionFrameBuffer.Format == PixelFormats.Pbgra32,
+            "跨分页过渡只能使用145×185、约105KiB的固定快照，不得复制整张图集");
         Assert(transitionImage.Visibility == Visibility.Collapsed &&
                transitionImage.Opacity == 0,
             "绕屏转角叠层默认必须完全隐藏");
@@ -550,6 +559,10 @@ internal static class Program
 
     private static void AssertRoamVisualTransitionContract(MainWindow window)
     {
+        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
+        var overlayBrush = GetField<ImageBrush>(window, "PetRoamTransitionBrush");
+        var transitionBuffer =
+            GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer");
         SetField(window, "_isEdgeRoaming", true);
         SetField(window, "_edgeRoamingEnabled", true);
         SetField(window, "_roamApproaching", false);
@@ -566,6 +579,37 @@ internal static class Program
             GetField<object>(window, "_currentSpriteFrame"));
         Assert(horizontalFrame.Name.EndsWith("horizontal-01.png", StringComparison.Ordinal),
             "绕屏首次进入横边时必须从接触相位第1帧开始");
+        Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 1,
+            "147px 宽、X=-1 的待机帧必须能完整裁进145×185快照并淡入绕屏");
+        AssertClose(overlay.Width, 145, "首次绕屏快照宽度");
+        AssertClose(overlay.Height, 185, "首次绕屏快照高度");
+        AssertClose(Canvas.GetLeft(overlay), 0, "首次绕屏快照 Canvas.X");
+        AssertClose(Canvas.GetTop(overlay), 0, "首次绕屏快照 Canvas.Y");
+        Assert(HasVisibleAlpha(CopyBitmapPixels(transitionBuffer)),
+            "首次绕屏的待机快照必须包含非透明像素");
+
+        var facing = GetField<ScaleTransform>(window, "PetFacingScale");
+        AssertClose(facing.ScaleX, 1, "顶部顺时针向右移动时的朝向");
+        SetField(window, "_roamClockwise", false);
+        Invoke(window, "UpdateRoamVisual");
+        AssertClose(facing.ScaleX, -1, "顶部逆时针向左移动时的朝向");
+        SetField(window, "_roamEdge", GetNestedEnum("EdgeDock", "Bottom"));
+        SetField(window, "_roamClockwise", true);
+        Invoke(window, "UpdateRoamVisual");
+        AssertClose(facing.ScaleX, -1, "底部顺时针向左移动时的朝向");
+        SetField(window, "_roamClockwise", false);
+        Invoke(window, "UpdateRoamVisual");
+        AssertClose(facing.ScaleX, 1, "底部逆时针向右移动时的朝向");
+        SetField(window, "_roamClockwise", true);
+
+        var horizontalModes = GetField<Array>(window, "_roamHorizontalFrames");
+        var wriggleFrames = (Array)horizontalModes.GetValue(0)!;
+        var wideHorizontalFrame = wriggleFrames.GetValue(1)!;
+        var wideHorizontalFrameInfo = GetSpriteFrameInfo(wideHorizontalFrame);
+        Assert(wideHorizontalFrameInfo.Width == 147 &&
+               wideHorizontalFrameInfo.DestinationX == -1,
+            "测试前置条件：蠕动横向第2帧应覆盖147px/X=-1裁剪边界");
+        Invoke(window, "ShowStableFrame", wideHorizontalFrame);
 
         SetField(window, "_roamEdge", GetNestedEnum("EdgeDock", "Right"));
         Invoke(window, "UpdateRoamVisual");
@@ -574,29 +618,51 @@ internal static class Program
         Assert(verticalFrame.Name.EndsWith("vertical-down-01.png", StringComparison.Ordinal),
             "横向转竖向时必须重置到新方向第1帧，不能继承随机相位");
 
-        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
-        var overlayBrush = GetField<ImageBrush>(window, "PetRoamTransitionBrush");
         Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 1,
-            "方向切换时旧姿势必须进入短交叉过渡叠层");
+            "147px 宽的绕屏帧切换方向时也必须进入短交叉过渡叠层");
+        Assert(HasVisibleAlpha(CopyBitmapPixels(transitionBuffer)),
+            "147px 宽的绕屏帧快照必须包含非透明像素");
         Assert(ReferenceEquals(
                 overlayBrush.ImageSource,
-                GetField<WriteableBitmap>(window, "_spritePageBuffer")),
-            "交叉过渡不得分配第二张位图");
+                GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer")),
+            "交叉过渡必须使用固定145×185快照，才能跨分页平滑进入和退出绕屏");
 
         var startedAt = GetField<TimeSpan>(window, "_roamVisualTransitionStartedAt");
         Invoke(
             window,
             "UpdateRoamVisualTransition",
-            startedAt + TimeSpan.FromMilliseconds(90));
+            startedAt + TimeSpan.FromMilliseconds(130));
         Assert(overlay.Visibility == Visibility.Visible &&
                overlay.Opacity > 0.45 && overlay.Opacity < 0.55,
-            "180ms 转角过渡的中点必须平滑淡出，不能瞬切");
+            "260ms 转角过渡的中点必须平滑淡出，不能瞬切");
         Invoke(
             window,
             "UpdateRoamVisualTransition",
-            startedAt + TimeSpan.FromMilliseconds(181));
+            startedAt + TimeSpan.FromMilliseconds(261));
         Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0,
             "转角过渡结束后叠层必须完全收回，避免残影和内存滞留");
+
+        var offsetStartedAt =
+            GetField<TimeSpan>(window, "_roamBaseOffsetTransitionStartedAt");
+        Invoke(
+            window,
+            "UpdateRoamBaseOffsetTransition",
+            offsetStartedAt + TimeSpan.FromMilliseconds(160));
+        var roamBaseOffset = GetField<TranslateTransform>(window, "PetRoamBaseOffset");
+        Assert(roamBaseOffset.X > 0 && roamBaseOffset.X < 27,
+            "转角锚点必须在320ms内逐像素移动，不能从横边一帧跳到竖边");
+        AssertClose(roamBaseOffset.Y, 0, "右边缘平滑锚点 Y");
+        Invoke(
+            window,
+            "UpdateRoamBaseOffsetTransition",
+            offsetStartedAt + TimeSpan.FromMilliseconds(321));
+        AssertClose(roamBaseOffset.X, 27, "右边缘平滑锚点终点 X");
+        Assert(!GetField<bool>(window, "_isRoamBaseOffsetTransitioning"),
+            "锚点过渡完成后必须停止更新");
+
+        facing.ScaleX = -1;
+        roamBaseOffset.X = 27;
+        roamBaseOffset.Y = 8;
 
         Invoke(
             window,
@@ -605,6 +671,21 @@ internal static class Program
             false,
             false,
             true);
+        var exitOverlayOffset =
+            GetField<TranslateTransform>(window, "PetRoamTransitionOffset");
+        var exitOverlayFacing =
+            GetField<ScaleTransform>(window, "PetRoamTransitionFacing");
+        AssertClose(roamBaseOffset.X, 0, "停止绕屏后的主画面锚点 X");
+        AssertClose(roamBaseOffset.Y, 0, "停止绕屏后的主画面锚点 Y");
+        AssertClose(facing.ScaleX, 1, "停止绕屏后的主画面朝向");
+        Assert(overlay.Visibility == Visibility.Visible,
+            "非零锚点停止绕屏时旧姿势必须原地淡出，不能瞬间消失");
+        AssertClose(exitOverlayOffset.X, 27, "停止绕屏快照保留的锚点 X");
+        AssertClose(exitOverlayOffset.Y, 8, "停止绕屏快照保留的锚点 Y");
+        AssertClose(exitOverlayFacing.ScaleX, -1, "停止绕屏快照保留的朝向");
+        Assert(GetField<bool>(window, "_isRoamVisualTransitioning"),
+            "停止绕屏后必须保留退出过渡状态，等待可见窗口中的淡出时钟完成");
+        Invoke(window, "HideRoamVisualTransition");
     }
 
     private static SpriteFrameInfo GetSpriteFrameInfo(object frame) => new(
@@ -616,6 +697,44 @@ internal static class Program
         GetProperty<int>(frame, "DestinationY"),
         GetProperty<string>(frame, "PageName"),
         GetProperty<string>(frame, "Name"));
+
+    private static void AssertStaleRoamFadeCannotHideNewTransition(MainWindow window)
+    {
+        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
+        SetField(window, "_isEdgeRoaming", false);
+        Invoke(
+            window,
+            "BeginRoamVisualTransition",
+            1d,
+            new Point(0, 0),
+            TimeSpan.Zero);
+        Invoke(window, "BeginRoamVisualTransitionFadeOut");
+        var firstGeneration =
+            GetField<long>(window, "_roamVisualTransitionGeneration");
+        PumpDispatcher(TimeSpan.FromMilliseconds(200));
+
+        Invoke(
+            window,
+            "BeginRoamVisualTransition",
+            1d,
+            new Point(0, 0),
+            TimeSpan.FromSeconds(1));
+        Invoke(window, "BeginRoamVisualTransitionFadeOut");
+        var secondGeneration =
+            GetField<long>(window, "_roamVisualTransitionGeneration");
+        Assert(secondGeneration > firstGeneration,
+            "每次新的绕屏淡化都必须获得独立代次，令旧回调失效");
+
+        // The first 260ms clock would finish about 60ms into this new fade.
+        // Its stale Completed callback must not collapse the replacement layer.
+        PumpDispatcher(TimeSpan.FromMilliseconds(80));
+        Assert(overlay.Visibility == Visibility.Visible &&
+               overlay.Opacity > 0 && overlay.Opacity < 1,
+            "旧淡化回调不得提前收起后启动的新260ms过渡");
+        PumpDispatcher(TimeSpan.FromMilliseconds(350));
+        Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0,
+            "最新一代绕屏淡化完成后必须正常收回");
+    }
 
     private static string FindWorkspaceFile(params string[] relativeParts)
     {
@@ -771,8 +890,8 @@ internal static class Program
                metrics.Min(metric => metric.HeadTop) <= 13,
             "16 相位跑步的头部上下起伏必须控制在约 4 个显示像素内");
         Assert(metrics.Max(metric => metric.CentroidX) -
-               metrics.Min(metric => metric.CentroidX) <= 11,
-            "16 相位跑步的整体水平重心摆动必须控制在约 4 个显示像素内");
+               metrics.Min(metric => metric.CentroidX) <= 17,
+            "16 相位跑步允许身体自然前倾，但整体水平重心摆动必须控制在约 6 个显示像素内");
         Assert(metrics.Max(metric => metric.CentroidY) -
                metrics.Min(metric => metric.CentroidY) <= 21,
             "16 相位跑步的整体垂直重心摆动必须控制在约 7 个显示像素内");
@@ -782,6 +901,16 @@ internal static class Program
         Assert(Math.Abs(first.CentroidX - last.CentroidX) <= 4 &&
                Math.Abs(first.CentroidY - last.CentroidY) <= 10,
             "16 -> 1 循环接缝的重心位移必须与普通相邻帧一样平滑");
+
+        var gathered = metrics.Single(metric => metric.FrameNumber == 16);
+        var bridge = metrics.Single(metric => metric.FrameNumber == 17);
+        var stride = metrics.Single(metric => metric.FrameNumber == 18);
+        Assert(Math.Abs(gathered.VisibleBottom - bridge.VisibleBottom) <= 10 &&
+               Math.Abs(gathered.VisibleHeight - bridge.VisibleHeight) <= 12,
+            "run16→17 必须经过收腿离地桥接帧，不能再一帧跳成完全腾空大跨步");
+        Assert(Math.Abs(bridge.VisibleBottom - stride.VisibleBottom) <= 20 &&
+               Math.Abs(bridge.VisibleHeight - stride.VisibleHeight) <= 24,
+            "run17→18 的桥接后半段脚底与身体高度也必须连续");
     }
 
     private static RunAlphaMetrics ReadRunAlphaMetrics(string path, int frameNumber)
@@ -864,6 +993,8 @@ internal static class Program
             headRight - headLeft + 1,
             (headLeft + headRight) / 2d,
             top,
+            bottom,
+            bottom - top + 1,
             centroidXSum / (double)centroidCount,
             centroidYSum / (double)centroidCount);
     }
@@ -932,9 +1063,9 @@ internal static class Program
                 "Assets",
                 $"luban-edge-bottom-{frameNumber:00}.png")))
             .ToArray();
-        Assert(Math.Abs(leftPeek.Average(metric => metric.BrimWidth) - idle.BrimWidth) <= 35 &&
-               Math.Abs(bottomPeek.Average(metric => metric.BrimWidth) - idle.BrimWidth) <= 35,
-            "左、下边缘探头的头部不得再比待机放大约 75%-80%");
+        Assert(Math.Abs(leftPeek.Average(metric => metric.BrimWidth) - idle.BrimWidth) <= 5 &&
+               Math.Abs(bottomPeek.Average(metric => metric.BrimWidth) - idle.BrimWidth) <= 5,
+            "左/右、下边缘探头的帽檐尺度必须与待机保持在约3%以内");
         Assert(leftPeek.Max(metric => metric.BrimWidth) -
                leftPeek.Min(metric => metric.BrimWidth) <= 10 &&
                bottomPeek.Max(metric => metric.BrimWidth) -
@@ -943,7 +1074,8 @@ internal static class Program
 
         foreach (var mode in new[] { "wriggle", "crawl", "hop" })
         {
-            var directionAverages = new List<double>();
+            var directionEquivalentScales = new List<double>();
+            SpriteVisualMetrics[]? verticalUpMetrics = null;
             foreach (var direction in new[] { "horizontal", "vertical-up", "vertical-down" })
             {
                 var metrics = Enumerable.Range(1, 8)
@@ -951,17 +1083,49 @@ internal static class Program
                         "Assets",
                         $"luban-roam-{mode}-{direction}-{frameNumber:00}.png")))
                     .ToArray();
-                directionAverages.Add(metrics.Average(metric => metric.BrimWidth));
+                directionEquivalentScales.Add(
+                    metrics.Average(metric => Math.Sqrt(metric.OpaqueArea)));
                 Assert(metrics.Max(metric => metric.VisibleWidth) -
-                       metrics.Min(metric => metric.VisibleWidth) <= 36 &&
+                       metrics.Min(metric => metric.VisibleWidth) <= 40 &&
                        metrics.Max(metric => metric.VisibleHeight) -
-                       metrics.Min(metric => metric.VisibleHeight) <= 12,
+                       metrics.Min(metric => metric.VisibleHeight) <= 32 &&
+                       metrics.Max(metric => Math.Sqrt(metric.OpaqueArea)) -
+                       metrics.Min(metric => Math.Sqrt(metric.OpaqueArea)) <= 12,
                     $"{mode}/{direction} 循环内部不得忽大忽小");
+
+                if (direction == "vertical-up")
+                {
+                    verticalUpMetrics = metrics;
+                }
+                else if (direction == "vertical-down")
+                {
+                    Assert(verticalUpMetrics is not null &&
+                           metrics.Select(metric => (
+                                   metric.VisibleWidth,
+                                   metric.VisibleHeight,
+                                   metric.OpaqueArea))
+                               .SequenceEqual(verticalUpMetrics.Select(metric => (
+                                   metric.VisibleWidth,
+                                   metric.VisibleHeight,
+                                   metric.OpaqueArea))),
+                        $"{mode} 向下帧必须是本模式向上帧的等尺度对应动作");
+                }
             }
 
-            Assert(directionAverages.Max() - directionAverages.Min() <= 20,
-                $"{mode} 绕过拐角时横向、上行、下行头部尺度必须接近");
+            Assert(directionEquivalentScales.Max() /
+                   directionEquivalentScales.Min() <= 1.15,
+                $"{mode} 绕过拐角时三方向人物等效尺度差必须小于15%");
         }
+
+        var downModeFirstFrames = new[] { "wriggle", "crawl", "hop" }
+            .Select(mode => File.ReadAllBytes(FindWorkspaceFile(
+                "Assets",
+                $"luban-roam-{mode}-vertical-down-01.png")))
+            .ToArray();
+        Assert(!downModeFirstFrames[0].SequenceEqual(downModeFirstFrames[1]) &&
+               !downModeFirstFrames[0].SequenceEqual(downModeFirstFrames[2]) &&
+               !downModeFirstFrames[1].SequenceEqual(downModeFirstFrames[2]),
+            "蠕动、爬行、走跳的向下动作必须是三套独立素材，不能再共用同一帧");
     }
 
     private static SpriteVisualMetrics ReadSpriteVisualMetrics(string path)
@@ -987,6 +1151,7 @@ internal static class Program
         var top = bitmap.PixelHeight;
         var right = -1;
         var bottom = -1;
+        var opaqueArea = 0;
         for (var y = 0; y < bitmap.PixelHeight; y++)
         {
             for (var x = 0; x < bitmap.PixelWidth; x++)
@@ -1000,6 +1165,7 @@ internal static class Program
                 top = Math.Min(top, y);
                 right = Math.Max(right, x);
                 bottom = Math.Max(bottom, y);
+                opaqueArea++;
             }
         }
 
@@ -1091,7 +1257,8 @@ internal static class Program
             left,
             top,
             right,
-            bottom);
+            bottom,
+            opaqueArea);
     }
 
     private static void AssertExactEdgeContactContract()
@@ -1167,6 +1334,52 @@ internal static class Program
             "顶部左右角仍应分别保留左、右吸附");
     }
 
+    private static void AssertManualTopDockIntegration(MainWindow window)
+    {
+        if (!window.IsVisible)
+        {
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+        }
+
+        var monitorType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
+        var workArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
+        var width = window.ActualWidth;
+        var height = window.ActualHeight;
+        var safeLeft = workArea.Left + Math.Max(20, (workArea.Width - width) / 2);
+        var safeTop = workArea.Top + Math.Max(20, (workArea.Height - height) / 2);
+
+        window.Left = safeLeft;
+        window.Top = workArea.Top;
+        Invoke(window, "UpdateEdgeDockAfterDrag");
+        Assert(GetField<object>(window, "_edgeDock").ToString() == "None" &&
+               !GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
+            "真实拖拽落点贴住屏幕顶部时不得进入吸附探头状态");
+
+        foreach (var edge in new[] { "Left", "Right", "Bottom" })
+        {
+            window.Left = edge switch
+            {
+                "Left" => workArea.Left,
+                "Right" => workArea.Right - width,
+                _ => safeLeft
+            };
+            window.Top = edge == "Bottom"
+                ? workArea.Bottom - height
+                : safeTop;
+            Invoke(window, "UpdateEdgeDockAfterDrag");
+            Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
+                   GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
+                $"真实拖拽落点贴住{edge}边缘时必须保留吸附探头状态");
+            Invoke(window, "ExitEdgePeek", false, true);
+        }
+
+        window.Left = safeLeft;
+        window.Top = safeTop;
+    }
+
     private static void AssertUserInterruptedRoamIsRescheduled(MainWindow window)
     {
         SetField(window, "_isEdgeRoaming", true);
@@ -1196,6 +1409,94 @@ internal static class Program
         PumpDispatcher(TimeSpan.FromMilliseconds(250));
         Assert(!GetField<bool>(window, "_isEdgeRoaming"),
             "用户打断后 RestartAutomaticCountdown 不得在 100ms 内重新启动绕屏");
+    }
+
+    private static void AssertPointerDownInterruptsRoam(MainWindow window)
+    {
+        var petHost = GetField<Grid>(window, "PetHost");
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(window, "_edgeRoamingEnabled", true);
+        SetField(window, "_roamApproaching", false);
+        SetField(window, "_roamClockwise", true);
+        SetField(window, "_roamMode", GetNestedEnum("RoamMode", "Wriggle"));
+        SetField(window, "_roamEdge", GetNestedEnum("EdgeDock", "Top"));
+        SetField(window, "_roamVisualEdge", GetNestedEnum("EdgeDock", "None"));
+        SetField(window, "_roamVisualDirection",
+            GetNestedEnum("RoamVisualDirection", "None"));
+        SetField(window, "_roamBoundaryTargetDistance", 1200d);
+        SetField(window, "_roamBoundaryTravelled", 180d);
+        SetField(window, "_nextRoamDueUtc", DateTimeOffset.UtcNow - TimeSpan.FromSeconds(1));
+        GetField<Stopwatch>(window, "_roamStopwatch").Restart();
+        Invoke(window, "UpdateRoamVisual");
+        GetField<DispatcherTimer>(window, "_roamTimer").Start();
+
+        var roamBaseOffset =
+            GetField<TranslateTransform>(window, "PetRoamBaseOffset");
+        var facing = GetField<ScaleTransform>(window, "PetFacingScale");
+        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
+        var viewport = GetField<Canvas>(window, "PetFrameViewport");
+        roamBaseOffset.X = 27;
+        roamBaseOffset.Y = 8;
+        facing.ScaleX = -1;
+        Assert(overlay.Visibility == Visibility.Visible,
+            "真实点击竞态测试必须从仍在交叉淡化的绕屏画面开始");
+        var expectedComposite = CaptureVisualPixels(viewport);
+
+        var interruptedAt = DateTimeOffset.UtcNow;
+        var mouseDown = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = UIElement.MouseLeftButtonDownEvent,
+            Source = petHost
+        };
+        petHost.RaiseEvent(mouseDown);
+
+        Assert(mouseDown.Handled &&
+               !GetField<bool>(window, "_isEdgeRoaming") &&
+               !GetField<DispatcherTimer>(window, "_roamTimer").IsEnabled,
+            "真实左键按下事件必须在区分点击/拖拽前立即停止绕屏");
+        Assert(GetField<bool>(window, "_pointerDown") &&
+               GetField<bool>(window, "_dragInteractionActive"),
+            "绕屏停止后同一次按下事件仍必须继续进入点击/拖拽判定");
+        var nextDue = GetField<DateTimeOffset>(window, "_nextRoamDueUtc");
+        Assert(nextDue >= interruptedAt + TimeSpan.FromMinutes(10) &&
+               nextDue <= DateTimeOffset.UtcNow + TimeSpan.FromMinutes(20.1),
+            "真实点击或拖拽按下事件必须把下一次绕屏重排到10-20分钟后");
+        var transitionBuffer =
+            GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer");
+        Assert(expectedComposite.SequenceEqual(CopyBitmapPixels(transitionBuffer)),
+            "转角交叉淡化期间点击时，退出快照必须逐像素保留停止前的合成画面");
+        var exitOverlayOffset =
+            GetField<TranslateTransform>(window, "PetRoamTransitionOffset");
+        var exitOverlayFacing =
+            GetField<ScaleTransform>(window, "PetRoamTransitionFacing");
+        AssertClose(roamBaseOffset.X, 0, "真实点击停止后的主画面锚点 X");
+        AssertClose(roamBaseOffset.Y, 0, "真实点击停止后的主画面锚点 Y");
+        AssertClose(facing.ScaleX, 1, "真实点击停止后的主画面朝向");
+        AssertClose(exitOverlayOffset.X, 27, "真实点击退出快照保留的锚点 X");
+        AssertClose(exitOverlayOffset.Y, 8, "真实点击退出快照保留的锚点 Y");
+        AssertClose(exitOverlayFacing.ScaleX, -1, "真实点击退出快照保留的朝向");
+        Assert(overlay.Visibility == Visibility.Visible,
+            "真实点击停止绕屏后必须继续原地淡出，不能闪回待机画面");
+
+        petHost.ReleaseMouseCapture();
+        SetField(window, "_pointerDown", false);
+        SetField(window, "_dragStarted", false);
+        SetField(window, "_dragInteractionActive", false);
+        PumpDispatcher(TimeSpan.FromMilliseconds(60));
+        Assert(overlay.Visibility == Visibility.Visible &&
+               overlay.Opacity > 0 && overlay.Opacity < 1,
+            "真实点击退出淡化开始后必须仍可见且处于半透明状态：" +
+            $"Visibility={overlay.Visibility}, Opacity={overlay.Opacity:F3}, " +
+            $"Generation={GetField<long>(window, "_roamVisualTransitionGeneration")}, " +
+            $"Transitioning={GetField<bool>(window, "_isRoamVisualTransitioning")}");
+        PumpDispatcher(TimeSpan.FromMilliseconds(400));
+        Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0 &&
+               !GetField<bool>(window, "_isRoamVisualTransitioning"),
+            "真实点击的260ms退出淡化完成后必须彻底收回叠层");
+        Invoke(window, "ShowStableFrame", GetField<object>(window, "_idleFrame"));
     }
 
     private static void AssertRoamPerimeterAndFullLap(MainWindow window)
@@ -1727,6 +2028,46 @@ internal static class Program
                 $"属性 {instance.GetType().Name}.{name} 类型不正确或为空");
     }
 
+    private static byte[] CaptureVisualPixels(FrameworkElement visual)
+    {
+        visual.UpdateLayout();
+        var width = checked((int)Math.Round(visual.ActualWidth));
+        var height = checked((int)Math.Round(visual.ActualHeight));
+        Assert(width == 145 && height == 185,
+            $"绕屏合成快照必须是145×185，实际 {width}×{height}");
+        var snapshot = new RenderTargetBitmap(
+            width,
+            height,
+            96,
+            96,
+            PixelFormats.Pbgra32);
+        snapshot.Render(visual);
+        return CopyBitmapPixels(snapshot);
+    }
+
+    private static byte[] CopyBitmapPixels(BitmapSource bitmap)
+    {
+        Assert(bitmap.Format == PixelFormats.Pbgra32,
+            $"绕屏快照必须使用Pbgra32，实际 {bitmap.Format}");
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        return pixels;
+    }
+
+    private static bool HasVisibleAlpha(byte[] pixels)
+    {
+        for (var index = 3; index < pixels.Length; index += 4)
+        {
+            if (pixels[index] != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static void AssertValidRect(Rect rect, string stage)
     {
         Assert(!rect.IsEmpty &&
@@ -1777,6 +2118,8 @@ internal static class Program
         int HeadWidth,
         double HeadCenterX,
         int HeadTop,
+        int VisibleBottom,
+        int VisibleHeight,
         double CentroidX,
         double CentroidY);
 
@@ -1786,7 +2129,8 @@ internal static class Program
         int Left,
         int Top,
         int Right,
-        int Bottom)
+        int Bottom,
+        int OpaqueArea)
     {
         public int VisibleWidth => Right - Left + 1;
         public int VisibleHeight => Bottom - Top + 1;
