@@ -39,7 +39,7 @@
 
 ## 运行
 
-已发布程序位于 `dist\LubanDesktopPet.exe`，适用于 Windows 11 x64，需要 .NET 8 Desktop Runtime。当前 EXE 未做商业代码签名，首次从网络下载运行时 Windows SmartScreen 可能会显示提示。
+已发布程序位于 `dist\LubanDesktopPet.exe`，适用于 Windows 11 x64，需要 .NET 8 Desktop Runtime。项目已附带[微软官方 .NET Desktop Runtime 8.0.29 x64 安装包](runtime/dotnet-desktop-runtime-8.0.29-win-x64/windowsdesktop-runtime-8.0.29-win-x64.exe)，其 SHA-512 和数字签名校验信息见[安装包说明](runtime/dotnet-desktop-runtime-8.0.29-win-x64/README.md)。当前桌宠 EXE 未做商业代码签名，首次从网络下载运行时 Windows SmartScreen 可能会显示提示。
 
 ```powershell
 dotnet run --project .\DesktopPet.csproj
