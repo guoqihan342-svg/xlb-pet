@@ -15,16 +15,21 @@ public partial class MainWindow : Window
 {
     private const double PetWidth = 145;
     private const double PetHeight = 185;
-    private const double BubbleGap = 12;
-    private const double CuteBubbleWidth = 215;
-    private const double TodoBubbleWidth = 280;
-    private const double TodoWindowHeight = 240;
+    private const double CuteBubbleHeight = 76;
+    private const double TodoBubbleHeight = 232;
     private const double ScreenEdgeMargin = 12;
-    private static readonly Duration CrossFadeDuration = new(TimeSpan.FromMilliseconds(90));
+    private static readonly TimeSpan ActionHoldDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan BridgeHoldDuration = TimeSpan.FromMilliseconds(220);
+    private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
+    private static readonly Duration TargetRevealDuration = new(TimeSpan.FromMilliseconds(240));
+    private static readonly Duration PreviousFrameRetireDuration = new(TimeSpan.FromMilliseconds(80));
 
     private readonly BitmapImage _idleImage;
     private readonly AnimationClip[] _reactionClips;
+    private readonly AnimationClip?[] _automaticSequence;
     private readonly DispatcherTimer _frameTimer;
+    private readonly DispatcherTimer _automaticTimer;
     private readonly ObservableCollection<TodoItem> _todos = new();
     private readonly TodoStore _todoStore = TodoStore.CreateDefault();
 
@@ -35,7 +40,11 @@ public partial class MainWindow : Window
     private AnimationClip? _activeClip;
     private int _activeFrameIndex = -1;
     private int _nextClipIndex;
+    private int _nextAutomaticSequenceIndex;
     private int _fadeGeneration;
+    private int _pillowAnimationGeneration;
+    private bool _automaticAnimationEnabled;
+    private bool _isPillowBreathing;
     private bool _isClosing;
 
     public MainWindow()
@@ -45,22 +54,34 @@ public partial class MainWindow : Window
         _idleImage = LoadResourceImage("Assets/luban-idle.png");
         _reactionClips =
         [
-            CreateClip("刚睡醒，让我伸个懒腰～", "Assets/luban-yawn.png", 420,
+            CreateClip("刚睡醒，让我伸个懒腰～", "Assets/luban-yawn.png",
                 "Assets/luban-idle-to-yawn.png", "Assets/luban-idle-to-yawn-2.png"),
-            CreateClip("呜……主人要哄哄我", "Assets/luban-cry.png", 380,
+            CreateClip("呜……主人要哄哄我", "Assets/luban-cry.png",
                 "Assets/luban-idle-to-cry.png", "Assets/luban-idle-to-cry-2.png"),
-            CreateClip("小鲁班出发！", "Assets/luban-run.png", 280,
+            CreateClip("小鲁班出发！", "Assets/luban-run.png",
                 "Assets/luban-idle-to-run.png", "Assets/luban-idle-to-run-2.png"),
-            CreateClip("给你卖个萌 ♡", "Assets/luban-cute.png", 350,
+            CreateClip("给你卖个萌 ♡", "Assets/luban-cute.png",
                 "Assets/luban-idle-to-cute-1.png", "Assets/luban-idle-to-cute.png"),
-            CreateClip("主人真棒！", "Assets/luban-like.png", 340,
+            CreateClip("主人真棒！", "Assets/luban-like.png",
                 "Assets/luban-idle-to-like.png", "Assets/luban-idle-to-like-2.png"),
-            CreateClip("吃块饼干，补充能量！", "Assets/luban-eat.png", 420,
+            CreateClip("吃块饼干，补充能量！", "Assets/luban-eat.png",
                 "Assets/luban-idle-to-eat.png"),
-            CreateClip("嗨～我在这里！", "Assets/luban-wave.png", 350,
+            CreateClip("嗨～我在这里！", "Assets/luban-wave.png",
                 "Assets/luban-idle-to-wave.png", "Assets/luban-idle-to-wave-2.png"),
-            CreateClip("让我认真想一想……", "Assets/luban-think.png", 420,
+            CreateClip("让我认真想一想……", "Assets/luban-think.png",
                 "Assets/luban-think-to-idle.png")
+        ];
+        _automaticSequence =
+        [
+            _reactionClips[0],
+            null,
+            _reactionClips[1],
+            _reactionClips[2],
+            _reactionClips[3],
+            _reactionClips[4],
+            _reactionClips[5],
+            _reactionClips[6],
+            _reactionClips[7]
         ];
         PetImage.Source = _idleImage;
 
@@ -72,27 +93,30 @@ public partial class MainWindow : Window
 
         _frameTimer = new DispatcherTimer();
         _frameTimer.Tick += FrameTimer_Tick;
+
+        _automaticTimer = new DispatcherTimer
+        {
+            Interval = AutomaticAnimationInterval
+        };
+        _automaticTimer.Tick += AutomaticTimer_Tick;
     }
 
     private static AnimationClip CreateClip(
         string message,
         string actionPath,
-        int actionHoldMilliseconds,
         params string[] bridgePaths)
     {
         var bridgeImages = Array.ConvertAll(bridgePaths, LoadResourceImage);
         var frames = new AnimationFrame[bridgeImages.Length * 2 + 1];
-        var bridgeHold = TimeSpan.FromMilliseconds(30);
-
         for (var index = 0; index < bridgeImages.Length; index++)
         {
-            frames[index] = new AnimationFrame(bridgeImages[index], bridgeHold);
-            frames[frames.Length - index - 1] = new AnimationFrame(bridgeImages[index], bridgeHold);
+            frames[index] = new AnimationFrame(bridgeImages[index], BridgeHoldDuration);
+            frames[frames.Length - index - 1] = new AnimationFrame(bridgeImages[index], BridgeHoldDuration);
         }
 
         frames[bridgeImages.Length] = new AnimationFrame(
             LoadResourceImage(actionPath),
-            TimeSpan.FromMilliseconds(actionHoldMilliseconds));
+            ActionHoldDuration);
         return new AnimationClip(message, frames);
     }
 
@@ -114,10 +138,14 @@ public partial class MainWindow : Window
         var workArea = SystemParameters.WorkArea;
         Left = Math.Max(workArea.Left, workArea.Right - ActualWidth - ScreenEdgeMargin);
         Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight - ScreenEdgeMargin);
+        _automaticAnimationEnabled = true;
+        RestartAutomaticCountdown();
     }
 
     private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
+        RestartAutomaticCountdown();
+
         if (_bubbleMode != BubbleMode.Todo)
         {
             return;
@@ -137,6 +165,11 @@ public partial class MainWindow : Window
         }
 
         SetBubbleMode(BubbleMode.None);
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        RestartAutomaticCountdown();
     }
 
     private void Window_Deactivated(object? sender, EventArgs e)
@@ -167,15 +200,20 @@ public partial class MainWindow : Window
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         _isClosing = true;
+        _automaticAnimationEnabled = false;
         _fadeGeneration++;
+        _pillowAnimationGeneration++;
         _frameTimer.Stop();
         _frameTimer.Tick -= FrameTimer_Tick;
+        _automaticTimer.Stop();
+        _automaticTimer.Tick -= AutomaticTimer_Tick;
         _activeClip = null;
         _activeFrameIndex = -1;
         PetImage.BeginAnimation(OpacityProperty, null);
         PetImageOverlay.BeginAnimation(OpacityProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        HideBubbleVisuals();
         SaveTodos();
     }
 
@@ -268,40 +306,144 @@ public partial class MainWindow : Window
 
     private void ShowCuteReaction()
     {
+        RestartAutomaticCountdown();
+
         if (_isClosing || _activeClip is not null)
         {
             return;
         }
 
         var clip = _reactionClips[_nextClipIndex];
+        if (!TryStartReaction(clip, showCuteBubble: true))
+        {
+            return;
+        }
+
         _nextClipIndex = (_nextClipIndex + 1) % _reactionClips.Length;
+    }
+
+    private bool TryStartReaction(AnimationClip clip, bool showCuteBubble)
+    {
+        if (_isClosing || _activeClip is not null)
+        {
+            return false;
+        }
+
+        StopPillowBreathing();
         _activeClip = clip;
         _activeFrameIndex = -1;
         CuteMessageText.Text = clip.Message;
 
-        if (_bubbleMode != BubbleMode.Todo)
+        if (showCuteBubble && _bubbleMode != BubbleMode.Todo)
         {
             SetBubbleMode(BubbleMode.Cute);
         }
 
-        PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, CreateBounceAnimation());
-        PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, CreateBounceAnimation());
-
         _frameTimer.Stop();
         ShowActiveClipFrame(0);
+        return true;
     }
 
-    private static DoubleAnimationUsingKeyFrames CreateBounceAnimation()
+    private void AutomaticTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_isClosing || !_automaticAnimationEnabled || _activeClip is not null ||
+            _isPillowBreathing ||
+            _bubbleMode == BubbleMode.Todo)
+        {
+            return;
+        }
+
+        var sequenceItem = _automaticSequence[_nextAutomaticSequenceIndex];
+        if (sequenceItem is null)
+        {
+            StartPillowBreathing();
+        }
+        else if (!TryStartReaction(sequenceItem, showCuteBubble: false))
+        {
+            return;
+        }
+
+        _nextAutomaticSequenceIndex =
+            (_nextAutomaticSequenceIndex + 1) % _automaticSequence.Length;
+    }
+
+    private void RestartAutomaticCountdown()
+    {
+        if (_isClosing || !_automaticAnimationEnabled)
+        {
+            return;
+        }
+
+        _automaticTimer.Stop();
+        _automaticTimer.Interval = AutomaticAnimationInterval;
+        _automaticTimer.Start();
+    }
+
+    private void StartPillowBreathing()
+    {
+        StopPillowBreathing();
+        _isPillowBreathing = true;
+        var generation = _pillowAnimationGeneration;
+        var easing = new SineEase { EasingMode = EasingMode.EaseInOut };
+
+        var scaleX = CreatePillowBreathingAnimation(1.012, easing);
+        var scaleY = CreatePillowBreathingAnimation(0.988, easing);
+        scaleY.Completed += (_, _) =>
+        {
+            if (_isClosing || generation != _pillowAnimationGeneration)
+            {
+                return;
+            }
+
+            _isPillowBreathing = false;
+            PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            PetScale.ScaleX = 1;
+            PetScale.ScaleY = 1;
+        };
+
+        PetScale.BeginAnimation(
+            ScaleTransform.ScaleXProperty,
+            scaleX,
+            HandoffBehavior.SnapshotAndReplace);
+        PetScale.BeginAnimation(
+            ScaleTransform.ScaleYProperty,
+            scaleY,
+            HandoffBehavior.SnapshotAndReplace);
+    }
+
+    private static DoubleAnimationUsingKeyFrames CreatePillowBreathingAnimation(
+        double middleValue,
+        IEasingFunction easing)
     {
         var animation = new DoubleAnimationUsingKeyFrames
         {
-            Duration = TimeSpan.FromMilliseconds(420)
+            Duration = new Duration(PillowAnimationDuration),
+            FillBehavior = FillBehavior.Stop
         };
-        animation.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        animation.KeyFrames.Add(new EasingDoubleKeyFrame(1.03, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(130))));
-        animation.KeyFrames.Add(new EasingDoubleKeyFrame(0.99, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(280))));
-        animation.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(420))));
+        animation.KeyFrames.Add(new EasingDoubleKeyFrame(
+            1,
+            KeyTime.FromTimeSpan(TimeSpan.Zero),
+            easing));
+        animation.KeyFrames.Add(new EasingDoubleKeyFrame(
+            middleValue,
+            KeyTime.FromTimeSpan(TimeSpan.FromTicks(PillowAnimationDuration.Ticks / 2)),
+            easing));
+        animation.KeyFrames.Add(new EasingDoubleKeyFrame(
+            1,
+            KeyTime.FromTimeSpan(PillowAnimationDuration),
+            easing));
         return animation;
+    }
+
+    private void StopPillowBreathing()
+    {
+        _pillowAnimationGeneration++;
+        _isPillowBreathing = false;
+        PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        PetScale.ScaleX = 1;
+        PetScale.ScaleY = 1;
     }
 
     private void FrameTimer_Tick(object? sender, EventArgs e)
@@ -365,10 +507,20 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (ReferenceEquals(PetImage.Source, target) && PetImageOverlay.Source is null)
+        {
+            PetImage.BeginAnimation(OpacityProperty, null);
+            PetImage.Opacity = 1;
+            PetImageOverlay.BeginAnimation(OpacityProperty, null);
+            PetImageOverlay.Opacity = 0;
+            completed?.Invoke();
+            return;
+        }
+
         var visibleSource = PetImageOverlay.Source is not null &&
                             PetImageOverlay.Opacity > PetImage.Opacity
             ? PetImageOverlay.Source
-            : PetImage.Source;
+            : PetImage.Source ?? target;
 
         _fadeGeneration++;
         var generation = _fadeGeneration;
@@ -381,38 +533,59 @@ public partial class MainWindow : Window
         PetImageOverlay.Opacity = 0;
 
         var easing = new CubicEase { EasingMode = EasingMode.EaseInOut };
-        var fadeOut = new DoubleAnimation(1, 0, CrossFadeDuration)
-        {
-            EasingFunction = easing,
-            FillBehavior = FillBehavior.HoldEnd
-        };
-        var fadeIn = new DoubleAnimation(0, 1, CrossFadeDuration)
+        var revealTarget = new DoubleAnimation(0, 1, TargetRevealDuration)
         {
             EasingFunction = easing,
             FillBehavior = FillBehavior.HoldEnd
         };
 
-        fadeIn.Completed += (_, _) =>
+        revealTarget.Completed += (_, _) =>
         {
             if (_isClosing || generation != _fadeGeneration)
             {
                 return;
             }
 
-            PetImage.Opacity = 0;
+            // The previous frame stays fully opaque while the target is revealed,
+            // so transparent PNG pixels never produce the 25% brightness dip of
+            // two complementary opacity animations. Retire only the old-only
+            // silhouette after the target is fully visible.
             PetImageOverlay.Opacity = 1;
-            PetImage.BeginAnimation(OpacityProperty, null);
             PetImageOverlay.BeginAnimation(OpacityProperty, null);
-            PetImage.Source = target;
-            PetImage.Opacity = 1;
-            PetImageOverlay.Source = null;
-            PetImageOverlay.Opacity = 0;
-            completed?.Invoke();
+
+            var retirePrevious = new DoubleAnimation(1, 0, PreviousFrameRetireDuration)
+            {
+                EasingFunction = easing,
+                FillBehavior = FillBehavior.HoldEnd
+            };
+            retirePrevious.Completed += (_, _) =>
+            {
+                if (_isClosing || generation != _fadeGeneration)
+                {
+                    return;
+                }
+
+                // Commit the target beneath the still-visible overlay first.
+                // At no point are both layers transparent, avoiding a one-frame
+                // blink in transparent WPF windows.
+                PetImage.Source = target;
+                PetImage.Opacity = 1;
+                PetImage.BeginAnimation(OpacityProperty, null);
+                PetImageOverlay.Opacity = 0;
+                PetImageOverlay.Source = null;
+                completed?.Invoke();
+            };
+
+            PetImage.BeginAnimation(
+                OpacityProperty,
+                retirePrevious,
+                HandoffBehavior.SnapshotAndReplace);
         };
 
-        PetImage.BeginAnimation(OpacityProperty, fadeOut, HandoffBehavior.SnapshotAndReplace);
-        PetImageOverlay.BeginAnimation(OpacityProperty, fadeIn, HandoffBehavior.SnapshotAndReplace);
-
+        PetImageOverlay.BeginAnimation(
+            OpacityProperty,
+            revealTarget,
+            HandoffBehavior.SnapshotAndReplace);
     }
 
     private void SetBubbleMode(BubbleMode mode)
@@ -422,80 +595,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Width and Height are explicit for every bubble mode. ActualWidth and
-        // ActualHeight may still describe the previous layout during a rapid
-        // toggle, which would move the pet away from its screen anchor.
-        var anchoredRight = Left + Width;
-        var anchoredBottom = Top + Height;
-
-        double bubbleWidth;
-        double targetWidth;
-        double targetHeight;
-
-        switch (mode)
-        {
-            case BubbleMode.Cute:
-                bubbleWidth = CuteBubbleWidth;
-                targetWidth = CuteBubbleWidth + BubbleGap + PetWidth;
-                targetHeight = PetHeight;
-                break;
-            case BubbleMode.Todo:
-                bubbleWidth = TodoBubbleWidth;
-                targetWidth = TodoBubbleWidth + BubbleGap + PetWidth;
-                targetHeight = TodoWindowHeight;
-                break;
-            default:
-                bubbleWidth = 0;
-                targetWidth = PetWidth;
-                targetHeight = PetHeight;
-                break;
-        }
-
-        var workArea = SystemParameters.WorkArea;
-        var targetLeft = Math.Max(workArea.Left + ScreenEdgeMargin, anchoredRight - targetWidth);
-        var targetTop = Math.Max(workArea.Top + ScreenEdgeMargin, anchoredBottom - targetHeight);
-
-        // A transparent WPF window can be composited between individual native
-        // size and position changes. Keep the bubble hidden during that phase
-        // and use the narrow window as a clip so the pet can never be rendered
-        // at the bubble's former screen position.
         HideBubbleVisuals();
-
-        if (_bubbleMode != BubbleMode.None)
-        {
-            // The current non-zero bubble columns keep PetHost outside this
-            // temporary narrow viewport while the window is repositioned.
-            Width = PetWidth;
-            Height = PetHeight;
-        }
-
-        if (mode == BubbleMode.None)
-        {
-            // Keep the old columns until the narrow window reaches its final
-            // location. Only then move PetHost back to column zero.
-            Left = targetLeft;
-            Top = targetTop;
-            GapColumn.Width = new GridLength(0);
-            BubbleColumn.Width = new GridLength(0);
-        }
-        else
-        {
-            // Move PetHost into the target right-hand column while it is still
-            // clipped by the narrow viewport, then reveal it by expanding.
-            BubbleColumn.Width = new GridLength(bubbleWidth);
-            GapColumn.Width = new GridLength(BubbleGap);
-            Left = targetLeft;
-            Top = targetTop;
-            Width = targetWidth;
-            Height = targetHeight;
-        }
-
         ShowBubbleVisuals(mode);
         _bubbleMode = mode;
     }
 
     private void HideBubbleVisuals()
     {
+        BubblePopup.IsOpen = false;
         BubbleHost.Visibility = Visibility.Collapsed;
         BubbleTailHost.Visibility = Visibility.Collapsed;
         CuteBubble.Visibility = Visibility.Collapsed;
@@ -509,10 +616,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        BubblePopup.VerticalOffset = mode == BubbleMode.Cute
+            ? PetHeight - CuteBubbleHeight
+            : PetHeight - TodoBubbleHeight;
         BubbleHost.Visibility = Visibility.Visible;
         BubbleTailHost.Visibility = Visibility.Visible;
         CuteBubble.Visibility = mode == BubbleMode.Cute ? Visibility.Visible : Visibility.Collapsed;
         TodoBubble.Visibility = mode == BubbleMode.Todo ? Visibility.Visible : Visibility.Collapsed;
+        BubblePopup.IsOpen = true;
     }
 
     private void CloseTodoButton_Click(object sender, RoutedEventArgs e)
