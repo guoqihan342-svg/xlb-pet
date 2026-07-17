@@ -32,6 +32,33 @@ internal static class Program
         var gapColumn = GetField<ColumnDefinition>(window, "GapColumn");
         var bubbleHost = GetField<Grid>(window, "BubbleHost");
         var bubbleTailHost = GetField<Grid>(window, "BubbleTailHost");
+        var cuteMessageText = GetField<TextBlock>(window, "CuteMessageText");
+
+        var expectedClips = new[]
+        {
+            new ExpectedClip("刚睡醒，让我伸个懒腰～",
+                ["luban-idle-to-yawn.png", "luban-yawn.png", "luban-idle-to-yawn.png"]),
+            new ExpectedClip("呜……主人要哄哄我",
+                ["luban-idle-to-cry.png", "luban-yawn-to-cry.png", "luban-cry.png",
+                    "luban-yawn-to-cry.png", "luban-idle-to-cry.png"]),
+            new ExpectedClip("小鲁班出发！",
+                ["luban-idle-to-run.png", "luban-run.png", "luban-idle-to-run.png"]),
+            new ExpectedClip("给你卖个萌 ♡",
+                ["luban-idle-to-cute.png", "luban-cute.png", "luban-idle-to-cute.png"]),
+            new ExpectedClip("主人真棒！",
+                ["luban-idle-to-like.png", "luban-like-to-cute.png", "luban-like.png",
+                    "luban-like-to-cute.png", "luban-idle-to-like.png"]),
+            new ExpectedClip("吃块饼干，补充能量！",
+                ["luban-idle-to-eat.png", "luban-eat-to-run.png", "luban-eat.png",
+                    "luban-eat-to-run.png", "luban-idle-to-eat.png"]),
+            new ExpectedClip("嗨～我在这里！",
+                ["luban-idle-to-wave.png", "luban-run-to-wave.png", "luban-wave.png",
+                    "luban-run-to-wave.png", "luban-idle-to-wave.png"]),
+            new ExpectedClip("让我认真想一想……",
+                ["luban-think-to-idle.png", "luban-think.png", "luban-think-to-idle.png"])
+        };
+        Assert(GetField<Array>(window, "_reactionClips").Length == expectedClips.Length,
+            "应配置 8 个独立短动作 Clip");
 
         AssertClose(window.Width, 145, "收起时宽度");
         AssertClose(window.Height, 185, "收起时高度");
@@ -44,6 +71,7 @@ internal static class Program
         var initialRight = window.Left + window.Width;
         var initialBottom = window.Top + window.Height;
 
+        var firstClip = expectedClips[0];
         AssertPropertyTransition(
             cuteBubble,
             UIElement.VisibilityProperty,
@@ -59,9 +87,8 @@ internal static class Program
                     "卖萌气泡显示时气泡尾巴应已可见");
             },
             "卖萌气泡应在窗口完成展开后再显示");
-        frameTimer.Stop();
         ArrangeWindow(window);
-        PumpDispatcher(TimeSpan.FromMilliseconds(60));
+        PumpDispatcher(TimeSpan.FromMilliseconds(48));
         Assert(petImage.Opacity > 0.01 && petImage.Opacity < 0.99,
             $"过渡中主图层透明度应处于渐变状态，实际 {petImage.Opacity:F3}");
         Assert(petImageOverlay.Opacity > 0.01 && petImageOverlay.Opacity < 0.99,
@@ -69,56 +96,37 @@ internal static class Program
         Assert(Math.Abs(petImage.Opacity + petImageOverlay.Opacity - 1) < 0.12,
             "交叉淡入过程中两层透明度之和应接近 1");
         RenderState(window, "frame-transition.png");
-        PumpDispatcher(TimeSpan.FromMilliseconds(250));
-        AssertImage(petImage, "luban-idle-to-yawn.png", "单击后第一帧应显示起身过渡图");
+        WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+        AssertImage(petImage, firstClip.Frames[0], "第一个短动作的首帧不正确");
         AssertCrossFadeSettled(petImage, petImageOverlay);
+        Assert(cuteMessageText.Text == firstClip.Message, "第一个短动作对白不正确");
         Assert(cuteBubble.Visibility == Visibility.Visible, "单击后应显示卖萌对话气泡");
         AssertClose(window.Width, 372, "卖萌气泡展开宽度");
         AssertClose(window.Height, 185, "卖萌气泡不应改变底部高度");
         AssertClose(window.Left + window.Width, initialRight, "卖萌气泡应向左展开");
         AssertClose(window.Top + window.Height, initialBottom, "卖萌气泡展开时底部应固定");
-        RenderState(window, "frame-1-idle-to-yawn.png");
+        RenderState(window, "clip-1-frame-1.png");
 
-        frameTimer.Start();
-        PumpDispatcher(TimeSpan.FromMilliseconds(400));
-        frameTimer.Stop();
-        AssertImage(petImage, "luban-yawn.png", "真实帧计时器应自动推进到犯困关键帧");
-        AssertCrossFadeSettled(petImage, petImageOverlay);
-        RenderState(window, "frame-2-yawn.png");
+        AssertBusyClickIgnored(window, petImage, petImageOverlay, frameTimer, cuteMessageText,
+            "短动作播放期间");
 
-        var remainingFrames = new[]
+        for (var frameIndex = 1; frameIndex < firstClip.Frames.Length; frameIndex++)
         {
-            "luban-yawn-to-cry.png",
-            "luban-cry.png",
-            "luban-cry-to-eat.png",
-            "luban-eat.png",
-            "luban-eat-to-run.png",
-            "luban-run.png",
-            "luban-run-to-wave.png",
-            "luban-wave.png",
-            "luban-wave-to-like.png",
-            "luban-like.png",
-            "luban-like-to-cute.png",
-            "luban-cute.png",
-            "luban-cute-to-think.png",
-            "luban-think.png",
-            "luban-think-to-idle.png",
-            "luban-idle.png"
-        };
+            AdvanceFrameAndAssert(window, petImage, petImageOverlay, frameTimer,
+                firstClip.Frames[frameIndex], $"短动作 1 第 {frameIndex + 1} 帧");
+        }
+
         AssertPropertyTransition(
             bubbleColumn,
             ColumnDefinition.WidthProperty,
             () =>
             {
-                for (var index = 0; index < remainingFrames.Length; index++)
-                {
-                    Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
-                    frameTimer.Stop();
-                    PumpDispatcher(TimeSpan.FromMilliseconds(220));
-                    AssertImage(petImage, remainingFrames[index], $"动画第 {index + 3} 帧不正确");
-                    AssertCrossFadeSettled(petImage, petImageOverlay);
-                    RenderState(window, $"frame-{index + 3}.png");
-                }
+                Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
+                frameTimer.Stop();
+                AssertImage(petImageOverlay, "luban-idle.png", "短动作结束后应开始淡回待机图");
+                AssertBusyClickIgnored(window, petImage, petImageOverlay, frameTimer, cuteMessageText,
+                    "返回待机的交叉淡入期间");
+                WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
             },
             () => bubbleColumn.Width.IsAbsolute && Math.Abs(bubbleColumn.Width.Value) < 0.01,
             () =>
@@ -133,7 +141,32 @@ internal static class Program
             },
             "卖萌气泡应在窗口完成收回后再把宠物移回第一列");
 
+        AssertImage(petImage, "luban-idle.png", "第一个短动作结束后应回到待机图");
         AssertClose(window.Width, 145, "卖萌结束后应收起气泡");
+
+        for (var clipIndex = 1; clipIndex < expectedClips.Length; clipIndex++)
+        {
+            var clip = expectedClips[clipIndex];
+            Invoke(window, "ShowCuteReaction");
+            ArrangeWindow(window);
+            WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+            Assert(cuteMessageText.Text == clip.Message, $"短动作 {clipIndex + 1} 对白不正确");
+            AssertImage(petImage, clip.Frames[0], $"短动作 {clipIndex + 1} 第 1 帧不正确");
+
+            for (var frameIndex = 1; frameIndex < clip.Frames.Length; frameIndex++)
+            {
+                AdvanceFrameAndAssert(window, petImage, petImageOverlay, frameTimer,
+                    clip.Frames[frameIndex], $"短动作 {clipIndex + 1} 第 {frameIndex + 1} 帧");
+            }
+
+            Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
+            frameTimer.Stop();
+            WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+            AssertImage(petImage, "luban-idle.png", $"短动作 {clipIndex + 1} 结束后应回到待机图");
+            Assert(cuteBubble.Visibility == Visibility.Collapsed,
+                $"短动作 {clipIndex + 1} 结束后应收起卖萌气泡");
+            AssertClose(window.Width, 145, $"短动作 {clipIndex + 1} 结束后窗口宽度");
+        }
 
         var rightClick = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Right)
         {
@@ -223,30 +256,32 @@ internal static class Program
         Invoke(window, "PetHost_MouseRightButtonUp", petHost, rightClick);
         Assert(todoBubble.Visibility == Visibility.Visible, "后续动画测试前应重新打开待办");
 
+        var todoClip = expectedClips[0];
         Invoke(window, "ShowCuteReaction");
-        frameTimer.Stop();
-        PumpDispatcher(TimeSpan.FromMilliseconds(220));
+        ArrangeWindow(window);
+        WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+        AssertImage(petImage, todoClip.Frames[0], "待办模式中的短动作首帧不正确");
         Assert(todoBubble.Visibility == Visibility.Visible, "待办打开时人物动画不应关闭待办");
         AssertClose(window.Width, 437, "待办打开时人物动画不应改变气泡宽度");
         RenderState(window, "todo-animated.png");
 
-        Invoke(window, "ShowCuteReaction");
-        for (var index = 0; index < 17; index++)
+        for (var frameIndex = 1; frameIndex < todoClip.Frames.Length; frameIndex++)
         {
-            Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
-            frameTimer.Stop();
-            PumpDispatcher(TimeSpan.FromMilliseconds(220));
+            AdvanceFrameAndAssert(window, petImage, petImageOverlay, frameTimer,
+                todoClip.Frames[frameIndex], $"待办模式短动作第 {frameIndex + 1} 帧");
+            Assert(todoBubble.Visibility == Visibility.Visible,
+                "待办模式中的人物动画不应在中途关闭待办");
         }
-        AssertImage(petImage, "luban-idle-to-yawn.png", "连续点击应只追加一轮，并从起身过渡帧重播");
 
-        for (var index = 0; index < 17; index++)
-        {
-            Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
-            frameTimer.Stop();
-            PumpDispatcher(TimeSpan.FromMilliseconds(220));
-        }
-        AssertImage(petImage, "luban-idle.png", "追加的一轮结束后仍应回到待机");
+        Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
+        frameTimer.Stop();
+        WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+        AssertImage(petImage, "luban-idle.png", "待办模式中的短动作结束后应回到待机");
         Assert(todoBubble.Visibility == Visibility.Visible, "人物动画结束不应关闭已打开的待办");
+        AssertClose(window.Width, 437, "人物动画结束后待办窗口宽度应保持不变");
+        AssertClose(window.Height, 240, "人物动画结束后待办窗口高度应保持不变");
+        AssertClose(bubbleColumn.Width.Value, 280, "人物动画结束后待办气泡列宽应保持不变");
+        AssertClose(gapColumn.Width.Value, 12, "人物动画结束后待办间隔列宽应保持不变");
 
         Console.WriteLine("UI state checks passed.");
     }
@@ -264,6 +299,96 @@ internal static class Program
         var method = instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"找不到方法 {name}");
         method.Invoke(instance, arguments);
+    }
+
+    private static object? GetRawField(object instance, string name)
+    {
+        var field = instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            ?? throw new InvalidOperationException($"找不到字段 {name}");
+        return field.GetValue(instance);
+    }
+
+    private static T GetValueField<T>(object instance, string name)
+    {
+        var value = GetRawField(instance, name)
+            ?? throw new InvalidOperationException($"字段 {name} 不应为空");
+        return (T)value;
+    }
+
+    private static void AssertBusyClickIgnored(
+        MainWindow window,
+        Image primary,
+        Image overlay,
+        DispatcherTimer frameTimer,
+        TextBlock messageText,
+        string stage)
+    {
+        var primarySource = primary.Source;
+        var overlaySource = overlay.Source;
+        var activeClip = GetRawField(window, "_activeClip");
+        var activeFrameIndex = GetValueField<int>(window, "_activeFrameIndex");
+        var nextClipIndex = GetValueField<int>(window, "_nextClipIndex");
+        var message = messageText.Text;
+        var timerEnabled = frameTimer.IsEnabled;
+        var timerInterval = frameTimer.Interval;
+        var width = window.Width;
+        var height = window.Height;
+
+        Invoke(window, "ShowCuteReaction");
+
+        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), activeClip),
+            $"{stage}再次点击不应更换当前 Clip");
+        Assert(GetValueField<int>(window, "_activeFrameIndex") == activeFrameIndex,
+            $"{stage}再次点击不应推进或重置帧索引");
+        Assert(GetValueField<int>(window, "_nextClipIndex") == nextClipIndex,
+            $"{stage}再次点击不应消费下一个 Clip");
+        Assert(ReferenceEquals(primary.Source, primarySource),
+            $"{stage}再次点击不应替换主图层");
+        Assert(ReferenceEquals(overlay.Source, overlaySource),
+            $"{stage}再次点击不应替换淡入图层");
+        Assert(messageText.Text == message, $"{stage}再次点击不应更新对白");
+        Assert(frameTimer.IsEnabled == timerEnabled, $"{stage}再次点击不应重启帧计时器");
+        Assert(frameTimer.Interval == timerInterval, $"{stage}再次点击不应修改帧间隔");
+        AssertClose(window.Width, width, $"{stage}再次点击不应修改窗口宽度");
+        AssertClose(window.Height, height, $"{stage}再次点击不应修改窗口高度");
+    }
+
+    private static void AdvanceFrameAndAssert(
+        MainWindow window,
+        Image primary,
+        Image overlay,
+        DispatcherTimer frameTimer,
+        string expectedFileName,
+        string message)
+    {
+        Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
+        frameTimer.Stop();
+        WaitForCrossFadeToSettle(primary, overlay, frameTimer);
+        AssertImage(primary, expectedFileName, message);
+        AssertCrossFadeSettled(primary, overlay);
+    }
+
+    private static void WaitForCrossFadeToSettle(
+        Image primary,
+        Image overlay,
+        DispatcherTimer frameTimer)
+    {
+        const int maximumAttempts = 80;
+        for (var attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            frameTimer.Stop();
+            if (overlay.Source is null &&
+                Math.Abs(primary.Opacity - 1) < 0.01 &&
+                Math.Abs(overlay.Opacity) < 0.01)
+            {
+                return;
+            }
+
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+        }
+
+        frameTimer.Stop();
+        AssertCrossFadeSettled(primary, overlay);
     }
 
     private static void AssertPropertyTransition(
@@ -395,4 +520,6 @@ internal static class Program
             throw new InvalidOperationException(message);
         }
     }
+
+    private sealed record ExpectedClip(string Message, string[] Frames);
 }

@@ -23,28 +23,19 @@ public partial class MainWindow : Window
     private static readonly Duration CrossFadeDuration = new(TimeSpan.FromMilliseconds(96));
 
     private readonly BitmapImage _idleImage;
-    private readonly AnimationFrame[] _reactionFrames;
+    private readonly AnimationClip[] _reactionClips;
     private readonly DispatcherTimer _frameTimer;
     private readonly ObservableCollection<TodoItem> _todos = new();
     private readonly TodoStore _todoStore = TodoStore.CreateDefault();
-
-    private readonly string[] _cuteMessages =
-    {
-        "嘿嘿，点到我啦～",
-        "主人今天也要开心呀！",
-        "小鲁班给你卖个萌 ♡",
-        "摸摸头，再继续加油～"
-    };
 
     private BubbleMode _bubbleMode;
     private Point _pointerDownScreen;
     private bool _pointerDown;
     private bool _dragStarted;
-    private int _cuteMessageIndex;
-    private int _reactionFrameIndex;
+    private AnimationClip? _activeClip;
+    private int _activeFrameIndex = -1;
+    private int _nextClipIndex;
     private int _fadeGeneration;
-    private bool _reactionActive;
-    private bool _replayRequested;
     private bool _isClosing;
 
     public MainWindow()
@@ -52,25 +43,20 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _idleImage = LoadResourceImage("Assets/luban-idle.png");
-        _reactionFrames =
+        _reactionClips =
         [
-            Frame("Assets/luban-idle-to-yawn.png", 230),
-            Frame("Assets/luban-yawn.png", 300),
-            Frame("Assets/luban-yawn-to-cry.png", 190),
-            Frame("Assets/luban-cry.png", 300),
-            Frame("Assets/luban-cry-to-eat.png", 190),
-            Frame("Assets/luban-eat.png", 330),
-            Frame("Assets/luban-eat-to-run.png", 190),
-            Frame("Assets/luban-run.png", 260),
-            Frame("Assets/luban-run-to-wave.png", 180),
-            Frame("Assets/luban-wave.png", 290),
-            Frame("Assets/luban-wave-to-like.png", 180),
-            Frame("Assets/luban-like.png", 290),
-            Frame("Assets/luban-like-to-cute.png", 180),
-            Frame("Assets/luban-cute.png", 310),
-            Frame("Assets/luban-cute-to-think.png", 190),
-            Frame("Assets/luban-think.png", 310),
-            Frame("Assets/luban-think-to-idle.png", 220)
+            CreateClip("刚睡醒，让我伸个懒腰～", "Assets/luban-idle-to-yawn.png", "Assets/luban-yawn.png", 420),
+            CreateClip("呜……主人要哄哄我", "Assets/luban-idle-to-cry.png", "Assets/luban-cry.png", 380,
+                "Assets/luban-yawn-to-cry.png"),
+            CreateClip("小鲁班出发！", "Assets/luban-idle-to-run.png", "Assets/luban-run.png", 280),
+            CreateClip("给你卖个萌 ♡", "Assets/luban-idle-to-cute.png", "Assets/luban-cute.png", 350),
+            CreateClip("主人真棒！", "Assets/luban-idle-to-like.png", "Assets/luban-like.png", 340,
+                "Assets/luban-like-to-cute.png"),
+            CreateClip("吃块饼干，补充能量！", "Assets/luban-idle-to-eat.png", "Assets/luban-eat.png", 420,
+                "Assets/luban-eat-to-run.png"),
+            CreateClip("嗨～我在这里！", "Assets/luban-idle-to-wave.png", "Assets/luban-wave.png", 350,
+                "Assets/luban-run-to-wave.png"),
+            CreateClip("让我认真想一想……", "Assets/luban-think-to-idle.png", "Assets/luban-think.png", 420)
         ];
         PetImage.Source = _idleImage;
 
@@ -84,11 +70,28 @@ public partial class MainWindow : Window
         _frameTimer.Tick += FrameTimer_Tick;
     }
 
-    private static AnimationFrame Frame(string resourcePath, int holdMilliseconds)
+    private static AnimationClip CreateClip(
+        string message,
+        string bridgePath,
+        string actionPath,
+        int actionHoldMilliseconds,
+        string? innerBridgePath = null)
     {
-        return new AnimationFrame(
-            LoadResourceImage(resourcePath),
-            TimeSpan.FromMilliseconds(holdMilliseconds));
+        var bridgeImage = LoadResourceImage(bridgePath);
+        var actionImage = LoadResourceImage(actionPath);
+        var bridgeFrame = new AnimationFrame(bridgeImage, TimeSpan.FromMilliseconds(70));
+        var actionFrame = new AnimationFrame(actionImage, TimeSpan.FromMilliseconds(actionHoldMilliseconds));
+
+        if (innerBridgePath is null)
+        {
+            return new AnimationClip(message, [bridgeFrame, actionFrame, bridgeFrame]);
+        }
+
+        var innerImage = LoadResourceImage(innerBridgePath);
+        var innerFrame = new AnimationFrame(innerImage, TimeSpan.FromMilliseconds(55));
+        return new AnimationClip(
+            message,
+            [bridgeFrame, innerFrame, actionFrame, innerFrame, bridgeFrame]);
     }
 
     private static BitmapImage LoadResourceImage(string resourcePath)
@@ -165,6 +168,8 @@ public partial class MainWindow : Window
         _fadeGeneration++;
         _frameTimer.Stop();
         _frameTimer.Tick -= FrameTimer_Tick;
+        _activeClip = null;
+        _activeFrameIndex = -1;
         PetImage.BeginAnimation(OpacityProperty, null);
         PetImageOverlay.BeginAnimation(OpacityProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
@@ -261,8 +266,16 @@ public partial class MainWindow : Window
 
     private void ShowCuteReaction()
     {
-        CuteMessageText.Text = _cuteMessages[_cuteMessageIndex % _cuteMessages.Length];
-        _cuteMessageIndex++;
+        if (_isClosing || _activeClip is not null)
+        {
+            return;
+        }
+
+        var clip = _reactionClips[_nextClipIndex];
+        _nextClipIndex = (_nextClipIndex + 1) % _reactionClips.Length;
+        _activeClip = clip;
+        _activeFrameIndex = -1;
+        CuteMessageText.Text = clip.Message;
 
         if (_bubbleMode != BubbleMode.Todo)
         {
@@ -272,16 +285,8 @@ public partial class MainWindow : Window
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, CreateBounceAnimation());
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, CreateBounceAnimation());
 
-        if (_reactionActive)
-        {
-            _replayRequested = true;
-            return;
-        }
-
-        _reactionActive = true;
-        _replayRequested = false;
         _frameTimer.Stop();
-        ShowReactionFrame(0);
+        ShowActiveClipFrame(0);
     }
 
     private static DoubleAnimationUsingKeyFrames CreateBounceAnimation()
@@ -300,28 +305,28 @@ public partial class MainWindow : Window
     private void FrameTimer_Tick(object? sender, EventArgs e)
     {
         _frameTimer.Stop();
-        if (_isClosing || !_reactionActive)
+        var clip = _activeClip;
+        if (_isClosing || clip is null)
         {
             return;
         }
 
-        var nextFrameIndex = _reactionFrameIndex + 1;
-        if (nextFrameIndex < _reactionFrames.Length)
+        var nextFrameIndex = _activeFrameIndex + 1;
+        if (nextFrameIndex < clip.Frames.Length)
         {
-            ShowReactionFrame(nextFrameIndex);
+            ShowActiveClipFrame(nextFrameIndex);
             return;
         }
 
-        if (_replayRequested)
-        {
-            _replayRequested = false;
-            ShowReactionFrame(0);
-            return;
-        }
-
-        _reactionActive = false;
         CrossFadeTo(_idleImage, () =>
         {
+            if (!ReferenceEquals(_activeClip, clip))
+            {
+                return;
+            }
+
+            _activeClip = null;
+            _activeFrameIndex = -1;
             if (_bubbleMode == BubbleMode.Cute)
             {
                 SetBubbleMode(BubbleMode.None);
@@ -329,18 +334,26 @@ public partial class MainWindow : Window
         });
     }
 
-    private void ShowReactionFrame(int frameIndex)
+    private void ShowActiveClipFrame(int frameIndex)
     {
-        if (_isClosing)
+        var clip = _activeClip;
+        if (_isClosing || clip is null)
         {
             return;
         }
 
-        _reactionFrameIndex = frameIndex;
-        var frame = _reactionFrames[frameIndex];
-        CrossFadeTo(frame.Image);
-        _frameTimer.Interval = frame.Interval;
-        _frameTimer.Start();
+        _activeFrameIndex = frameIndex;
+        var frame = clip.Frames[frameIndex];
+        CrossFadeTo(frame.Image, () =>
+        {
+            if (_isClosing || !ReferenceEquals(_activeClip, clip) || _activeFrameIndex != frameIndex)
+            {
+                return;
+            }
+
+            _frameTimer.Interval = frame.HoldDuration;
+            _frameTimer.Start();
+        });
     }
 
     private void CrossFadeTo(BitmapImage target, Action? completed = null)
@@ -568,5 +581,7 @@ public partial class MainWindow : Window
         Todo
     }
 
-    private sealed record AnimationFrame(BitmapImage Image, TimeSpan Interval);
+    private sealed record AnimationClip(string Message, AnimationFrame[] Frames);
+
+    private sealed record AnimationFrame(BitmapImage Image, TimeSpan HoldDuration);
 }
