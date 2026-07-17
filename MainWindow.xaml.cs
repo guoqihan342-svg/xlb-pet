@@ -20,7 +20,7 @@ public partial class MainWindow : Window
     private const double TodoBubbleWidth = 280;
     private const double TodoWindowHeight = 240;
     private const double ScreenEdgeMargin = 12;
-    private static readonly Duration CrossFadeDuration = new(TimeSpan.FromMilliseconds(96));
+    private static readonly Duration CrossFadeDuration = new(TimeSpan.FromMilliseconds(90));
 
     private readonly BitmapImage _idleImage;
     private readonly AnimationClip[] _reactionClips;
@@ -45,18 +45,22 @@ public partial class MainWindow : Window
         _idleImage = LoadResourceImage("Assets/luban-idle.png");
         _reactionClips =
         [
-            CreateClip("刚睡醒，让我伸个懒腰～", "Assets/luban-idle-to-yawn.png", "Assets/luban-yawn.png", 420),
-            CreateClip("呜……主人要哄哄我", "Assets/luban-idle-to-cry.png", "Assets/luban-cry.png", 380,
-                "Assets/luban-yawn-to-cry.png"),
-            CreateClip("小鲁班出发！", "Assets/luban-idle-to-run.png", "Assets/luban-run.png", 280),
-            CreateClip("给你卖个萌 ♡", "Assets/luban-idle-to-cute.png", "Assets/luban-cute.png", 350),
-            CreateClip("主人真棒！", "Assets/luban-idle-to-like.png", "Assets/luban-like.png", 340,
-                "Assets/luban-like-to-cute.png"),
-            CreateClip("吃块饼干，补充能量！", "Assets/luban-idle-to-eat.png", "Assets/luban-eat.png", 420,
-                "Assets/luban-eat-to-run.png"),
-            CreateClip("嗨～我在这里！", "Assets/luban-idle-to-wave.png", "Assets/luban-wave.png", 350,
-                "Assets/luban-run-to-wave.png"),
-            CreateClip("让我认真想一想……", "Assets/luban-think-to-idle.png", "Assets/luban-think.png", 420)
+            CreateClip("刚睡醒，让我伸个懒腰～", "Assets/luban-yawn.png", 420,
+                "Assets/luban-idle-to-yawn.png", "Assets/luban-idle-to-yawn-2.png"),
+            CreateClip("呜……主人要哄哄我", "Assets/luban-cry.png", 380,
+                "Assets/luban-idle-to-cry.png", "Assets/luban-idle-to-cry-2.png"),
+            CreateClip("小鲁班出发！", "Assets/luban-run.png", 280,
+                "Assets/luban-idle-to-run.png", "Assets/luban-idle-to-run-2.png"),
+            CreateClip("给你卖个萌 ♡", "Assets/luban-cute.png", 350,
+                "Assets/luban-idle-to-cute-1.png", "Assets/luban-idle-to-cute.png"),
+            CreateClip("主人真棒！", "Assets/luban-like.png", 340,
+                "Assets/luban-idle-to-like.png", "Assets/luban-idle-to-like-2.png"),
+            CreateClip("吃块饼干，补充能量！", "Assets/luban-eat.png", 420,
+                "Assets/luban-idle-to-eat.png"),
+            CreateClip("嗨～我在这里！", "Assets/luban-wave.png", 350,
+                "Assets/luban-idle-to-wave.png", "Assets/luban-idle-to-wave-2.png"),
+            CreateClip("让我认真想一想……", "Assets/luban-think.png", 420,
+                "Assets/luban-think-to-idle.png")
         ];
         PetImage.Source = _idleImage;
 
@@ -72,26 +76,24 @@ public partial class MainWindow : Window
 
     private static AnimationClip CreateClip(
         string message,
-        string bridgePath,
         string actionPath,
         int actionHoldMilliseconds,
-        string? innerBridgePath = null)
+        params string[] bridgePaths)
     {
-        var bridgeImage = LoadResourceImage(bridgePath);
-        var actionImage = LoadResourceImage(actionPath);
-        var bridgeFrame = new AnimationFrame(bridgeImage, TimeSpan.FromMilliseconds(70));
-        var actionFrame = new AnimationFrame(actionImage, TimeSpan.FromMilliseconds(actionHoldMilliseconds));
+        var bridgeImages = Array.ConvertAll(bridgePaths, LoadResourceImage);
+        var frames = new AnimationFrame[bridgeImages.Length * 2 + 1];
+        var bridgeHold = TimeSpan.FromMilliseconds(30);
 
-        if (innerBridgePath is null)
+        for (var index = 0; index < bridgeImages.Length; index++)
         {
-            return new AnimationClip(message, [bridgeFrame, actionFrame, bridgeFrame]);
+            frames[index] = new AnimationFrame(bridgeImages[index], bridgeHold);
+            frames[frames.Length - index - 1] = new AnimationFrame(bridgeImages[index], bridgeHold);
         }
 
-        var innerImage = LoadResourceImage(innerBridgePath);
-        var innerFrame = new AnimationFrame(innerImage, TimeSpan.FromMilliseconds(55));
-        return new AnimationClip(
-            message,
-            [bridgeFrame, innerFrame, actionFrame, innerFrame, bridgeFrame]);
+        frames[bridgeImages.Length] = new AnimationFrame(
+            LoadResourceImage(actionPath),
+            TimeSpan.FromMilliseconds(actionHoldMilliseconds));
+        return new AnimationClip(message, frames);
     }
 
     private static BitmapImage LoadResourceImage(string resourcePath)

@@ -11,22 +11,24 @@
 
   <ItemGroup>
     <Resource Include="Assets\luban-idle-to-yawn.png" />
+    <Resource Include="Assets\luban-idle-to-yawn-2.png" />
     <Resource Include="Assets\luban-yawn.png" />
-    <Resource Include="Assets\luban-yawn-to-cry.png" />
     <Resource Include="Assets\luban-idle.png" />
     <Resource Include="Assets\luban-idle-to-cry.png" />
+    <Resource Include="Assets\luban-idle-to-cry-2.png" />
     <Resource Include="Assets\luban-cry.png" />
     <Resource Include="Assets\luban-idle-to-eat.png" />
     <Resource Include="Assets\luban-eat.png" />
-    <Resource Include="Assets\luban-eat-to-run.png" />
     <Resource Include="Assets\luban-idle-to-run.png" />
+    <Resource Include="Assets\luban-idle-to-run-2.png" />
     <Resource Include="Assets\luban-run.png" />
-    <Resource Include="Assets\luban-run-to-wave.png" />
     <Resource Include="Assets\luban-idle-to-wave.png" />
+    <Resource Include="Assets\luban-idle-to-wave-2.png" />
     <Resource Include="Assets\luban-wave.png" />
     <Resource Include="Assets\luban-idle-to-like.png" />
+    <Resource Include="Assets\luban-idle-to-like-2.png" />
     <Resource Include="Assets\luban-like.png" />
-    <Resource Include="Assets\luban-like-to-cute.png" />
+    <Resource Include="Assets\luban-idle-to-cute-1.png" />
     <Resource Include="Assets\luban-idle-to-cute.png" />
     <Resource Include="Assets\luban-cute.png" />
     <Resource Include="Assets\luban-think.png" />

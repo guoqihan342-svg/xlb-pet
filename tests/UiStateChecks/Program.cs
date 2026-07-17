@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Reflection;
 using System.IO;
 using System.Windows;
@@ -37,23 +38,25 @@ internal static class Program
         var expectedClips = new[]
         {
             new ExpectedClip("刚睡醒，让我伸个懒腰～",
-                ["luban-idle-to-yawn.png", "luban-yawn.png", "luban-idle-to-yawn.png"]),
+                ["luban-idle-to-yawn.png", "luban-idle-to-yawn-2.png", "luban-yawn.png",
+                    "luban-idle-to-yawn-2.png", "luban-idle-to-yawn.png"]),
             new ExpectedClip("呜……主人要哄哄我",
-                ["luban-idle-to-cry.png", "luban-yawn-to-cry.png", "luban-cry.png",
-                    "luban-yawn-to-cry.png", "luban-idle-to-cry.png"]),
+                ["luban-idle-to-cry.png", "luban-idle-to-cry-2.png", "luban-cry.png",
+                    "luban-idle-to-cry-2.png", "luban-idle-to-cry.png"]),
             new ExpectedClip("小鲁班出发！",
-                ["luban-idle-to-run.png", "luban-run.png", "luban-idle-to-run.png"]),
+                ["luban-idle-to-run.png", "luban-idle-to-run-2.png", "luban-run.png",
+                    "luban-idle-to-run-2.png", "luban-idle-to-run.png"]),
             new ExpectedClip("给你卖个萌 ♡",
-                ["luban-idle-to-cute.png", "luban-cute.png", "luban-idle-to-cute.png"]),
+                ["luban-idle-to-cute-1.png", "luban-idle-to-cute.png", "luban-cute.png",
+                    "luban-idle-to-cute.png", "luban-idle-to-cute-1.png"]),
             new ExpectedClip("主人真棒！",
-                ["luban-idle-to-like.png", "luban-like-to-cute.png", "luban-like.png",
-                    "luban-like-to-cute.png", "luban-idle-to-like.png"]),
+                ["luban-idle-to-like.png", "luban-idle-to-like-2.png", "luban-like.png",
+                    "luban-idle-to-like-2.png", "luban-idle-to-like.png"]),
             new ExpectedClip("吃块饼干，补充能量！",
-                ["luban-idle-to-eat.png", "luban-eat-to-run.png", "luban-eat.png",
-                    "luban-eat-to-run.png", "luban-idle-to-eat.png"]),
+                ["luban-idle-to-eat.png", "luban-eat.png", "luban-idle-to-eat.png"]),
             new ExpectedClip("嗨～我在这里！",
-                ["luban-idle-to-wave.png", "luban-run-to-wave.png", "luban-wave.png",
-                    "luban-run-to-wave.png", "luban-idle-to-wave.png"]),
+                ["luban-idle-to-wave.png", "luban-idle-to-wave-2.png", "luban-wave.png",
+                    "luban-idle-to-wave-2.png", "luban-idle-to-wave.png"]),
             new ExpectedClip("让我认真想一想……",
                 ["luban-think-to-idle.png", "luban-think.png", "luban-think-to-idle.png"])
         };
@@ -88,13 +91,7 @@ internal static class Program
             },
             "卖萌气泡应在窗口完成展开后再显示");
         ArrangeWindow(window);
-        PumpDispatcher(TimeSpan.FromMilliseconds(48));
-        Assert(petImage.Opacity > 0.01 && petImage.Opacity < 0.99,
-            $"过渡中主图层透明度应处于渐变状态，实际 {petImage.Opacity:F3}");
-        Assert(petImageOverlay.Opacity > 0.01 && petImageOverlay.Opacity < 0.99,
-            $"过渡中覆盖图层透明度应处于渐变状态，实际 {petImageOverlay.Opacity:F3}");
-        Assert(Math.Abs(petImage.Opacity + petImageOverlay.Opacity - 1) < 0.12,
-            "交叉淡入过程中两层透明度之和应接近 1");
+        WaitForCrossFadeSample(petImage, petImageOverlay);
         RenderState(window, "frame-transition.png");
         WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
         AssertImage(petImage, firstClip.Frames[0], "第一个短动作的首帧不正确");
@@ -283,7 +280,138 @@ internal static class Program
         AssertClose(bubbleColumn.Width.Value, 280, "人物动画结束后待办气泡列宽应保持不变");
         AssertClose(gapColumn.Width.Value, 12, "人物动画结束后待办间隔列宽应保持不变");
 
+        AssertRealTimeSingleAction();
+
         Console.WriteLine("UI state checks passed.");
+    }
+
+    private static void AssertRealTimeSingleAction()
+    {
+        var window = new MainWindow();
+        var primary = GetField<Image>(window, "PetImage");
+        var overlay = GetField<Image>(window, "PetImageOverlay");
+        var frameTimer = GetField<DispatcherTimer>(window, "_frameTimer");
+        var messageText = GetField<TextBlock>(window, "CuteMessageText");
+        var allowedFrames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "luban-idle.png",
+            "luban-idle-to-yawn.png",
+            "luban-idle-to-yawn-2.png",
+            "luban-yawn.png"
+        };
+        var observedFrameIndexes = new HashSet<int>();
+        var entryFadeBurstObserved = false;
+        var actionHoldBurstObserved = false;
+        var returnFadeBurstObserved = false;
+        var blendedSamples = 0;
+        var stopwatch = Stopwatch.StartNew();
+
+        Invoke(window, "ShowCuteReaction");
+
+        while (GetRawField(window, "_activeClip") is not null &&
+               stopwatch.Elapsed < TimeSpan.FromSeconds(3))
+        {
+            PumpDispatcher(TimeSpan.FromMilliseconds(16));
+            if (GetRawField(window, "_activeClip") is null)
+            {
+                break;
+            }
+
+            var frameIndex = GetValueField<int>(window, "_activeFrameIndex");
+            observedFrameIndexes.Add(frameIndex);
+            AssertAllowedRuntimeFrame(primary, allowedFrames, "实时播放主图层出现了其他动作");
+            AssertAllowedRuntimeFrame(overlay, allowedFrames, "实时播放覆盖图层出现了其他动作");
+
+            if (IsCrossFadeInProgress(primary, overlay))
+            {
+                blendedSamples++;
+                Assert(Math.Abs(primary.Opacity + overlay.Opacity - 1) < 0.12,
+                    "实时交叉淡入中两层透明度之和应接近 1");
+            }
+
+            if (!entryFadeBurstObserved &&
+                frameIndex == 0 &&
+                IsImageNamed(overlay, "luban-idle-to-yawn.png") &&
+                IsCrossFadeInProgress(primary, overlay))
+            {
+                AssertBusyClickBurst(window, primary, overlay, frameTimer, messageText,
+                    "首帧淡入期间");
+                entryFadeBurstObserved = true;
+            }
+
+            if (!actionHoldBurstObserved &&
+                frameIndex == 2 &&
+                overlay.Source is null &&
+                frameTimer.IsEnabled)
+            {
+                AssertBusyClickBurst(window, primary, overlay, frameTimer, messageText,
+                    "动作持帧期间");
+                actionHoldBurstObserved = true;
+            }
+
+            if (!returnFadeBurstObserved &&
+                frameIndex == 4 &&
+                IsImageNamed(overlay, "luban-idle.png") &&
+                IsCrossFadeInProgress(primary, overlay))
+            {
+                AssertBusyClickBurst(window, primary, overlay, frameTimer, messageText,
+                    "返回待机淡入期间");
+                returnFadeBurstObserved = true;
+            }
+        }
+
+        var elapsed = stopwatch.Elapsed;
+        Assert(GetRawField(window, "_activeClip") is null, "实时短动作应在 3 秒内返回待机");
+        Assert(elapsed >= TimeSpan.FromMilliseconds(700) && elapsed <= TimeSpan.FromMilliseconds(1800),
+            $"实时单动作时长应保持约 1 秒，实际 {elapsed.TotalMilliseconds:F0}ms");
+        Assert(entryFadeBurstObserved, "实时播放应在首帧淡入期间覆盖连续点击");
+        Assert(actionHoldBurstObserved, "实时播放应在动作持帧期间覆盖连续点击");
+        Assert(returnFadeBurstObserved, "实时播放应在返回待机淡入期间覆盖连续点击");
+        Assert(observedFrameIndexes.SetEquals([0, 1, 2, 3, 4]),
+            $"实时播放应且仅应经过 5 个帧索引，实际 {string.Join(", ", observedFrameIndexes.Order())}");
+        Assert(GetValueField<int>(window, "_nextClipIndex") == 1,
+            "忙时连点不应排队或消耗后续动作");
+        Assert(blendedSamples >= 6,
+            $"实时播放应观察到足够的渐变采样点，实际 {blendedSamples}");
+        AssertImage(primary, "luban-idle.png", "实时单动作结束后应回到待机图");
+        AssertCrossFadeSettled(primary, overlay);
+
+        PumpDispatcher(TimeSpan.FromMilliseconds(250));
+        Assert(GetRawField(window, "_activeClip") is null, "动作结束后不应自动追加下一轮");
+        Assert(GetValueField<int>(window, "_nextClipIndex") == 1,
+            "动作结束后等待仍应只消费一个 Clip，不应存在隐藏队列");
+        AssertImage(primary, "luban-idle.png", "动作结束后应持续保持待机图");
+        Assert(!frameTimer.IsEnabled, "动作结束后帧计时器应停止");
+    }
+
+    private static void AssertBusyClickBurst(
+        MainWindow window,
+        Image primary,
+        Image overlay,
+        DispatcherTimer frameTimer,
+        TextBlock messageText,
+        string stage)
+    {
+        const int clickCount = 5;
+        for (var clickIndex = 0; clickIndex < clickCount; clickIndex++)
+        {
+            AssertBusyClickIgnored(window, primary, overlay, frameTimer, messageText,
+                $"{stage}第 {clickIndex + 1} 次连点");
+        }
+    }
+
+    private static void AssertAllowedRuntimeFrame(
+        Image image,
+        IReadOnlySet<string> allowedFrames,
+        string message)
+    {
+        if (image.Source is not BitmapImage bitmap)
+        {
+            return;
+        }
+
+        var fileName = Path.GetFileName(bitmap.UriSource.LocalPath);
+        Assert(allowedFrames.Contains(fileName), $"{message}：{fileName}");
     }
 
     private static T GetField<T>(object instance, string name) where T : class
@@ -389,6 +517,39 @@ internal static class Program
 
         frameTimer.Stop();
         AssertCrossFadeSettled(primary, overlay);
+    }
+
+    private static void WaitForCrossFadeSample(Image primary, Image overlay)
+    {
+        const int maximumAttempts = 40;
+        for (var attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            if (IsCrossFadeInProgress(primary, overlay))
+            {
+                Assert(Math.Abs(primary.Opacity + overlay.Opacity - 1) < 0.12,
+                    "交叉淡入过程中两层透明度之和应接近 1");
+                return;
+            }
+
+            PumpDispatcher(TimeSpan.FromMilliseconds(5));
+        }
+
+        throw new InvalidOperationException(
+            $"未采样到交叉淡入中间状态：主图层 {primary.Opacity:F3}，覆盖图层 {overlay.Opacity:F3}");
+    }
+
+    private static bool IsCrossFadeInProgress(Image primary, Image overlay)
+    {
+        return overlay.Source is not null &&
+               primary.Opacity > 0.01 && primary.Opacity < 0.99 &&
+               overlay.Opacity > 0.01 && overlay.Opacity < 0.99;
+    }
+
+    private static bool IsImageNamed(Image image, string expectedFileName)
+    {
+        return image.Source is BitmapImage bitmap &&
+               Path.GetFileName(bitmap.UriSource.LocalPath)
+                   .Equals(expectedFileName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AssertPropertyTransition(
