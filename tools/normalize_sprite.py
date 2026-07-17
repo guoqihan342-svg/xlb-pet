@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from split_sprite_sheet import resize_rgba_premultiplied
+
 
 CANVAS_SIZE = (900, 1100)
 MAX_CHARACTER_SIZE = (860, 1060)
@@ -34,7 +36,7 @@ def normalize(
         max(1, round(character.width * scale)),
         max(1, round(character.height * scale)),
     )
-    character = character.resize(target_size, Image.Resampling.LANCZOS)
+    character = resize_rgba_premultiplied(character, target_size)
 
     canvas = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     x = (CANVAS_SIZE[0] - character.width) // 2 + offset_x

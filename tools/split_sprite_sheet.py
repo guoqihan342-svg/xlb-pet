@@ -12,6 +12,20 @@ MAX_REGISTERED_SIZE = (860, 1060)
 BOTTOM_MARGIN = 20
 
 
+def resize_rgba_premultiplied(
+    image: Image.Image,
+    size: tuple[int, int],
+) -> Image.Image:
+    """Resize RGBA without bleeding hidden chroma-key RGB into soft edges."""
+
+    return (
+        image.convert("RGBA")
+        .convert("RGBa")
+        .resize(size, Image.Resampling.LANCZOS)
+        .convert("RGBA")
+    )
+
+
 def remove_border_fragments(cell: Image.Image) -> Image.Image:
     cleaned = cell.copy()
     alpha = cleaned.getchannel("A")
@@ -56,55 +70,134 @@ def remove_border_fragments(cell: Image.Image) -> Image.Image:
     return cleaned
 
 
+def _find_nearest_transparent_boundary(
+    projection: list[int],
+    nominal: int,
+    radius: int,
+) -> int:
+    start = max(1, nominal - radius)
+    end = min(len(projection) - 1, nominal + radius + 1)
+    zero_runs: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for index in range(start, end):
+        if projection[index] == 0 and run_start is None:
+            run_start = index
+        elif projection[index] != 0 and run_start is not None:
+            zero_runs.append((run_start, index))
+            run_start = None
+    if run_start is not None:
+        zero_runs.append((run_start, end))
+
+    if zero_runs:
+        nearest = min(
+            zero_runs,
+            key=lambda run: abs(((run[0] + run[1] - 1) / 2) - nominal),
+        )
+        return round((nearest[0] + nearest[1]) / 2)
+
+    minimum = min(projection[start:end])
+    candidates = [
+        index
+        for index in range(start, end)
+        if projection[index] == minimum
+    ]
+    return min(candidates, key=lambda index: abs(index - nominal))
+
+
+def _alpha_projection(alpha: Image.Image, horizontal: bool) -> list[int]:
+    binary = alpha.point(lambda value: 255 if value > 16 else 0)
+    size = (binary.width, 1) if horizontal else (1, binary.height)
+    return list(binary.resize(size, Image.Resampling.BOX).getdata())
+
+
 def load_cells(
     source: Path,
     columns: int,
     rows: int,
-) -> tuple[list[Image.Image], int]:
+    *,
+    preserve_border_components: bool = False,
+    snap_to_transparent_gaps: bool = False,
+) -> tuple[list[Image.Image], float]:
     with Image.open(source) as opened:
         sheet = opened.convert("RGBA")
 
-    if sheet.width % columns != 0 or sheet.height % rows != 0:
-        raise ValueError(
-            f"Sheet size {sheet.size} is not divisible by {columns}x{rows}"
-        )
+    if columns <= 0 or rows <= 0:
+        raise ValueError("Sprite-sheet columns and rows must be positive")
 
-    cell_width = sheet.width // columns
-    cell_height = sheet.height // rows
+    nominal_cell_width = sheet.width / columns
+    nominal_cell_height = sheet.height / rows
+    y_boundaries = [0]
+    if snap_to_transparent_gaps:
+        row_projection = _alpha_projection(sheet.getchannel("A"), horizontal=False)
+        for index in range(1, rows):
+            y_boundaries.append(_find_nearest_transparent_boundary(
+                row_projection,
+                round(index * nominal_cell_height),
+                round(nominal_cell_height * 0.4),
+            ))
+    else:
+        y_boundaries.extend(
+            round(index * sheet.height / rows)
+            for index in range(1, rows)
+        )
+    y_boundaries.append(sheet.height)
+
     cells: list[Image.Image] = []
     for row in range(rows):
-        for column in range(columns):
-            cell = remove_border_fragments(sheet.crop(
-                (
-                    column * cell_width,
-                    row * cell_height,
-                    (column + 1) * cell_width,
-                    (row + 1) * cell_height,
-                )
+        x_boundaries = [0]
+        if snap_to_transparent_gaps:
+            row_alpha = sheet.getchannel("A").crop((
+                0,
+                y_boundaries[row],
+                sheet.width,
+                y_boundaries[row + 1],
             ))
+            column_projection = _alpha_projection(row_alpha, horizontal=True)
+            for index in range(1, columns):
+                x_boundaries.append(_find_nearest_transparent_boundary(
+                    column_projection,
+                    round(index * nominal_cell_width),
+                    round(nominal_cell_width * 0.35),
+                ))
+        else:
+            x_boundaries.extend(
+                round(index * sheet.width / columns)
+                for index in range(1, columns)
+            )
+        x_boundaries.append(sheet.width)
+
+        for column in range(columns):
+            cell = sheet.crop((
+                x_boundaries[column],
+                y_boundaries[row],
+                x_boundaries[column + 1],
+                y_boundaries[row + 1],
+            ))
+            if not preserve_border_components:
+                cell = remove_border_fragments(cell)
             cells.append(cell)
-    return cells, cell_width
+    return cells, nominal_cell_width
 
 
 def resize_cells_to_width(
     cells: list[Image.Image],
-    cell_width: int,
-    target_width: int,
+    cell_width: float,
+    target_width: float,
 ) -> list[Image.Image]:
-    if cell_width == target_width:
+    scale = target_width / cell_width
+    if abs(scale - 1) < 1e-9:
         return cells
 
-    scale = target_width / cell_width
-    return [
-        cell.resize(
+    resized: list[Image.Image] = []
+    for cell in cells:
+        resized.append(resize_rgba_premultiplied(
+            cell,
             (
-                target_width,
+                max(1, round(cell.width * scale)),
                 max(1, round(cell.height * scale)),
             ),
-            Image.Resampling.LANCZOS,
-        )
-        for cell in cells
-    ]
+        ))
+    return resized
 
 
 def save_registered_groups(
@@ -128,12 +221,12 @@ def save_registered_groups(
         for frame_index, cell in enumerate(cells, start=1):
             box = boxes[box_index]
             box_index += 1
-            registered = cell.crop(box).resize(
+            registered = resize_rgba_premultiplied(
+                cell.crop(box),
                 (
                     max(1, round((box[2] - box[0]) * scale)),
                     max(1, round((box[3] - box[1]) * scale)),
                 ),
-                Image.Resampling.LANCZOS,
             )
             canvas = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
             x = (CANVAS_SIZE[0] - registered.width) // 2
@@ -153,8 +246,16 @@ def split_sheet(
     paired_source: Path | None = None,
     paired_destination: Path | None = None,
     paired_prefix: str | None = None,
+    preserve_border_components: bool = False,
+    snap_to_transparent_gaps: bool = False,
 ) -> None:
-    cells, cell_width = load_cells(source, columns, rows)
+    cells, cell_width = load_cells(
+        source,
+        columns,
+        rows,
+        preserve_border_components=preserve_border_components,
+        snap_to_transparent_gaps=snap_to_transparent_gaps,
+    )
     loaded_groups = [(cells, cell_width, destination, prefix)]
     if paired_source is not None:
         if paired_destination is None or paired_prefix is None:
@@ -165,6 +266,8 @@ def split_sheet(
             paired_source,
             columns,
             rows,
+            preserve_border_components=preserve_border_components,
+            snap_to_transparent_gaps=snap_to_transparent_gaps,
         )
         loaded_groups.append((
             paired_cells,
@@ -197,6 +300,22 @@ def main() -> None:
     parser.add_argument("--paired-source", type=Path)
     parser.add_argument("--paired-destination", type=Path)
     parser.add_argument("--paired-prefix")
+    parser.add_argument(
+        "--preserve-border-components",
+        action="store_true",
+        help=(
+            "Do not discard small alpha components touching cell borders. "
+            "Use this for intentional edge-anchored sprites such as hands."
+        ),
+    )
+    parser.add_argument(
+        "--snap-to-transparent-gaps",
+        action="store_true",
+        help=(
+            "Move nominal grid cuts to nearby transparent gaps so generated "
+            "sprites crossing an equal cell boundary are not clipped."
+        ),
+    )
     args = parser.parse_args()
     split_sheet(
         args.source,
@@ -207,6 +326,8 @@ def main() -> None:
         args.paired_source,
         args.paired_destination,
         args.paired_prefix,
+        args.preserve_border_components,
+        args.snap_to_transparent_gaps,
     )
 
 

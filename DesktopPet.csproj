@@ -10,11 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\luban-idle.png" />
-    <Resource Include="Assets\luban-wake-*.png" />
-    <Resource Include="Assets\luban-*-frame-*.png" />
-    <Resource Include="Assets\luban-edge-*.png" />
-    <Resource Include="Assets\luban-roam-*.png" />
+    <Resource Include="Assets\sprite-pages\*.png" />
+    <Resource Include="Assets\luban-sprite-pages.json" />
     <None Update="log\.gitkeep"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest" />
