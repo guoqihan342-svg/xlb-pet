@@ -249,15 +249,14 @@
                 </Grid.RenderTransform>
                 <Image x:Name="PetImage"
                        Margin="2"
-                       CacheMode="BitmapCache"
                        Stretch="Uniform"
                        SnapsToDevicePixels="True"
                        IsHitTestVisible="False"
                        RenderOptions.BitmapScalingMode="HighQuality" />
                 <Image x:Name="PetImageOverlay"
                        Margin="2"
-                       CacheMode="BitmapCache"
                        Opacity="0"
+                       Visibility="Collapsed"
                        Stretch="Uniform"
                        SnapsToDevicePixels="True"
                        IsHitTestVisible="False"

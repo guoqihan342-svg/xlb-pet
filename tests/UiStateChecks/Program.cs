@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
 using System.IO;
+using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -26,6 +27,7 @@ internal static class Program
         var petImage = GetField<Image>(window, "PetImage");
         var petImageOverlay = GetField<Image>(window, "PetImageOverlay");
         var frameTimer = GetField<DispatcherTimer>(window, "_frameTimer");
+        var transitionTimer = GetField<DispatcherTimer>(window, "_transitionTimer");
         var automaticTimer = GetField<DispatcherTimer>(window, "_automaticTimer");
         var petHost = GetField<Grid>(window, "PetHost");
         var cuteBubble = GetField<Border>(window, "CuteBubble");
@@ -70,10 +72,15 @@ internal static class Program
         {
             AssertClipTiming(reactionClips.GetValue(clipIndex)!, expectedClips[clipIndex]);
         }
+        AssertInterpolatedFrames(window, reactionClips);
         Assert(automaticTimer.Interval == TimeSpan.FromSeconds(10),
             "自动动画计时器间隔应为 10 秒");
         Assert(!automaticTimer.IsEnabled,
             "窗口加载前不应启动自动动画计时器");
+        Assert(transitionTimer.Interval == TimeSpan.FromMilliseconds(20),
+            "预合成中间帧应按 20ms 间隔播放");
+        Assert(!transitionTimer.IsEnabled,
+            "窗口加载前不应启动姿势过渡计时器");
 
         AssertClose(window.Width, 145, "收起时宽度");
         AssertClose(window.Height, 185, "收起时高度");
@@ -103,13 +110,12 @@ internal static class Program
             },
             "卖萌气泡应在固定窗口外安全显示");
         ArrangeWindow(window);
-        WaitForCrossFadeSample(petImage, petImageOverlay);
         RenderState(window, "frame-transition.png");
-        WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+        WaitForTransitionToSettle(window, petImage, petImageOverlay, frameTimer);
         AssertImage(petImage, firstClip.Frames[0], "第一个短动作的首帧不正确");
-        AssertCrossFadeSettled(petImage, petImageOverlay);
-        Assert(frameTimer.Interval == TimeSpan.FromMilliseconds(220),
-            "桥接帧应稳定停留 220ms");
+        AssertSingleLayerSettled(petImage, petImageOverlay);
+        Assert(frameTimer.Interval == TimeSpan.FromMilliseconds(750),
+            "桥接帧应稳定停留 750ms");
         Assert(cuteMessageText.Text == firstClip.Message, "第一个短动作对白不正确");
         Assert(cuteBubble.Visibility == Visibility.Visible, "单击后应显示卖萌对话气泡");
         Assert(IsPopupRequestedOpen(bubblePopup), "卖萌气泡应显示在独立 Popup 中");
@@ -127,8 +133,8 @@ internal static class Program
             AdvanceFrameAndAssert(window, petImage, petImageOverlay, frameTimer,
                 firstClip.Frames[frameIndex], $"短动作 1 第 {frameIndex + 1} 帧");
             Assert(frameTimer.Interval == (frameIndex == firstClip.Frames.Length / 2
-                    ? TimeSpan.FromSeconds(5)
-                    : TimeSpan.FromMilliseconds(220)),
+                    ? TimeSpan.FromSeconds(6)
+                    : TimeSpan.FromMilliseconds(750)),
                 $"短动作 1 第 {frameIndex + 1} 帧停留时长不正确");
         }
 
@@ -139,10 +145,9 @@ internal static class Program
             {
                 Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
                 frameTimer.Stop();
-                AssertImage(petImageOverlay, "luban-idle.png", "短动作结束后应开始淡回待机图");
-                AssertBusyClickIgnored(window, petImage, petImageOverlay, frameTimer, cuteMessageText,
-                    "返回待机的交叉淡入期间");
-                WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+                AssertImage(petImage, "luban-idle.png", "短动作结束后应直接回到待机图");
+                AssertSingleLayerInvariant(petImage, petImageOverlay, "返回待机");
+                WaitForTransitionToSettle(window, petImage, petImageOverlay, frameTimer);
             },
             () => cuteBubble.Visibility == Visibility.Collapsed,
             () =>
@@ -166,7 +171,14 @@ internal static class Program
             var clip = expectedClips[clipIndex];
             Invoke(window, "ShowCuteReaction");
             ArrangeWindow(window);
-            WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+            if (clipIndex == expectedClips.Length - 1)
+            {
+                AssertBusyClickIgnored(window, petImage, petImageOverlay, frameTimer, cuteMessageText,
+                    "思考动作短补间期间");
+                RenderState(window, "think-transition.png");
+                CompleteTransitionFrameByFrame(window, petImage, petImageOverlay);
+            }
+            WaitForTransitionToSettle(window, petImage, petImageOverlay, frameTimer);
             Assert(cuteMessageText.Text == clip.Message, $"短动作 {clipIndex + 1} 对白不正确");
             AssertImage(petImage, clip.Frames[0], $"短动作 {clipIndex + 1} 第 1 帧不正确");
 
@@ -175,14 +187,14 @@ internal static class Program
                 AdvanceFrameAndAssert(window, petImage, petImageOverlay, frameTimer,
                     clip.Frames[frameIndex], $"短动作 {clipIndex + 1} 第 {frameIndex + 1} 帧");
                 Assert(frameTimer.Interval == (frameIndex == clip.Frames.Length / 2
-                        ? TimeSpan.FromSeconds(5)
-                        : TimeSpan.FromMilliseconds(220)),
+                        ? TimeSpan.FromSeconds(6)
+                        : TimeSpan.FromMilliseconds(750)),
                     $"短动作 {clipIndex + 1} 第 {frameIndex + 1} 帧停留时长不正确");
             }
 
             Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
             frameTimer.Stop();
-            WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+            WaitForTransitionToSettle(window, petImage, petImageOverlay, frameTimer);
             AssertImage(petImage, "luban-idle.png", $"短动作 {clipIndex + 1} 结束后应回到待机图");
             Assert(cuteBubble.Visibility == Visibility.Collapsed,
                 $"短动作 {clipIndex + 1} 结束后应收起卖萌气泡");
@@ -282,7 +294,7 @@ internal static class Program
         var todoClip = expectedClips[0];
         Invoke(window, "ShowCuteReaction");
         ArrangeWindow(window);
-        WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+        WaitForTransitionToSettle(window, petImage, petImageOverlay, frameTimer);
         AssertImage(petImage, todoClip.Frames[0], "待办模式中的短动作首帧不正确");
         Assert(todoBubble.Visibility == Visibility.Visible, "待办打开时人物动画不应关闭待办");
         AssertClose(window.Width, 145, "待办打开时人物动画不应改变宠物窗口宽度");
@@ -298,7 +310,7 @@ internal static class Program
 
         Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
         frameTimer.Stop();
-        WaitForCrossFadeToSettle(petImage, petImageOverlay, frameTimer);
+        WaitForTransitionToSettle(window, petImage, petImageOverlay, frameTimer);
         AssertImage(petImage, "luban-idle.png", "待办模式中的短动作结束后应回到待机");
         Assert(todoBubble.Visibility == Visibility.Visible, "人物动画结束不应关闭已打开的待办");
         AssertClose(window.Width, 145, "人物动画结束后宠物窗口宽度应保持不变");
@@ -362,7 +374,7 @@ internal static class Program
                 Assert(GetValueField<bool>(window, "_isPillowBreathing"),
                     "自动轮换应包含缓慢的抱枕呼吸动画");
                 AssertImage(primary, "luban-idle.png", "抱枕动画应保持待机图");
-                AssertCrossFadeSettled(primary, overlay);
+                AssertSingleLayerSettled(primary, overlay);
 
                 Invoke(window, "ShowCuteReaction");
                 automaticTimer.Stop();
@@ -398,7 +410,7 @@ internal static class Program
         Assert(GetValueField<int>(window, "_nextClipIndex") == expectedManualIndex,
             "自动九项轮换不应额外消费手动点击动作");
         AssertImage(primary, "luban-idle.png", "自动九项轮换结束后应回到抱枕待机");
-        AssertCrossFadeSettled(primary, overlay);
+        AssertSingleLayerSettled(primary, overlay);
 
         automaticTimer.Start();
         Invoke(window, "Window_Closing", window, new CancelEventArgs());
@@ -411,16 +423,16 @@ internal static class Program
         Image overlay,
         DispatcherTimer frameTimer)
     {
-        WaitForCrossFadeToSettle(primary, overlay, frameTimer);
+        WaitForTransitionToSettle(window, primary, overlay, frameTimer);
         while (GetRawField(window, "_activeClip") is not null)
         {
             Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
             frameTimer.Stop();
-            WaitForCrossFadeToSettle(primary, overlay, frameTimer);
+            WaitForTransitionToSettle(window, primary, overlay, frameTimer);
         }
 
         AssertImage(primary, "luban-idle.png", "动作完成后应回到抱枕待机图");
-        AssertCrossFadeSettled(primary, overlay);
+        AssertSingleLayerSettled(primary, overlay);
     }
 
     private static void AssertRealTimeAutomaticTrigger()
@@ -469,10 +481,137 @@ internal static class Program
                     .Equals(expected.Frames[frameIndex], StringComparison.OrdinalIgnoreCase),
                 $"{expected.Message} 第 {frameIndex + 1} 帧资源不正确");
             Assert(holdDuration == (frameIndex == frames.Length / 2
-                    ? TimeSpan.FromSeconds(5)
-                    : TimeSpan.FromMilliseconds(220)),
+                    ? TimeSpan.FromSeconds(6)
+                    : TimeSpan.FromMilliseconds(750)),
                 $"{expected.Message} 第 {frameIndex + 1} 帧停留时长不正确");
         }
+    }
+
+    private static void AssertInterpolatedFrames(MainWindow window, Array reactionClips)
+    {
+        var idle = GetField<BitmapImage>(window, "_idleImage");
+        var shouldInterpolate = typeof(MainWindow).GetMethod(
+            "ShouldInterpolate",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到轮廓门禁方法");
+
+        BitmapImage? thinkBridge = null;
+        foreach (var clipIndex in Enumerable.Range(0, reactionClips.Length))
+        {
+            var clip = reactionClips.GetValue(clipIndex)
+                ?? throw new InvalidOperationException($"动作 {clipIndex + 1} Clip 不应为空");
+            var clipFrames = GetClipFrames(clip);
+            var sequence = new List<BitmapImage> { idle };
+            foreach (var frame in clipFrames)
+            {
+                sequence.Add((BitmapImage)(frame?.GetType().GetProperty("Image")?.GetValue(frame)
+                    ?? throw new InvalidOperationException($"动作 {clipIndex + 1} 存在无图片帧")));
+            }
+
+            sequence.Add(idle);
+            for (var pairIndex = 0; pairIndex < sequence.Count - 1; pairIndex++)
+            {
+                var source = sequence[pairIndex];
+                var target = sequence[pairIndex + 1];
+                var expected = clipIndex == reactionClips.Length - 1;
+                var forward = (bool)(shouldInterpolate.Invoke(null, [source, target]) ?? false);
+                var reverse = (bool)(shouldInterpolate.Invoke(null, [target, source]) ?? false);
+                Assert(forward == expected,
+                    $"动作 {clipIndex + 1} 第 {pairIndex + 1} 段补间门禁不正确");
+                Assert(reverse == expected,
+                    $"动作 {clipIndex + 1} 第 {pairIndex + 1} 段返程补间门禁不正确");
+            }
+
+            if (clipIndex == reactionClips.Length - 1)
+            {
+                thinkBridge = sequence[1];
+            }
+        }
+
+        if (thinkBridge is null)
+        {
+            throw new InvalidOperationException("缺少思考动作桥接帧");
+        }
+
+        var transitionCache = GetRawField(window, "_transitionFrames") as System.Collections.IDictionary;
+        Assert(transitionCache is { Count: 4 },
+            "思考动作的两组正反向补间应在窗口显示前全部缓存");
+        var buildFrames = typeof(MainWindow).GetMethod(
+            "BuildInterpolatedFrames",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到预合成中间帧方法");
+        var frames = (BitmapSource[])(buildFrames.Invoke(null, [idle, thinkBridge])
+            ?? throw new InvalidOperationException("预合成中间帧不应为空"));
+        var reverseFrames = (BitmapSource[])(buildFrames.Invoke(null, [thinkBridge, idle])
+            ?? throw new InvalidOperationException("返程预合成中间帧不应为空"));
+
+        Assert(frames.Length == 6, "每次姿势切换应生成 6 张中间帧");
+        var sourceHash = GetPixelHash(idle);
+        var targetHash = GetPixelHash(thinkBridge);
+        var previousHash = sourceHash;
+        for (var frameIndex = 0; frameIndex < frames.Length; frameIndex++)
+        {
+            var frame = frames[frameIndex];
+            Assert(frame.IsFrozen, "预合成中间帧应冻结后再交给 UI 播放");
+            Assert(frame.Format == PixelFormats.Pbgra32, "预合成中间帧应使用 Pbgra32 格式");
+            Assert(frame.PixelWidth == 360 && frame.PixelHeight == 440,
+                "预合成中间帧应保持 360×440 尺寸");
+
+            var hash = GetPixelHash(frame);
+            Assert(hash != sourceHash, "中间帧不应退化为起始姿势");
+            Assert(hash != targetHash, "中间帧不应提前退化为目标姿势");
+            Assert(hash != previousHash, "相邻中间帧不应重复");
+            Assert(hash == GetPixelHash(reverseFrames[frames.Length - frameIndex - 1]),
+                "返程补间应与正向补间逐像素反序一致");
+            previousHash = hash;
+        }
+
+        AssertInterpolationFormula(idle, thinkBridge, frames);
+    }
+
+    private static void AssertInterpolationFormula(
+        BitmapSource source,
+        BitmapSource target,
+        IReadOnlyList<BitmapSource> frames)
+    {
+        var sourcePixels = GetPbgraPixels(source);
+        var targetPixels = GetPbgraPixels(target);
+        var denominator = frames.Count + 1;
+        for (var frameIndex = 0; frameIndex < frames.Count; frameIndex++)
+        {
+            var actualPixels = GetPbgraPixels(frames[frameIndex]);
+            var targetWeight = frameIndex + 1;
+            var sourceWeight = denominator - targetWeight;
+            for (var byteIndex = 0; byteIndex < actualPixels.Length; byteIndex++)
+            {
+                var expected = (byte)(
+                    (sourcePixels[byteIndex] * sourceWeight +
+                     targetPixels[byteIndex] * targetWeight +
+                     denominator / 2) /
+                    denominator);
+                if (actualPixels[byteIndex] != expected)
+                {
+                    throw new InvalidOperationException(
+                        $"第 {frameIndex + 1} 张补间帧第 {byteIndex} 个字节权重方向不正确");
+                }
+            }
+        }
+    }
+
+    private static string GetPixelHash(BitmapSource source)
+    {
+        return Convert.ToHexString(SHA256.HashData(GetPbgraPixels(source)));
+    }
+
+    private static byte[] GetPbgraPixels(BitmapSource source)
+    {
+        BitmapSource pbgra = source.Format == PixelFormats.Pbgra32
+            ? source
+            : new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
+        var stride = pbgra.PixelWidth * 4;
+        var pixels = new byte[stride * pbgra.PixelHeight];
+        pbgra.CopyPixels(pixels, stride, 0);
+        return pixels;
     }
 
     private static Array GetClipFrames(object clip)
@@ -506,10 +645,10 @@ internal static class Program
             "luban-yawn.png"
         };
         var observedFrameIndexes = new HashSet<int>();
-        var entryFadeBurstObserved = false;
+        var entryBridgeBurstObserved = false;
         var actionHoldBurstObserved = false;
-        var returnFadeBurstObserved = false;
-        var blendedSamples = 0;
+        var returnBridgeBurstObserved = false;
+        var interpolatedSamples = 0;
         TimeSpan? actionHoldStarted = null;
         TimeSpan? actionHoldEnded = null;
         var stopwatch = Stopwatch.StartNew();
@@ -517,7 +656,7 @@ internal static class Program
         Invoke(window, "ShowCuteReaction");
 
         while (GetRawField(window, "_activeClip") is not null &&
-               stopwatch.Elapsed < TimeSpan.FromSeconds(10))
+               stopwatch.Elapsed < TimeSpan.FromSeconds(12))
         {
             PumpDispatcher(TimeSpan.FromMilliseconds(16));
             if (GetRawField(window, "_activeClip") is null)
@@ -527,30 +666,27 @@ internal static class Program
 
             var frameIndex = GetValueField<int>(window, "_activeFrameIndex");
             observedFrameIndexes.Add(frameIndex);
-            AssertLayerContinuity(primary, overlay, "实时播放");
+            AssertSingleLayerInvariant(primary, overlay, "实时播放");
             AssertAllowedRuntimeFrame(primary, allowedFrames, "实时播放主图层出现了其他动作");
-            AssertAllowedRuntimeFrame(overlay, allowedFrames, "实时播放覆盖图层出现了其他动作");
 
-            if (IsCrossFadeInProgress(primary, overlay))
+            if (IsTransitionInProgress(window))
             {
-                blendedSamples++;
-                Assert(Math.Max(primary.Opacity, overlay.Opacity) >= 0.99,
-                    "实时过渡中必须始终有一个完全可见的图层，避免人物变暗闪烁");
+                interpolatedSamples++;
             }
 
-            if (!entryFadeBurstObserved &&
+            if (!entryBridgeBurstObserved &&
                 frameIndex == 0 &&
-                IsImageNamed(overlay, "luban-idle-to-yawn.png") &&
-                IsCrossFadeInProgress(primary, overlay))
+                !IsTransitionInProgress(window) &&
+                frameTimer.IsEnabled)
             {
                 AssertBusyClickBurst(window, primary, overlay, frameTimer, messageText,
-                    "首帧淡入期间");
-                entryFadeBurstObserved = true;
+                    "首个完整不透明桥接姿势期间");
+                entryBridgeBurstObserved = true;
             }
 
             if (!actionHoldBurstObserved &&
                 frameIndex == 2 &&
-                overlay.Source is null &&
+                !IsTransitionInProgress(window) &&
                 frameTimer.IsEnabled)
             {
                 actionHoldStarted = stopwatch.Elapsed;
@@ -564,37 +700,37 @@ internal static class Program
                 actionHoldEnded = stopwatch.Elapsed;
             }
 
-            if (!returnFadeBurstObserved &&
+            if (!returnBridgeBurstObserved &&
                 frameIndex == 4 &&
-                IsImageNamed(overlay, "luban-idle.png") &&
-                IsCrossFadeInProgress(primary, overlay))
+                !IsTransitionInProgress(window) &&
+                frameTimer.IsEnabled)
             {
                 AssertBusyClickBurst(window, primary, overlay, frameTimer, messageText,
-                    "返回待机淡入期间");
-                returnFadeBurstObserved = true;
+                    "返回待机的完整不透明桥接姿势期间");
+                returnBridgeBurstObserved = true;
             }
         }
 
         var elapsed = stopwatch.Elapsed;
-        Assert(GetRawField(window, "_activeClip") is null, "实时动作应在 10 秒内返回待机");
-        Assert(elapsed >= TimeSpan.FromSeconds(7.2) && elapsed <= TimeSpan.FromSeconds(9.1),
-            $"两桥接动作总时长应约 7.8 秒，实际 {elapsed.TotalMilliseconds:F0}ms");
+        Assert(GetRawField(window, "_activeClip") is null, "实时动作应在 12 秒内返回待机");
+        Assert(elapsed >= TimeSpan.FromSeconds(8.6) && elapsed <= TimeSpan.FromSeconds(9.8),
+            $"放慢后的两桥接动作总时长应约 9 秒，实际 {elapsed.TotalMilliseconds:F0}ms");
         Assert(actionHoldStarted is not null && actionHoldEnded is not null,
             "实时播放应完整观察到动作主体的静止阶段");
         var actionHold = actionHoldEnded!.Value - actionHoldStarted!.Value;
-        Assert(actionHold >= TimeSpan.FromSeconds(4.85) && actionHold <= TimeSpan.FromSeconds(5.45),
-            $"动作主体应静止约 5 秒，实际 {actionHold.TotalMilliseconds:F0}ms");
-        Assert(entryFadeBurstObserved, "实时播放应在首帧淡入期间覆盖连续点击");
+        Assert(actionHold >= TimeSpan.FromSeconds(5.8) && actionHold <= TimeSpan.FromSeconds(6.5),
+            $"动作主体应静止约 6 秒，实际 {actionHold.TotalMilliseconds:F0}ms");
+        Assert(entryBridgeBurstObserved, "实时播放应在首个完整不透明桥接姿势期间覆盖连续点击");
         Assert(actionHoldBurstObserved, "实时播放应在动作持帧期间覆盖连续点击");
-        Assert(returnFadeBurstObserved, "实时播放应在返回待机淡入期间覆盖连续点击");
+        Assert(returnBridgeBurstObserved, "实时播放应在返回待机的完整不透明桥接姿势期间覆盖连续点击");
         Assert(observedFrameIndexes.SetEquals([0, 1, 2, 3, 4]),
             $"实时播放应且仅应经过 5 个帧索引，实际 {string.Join(", ", observedFrameIndexes.Order())}");
         Assert(GetValueField<int>(window, "_nextClipIndex") == 1,
             "忙时连点不应排队或消耗后续动作");
-        Assert(blendedSamples >= 24,
-            $"实时播放应观察到足够的渐变采样点，实际 {blendedSamples}");
+        Assert(interpolatedSamples == 0,
+            $"哈欠轮廓跨度较大，不应出现淡化中间帧，实际采样 {interpolatedSamples}");
         AssertImage(primary, "luban-idle.png", "实时单动作结束后应回到待机图");
-        AssertCrossFadeSettled(primary, overlay);
+        AssertSingleLayerSettled(primary, overlay);
 
         PumpDispatcher(TimeSpan.FromMilliseconds(250));
         Assert(GetRawField(window, "_activeClip") is null, "动作结束后不应自动追加下一轮");
@@ -625,7 +761,8 @@ internal static class Program
         IReadOnlySet<string> allowedFrames,
         string message)
     {
-        if (image.Source is not BitmapImage bitmap)
+        var bitmap = GetOriginalBitmapImage(image.Source);
+        if (bitmap is null)
         {
             return;
         }
@@ -634,24 +771,28 @@ internal static class Program
         Assert(allowedFrames.Contains(fileName), $"{message}：{fileName}");
     }
 
-    private static void AssertLayerContinuity(Image primary, Image overlay, string stage)
+    private static void AssertSingleLayerInvariant(Image primary, Image overlay, string stage)
     {
-        Assert(primary.Source is not null, $"{stage}主图层不应出现空帧");
-        Assert(primary.Opacity >= -0.01 && primary.Opacity <= 1.01,
-            $"{stage}主图层透明度越界：{primary.Opacity:F3}");
-        Assert(overlay.Opacity >= -0.01 && overlay.Opacity <= 1.01,
-            $"{stage}覆盖图层透明度越界：{overlay.Opacity:F3}");
-
-        if (overlay.Source is null)
+        var bitmap = primary.Source as BitmapSource;
+        Assert(bitmap is not null, $"{stage}主图层不应出现空帧");
+        if (bitmap is null)
         {
-            Assert(primary.Opacity >= 0.99 && overlay.Opacity <= 0.01,
-                $"{stage}覆盖图层为空时主图层必须完全可见");
-            return;
+            throw new InvalidOperationException($"{stage}主图层不应出现空帧");
         }
-
-        Assert(Math.Max(primary.Opacity, overlay.Opacity) >= 0.99,
-            $"{stage}必须始终有一个完全可见图层，实际最大透明度 " +
-            $"{Math.Max(primary.Opacity, overlay.Opacity):F3}");
+        Assert(bitmap.IsFrozen, $"{stage}主图层位图应预先生成并冻结");
+        Assert(bitmap.PixelWidth == 360 && bitmap.PixelHeight == 440,
+            $"{stage}主图层应保持 360×440 的高质量显示资源");
+        Assert(bitmap.Format == PixelFormats.Pbgra32,
+            $"{stage}主图层应始终使用同一种 Pbgra32 显示格式");
+        AssertClose(primary.Opacity, 1, $"{stage}主图层必须始终完全不透明");
+        Assert(!DependencyPropertyHelper.GetValueSource(primary, UIElement.OpacityProperty).IsAnimated,
+            $"{stage}主图层不应再使用透明度动画");
+        Assert(overlay.Source is null, $"{stage}闲置覆盖图层不应装载图片");
+        AssertClose(overlay.Opacity, 0, $"{stage}闲置覆盖图层应保持透明");
+        Assert(overlay.Visibility == Visibility.Collapsed,
+            $"{stage}闲置覆盖图层应从渲染树中折叠");
+        Assert(!DependencyPropertyHelper.GetValueSource(overlay, UIElement.OpacityProperty).IsAnimated,
+            $"{stage}覆盖图层不应有透明度动画");
     }
 
     private static T GetField<T>(object instance, string name) where T : class
@@ -702,7 +843,10 @@ internal static class Program
         var activeFrameIndex = GetValueField<int>(window, "_activeFrameIndex");
         var nextClipIndex = GetValueField<int>(window, "_nextClipIndex");
         var nextAutomaticSequenceIndex = GetValueField<int>(window, "_nextAutomaticSequenceIndex");
-        var fadeGeneration = GetValueField<int>(window, "_fadeGeneration");
+        var transitionGeneration = GetValueField<int>(window, "_transitionGeneration");
+        var activeTransition = GetRawField(window, "_activeTransition");
+        var transitionTimer = GetField<DispatcherTimer>(window, "_transitionTimer");
+        var transitionTimerEnabled = transitionTimer.IsEnabled;
         var message = messageText.Text;
         var timerEnabled = frameTimer.IsEnabled;
         var timerInterval = frameTimer.Interval;
@@ -719,17 +863,22 @@ internal static class Program
             $"{stage}再次点击不应消费下一个 Clip");
         Assert(GetValueField<int>(window, "_nextAutomaticSequenceIndex") == nextAutomaticSequenceIndex,
             $"{stage}再次点击不应消费自动轮换项");
-        Assert(GetValueField<int>(window, "_fadeGeneration") == fadeGeneration,
-            $"{stage}再次点击不应重启动画淡入");
+        Assert(GetValueField<int>(window, "_transitionGeneration") == transitionGeneration,
+            $"{stage}再次点击不应重启预合成过渡");
+        Assert(ReferenceEquals(GetRawField(window, "_activeTransition"), activeTransition),
+            $"{stage}再次点击不应替换当前预合成过渡");
         Assert(ReferenceEquals(primary.Source, primarySource),
             $"{stage}再次点击不应替换主图层");
         Assert(ReferenceEquals(overlay.Source, overlaySource),
-            $"{stage}再次点击不应替换淡入图层");
+            $"{stage}再次点击不应启用闲置覆盖图层");
         Assert(messageText.Text == message, $"{stage}再次点击不应更新对白");
         Assert(frameTimer.IsEnabled == timerEnabled, $"{stage}再次点击不应重启帧计时器");
         Assert(frameTimer.Interval == timerInterval, $"{stage}再次点击不应修改帧间隔");
+        Assert(transitionTimer.IsEnabled == transitionTimerEnabled,
+            $"{stage}再次点击不应重启过渡计时器");
         AssertClose(window.Width, width, $"{stage}再次点击不应修改窗口宽度");
         AssertClose(window.Height, height, $"{stage}再次点击不应修改窗口高度");
+        AssertSingleLayerInvariant(primary, overlay, stage);
     }
 
     private static void AdvanceFrameAndAssert(
@@ -742,24 +891,26 @@ internal static class Program
     {
         Invoke(window, "FrameTimer_Tick", null, EventArgs.Empty);
         frameTimer.Stop();
-        WaitForCrossFadeToSettle(primary, overlay, frameTimer);
+        WaitForTransitionToSettle(window, primary, overlay, frameTimer);
         AssertImage(primary, expectedFileName, message);
-        AssertCrossFadeSettled(primary, overlay);
+        AssertSingleLayerSettled(primary, overlay);
     }
 
-    private static void WaitForCrossFadeToSettle(
+    private static void WaitForTransitionToSettle(
+        MainWindow window,
         Image primary,
         Image overlay,
         DispatcherTimer frameTimer)
     {
-        const int maximumAttempts = 80;
+        var transitionTimer = GetField<DispatcherTimer>(window, "_transitionTimer");
+        const int maximumAttempts = 100;
         for (var attempt = 0; attempt < maximumAttempts; attempt++)
         {
             frameTimer.Stop();
-            if (overlay.Source is null &&
-                Math.Abs(primary.Opacity - 1) < 0.01 &&
-                Math.Abs(overlay.Opacity) < 0.01)
+            if (GetRawField(window, "_activeTransition") is null &&
+                !transitionTimer.IsEnabled)
             {
+                AssertSingleLayerSettled(primary, overlay);
                 return;
             }
 
@@ -767,40 +918,41 @@ internal static class Program
         }
 
         frameTimer.Stop();
-        AssertCrossFadeSettled(primary, overlay);
+        Assert(GetRawField(window, "_activeTransition") is null,
+            "预合成姿势过渡应在 1 秒内完成");
+        Assert(!transitionTimer.IsEnabled, "姿势过渡完成后应停止过渡计时器");
+        AssertSingleLayerSettled(primary, overlay);
     }
 
-    private static void WaitForCrossFadeSample(Image primary, Image overlay)
+    private static void CompleteTransitionFrameByFrame(
+        MainWindow window,
+        Image primary,
+        Image overlay)
     {
-        const int maximumAttempts = 40;
-        for (var attempt = 0; attempt < maximumAttempts; attempt++)
+        var transitionTimer = GetField<DispatcherTimer>(window, "_transitionTimer");
+        transitionTimer.Stop();
+        var intermediateFrameCount = 0;
+        while (GetRawField(window, "_activeTransition") is not null)
         {
-            if (IsCrossFadeInProgress(primary, overlay))
-            {
-                Assert(Math.Max(primary.Opacity, overlay.Opacity) >= 0.99,
-                    "过渡过程中必须始终有一个完全可见的图层");
-                return;
-            }
+            AssertSingleLayerInvariant(primary, overlay, "逐帧补间播放");
+            Assert(GetOriginalBitmapImage(primary.Source) is null,
+                "补间尚未完成时主图应为预生成中间帧");
+            intermediateFrameCount++;
+            Assert(intermediateFrameCount <= 6, "补间播放不应超过 6 张中间帧");
 
-            PumpDispatcher(TimeSpan.FromMilliseconds(5));
+            Invoke(window, "TransitionTimer_Tick", null, EventArgs.Empty);
+            transitionTimer.Stop();
         }
 
-        throw new InvalidOperationException(
-            $"未采样到交叉淡入中间状态：主图层 {primary.Opacity:F3}，覆盖图层 {overlay.Opacity:F3}");
+        Assert(intermediateFrameCount == 6,
+            $"思考动作每段应完整播放 6 张中间帧，实际 {intermediateFrameCount}");
+        Assert(!transitionTimer.IsEnabled, "逐帧补间完成后应停止过渡计时器");
+        AssertSingleLayerSettled(primary, overlay);
     }
 
-    private static bool IsCrossFadeInProgress(Image primary, Image overlay)
+    private static bool IsTransitionInProgress(MainWindow window)
     {
-        return overlay.Source is not null &&
-               ((primary.Opacity >= 0.99 && overlay.Opacity > 0.01 && overlay.Opacity < 0.99) ||
-                (overlay.Opacity >= 0.99 && primary.Opacity > 0.01 && primary.Opacity < 0.99));
-    }
-
-    private static bool IsImageNamed(Image image, string expectedFileName)
-    {
-        return image.Source is BitmapImage bitmap &&
-               Path.GetFileName(bitmap.UriSource.LocalPath)
-                   .Equals(expectedFileName, StringComparison.OrdinalIgnoreCase);
+        return GetRawField(window, "_activeTransition") is not null;
     }
 
     private static void AssertPropertyTransition(
@@ -855,17 +1007,30 @@ internal static class Program
 
     private static void AssertImage(Image image, string expectedFileName, string message)
     {
-        Assert(image.Source is BitmapImage bitmap &&
+        var bitmap = GetOriginalBitmapImage(image.Source);
+        Assert(bitmap is not null &&
                bitmap.UriSource.ToString().EndsWith(expectedFileName, StringComparison.OrdinalIgnoreCase), message);
-        Assert(image.Source is BitmapImage { PixelWidth: 900, PixelHeight: 1100 },
-            "状态图应保持 900×1100 高分辨率资源");
+        Assert(image.Source is BitmapSource { PixelWidth: 360, PixelHeight: 440 },
+            "状态图应预解码为 360×440，避免切换时重复缩放大图");
+        Assert(image.Source is BitmapSource { Format: var format } && format == PixelFormats.Pbgra32,
+            "稳定状态与补间帧应统一使用 Pbgra32，避免终点格式切换闪动");
     }
 
-    private static void AssertCrossFadeSettled(Image primary, Image overlay)
+    private static void AssertSingleLayerSettled(Image primary, Image overlay)
     {
-        AssertClose(primary.Opacity, 1, "交叉淡入完成后主图层应完全可见");
-        AssertClose(overlay.Opacity, 0, "交叉淡入完成后覆盖图层应透明");
-        Assert(overlay.Source is null, "交叉淡入完成后覆盖图层应释放图片");
+        AssertSingleLayerInvariant(primary, overlay, "稳定状态");
+        Assert(GetOriginalBitmapImage(primary.Source) is not null,
+            "稳定状态应落在精确的原始姿势图上");
+    }
+
+    private static BitmapImage? GetOriginalBitmapImage(ImageSource? source)
+    {
+        return source switch
+        {
+            BitmapImage bitmap => bitmap,
+            FormatConvertedBitmap converted => GetOriginalBitmapImage(converted.Source),
+            _ => null
+        };
     }
 
     private static void PumpDispatcher(TimeSpan duration)

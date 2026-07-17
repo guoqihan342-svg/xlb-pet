@@ -18,18 +18,23 @@ public partial class MainWindow : Window
     private const double CuteBubbleHeight = 76;
     private const double TodoBubbleHeight = 232;
     private const double ScreenEdgeMargin = 12;
-    private static readonly TimeSpan ActionHoldDuration = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan BridgeHoldDuration = TimeSpan.FromMilliseconds(220);
+    private const int SpriteDecodePixelWidth = 360;
+    private const int TransitionFrameCount = 6;
+    private static readonly TimeSpan ActionHoldDuration = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan BridgeHoldDuration = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan TransitionFrameInterval = TimeSpan.FromMilliseconds(20);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
-    private static readonly Duration TargetRevealDuration = new(TimeSpan.FromMilliseconds(240));
-    private static readonly Duration PreviousFrameRetireDuration = new(TimeSpan.FromMilliseconds(80));
 
     private readonly BitmapImage _idleImage;
     private readonly AnimationClip[] _reactionClips;
     private readonly AnimationClip?[] _automaticSequence;
     private readonly DispatcherTimer _frameTimer;
+    private readonly DispatcherTimer _transitionTimer;
     private readonly DispatcherTimer _automaticTimer;
+    private readonly Dictionary<BitmapImage, BitmapSource> _displayImages = new();
+    private readonly Dictionary<(BitmapImage Source, BitmapImage Target), BitmapSource[]>
+        _transitionFrames = new();
     private readonly ObservableCollection<TodoItem> _todos = new();
     private readonly TodoStore _todoStore = TodoStore.CreateDefault();
 
@@ -41,8 +46,10 @@ public partial class MainWindow : Window
     private int _activeFrameIndex = -1;
     private int _nextClipIndex;
     private int _nextAutomaticSequenceIndex;
-    private int _fadeGeneration;
+    private int _transitionGeneration;
     private int _pillowAnimationGeneration;
+    private FrameTransition? _activeTransition;
+    private BitmapImage _currentImage;
     private bool _automaticAnimationEnabled;
     private bool _isPillowBreathing;
     private bool _isClosing;
@@ -83,7 +90,21 @@ public partial class MainWindow : Window
             _reactionClips[6],
             _reactionClips[7]
         ];
-        PetImage.Source = _idleImage;
+        _currentImage = _idleImage;
+        _ = GetDisplayImage(_idleImage);
+        foreach (var clip in _reactionClips)
+        {
+            foreach (var frame in clip.Frames)
+            {
+                _ = GetDisplayImage(frame.Image);
+            }
+        }
+
+        var thinkFrames = _reactionClips[^1].Frames;
+        CacheTransitionPair(_idleImage, thinkFrames[0].Image);
+        CacheTransitionPair(thinkFrames[0].Image, thinkFrames[1].Image);
+
+        PetImage.Source = GetDisplayImage(_idleImage);
 
         TodoItemsControl.ItemsSource = _todos;
         foreach (var item in _todoStore.Load())
@@ -93,6 +114,12 @@ public partial class MainWindow : Window
 
         _frameTimer = new DispatcherTimer();
         _frameTimer.Tick += FrameTimer_Tick;
+
+        _transitionTimer = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TransitionFrameInterval
+        };
+        _transitionTimer.Tick += TransitionTimer_Tick;
 
         _automaticTimer = new DispatcherTimer
         {
@@ -125,6 +152,7 @@ public partial class MainWindow : Window
         var image = new BitmapImage();
         image.BeginInit();
         image.CacheOption = BitmapCacheOption.OnLoad;
+        image.DecodePixelWidth = SpriteDecodePixelWidth;
         image.UriSource = new Uri(
             $"pack://application:,,,/LubanDesktopPet;component/{resourcePath}",
             UriKind.Absolute);
@@ -201,16 +229,18 @@ public partial class MainWindow : Window
     {
         _isClosing = true;
         _automaticAnimationEnabled = false;
-        _fadeGeneration++;
+        _transitionGeneration++;
         _pillowAnimationGeneration++;
         _frameTimer.Stop();
         _frameTimer.Tick -= FrameTimer_Tick;
+        _transitionTimer.Stop();
+        _transitionTimer.Tick -= TransitionTimer_Tick;
         _automaticTimer.Stop();
         _automaticTimer.Tick -= AutomaticTimer_Tick;
         _activeClip = null;
         _activeFrameIndex = -1;
+        _activeTransition = null;
         PetImage.BeginAnimation(OpacityProperty, null);
-        PetImageOverlay.BeginAnimation(OpacityProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         HideBubbleVisuals();
@@ -462,7 +492,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        CrossFadeTo(_idleImage, () =>
+        TransitionTo(_idleImage, () =>
         {
             if (!ReferenceEquals(_activeClip, clip))
             {
@@ -488,7 +518,7 @@ public partial class MainWindow : Window
 
         _activeFrameIndex = frameIndex;
         var frame = clip.Frames[frameIndex];
-        CrossFadeTo(frame.Image, () =>
+        TransitionTo(frame.Image, () =>
         {
             if (_isClosing || !ReferenceEquals(_activeClip, clip) || _activeFrameIndex != frameIndex)
             {
@@ -500,92 +530,203 @@ public partial class MainWindow : Window
         });
     }
 
-    private void CrossFadeTo(BitmapImage target, Action? completed = null)
+    private void TransitionTo(BitmapImage target, Action? completed = null)
     {
         if (_isClosing)
         {
             return;
         }
 
-        if (ReferenceEquals(PetImage.Source, target) && PetImageOverlay.Source is null)
+        if (_activeTransition is null && ReferenceEquals(_currentImage, target))
         {
             PetImage.BeginAnimation(OpacityProperty, null);
             PetImage.Opacity = 1;
-            PetImageOverlay.BeginAnimation(OpacityProperty, null);
-            PetImageOverlay.Opacity = 0;
             completed?.Invoke();
             return;
         }
 
-        var visibleSource = PetImageOverlay.Source is not null &&
-                            PetImageOverlay.Opacity > PetImage.Opacity
-            ? PetImageOverlay.Source
-            : PetImage.Source ?? target;
-
-        _fadeGeneration++;
-        var generation = _fadeGeneration;
+        _transitionTimer.Stop();
+        _transitionGeneration++;
+        var generation = _transitionGeneration;
+        var source = _currentImage;
+        var sourceDisplay = GetDisplayImage(source);
+        var targetDisplay = GetDisplayImage(target);
 
         PetImage.BeginAnimation(OpacityProperty, null);
-        PetImageOverlay.BeginAnimation(OpacityProperty, null);
-        PetImage.Source = visibleSource;
         PetImage.Opacity = 1;
-        PetImageOverlay.Source = target;
+        PetImageOverlay.Source = null;
         PetImageOverlay.Opacity = 0;
 
-        var easing = new CubicEase { EasingMode = EasingMode.EaseInOut };
-        var revealTarget = new DoubleAnimation(0, 1, TargetRevealDuration)
+        if (!ShouldInterpolate(source, target))
         {
-            EasingFunction = easing,
-            FillBehavior = FillBehavior.HoldEnd
-        };
+            _activeTransition = null;
+            _currentImage = target;
+            PetImage.Source = targetDisplay;
+            completed?.Invoke();
+            return;
+        }
 
-        revealTarget.Completed += (_, _) =>
+        if (!_transitionFrames.TryGetValue((source, target), out var intermediateFrames))
         {
-            if (_isClosing || generation != _fadeGeneration)
+            throw new InvalidOperationException("允许补间的姿势缺少预生成帧。");
+        }
+
+        _activeTransition = new FrameTransition(
+            generation,
+            target,
+            targetDisplay,
+            intermediateFrames,
+            completed);
+        PetImage.Source = intermediateFrames[0];
+        _transitionTimer.Start();
+    }
+
+    private void TransitionTimer_Tick(object? sender, EventArgs e)
+    {
+        var transition = _activeTransition;
+        if (_isClosing || transition is null || transition.Generation != _transitionGeneration)
+        {
+            _transitionTimer.Stop();
+            return;
+        }
+
+        transition.FrameIndex++;
+        if (transition.FrameIndex < transition.IntermediateFrames.Length)
+        {
+            PetImage.Source = transition.IntermediateFrames[transition.FrameIndex];
+            return;
+        }
+
+        _transitionTimer.Stop();
+        _currentImage = transition.Target;
+        PetImage.Source = transition.TargetDisplay;
+        PetImage.Opacity = 1;
+        _activeTransition = null;
+        transition.Completed?.Invoke();
+    }
+
+    private static bool ShouldInterpolate(BitmapImage source, BitmapImage target)
+    {
+        var sourceName = GetResourceFileName(source);
+        var targetName = GetResourceFileName(target);
+        return IsFramePair(sourceName, targetName, "luban-idle.png", "luban-think-to-idle.png") ||
+               IsFramePair(sourceName, targetName, "luban-think-to-idle.png", "luban-think.png");
+    }
+
+    private static bool IsFramePair(
+        string sourceName,
+        string targetName,
+        string firstName,
+        string secondName)
+    {
+        return sourceName.Equals(firstName, StringComparison.OrdinalIgnoreCase) &&
+               targetName.Equals(secondName, StringComparison.OrdinalIgnoreCase) ||
+               sourceName.Equals(secondName, StringComparison.OrdinalIgnoreCase) &&
+               targetName.Equals(firstName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetResourceFileName(BitmapImage image)
+    {
+        return Uri.UnescapeDataString(image.UriSource.Segments[^1]);
+    }
+
+    private BitmapSource GetDisplayImage(BitmapImage image)
+    {
+        if (_displayImages.TryGetValue(image, out var displayImage))
+        {
+            return displayImage;
+        }
+
+        displayImage = EnsurePbgra32(image);
+        _displayImages.Add(image, displayImage);
+        return displayImage;
+    }
+
+    private void CacheTransitionPair(BitmapImage first, BitmapImage second)
+    {
+        var forward = BuildInterpolatedFrames(
+            GetDisplayImage(first),
+            GetDisplayImage(second));
+        var reverse = new BitmapSource[forward.Length];
+        for (var index = 0; index < forward.Length; index++)
+        {
+            reverse[index] = forward[forward.Length - index - 1];
+        }
+
+        _transitionFrames.Add((first, second), forward);
+        _transitionFrames.Add((second, first), reverse);
+    }
+
+    private static BitmapSource[] BuildInterpolatedFrames(
+        BitmapSource source,
+        BitmapSource target)
+    {
+        var sourcePbgra = EnsurePbgra32(source);
+        var targetPbgra = EnsurePbgra32(target);
+        if (sourcePbgra.PixelWidth != targetPbgra.PixelWidth ||
+            sourcePbgra.PixelHeight != targetPbgra.PixelHeight)
+        {
+            throw new InvalidOperationException("动画图片尺寸必须完全一致。");
+        }
+
+        var width = sourcePbgra.PixelWidth;
+        var height = sourcePbgra.PixelHeight;
+        var stride = width * 4;
+        var bufferLength = stride * height;
+        var sourcePixels = new byte[bufferLength];
+        var targetPixels = new byte[bufferLength];
+        sourcePbgra.CopyPixels(sourcePixels, stride, 0);
+        targetPbgra.CopyPixels(targetPixels, stride, 0);
+
+        var frames = new BitmapSource[TransitionFrameCount];
+        const int denominator = TransitionFrameCount + 1;
+        var dpiX = targetPbgra.DpiX > 0 ? targetPbgra.DpiX : 96;
+        var dpiY = targetPbgra.DpiY > 0 ? targetPbgra.DpiY : 96;
+
+        for (var frameIndex = 0; frameIndex < frames.Length; frameIndex++)
+        {
+            var targetWeight = frameIndex + 1;
+            var sourceWeight = denominator - targetWeight;
+            var pixels = new byte[bufferLength];
+            for (var byteIndex = 0; byteIndex < pixels.Length; byteIndex++)
             {
-                return;
+                pixels[byteIndex] = (byte)(
+                    (sourcePixels[byteIndex] * sourceWeight +
+                     targetPixels[byteIndex] * targetWeight +
+                     denominator / 2) /
+                    denominator);
             }
 
-            // The previous frame stays fully opaque while the target is revealed,
-            // so transparent PNG pixels never produce the 25% brightness dip of
-            // two complementary opacity animations. Retire only the old-only
-            // silhouette after the target is fully visible.
-            PetImageOverlay.Opacity = 1;
-            PetImageOverlay.BeginAnimation(OpacityProperty, null);
+            var frame = BitmapSource.Create(
+                width,
+                height,
+                dpiX,
+                dpiY,
+                PixelFormats.Pbgra32,
+                null,
+                pixels,
+                stride);
+            frame.Freeze();
+            frames[frameIndex] = frame;
+        }
 
-            var retirePrevious = new DoubleAnimation(1, 0, PreviousFrameRetireDuration)
-            {
-                EasingFunction = easing,
-                FillBehavior = FillBehavior.HoldEnd
-            };
-            retirePrevious.Completed += (_, _) =>
-            {
-                if (_isClosing || generation != _fadeGeneration)
-                {
-                    return;
-                }
+        return frames;
+    }
 
-                // Commit the target beneath the still-visible overlay first.
-                // At no point are both layers transparent, avoiding a one-frame
-                // blink in transparent WPF windows.
-                PetImage.Source = target;
-                PetImage.Opacity = 1;
-                PetImage.BeginAnimation(OpacityProperty, null);
-                PetImageOverlay.Opacity = 0;
-                PetImageOverlay.Source = null;
-                completed?.Invoke();
-            };
+    private static BitmapSource EnsurePbgra32(BitmapSource source)
+    {
+        if (source.Format == PixelFormats.Pbgra32)
+        {
+            return source;
+        }
 
-            PetImage.BeginAnimation(
-                OpacityProperty,
-                retirePrevious,
-                HandoffBehavior.SnapshotAndReplace);
-        };
-
-        PetImageOverlay.BeginAnimation(
-            OpacityProperty,
-            revealTarget,
-            HandoffBehavior.SnapshotAndReplace);
+        var converted = new FormatConvertedBitmap(
+            source,
+            PixelFormats.Pbgra32,
+            null,
+            0);
+        converted.Freeze();
+        return converted;
     }
 
     private void SetBubbleMode(BubbleMode mode)
@@ -697,4 +838,24 @@ public partial class MainWindow : Window
     private sealed record AnimationClip(string Message, AnimationFrame[] Frames);
 
     private sealed record AnimationFrame(BitmapImage Image, TimeSpan HoldDuration);
+
+    private sealed class FrameTransition(
+        int generation,
+        BitmapImage target,
+        BitmapSource targetDisplay,
+        BitmapSource[] intermediateFrames,
+        Action? completed)
+    {
+        public int Generation { get; } = generation;
+
+        public BitmapImage Target { get; } = target;
+
+        public BitmapSource TargetDisplay { get; } = targetDisplay;
+
+        public BitmapSource[] IntermediateFrames { get; } = intermediateFrames;
+
+        public Action? Completed { get; } = completed;
+
+        public int FrameIndex { get; set; }
+    }
 }
