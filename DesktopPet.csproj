@@ -10,29 +10,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\luban-idle-to-yawn.png" />
-    <Resource Include="Assets\luban-idle-to-yawn-2.png" />
-    <Resource Include="Assets\luban-yawn.png" />
     <Resource Include="Assets\luban-idle.png" />
-    <Resource Include="Assets\luban-idle-to-cry.png" />
-    <Resource Include="Assets\luban-idle-to-cry-2.png" />
-    <Resource Include="Assets\luban-cry.png" />
-    <Resource Include="Assets\luban-idle-to-eat.png" />
-    <Resource Include="Assets\luban-eat.png" />
-    <Resource Include="Assets\luban-idle-to-run.png" />
-    <Resource Include="Assets\luban-idle-to-run-2.png" />
-    <Resource Include="Assets\luban-run.png" />
-    <Resource Include="Assets\luban-idle-to-wave.png" />
-    <Resource Include="Assets\luban-idle-to-wave-2.png" />
-    <Resource Include="Assets\luban-wave.png" />
-    <Resource Include="Assets\luban-idle-to-like.png" />
-    <Resource Include="Assets\luban-idle-to-like-2.png" />
-    <Resource Include="Assets\luban-like.png" />
-    <Resource Include="Assets\luban-idle-to-cute-1.png" />
-    <Resource Include="Assets\luban-idle-to-cute.png" />
-    <Resource Include="Assets\luban-cute.png" />
-    <Resource Include="Assets\luban-think.png" />
-    <Resource Include="Assets\luban-think-to-idle.png" />
+    <Resource Include="Assets\luban-wake-*.png" />
+    <Resource Include="Assets\luban-*-frame-*.png" />
+    <Resource Include="Assets\luban-edge-*.png" />
+    <Resource Include="Assets\luban-roam-*.png" />
+    <None Update="log\.gitkeep"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Remove="tests\**\*" />
     <None Remove="tests\**\*" />

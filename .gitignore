@@ -3,6 +3,8 @@ obj/
 tmp/
 tests/**/bin/
 tests/**/obj/
+**/__pycache__/
+**/log/*.log
 .vs/
 *.user
 *.suo

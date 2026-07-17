@@ -59,7 +59,7 @@
 
             <Border x:Name="TodoBubble"
                     Width="280"
-                    Height="232"
+                    Height="270"
                     Padding="14"
                     VerticalAlignment="Bottom"
                     Background="White"
@@ -71,6 +71,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="30" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="32" />
                         <RowDefinition Height="38" />
                     </Grid.RowDefinitions>
 
@@ -186,7 +187,19 @@
                         </TextBlock>
                     </Grid>
 
-                    <Grid Grid.Row="2">
+                    <CheckBox x:Name="AutoRoamToggle"
+                              Grid.Row="2"
+                              VerticalAlignment="Center"
+                              Cursor="Hand"
+                              FontFamily="Microsoft YaHei UI"
+                              FontSize="12"
+                              Foreground="#515966"
+                              Content="自动绕屏移动"
+                              ToolTip="仅控制沿屏幕边缘移动，其他自动可爱动作不受影响"
+                              Checked="AutoRoamToggle_Changed"
+                              Unchecked="AutoRoamToggle_Changed" />
+
+                    <Grid Grid.Row="3">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="54" />
@@ -245,7 +258,13 @@
             <Grid x:Name="PetVisual"
                   RenderTransformOrigin="0.5,0.72">
                 <Grid.RenderTransform>
-                    <ScaleTransform x:Name="PetScale" ScaleX="1" ScaleY="1" />
+                    <TransformGroup>
+                        <ScaleTransform x:Name="PetFacingScale" ScaleX="1" ScaleY="1" />
+                        <ScaleTransform x:Name="PetScale" ScaleX="1" ScaleY="1" />
+                        <ScaleTransform x:Name="PetCornerScale" ScaleX="1" ScaleY="1" />
+                        <TranslateTransform x:Name="PetRoamBaseOffset" X="0" Y="0" />
+                        <TranslateTransform x:Name="PetRoamOffset" X="0" Y="0" />
+                    </TransformGroup>
                 </Grid.RenderTransform>
                 <Image x:Name="PetImage"
                        Margin="2"
