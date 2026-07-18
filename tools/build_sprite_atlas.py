@@ -8,15 +8,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import time
 
+import lz4.block
+import numpy as np
 from PIL import Image
 
 from split_sprite_sheet import resize_rgba_premultiplied
 
 
-DISPLAY_WIDTH = 190
-DISPLAY_HEIGHT = 242
+DISPLAY_WIDTH = 399
+DISPLAY_HEIGHT = 509
 TRANSPARENT_GUTTER = 2
-REUSABLE_PAGE_MAX_WIDTH = 1024
+REUSABLE_PAGE_MAX_WIDTH = 1540
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+ROAM_FRAME_COUNTS = {
+    "wriggle": 48,
+}
+ROAM_DIRECTIONS = ("horizontal", "vertical-up", "vertical-down")
+WRIGGLE_CORNER_FRAME_COUNT = 48
 
 
 def replace_with_retry(temporary: Path, destination: Path) -> None:
@@ -59,6 +67,35 @@ def write_text_atomically(destination: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def write_bytes_atomically(destination: Path, content: bytes) -> None:
+    temporary = destination.with_name(
+        f".{destination.stem}.{os.getpid()}.tmp{destination.suffix}"
+    )
+    temporary.unlink(missing_ok=True)
+    try:
+        temporary.write_bytes(content)
+        replace_with_retry(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def encode_pbgra32_lz4(image: Image.Image) -> bytes:
+    rgba = np.asarray(image.convert("RGBA"), dtype=np.uint16)
+    alpha = rgba[:, :, 3:4]
+    premultiplied = ((rgba[:, :, :3] * alpha + 127) // 255).astype(np.uint8)
+    pbgra = np.empty(rgba.shape, dtype=np.uint8)
+    pbgra[:, :, 0] = premultiplied[:, :, 2]
+    pbgra[:, :, 1] = premultiplied[:, :, 1]
+    pbgra[:, :, 2] = premultiplied[:, :, 0]
+    pbgra[:, :, 3] = alpha[:, :, 0].astype(np.uint8)
+    return lz4.block.compress(
+        pbgra.tobytes(),
+        mode="fast",
+        acceleration=8,
+        store_size=False,
+    )
+
+
 @dataclass
 class PackedSprite:
     pixels: bytes
@@ -71,7 +108,27 @@ class PackedSprite:
     atlas_y: int = 0
 
 
-def resource_paths() -> list[str]:
+def wriggle_corner_paths(root: Path) -> list[str]:
+    paths = [
+        f"Assets/luban-roam-wriggle-corner-{number:02}.png"
+        for number in range(1, WRIGGLE_CORNER_FRAME_COUNT + 1)
+    ]
+    present = [(root / path).is_file() for path in paths]
+    if not all(present):
+        missing = [
+            path
+            for path, exists in zip(paths, present, strict=True)
+            if not exists
+        ]
+        raise RuntimeError(
+            "Wriggle corner transition must contain all "
+            f"{WRIGGLE_CORNER_FRAME_COUNT} frames; "
+            f"missing={missing}"
+        )
+    return paths
+
+
+def resource_paths(root: Path) -> list[str]:
     paths = ["Assets/luban-idle.png"]
     paths.extend(f"Assets/luban-wake-{number:02}.png" for number in range(1, 15))
     for edge in ("left", "top", "bottom"):
@@ -79,19 +136,22 @@ def resource_paths() -> list[str]:
             f"Assets/luban-edge-{edge}-{number:02}.png"
             for number in range(1, 5)
         )
-    for mode in ("wriggle", "crawl", "hop"):
-        for direction in ("horizontal", "vertical-up", "vertical-down"):
+    for mode, frame_count in ROAM_FRAME_COUNTS.items():
+        for direction in ROAM_DIRECTIONS:
             paths.extend(
                 f"Assets/luban-roam-{mode}-{direction}-{number:02}.png"
-                for number in range(1, 9)
+                for number in range(1, frame_count + 1)
             )
-    for action in ("yawn", "cry", "run", "cute", "like", "eat", "wave", "think"):
+    paths.extend(wriggle_corner_paths(root))
+    for action in ACTION_NAMES:
         paths.extend(
             f"Assets/luban-{action}-frame-{number:02}.png"
             for number in range(1, 25)
         )
-    if len(paths) != 291 or len(set(paths)) != len(paths):
-        raise RuntimeError(f"Expected 291 unique resources, got {len(paths)}")
+    if len(set(paths)) != len(paths):
+        raise RuntimeError(
+            f"Sprite resource list contains duplicates: {len(paths)} paths"
+        )
     return paths
 
 
@@ -229,11 +289,11 @@ def pack_sprites(sprites: list[PackedSprite]) -> tuple[int, int]:
     return width, height
 
 
-def page_resource_paths() -> dict[str, list[str]]:
+def page_resource_paths(root: Path) -> dict[str, list[str]]:
     idle = "Assets/luban-idle.png"
     wake = [f"Assets/luban-wake-{number:02}.png" for number in range(1, 15)]
     pages: dict[str, list[str]] = {"idle": [idle]}
-    for action in ("yawn", "cry", "run", "cute", "like", "eat", "wave", "think"):
+    for action in ACTION_NAMES:
         pages[f"action-{action}"] = [idle, *wake, *[
             f"Assets/luban-{action}-frame-{number:02}.png"
             for number in range(1, 25)
@@ -243,19 +303,35 @@ def page_resource_paths() -> dict[str, list[str]]:
         for edge in ("left", "top", "bottom")
         for number in range(1, 5)
     ]]
-    for mode in ("wriggle", "crawl", "hop"):
-        pages[f"roam-{mode}"] = [idle, *[
-            f"Assets/luban-roam-{mode}-{direction}-{number:02}.png"
-            for direction in ("horizontal", "vertical-up", "vertical-down")
-            for number in range(1, 9)
-        ]]
-
-    expected = set(resource_paths())
+    wriggle_count = ROAM_FRAME_COUNTS["wriggle"]
+    pages["roam-wriggle-horizontal"] = [idle, *[
+        f"Assets/luban-roam-wriggle-horizontal-{number:02}.png"
+        for number in range(1, wriggle_count + 1)
+    ]]
+    pages["roam-wriggle-vertical"] = [idle, *[
+        f"Assets/luban-roam-wriggle-{direction}-{number:02}.png"
+        for direction in ("vertical-up", "vertical-down")
+        for number in range(1, wriggle_count + 1)
+    ]]
+    pages["roam-wriggle-corner"] = [
+        idle,
+        *wriggle_corner_paths(root),
+    ]
+    expected = set(resource_paths(root))
     actual = {path for paths in pages.values() for path in paths}
     if actual != expected:
         raise RuntimeError(
             f"Page source union mismatch: missing={sorted(expected - actual)}, "
             f"extra={sorted(actual - expected)}"
+        )
+    duplicate_page_paths = {
+        page_name: len(paths) - len(set(paths))
+        for page_name, paths in pages.items()
+        if len(paths) != len(set(paths))
+    }
+    if duplicate_page_paths:
+        raise RuntimeError(
+            f"Page resource lists contain duplicates: {duplicate_page_paths}"
         )
     return pages
 
@@ -287,14 +363,21 @@ def build_page(
     ordered_frames = {path: frames[path] for path in paths}
     atlas_path.parent.mkdir(parents=True, exist_ok=True)
     save_png_atomically(atlas, atlas_path)
+    runtime_path = atlas_path.with_suffix(".pbgra.lz4")
+    runtime_bytes = encode_pbgra32_lz4(atlas)
+    write_bytes_atomically(runtime_path, runtime_bytes)
     print(
         f"  {page_name}: {atlas_width}x{atlas_height}, "
-        f"{len(ordered_frames)} frames, {len(sprites)} unique"
+        f"{len(ordered_frames)} frames, {len(sprites)} unique, "
+        f"{runtime_path.stat().st_size / 1024 / 1024:.2f} MiB LZ4"
     )
     return {
-        "resource": atlas_path.relative_to(root).as_posix(),
+        "resource": runtime_path.relative_to(root).as_posix(),
+        "previewResource": atlas_path.relative_to(root).as_posix(),
         "width": atlas_width,
         "height": atlas_height,
+        "uncompressedByteCount": atlas_width * atlas_height * 4,
+        "compressedByteCount": len(runtime_bytes),
         "logicalFrameCount": len(ordered_frames),
         "uniqueSpriteCount": len(sprites),
         "frames": ordered_frames,
@@ -306,8 +389,20 @@ def write_outputs(
     output_directory: Path,
     manifest_path: Path,
 ) -> None:
-    pages = page_resource_paths()
+    pages = page_resource_paths(root)
     output_directory.mkdir(parents=True, exist_ok=True)
+    expected_page_files = {
+        name
+        for page_name in pages
+        for name in (
+            f"luban-{page_name}.png",
+            f"luban-{page_name}.pbgra.lz4",
+        )
+    }
+    for pattern in ("luban-*.png", "luban-*.pbgra.lz4"):
+        for stale_page in output_directory.glob(pattern):
+            if stale_page.name not in expected_page_files:
+                stale_page.unlink()
     manifest_pages: dict[str, dict[str, object]] = {}
     print(f"Building {len(pages)} sprite pages:")
     for page_name, paths in pages.items():
@@ -318,12 +413,23 @@ def write_outputs(
             output_directory / f"luban-{page_name}.png",
         )
 
+    source_paths = resource_paths(root)
+    source_frame_count = len(source_paths)
+    page_frame_count = sum(len(paths) for paths in pages.values())
+    if source_frame_count != len({path for paths in pages.values() for path in paths}):
+        raise RuntimeError("Manifest source frame count does not match page union")
+    if page_frame_count != sum(
+        int(page["logicalFrameCount"])
+        for page in manifest_pages.values()
+    ):
+        raise RuntimeError("Manifest page frame count does not match built pages")
+
     manifest = {
-        "version": 2,
+        "version": 3,
         "displayWidth": DISPLAY_WIDTH,
         "displayHeight": DISPLAY_HEIGHT,
-        "sourceFrameCount": len(resource_paths()),
-        "pageFrameCount": sum(len(paths) for paths in pages.values()),
+        "sourceFrameCount": source_frame_count,
+        "pageFrameCount": page_frame_count,
         "pages": manifest_pages,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

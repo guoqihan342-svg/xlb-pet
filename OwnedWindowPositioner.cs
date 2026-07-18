@@ -19,7 +19,8 @@ internal static class OwnedWindowPositioner
     internal static bool TryPosition(
         FrameworkElement anchor,
         Window child,
-        out bool childIsOnLeft)
+        out bool childIsOnLeft,
+        bool? preferredChildIsOnLeft = null)
     {
         childIsOnLeft = true;
         try
@@ -58,7 +59,8 @@ internal static class OwnedWindowPositioner
             var anchorLeft = (int)Math.Round(anchorTopLeft.X);
             var anchorRight = (int)Math.Round(anchorBottomRight.X);
             var anchorBottom = (int)Math.Round(anchorBottomRight.Y);
-            childIsOnLeft = anchorLeft - childWidth >= monitorInfo.WorkArea.Left;
+            childIsOnLeft = preferredChildIsOnLeft ??
+                            anchorLeft - childWidth >= monitorInfo.WorkArea.Left;
 
             var desiredLeft = childIsOnLeft
                 ? anchorLeft - childWidth

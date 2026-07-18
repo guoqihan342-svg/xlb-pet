@@ -13,6 +13,7 @@ public partial class TodoWindow : Window
 {
     private bool _settingAutoRoam;
     private bool _settingPetSizeScale;
+    private bool _petSizeAdjustmentActive;
     private bool _tailOnRight = true;
     private bool _allowClose;
     private bool _hasClosed;
@@ -29,6 +30,12 @@ public partial class TodoWindow : Window
             TodoInput_PreviewTextInputUpdate);
         TodoInput.PreviewTextInput += TodoInput_PreviewTextInputCommitted;
         TodoInput.LostKeyboardFocus += TodoInput_LostKeyboardFocus;
+        PetSizeSlider.PreviewMouseLeftButtonDown += PetSizeSlider_PreviewMouseLeftButtonDown;
+        PetSizeSlider.PreviewMouseLeftButtonUp += PetSizeSlider_PreviewMouseLeftButtonUp;
+        PetSizeSlider.LostMouseCapture += PetSizeSlider_LostMouseCapture;
+        PetSizeSlider.PreviewKeyDown += PetSizeSlider_PreviewKeyDown;
+        PetSizeSlider.PreviewKeyUp += PetSizeSlider_PreviewKeyUp;
+        PetSizeSlider.LostKeyboardFocus += PetSizeSlider_LostKeyboardFocus;
         Closing += TodoWindow_Closing;
         Closed += (_, _) => _hasClosed = true;
     }
@@ -50,6 +57,10 @@ public partial class TodoWindow : Window
     public event Action<bool>? AutoRoamChanged;
 
     public event Action<double>? PetSizeScaleChanged;
+
+    public event Action? PetSizeAdjustmentStarted;
+
+    public event Action? PetSizeAdjustmentCompleted;
 
     public event EventHandler? CloseRequested;
 
@@ -95,7 +106,7 @@ public partial class TodoWindow : Window
         _settingPetSizeScale = true;
         try
         {
-            PetSizeSlider.Value = Math.Round(normalizedScale * 100 / 5) * 5;
+            PetSizeSlider.Value = normalizedScale * 100;
             PetSizeLabel.Text = $"{PetSizeSlider.Value:F0}%";
         }
         finally
@@ -260,6 +271,64 @@ public partial class TodoWindow : Window
         {
             AutoRoamChanged?.Invoke(AutoRoamToggle.IsChecked == true);
         }
+    }
+
+    private void PetSizeSlider_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e) => BeginPetSizeAdjustment();
+
+    private void PetSizeSlider_PreviewMouseLeftButtonUp(
+        object sender,
+        MouseButtonEventArgs e) => EndPetSizeAdjustment();
+
+    private void PetSizeSlider_LostMouseCapture(
+        object sender,
+        MouseEventArgs e) => EndPetSizeAdjustment();
+
+    private void PetSizeSlider_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (IsPetSizeAdjustmentKey(e.Key))
+        {
+            BeginPetSizeAdjustment();
+        }
+    }
+
+    private void PetSizeSlider_PreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        if (IsPetSizeAdjustmentKey(e.Key))
+        {
+            EndPetSizeAdjustment();
+        }
+    }
+
+    private void PetSizeSlider_LostKeyboardFocus(
+        object sender,
+        KeyboardFocusChangedEventArgs e) => EndPetSizeAdjustment();
+
+    private static bool IsPetSizeAdjustmentKey(Key key) =>
+        key is Key.Left or Key.Right or Key.Up or Key.Down or
+            Key.Home or Key.End or Key.PageUp or Key.PageDown;
+
+    private void BeginPetSizeAdjustment()
+    {
+        if (_settingPetSizeScale || _petSizeAdjustmentActive)
+        {
+            return;
+        }
+
+        _petSizeAdjustmentActive = true;
+        PetSizeAdjustmentStarted?.Invoke();
+    }
+
+    private void EndPetSizeAdjustment()
+    {
+        if (!_petSizeAdjustmentActive)
+        {
+            return;
+        }
+
+        _petSizeAdjustmentActive = false;
+        PetSizeAdjustmentCompleted?.Invoke();
     }
 
 

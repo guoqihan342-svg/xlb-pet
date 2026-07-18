@@ -11,6 +11,7 @@
         ShowInTaskbar="False"
         SizeToContent="Manual"
         SnapsToDevicePixels="True"
+        FontFamily="Microsoft YaHei"
         Topmost="True"
         UseLayoutRounding="True"
         WindowStartupLocation="Manual"
@@ -44,7 +45,7 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock VerticalAlignment="Center"
-                               FontFamily="Microsoft YaHei UI"
+                               FontFamily="Microsoft YaHei"
                                FontSize="16"
                                FontWeight="SemiBold"
                                Foreground="#202631"
@@ -55,7 +56,7 @@
                             Background="#F1F3F6"
                             BorderThickness="0"
                             Cursor="Hand"
-                            FontFamily="Microsoft YaHei UI"
+                            FontFamily="Microsoft YaHei"
                             Foreground="#515966"
                             Content="收起"
                             Click="CloseButton_Click" />
@@ -65,7 +66,7 @@
                             Background="#FFF0F0"
                             BorderThickness="0"
                             Cursor="Hand"
-                            FontFamily="Microsoft YaHei UI"
+                            FontFamily="Microsoft YaHei"
                             Foreground="#C04444"
                             Content="退出"
                             Click="ExitButton_Click" />
@@ -115,7 +116,7 @@
                                                       Click="TodoCheckBox_Click" />
                                             <TextBlock Grid.Column="1"
                                                        VerticalAlignment="Center"
-                                                       FontFamily="Microsoft YaHei UI"
+                                                       FontFamily="Microsoft YaHei"
                                                        FontSize="13"
                                                        Text="{Binding Text}"
                                                        TextTrimming="CharacterEllipsis"
@@ -152,7 +153,7 @@
 
                     <TextBlock HorizontalAlignment="Center"
                                VerticalAlignment="Center"
-                               FontFamily="Microsoft YaHei UI"
+                               FontFamily="Microsoft YaHei"
                                FontSize="13"
                                Foreground="#9AA1AC"
                                IsHitTestVisible="False"
@@ -173,7 +174,7 @@
                           Grid.Row="2"
                           VerticalAlignment="Center"
                           Cursor="Hand"
-                          FontFamily="Microsoft YaHei UI"
+                          FontFamily="Microsoft YaHei"
                           FontSize="12"
                           Foreground="#515966"
                           Content="自动绕屏移动"
@@ -188,7 +189,7 @@
                         <ColumnDefinition Width="46" />
                     </Grid.ColumnDefinitions>
                     <TextBlock VerticalAlignment="Center"
-                               FontFamily="Microsoft YaHei UI"
+                               FontFamily="Microsoft YaHei"
                                FontSize="12"
                                Foreground="#515966"
                                Text="桌宠大小" />
@@ -199,16 +200,17 @@
                             Cursor="Hand"
                             Minimum="75"
                             Maximum="140"
-                            TickFrequency="5"
-                            IsSnapToTickEnabled="True"
-                            SmallChange="5"
-                            LargeChange="10"
+                            TickFrequency="1"
+                            IsSnapToTickEnabled="False"
+                            IsMoveToPointEnabled="True"
+                            SmallChange="1"
+                            LargeChange="5"
                             ToolTip="默认 100% 比旧版高度增加约 1.5 厘米"
                             ValueChanged="PetSizeSlider_ValueChanged" />
                     <TextBlock x:Name="PetSizeLabel"
                                Grid.Column="2"
                                VerticalAlignment="Center"
-                               FontFamily="Microsoft YaHei UI"
+                               FontFamily="Microsoft YaHei"
                                FontSize="12"
                                Foreground="#515966"
                                TextAlignment="Right"
@@ -226,7 +228,7 @@
                              Padding="8,5"
                              VerticalContentAlignment="Center"
                              BorderBrush="#D8DEE8"
-                             FontFamily="Microsoft YaHei UI"
+                             FontFamily="Microsoft YaHei"
                              FontSize="13"
                              InputMethod.IsInputMethodEnabled="True"
                              MaxLength="80"
@@ -236,7 +238,7 @@
                             Background="#5B8DEF"
                             BorderThickness="0"
                             Cursor="Hand"
-                            FontFamily="Microsoft YaHei UI"
+                            FontFamily="Microsoft YaHei"
                             Foreground="White"
                             Content="新增"
                             Click="AddButton_Click" />

@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -25,9 +24,8 @@ public partial class MainWindow : Window
     private const double CuteBubbleHeight = 76;
     private const double ScreenEdgeMargin = 12;
     private const double EdgeContactTolerance = 1;
-    private const int DisplayPixelWidth = 190;
-    private const int DisplayPixelHeight = 242;
-    private const int SpriteAtlasFrameCount = 291;
+    private const int DisplayPixelWidth = 399;
+    private const int DisplayPixelHeight = 509;
     private const string SpriteAtlasManifestPath = "Assets/luban-sprite-pages.json";
     private const long SpritePageCollectionThresholdBytes = 320L * 1024L * 1024L;
     private const int WakeFrameCount = 14;
@@ -35,22 +33,24 @@ public partial class MainWindow : Window
     private const int ActionLoopStartPoseNumber = 21;
     private const int ActionLoopPoseCount = 4;
     private const int ActionLoopCycleCount = 8;
-    private const int RunLoopStartPoseNumber = 9;
-    private const int RunLoopPoseCount = 16;
-    private const int RunLoopCycleCount = 6;
     private const int EdgePeekFrameCount = 4;
-    private const int RoamFrameCount = 8;
+    private const int WriggleRoamFrameCount = 48;
+    private const int WriggleCornerFrameCount = 48;
+    private const int WriggleCornerFacingSwitchFrameNumber = 43;
+    private const double WriggleFrameTravelDistance = 1;
+    private const double PetSizeSpringAngularFrequency = 28;
+    private const double MaximumPetSizeVelocity = 4;
+    private const double MaximumRoamDeltaSeconds = 0.250;
+    private const double MaximumRoamSubstepSeconds = 1d / 60d;
     private static readonly TimeSpan MotionFrameInterval = TimeSpan.FromMilliseconds(85);
     private static readonly TimeSpan ActionLoopFrameInterval = TimeSpan.FromMilliseconds(180);
-    private static readonly TimeSpan RunLoopFrameInterval = TimeSpan.FromMilliseconds(70);
     private static readonly TimeSpan EdgePeekFrameInterval = TimeSpan.FromMilliseconds(220);
     private static readonly TimeSpan EdgePeekEndpointHold = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan RoamRenderInterval = TimeSpan.FromMilliseconds(16);
-    private static readonly TimeSpan RoamSpriteFrameInterval = TimeSpan.FromMilliseconds(70);
-    private static readonly TimeSpan RoamCornerTurnDuration = TimeSpan.FromMilliseconds(320);
-    private static readonly TimeSpan RoamVisualTransitionDuration = TimeSpan.FromMilliseconds(260);
-    private static readonly TimeSpan FrameBlendDuration = TimeSpan.FromMilliseconds(55);
-    private static readonly TimeSpan RoamFrameBlendDuration = TimeSpan.FromMilliseconds(65);
+    private static readonly TimeSpan RoamCornerTurnDuration = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan RoamVisualTransitionDuration = TimeSpan.FromMilliseconds(120);
+    private static readonly TimeSpan PetSizeTransitionDuration = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan PetSizePersistDelay = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan FrameBlendDuration = TimeSpan.Zero;
     private static readonly TimeSpan EdgeFrameBlendDuration = TimeSpan.FromMilliseconds(120);
     private static readonly TimeSpan TodoStateBlendDuration = TimeSpan.FromMilliseconds(220);
     private static readonly TimeSpan SpritePageCollectionCooldown = TimeSpan.FromMinutes(30);
@@ -60,7 +60,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan MaximumRoamScheduleDelay = TimeSpan.FromMinutes(20);
 
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
-    private readonly WriteableBitmap _spritePageBuffer;
+    private readonly byte[] _spritePagePixels;
+    private readonly byte[] _spritePageCompressedBytes;
     private readonly WriteableBitmap _displayFrameBuffer;
     private readonly byte[] _displayFramePixels =
         new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
@@ -80,15 +81,13 @@ public partial class MainWindow : Window
     private readonly SpriteFrame[][] _roamHorizontalFrames;
     private readonly SpriteFrame[][] _roamVerticalUpFrames;
     private readonly SpriteFrame[][] _roamVerticalDownFrames;
+    private readonly SpriteFrame[] _roamWriggleCornerFrames;
     private readonly AnimationClip[] _reactionClips;
     private readonly AnimationClip _todoEnterClip;
     private readonly AnimationClip _todoExitClip;
     private readonly AnimationClip?[] _automaticActivities;
-    private readonly DispatcherTimer _frameTimer;
-    private readonly DispatcherTimer _edgePeekTimer;
-    private readonly DispatcherTimer _roamTimer;
     private readonly DispatcherTimer _automaticTimer;
-    private readonly Stopwatch _roamStopwatch = new();
+    private readonly DispatcherTimer _petSizePersistTimer;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
     private readonly ObservableCollection<TodoItem> _todos = new();
@@ -103,6 +102,8 @@ public partial class MainWindow : Window
     private bool _dragInteractionActive;
     private AnimationClip? _activeClip;
     private int _activeFrameIndex = -1;
+    private long _activeClipStartedTimestamp;
+    private long _activeFrameDeadlineTimestamp;
     private int _nextClipIndex;
     private int _lastAutomaticActivityIndex = -1;
     private int _pillowAnimationGeneration;
@@ -112,23 +113,30 @@ public partial class MainWindow : Window
     private DateTimeOffset _lastSpritePageCollectionUtc = DateTimeOffset.MinValue;
     private int _edgePeekFrameIndex;
     private int _edgePeekFrameDirection = 1;
+    private long _edgePeekFrameDeadlineTimestamp;
     private EdgeDock _edgeDock;
     private EdgeDock _roamEdge;
     private EdgeDock _roamVisualEdge;
+    private EdgeDock _roamCornerSourceEdge;
     private EdgeDock _roamCornerTargetEdge;
     private RoamVisualDirection _roamVisualDirection;
     private RoamMode _roamMode;
     private Rect _roamWorkArea;
     private Point _roamApproachTarget;
     private Point _roamBoundaryStart;
-    private TimeSpan _roamLastElapsed;
+    private TimeSpan _roamElapsed;
     private TimeSpan _roamCornerTurnElapsed;
     private TimeSpan _roamVisualPhaseStartedAt;
+    private TimeSpan _roamVisualTransitionEndsAt;
     private TimeSpan _roamBaseOffsetTransitionStartedAt;
     private Point _roamBaseOffsetTransitionStart;
     private Point _roamBaseOffsetTransitionTarget;
     private double _roamBoundaryTargetDistance;
     private double _roamBoundaryTravelled;
+    private double _roamLogicalLeft;
+    private double _roamLogicalTop;
+    private double _roamVisualTravelDistance;
+    private long _roamLastRenderingTimestamp;
     private DateTimeOffset _nextRoamDueUtc;
     private bool _roamClockwise;
     private bool _roamApproaching;
@@ -137,6 +145,24 @@ public partial class MainWindow : Window
     private bool _isEdgeRoaming;
     private bool _edgeRoamingEnabled;
     private double _petSizeScale = 1;
+    private double _persistedPetSizeScale = 1;
+    private double _petSizePreviewBaseScale = 1;
+    private double _petSizeTransitionStartScale = 1;
+    private double _petSizeTransitionStartVelocity;
+    private double _petSizeVelocity;
+    private double _petSizeTargetScale = 1;
+    private long _petSizeTransitionStartedTimestamp;
+    private bool _isPetSizeTransitioning;
+    private bool _isPetSizePreviewSessionActive;
+    private bool _petSizeEnvelopePrepared;
+    private bool _isPetSizeAdjustmentActive;
+    private bool _petSizeCommitPending;
+    private bool _petSizeTodoPositionNeedsUpdate;
+    private bool _petSizeSettingsDirty;
+    private bool _isApplyingPetSizeLayout;
+    private bool _todoPositionUpdateQueued;
+    private PetSizeAnchor? _petSizePreviewAnchor;
+    private bool? _petSizeTodoChildOnLeft;
     private bool _automaticAnimationEnabled;
     private bool _isPillowBreathing;
     private bool _isClosing;
@@ -144,7 +170,9 @@ public partial class MainWindow : Window
     private bool _displaySettingsSubscribed;
     private SpriteFrame? _currentSpriteFrame;
     private string? _loadedSpritePageName;
+    private int _loadedSpritePageStride;
     private bool _isFrameBlending;
+    private bool _isVisualClockSubscribed;
     private long _frameBlendStartedTimestamp;
     private TimeSpan _activeFrameBlendDuration;
     private TimeSpan? _nextFrameBlendDuration;
@@ -155,13 +183,10 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _spritePages = LoadSpritePages(BuildSpriteResourcePaths());
-        _spritePageBuffer = new WriteableBitmap(
-            _spritePages.Values.Max(page => page.Width),
-            _spritePages.Values.Max(page => page.Height),
-            96,
-            96,
-            PixelFormats.Pbgra32,
-            null);
+        _spritePagePixels = new byte[_spritePages.Values.Max(page =>
+            checked(page.Width * page.Height * 4))];
+        _spritePageCompressedBytes = new byte[_spritePages.Values.Max(page =>
+            page.CompressedByteCount)];
         _displayFrameBuffer = new WriteableBitmap(
             DisplayPixelWidth,
             DisplayPixelHeight,
@@ -179,27 +204,36 @@ public partial class MainWindow : Window
         _edgeBottomFrames = LoadFrameSequence("edge", "luban-edge-bottom", EdgePeekFrameCount);
         _roamHorizontalFrames = Enum.GetValues<RoamMode>()
             .Select(mode => LoadFrameSequence(
-                $"roam-{GetRoamAssetName(mode)}",
+                mode == RoamMode.Wriggle
+                    ? "roam-wriggle-horizontal"
+                    : $"roam-{GetRoamAssetName(mode)}",
                 $"luban-roam-{GetRoamAssetName(mode)}-horizontal",
-                RoamFrameCount))
+                GetRoamFrameCount(mode)))
             .ToArray();
         _roamVerticalUpFrames = Enum.GetValues<RoamMode>()
             .Select(mode => LoadFrameSequence(
-                $"roam-{GetRoamAssetName(mode)}",
+                mode == RoamMode.Wriggle
+                    ? "roam-wriggle-vertical"
+                    : $"roam-{GetRoamAssetName(mode)}",
                 $"luban-roam-{GetRoamAssetName(mode)}-vertical-up",
-                RoamFrameCount))
+                GetRoamFrameCount(mode)))
             .ToArray();
         _roamVerticalDownFrames = Enum.GetValues<RoamMode>()
-            .Select(mode => LoadFrameSequence(
-                $"roam-{GetRoamAssetName(mode)}",
-                $"luban-roam-{GetRoamAssetName(mode)}-vertical-down",
-                RoamFrameCount))
+            .Select(mode => mode == RoamMode.Wriggle
+                ? _roamVerticalUpFrames[(int)mode].Reverse().ToArray()
+                : LoadFrameSequence(
+                    $"roam-{GetRoamAssetName(mode)}",
+                    $"luban-roam-{GetRoamAssetName(mode)}-vertical-down",
+                    GetRoamFrameCount(mode)))
             .ToArray();
+        _roamWriggleCornerFrames = LoadFrameSequence(
+            "roam-wriggle-corner",
+            "luban-roam-wriggle-corner",
+            WriggleCornerFrameCount);
         _reactionClips =
         [
             CreateMotionClip("刚睡醒，让我伸个懒腰～", "yawn"),
             CreateMotionClip("呜……主人要哄哄我", "cry"),
-            CreateMotionClip("小鲁班出发！", "run"),
             CreateMotionClip("给你卖个萌 ♡", "cute"),
             CreateMotionClip("主人真棒！", "like"),
             CreateMotionClip("吃块饼干，补充能量！", "eat"),
@@ -217,8 +251,7 @@ public partial class MainWindow : Window
             _reactionClips[3],
             _reactionClips[4],
             _reactionClips[5],
-            _reactionClips[6],
-            _reactionClips[7]
+            _reactionClips[6]
         ];
         ShowStableFrame(_idleFrame);
 
@@ -236,34 +269,29 @@ public partial class MainWindow : Window
         _todoWindow.DeleteRequested += TodoWindow_DeleteRequested;
         _todoWindow.AutoRoamChanged += TodoWindow_AutoRoamChanged;
         _todoWindow.PetSizeScaleChanged += TodoWindow_PetSizeScaleChanged;
+        _todoWindow.PetSizeAdjustmentStarted += TodoWindow_PetSizeAdjustmentStarted;
+        _todoWindow.PetSizeAdjustmentCompleted += TodoWindow_PetSizeAdjustmentCompleted;
         _todoWindow.CloseRequested += TodoWindow_CloseRequested;
         _todoWindow.ExitRequested += TodoWindow_ExitRequested;
         _todoWindow.ImeCompositionChanged += TodoWindow_ImeCompositionChanged;
         _todoWindow.Deactivated += TodoWindow_Deactivated;
         _todoWindow.LostKeyboardFocus += TodoWindow_LostKeyboardFocus;
 
+        _petSizePersistTimer = new DispatcherTimer
+        {
+            Interval = PetSizePersistDelay
+        };
+        _petSizePersistTimer.Tick += PetSizePersistTimer_Tick;
+
         var settings = _settingsStore.Load();
         _edgeRoamingEnabled = settings.EdgeRoamingEnabled;
         _petSizeScale = NormalizePetSizeScale(settings.PetSizeScale);
+        _persistedPetSizeScale = _petSizeScale;
+        _petSizeTargetScale = _petSizeScale;
         _nextRoamDueUtc = DateTimeOffset.UtcNow + GetRandomRoamScheduleDelay();
         _todoWindow.SetAutoRoam(_edgeRoamingEnabled);
         _todoWindow.SetPetSizeScale(_petSizeScale);
         ApplyPetSizeScale(_petSizeScale, persist: false, preservePosition: false);
-
-        _frameTimer = new DispatcherTimer(DispatcherPriority.Render);
-        _frameTimer.Tick += FrameTimer_Tick;
-
-        _edgePeekTimer = new DispatcherTimer(DispatcherPriority.Render)
-        {
-            Interval = EdgePeekEndpointHold
-        };
-        _edgePeekTimer.Tick += EdgePeekTimer_Tick;
-
-        _roamTimer = new DispatcherTimer(DispatcherPriority.Render)
-        {
-            Interval = RoamRenderInterval
-        };
-        _roamTimer.Tick += RoamTimer_Tick;
 
         _automaticTimer = new DispatcherTimer
         {
@@ -385,11 +413,6 @@ public partial class MainWindow : Window
             names[timelineIndex] = frameName;
         }
 
-        if (string.Equals(actionName, "run", StringComparison.Ordinal))
-        {
-            return CreateRunMotionClip(message, actionName, timeline, names);
-        }
-
         var frames = new List<AnimationFrame>(
             (timeline.Length - 1) * 2 + ActionLoopPoseCount * ActionLoopCycleCount);
         for (var timelineIndex = 1; timelineIndex < timeline.Length; timelineIndex++)
@@ -422,58 +445,6 @@ public partial class MainWindow : Window
                 timeline[timelineIndex],
                 MotionFrameInterval,
                 names[timelineIndex]));
-        }
-
-        return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
-    }
-
-    private static AnimationClip CreateRunMotionClip(
-        string message,
-        string actionName,
-        SpriteFrame[] timeline,
-        string[] names)
-    {
-        var entryLastTimelineIndex = WakeFrameCount;
-        var frames = new List<AnimationFrame>(
-            entryLastTimelineIndex +
-            RunLoopPoseCount * RunLoopCycleCount +
-            1 +
-            WakeFrameCount + 1);
-
-        for (var timelineIndex = 1;
-             timelineIndex <= entryLastTimelineIndex;
-             timelineIndex++)
-        {
-            frames.Add(new AnimationFrame(
-                timeline[timelineIndex], MotionFrameInterval, names[timelineIndex]));
-        }
-
-        var actionFrameIndex = frames.Count - 1;
-        for (var cycle = 0; cycle < RunLoopCycleCount; cycle++)
-        {
-            for (var poseOffset = 0; poseOffset < RunLoopPoseCount; poseOffset++)
-            {
-                var poseNumber = RunLoopStartPoseNumber + poseOffset;
-                var timelineIndex = WakeFrameCount + poseNumber;
-                frames.Add(new AnimationFrame(
-                    timeline[timelineIndex], RunLoopFrameInterval, names[timelineIndex]));
-            }
-        }
-
-        // 用下一周期的接触相位落稳，再回到 wake/idle。旧实现把 16 帧
-        // 侧身跑完整倒放，既像倒着跑，也会混入踢腿姿势。
-        var contactTimelineIndex = WakeFrameCount + RunLoopStartPoseNumber;
-        frames.Add(new AnimationFrame(
-            timeline[contactTimelineIndex],
-            RunLoopFrameInterval,
-            names[contactTimelineIndex]));
-
-        for (var timelineIndex = WakeFrameCount;
-             timelineIndex >= 0;
-             timelineIndex--)
-        {
-            frames.Add(new AnimationFrame(
-                timeline[timelineIndex], MotionFrameInterval, names[timelineIndex]));
         }
 
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
@@ -524,7 +495,7 @@ public partial class MainWindow : Window
 
     private static string[] BuildSpriteResourcePaths()
     {
-        var resourcePaths = new List<string>(SpriteAtlasFrameCount)
+        var resourcePaths = new List<string>()
         {
             "Assets/luban-idle.png"
         };
@@ -542,20 +513,28 @@ public partial class MainWindow : Window
         foreach (var mode in Enum.GetValues<RoamMode>())
         {
             var modeName = GetRoamAssetName(mode);
+            var frameCount = GetRoamFrameCount(mode);
             foreach (var directionName in new[]
                      {
                          "horizontal", "vertical-up", "vertical-down"
                      })
             {
-                resourcePaths.AddRange(Enumerable.Range(1, RoamFrameCount)
+                resourcePaths.AddRange(Enumerable.Range(1, frameCount)
                     .Select(frameNumber =>
                         $"Assets/luban-roam-{modeName}-{directionName}-{frameNumber:00}.png"));
+            }
+
+            if (mode == RoamMode.Wriggle)
+            {
+                resourcePaths.AddRange(Enumerable.Range(1, WriggleCornerFrameCount)
+                    .Select(frameNumber =>
+                        $"Assets/luban-roam-wriggle-corner-{frameNumber:00}.png"));
             }
         }
 
         foreach (var actionName in new[]
                  {
-                     "yawn", "cry", "run", "cute",
+                     "yawn", "cry", "cute",
                      "like", "eat", "wave", "think"
                  })
         {
@@ -564,11 +543,10 @@ public partial class MainWindow : Window
                     $"Assets/luban-{actionName}-frame-{frameNumber:00}.png"));
         }
 
-        if (resourcePaths.Count != SpriteAtlasFrameCount ||
-            resourcePaths.Distinct(StringComparer.Ordinal).Count() != resourcePaths.Count)
+        if (resourcePaths.Distinct(StringComparer.Ordinal).Count() != resourcePaths.Count)
         {
             throw new InvalidOperationException(
-                $"精灵图集资源清单异常：期望 {SpriteAtlasFrameCount}，实际 {resourcePaths.Count}。");
+                $"精灵图集资源清单包含重复项，实际 {resourcePaths.Count} 帧。");
         }
 
         return resourcePaths.ToArray();
@@ -577,10 +555,10 @@ public partial class MainWindow : Window
     private static IReadOnlyDictionary<string, SpriteAtlasPage> LoadSpritePages(
         IReadOnlyList<string> resourcePaths)
     {
-        if (resourcePaths.Count != SpriteAtlasFrameCount)
+        if (resourcePaths.Count == 0)
         {
             throw new ArgumentException(
-                $"精灵图集必须包含 {SpriteAtlasFrameCount} 帧。",
+                "精灵图集资源清单不能为空。",
                 nameof(resourcePaths));
         }
 
@@ -600,11 +578,11 @@ public partial class MainWindow : Window
                        ?? throw new InvalidOperationException("精灵图集清单为空。");
         }
 
-        if (manifest.Version != 2 ||
+        if (manifest.Version != 3 ||
             manifest.DisplayWidth != DisplayPixelWidth ||
             manifest.DisplayHeight != DisplayPixelHeight ||
-            manifest.SourceFrameCount != SpriteAtlasFrameCount ||
-            manifest.PageFrameCount < SpriteAtlasFrameCount ||
+            manifest.SourceFrameCount != resourcePaths.Count ||
+            manifest.PageFrameCount < resourcePaths.Count ||
             manifest.Pages.Count == 0)
         {
             throw new InvalidOperationException("精灵图集分页清单的尺寸或版本不匹配。");
@@ -620,7 +598,11 @@ public partial class MainWindow : Window
         {
             if (string.IsNullOrWhiteSpace(pageName) ||
                 string.IsNullOrWhiteSpace(pageDescriptor.Resource) ||
+                string.IsNullOrWhiteSpace(pageDescriptor.PreviewResource) ||
                 pageDescriptor.Width <= 0 || pageDescriptor.Height <= 0 ||
+                pageDescriptor.UncompressedByteCount != checked(
+                    pageDescriptor.Width * pageDescriptor.Height * 4) ||
+                pageDescriptor.CompressedByteCount <= 0 ||
                 pageDescriptor.LogicalFrameCount != pageDescriptor.Frames.Count ||
                 pageDescriptor.UniqueSpriteCount <= 0 ||
                 pageDescriptor.UniqueSpriteCount > pageDescriptor.Frames.Count)
@@ -667,8 +649,11 @@ public partial class MainWindow : Window
                 pageName,
                 new SpriteAtlasPage(
                     pageDescriptor.Resource,
+                    pageDescriptor.PreviewResource,
                     pageDescriptor.Width,
                     pageDescriptor.Height,
+                    pageDescriptor.UncompressedByteCount,
+                    pageDescriptor.CompressedByteCount,
                     new ReadOnlyDictionary<string, SpriteFrame>(frameMap)));
         }
 
@@ -679,25 +664,6 @@ public partial class MainWindow : Window
         }
 
         return new ReadOnlyDictionary<string, SpriteAtlasPage>(pageMap);
-    }
-
-    private static BitmapSource LoadPackagedBitmap(string resourcePath)
-    {
-        var resource = Application.GetResourceStream(CreatePackUri(resourcePath))
-            ?? throw new InvalidOperationException($"找不到桌宠图片资源：{resourcePath}");
-        BitmapImage bitmap;
-        using (resource.Stream)
-        {
-            bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
-            bitmap.StreamSource = resource.Stream;
-            bitmap.EndInit();
-            bitmap.Freeze();
-        }
-
-        return bitmap;
     }
 
     private static Uri CreatePackUri(string resourcePath)
@@ -741,7 +707,14 @@ public partial class MainWindow : Window
     {
         if (_todoWindow.IsVisible)
         {
-            UpdateTodoWindowPosition();
+            if (_isApplyingPetSizeLayout)
+            {
+                QueueTodoWindowPositionUpdate();
+            }
+            else
+            {
+                UpdateTodoWindowPosition();
+            }
         }
 
         if (!BubblePopup.IsOpen)
@@ -772,6 +745,16 @@ public partial class MainWindow : Window
                     if (_isClosing)
                     {
                         return;
+                    }
+
+                    if (_isPetSizePreviewSessionActive)
+                    {
+                        var deferSettingsSave = _isPetSizeAdjustmentActive;
+                        CommitPetSizePreviewSession(persist: !deferSettingsSave);
+                        if (deferSettingsSave)
+                        {
+                            _petSizeCommitPending = true;
+                        }
                     }
 
                     var resumeRoaming = _isEdgeRoaming && _edgeRoamingEnabled;
@@ -880,7 +863,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (OwnedWindowPositioner.TryPosition(PetHost, _todoWindow, out var childIsOnLeft))
+        if (OwnedWindowPositioner.TryPosition(
+                PetSizeViewbox,
+                _todoWindow,
+                out var childIsOnLeft,
+                _isPetSizePreviewSessionActive ? _petSizeTodoChildOnLeft : null))
         {
             _todoWindow.SetTailOnRight(childIsOnLeft);
             return;
@@ -893,20 +880,47 @@ public partial class MainWindow : Window
         var bubbleHeight = _todoWindow.ActualHeight > 0
             ? _todoWindow.ActualHeight
             : _todoWindow.Height;
-        var petWidth = ActualWidth > 0 ? ActualWidth : Width;
-        var petHeight = ActualHeight > 0 ? ActualHeight : Height;
-
-        var canPlaceOnLeft = Left - bubbleWidth >= workArea.Left;
+        var petTopLeft = PetSizeViewbox.TranslatePoint(new Point(0, 0), this);
+        var petBottomRight = PetSizeViewbox.TranslatePoint(
+            new Point(PetSizeViewbox.ActualWidth, PetSizeViewbox.ActualHeight),
+            this);
+        var petLeft = Left + Math.Min(petTopLeft.X, petBottomRight.X);
+        var petRight = Left + Math.Max(petTopLeft.X, petBottomRight.X);
+        var petBottom = Top + Math.Max(petTopLeft.Y, petBottomRight.Y);
+        var canPlaceOnLeft = _isPetSizePreviewSessionActive &&
+                             _petSizeTodoChildOnLeft is { } lockedSide
+            ? lockedSide
+            : petLeft - bubbleWidth >= workArea.Left;
         var desiredLeft = canPlaceOnLeft
-            ? Left - bubbleWidth
-            : Left + petWidth;
-        var desiredTop = Top + petHeight - bubbleHeight;
+            ? petLeft - bubbleWidth
+            : petRight;
+        var desiredTop = petBottom - bubbleHeight;
         var maximumLeft = Math.Max(workArea.Left, workArea.Right - bubbleWidth);
         var maximumTop = Math.Max(workArea.Top, workArea.Bottom - bubbleHeight);
 
         _todoWindow.SetTailOnRight(canPlaceOnLeft);
         _todoWindow.Left = Math.Clamp(desiredLeft, workArea.Left, maximumLeft);
         _todoWindow.Top = Math.Clamp(desiredTop, workArea.Top, maximumTop);
+    }
+
+    private void QueueTodoWindowPositionUpdate()
+    {
+        if (_isClosing || !_todoWindow.IsVisible || _todoPositionUpdateQueued)
+        {
+            return;
+        }
+
+        _todoPositionUpdateQueued = true;
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            new Action(() =>
+            {
+                _todoPositionUpdateQueued = false;
+                if (!_isClosing && _todoWindow.IsVisible)
+                {
+                    UpdateTodoWindowPosition();
+                }
+            }));
     }
 
     private static bool IsWithin(DependencyObject? source, DependencyObject ancestor)
@@ -952,18 +966,27 @@ public partial class MainWindow : Window
         AppLogger.Info("主窗口正在关闭");
         _automaticAnimationEnabled = false;
         _pillowAnimationGeneration++;
-        _frameTimer.Stop();
-        _frameTimer.Tick -= FrameTimer_Tick;
+        _petSizePersistTimer.Stop();
+        _petSizePersistTimer.Tick -= PetSizePersistTimer_Tick;
+        _isPetSizeTransitioning = false;
+        _isPetSizePreviewSessionActive = false;
+        _petSizeEnvelopePrepared = false;
+        if (_petSizeSettingsDirty)
+        {
+            _petSizeScale = _petSizeTargetScale;
+            if (SaveSettings())
+            {
+                _petSizeSettingsDirty = false;
+            }
+        }
+        StopVisualClock();
         StopFrameBlend(snapToTarget: false);
-        _edgePeekTimer.Stop();
-        _edgePeekTimer.Tick -= EdgePeekTimer_Tick;
-        _roamTimer.Stop();
-        _roamTimer.Tick -= RoamTimer_Tick;
-        _roamStopwatch.Stop();
         _automaticTimer.Stop();
         _automaticTimer.Tick -= AutomaticTimer_Tick;
         _activeClip = null;
         _activeFrameIndex = -1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
         _edgeDock = EdgeDock.None;
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
@@ -984,6 +1007,7 @@ public partial class MainWindow : Window
         _todoWindow.Deactivated -= TodoWindow_Deactivated;
         _todoWindow.CloseForApplication();
         SaveTodos();
+        AppLogger.Flush(TimeSpan.FromSeconds(1));
     }
 
     private void PetHost_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -991,6 +1015,11 @@ public partial class MainWindow : Window
         if (e.ChangedButton != MouseButton.Left)
         {
             return;
+        }
+
+        if (_isPetSizePreviewSessionActive)
+        {
+            CommitPetSizePreviewSession(persist: true);
         }
 
         StopEdgeRoaming(
@@ -1186,10 +1215,11 @@ public partial class MainWindow : Window
 
         if (_bubbleMode == BubbleMode.Todo)
         {
-            _edgePeekTimer.Stop();
             _edgeDock = EdgeDock.None;
+            _edgePeekFrameDeadlineTimestamp = 0;
             ResetPetVisualTransforms();
             ShowStableTodoFrame();
+            UpdateVisualClockSubscription();
             return;
         }
 
@@ -1197,9 +1227,9 @@ public partial class MainWindow : Window
         _automaticTimer.Stop();
         if (_activeClip is { } activeClip)
         {
-            _frameTimer.Stop();
             _activeClip = null;
             _activeFrameIndex = -1;
+            _activeFrameDeadlineTimestamp = 0;
             AppLogger.Info($"动作中止：{activeClip.ActionName}，原因：拖到屏幕边缘");
             if (_bubbleMode == BubbleMode.Cute)
             {
@@ -1207,7 +1237,6 @@ public partial class MainWindow : Window
             }
         }
 
-        _edgePeekTimer.Stop();
         _edgeDock = dock;
         _edgePeekFrameIndex = 0;
         _edgePeekFrameDirection = 1;
@@ -1228,8 +1257,9 @@ public partial class MainWindow : Window
         PetFacingScale.ScaleY = 1;
         _nextFrameBlendDuration = EdgeFrameBlendDuration;
         ShowStableFrame(GetEdgeFrames(dock)[0]);
-        _edgePeekTimer.Interval = EdgePeekEndpointHold;
-        _edgePeekTimer.Start();
+        _edgePeekFrameDeadlineTimestamp = Stopwatch.GetTimestamp() +
+                                          ToStopwatchTicks(EdgePeekEndpointHold);
+        UpdateVisualClockSubscription();
         AppLogger.Info($"边缘探头开始：{GetEdgeName(dock)}");
     }
 
@@ -1243,10 +1273,10 @@ public partial class MainWindow : Window
         }
 
         var previousDock = _edgeDock;
-        _edgePeekTimer.Stop();
         _edgeDock = EdgeDock.None;
         _edgePeekFrameIndex = 0;
         _edgePeekFrameDirection = 1;
+        _edgePeekFrameDeadlineTimestamp = 0;
         if (restoreIdleFrame)
         {
             BakeCurrentPetVisualTransformIntoDisplayFrame();
@@ -1256,6 +1286,7 @@ public partial class MainWindow : Window
         PetFacingScale.ScaleY = 1;
         if (restoreIdleFrame)
         {
+            _nextFrameBlendDuration = EdgeFrameBlendDuration;
             ShowStableFrame(_idleFrame);
         }
         AppLogger.Info($"边缘探头结束：{GetEdgeName(previousDock)}");
@@ -1263,13 +1294,14 @@ public partial class MainWindow : Window
         {
             RestartAutomaticCountdown();
         }
+
+        UpdateVisualClockSubscription();
     }
 
-    private void EdgePeekTimer_Tick(object? sender, EventArgs e)
+    private void AdvanceEdgePeek(long timestamp)
     {
         if (_bubbleMode == BubbleMode.Todo)
         {
-            _edgePeekTimer.Stop();
             ExitEdgePeek(
                 restartAutomaticCountdown: false,
                 restoreIdleFrame: false);
@@ -1280,30 +1312,51 @@ public partial class MainWindow : Window
 
         if (_isClosing || _edgeDock == EdgeDock.None)
         {
-            _edgePeekTimer.Stop();
             return;
         }
 
         var frames = GetEdgeFrames(_edgeDock);
-        var nextFrameIndex = _edgePeekFrameIndex + _edgePeekFrameDirection;
-        if (nextFrameIndex >= frames.Length)
+        var cycleDurationTicks = ToStopwatchTicks(
+            EdgePeekEndpointHold + EdgePeekEndpointHold +
+            EdgePeekFrameInterval + EdgePeekFrameInterval +
+            EdgePeekFrameInterval + EdgePeekFrameInterval);
+        var overdueTicks = timestamp - _edgePeekFrameDeadlineTimestamp;
+        if (overdueTicks >= cycleDurationTicks)
         {
-            _edgePeekFrameDirection = -1;
-            nextFrameIndex = Math.Max(0, frames.Length - 2);
-        }
-        else if (nextFrameIndex < 0)
-        {
-            _edgePeekFrameDirection = 1;
-            nextFrameIndex = Math.Min(frames.Length - 1, 1);
+            _edgePeekFrameDeadlineTimestamp +=
+                overdueTicks / cycleDurationTicks * cycleDurationTicks;
         }
 
-        _edgePeekFrameIndex = nextFrameIndex;
-        _nextFrameBlendDuration = EdgeFrameBlendDuration;
-        ShowStableFrame(frames[_edgePeekFrameIndex]);
-        _edgePeekTimer.Interval =
-            _edgePeekFrameIndex == 0 || _edgePeekFrameIndex == frames.Length - 1
-                ? EdgePeekEndpointHold
-                : EdgePeekFrameInterval;
+        var frameChanged = false;
+        while (timestamp >= _edgePeekFrameDeadlineTimestamp &&
+               _edgeDock != EdgeDock.None)
+        {
+            var nextFrameIndex = _edgePeekFrameIndex + _edgePeekFrameDirection;
+            if (nextFrameIndex >= frames.Length)
+            {
+                _edgePeekFrameDirection = -1;
+                nextFrameIndex = Math.Max(0, frames.Length - 2);
+            }
+            else if (nextFrameIndex < 0)
+            {
+                _edgePeekFrameDirection = 1;
+                nextFrameIndex = Math.Min(frames.Length - 1, 1);
+            }
+
+            _edgePeekFrameIndex = nextFrameIndex;
+            frameChanged = true;
+            var holdDuration =
+                _edgePeekFrameIndex == 0 || _edgePeekFrameIndex == frames.Length - 1
+                    ? EdgePeekEndpointHold
+                    : EdgePeekFrameInterval;
+            _edgePeekFrameDeadlineTimestamp += ToStopwatchTicks(holdDuration);
+        }
+
+        if (frameChanged)
+        {
+            _nextFrameBlendDuration = TimeSpan.Zero;
+            ShowStableFrame(frames[_edgePeekFrameIndex]);
+        }
     }
 
     private SpriteFrame[] GetEdgeFrames(EdgeDock dock)
@@ -1340,27 +1393,37 @@ public partial class MainWindow : Window
             return false;
         }
 
+        if (_isPetSizePreviewSessionActive)
+        {
+            CommitPetSizePreviewSession(persist: true);
+        }
+
         StopPillowBreathing();
         _automaticTimer.Stop();
         _roamWorkArea = MonitorWorkArea.GetForWindow(this);
+        _roamLogicalLeft = Left;
+        _roamLogicalTop = Top;
         _roamEdge = FindNearestEdge(_roamWorkArea);
         _roamApproachTarget = GetDockedPosition(_roamEdge, _roamWorkArea);
-        _roamApproaching = Math.Abs(Left - _roamApproachTarget.X) > 0.5 ||
-                           Math.Abs(Top - _roamApproachTarget.Y) > 0.5;
-        _roamMode = (RoamMode)_random.Next(Enum.GetValues<RoamMode>().Length);
+        _roamApproaching = Math.Abs(_roamLogicalLeft - _roamApproachTarget.X) > 0.5 ||
+                           Math.Abs(_roamLogicalTop - _roamApproachTarget.Y) > 0.5;
+        _roamMode = RoamMode.Wriggle;
         _roamClockwise = _random.Next(2) == 0;
-        _roamLastElapsed = TimeSpan.Zero;
+        _roamElapsed = TimeSpan.Zero;
         _roamCornerTurnElapsed = TimeSpan.Zero;
+        _roamVisualTravelDistance = 0;
         _roamBoundaryTravelled = 0;
         _roamBoundaryTargetDistance = CalculateRoamPerimeter(
             _roamWorkArea,
             ActualWidth > 0 ? ActualWidth : Width,
             ActualHeight > 0 ? ActualHeight : Height);
         _roamBoundaryStart = _roamApproachTarget;
+        _roamCornerSourceEdge = EdgeDock.None;
         _roamCornerTargetEdge = EdgeDock.None;
         _isRoamCornerTurning = false;
         _roamVisualDirection = RoamVisualDirection.None;
         _roamVisualPhaseStartedAt = TimeSpan.Zero;
+        _roamVisualTransitionEndsAt = TimeSpan.Zero;
         _isRoamBaseOffsetTransitioning = false;
         _roamBaseOffsetTransitionStartedAt = TimeSpan.Zero;
         _roamBaseOffsetTransitionStart = new Point(0, 0);
@@ -1372,9 +1435,9 @@ public partial class MainWindow : Window
         PetCornerScale.ScaleX = 1;
         PetCornerScale.ScaleY = 1;
         _isEdgeRoaming = true;
-        _roamStopwatch.Restart();
+        _roamLastRenderingTimestamp = Stopwatch.GetTimestamp();
         UpdateRoamVisual();
-        _roamTimer.Start();
+        UpdateVisualClockSubscription();
         AppLogger.Info(
             $"自动绕屏开始：{GetRoamModeName(_roamMode)}，" +
             $"方向：{(_roamClockwise ? "顺时针" : "逆时针")}，" +
@@ -1395,9 +1458,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        _roamTimer.Stop();
-        _roamStopwatch.Stop();
         _isEdgeRoaming = false;
+        _roamLastRenderingTimestamp = 0;
         if (restoreIdleFrame)
         {
             BakeCurrentPetVisualTransformIntoDisplayFrame();
@@ -1405,11 +1467,14 @@ public partial class MainWindow : Window
 
         _roamApproaching = false;
         _roamCornerTurnElapsed = TimeSpan.Zero;
+        _roamCornerSourceEdge = EdgeDock.None;
         _roamCornerTargetEdge = EdgeDock.None;
         _isRoamCornerTurning = false;
         _roamVisualEdge = EdgeDock.None;
         _roamVisualDirection = RoamVisualDirection.None;
         _roamVisualPhaseStartedAt = TimeSpan.Zero;
+        _roamVisualTransitionEndsAt = TimeSpan.Zero;
+        _roamVisualTravelDistance = 0;
         _isRoamBaseOffsetTransitioning = false;
         _roamBaseOffsetTransitionStartedAt = TimeSpan.Zero;
         _roamBaseOffsetTransitionStart = new Point(0, 0);
@@ -1445,9 +1510,11 @@ public partial class MainWindow : Window
         {
             RestartAutomaticCountdown();
         }
+
+        UpdateVisualClockSubscription();
     }
 
-    private void RoamTimer_Tick(object? sender, EventArgs e)
+    private void AdvanceEdgeRoaming(long timestamp)
     {
         if (_isClosing || !_isEdgeRoaming || !_edgeRoamingEnabled ||
             _edgeDock != EdgeDock.None)
@@ -1456,63 +1523,192 @@ public partial class MainWindow : Window
             return;
         }
 
-        var elapsed = _roamStopwatch.Elapsed;
-        var delta = elapsed - _roamLastElapsed;
-        _roamLastElapsed = elapsed;
-        if (delta <= TimeSpan.Zero)
+        if (_roamLastRenderingTimestamp == 0)
+        {
+            _roamLastRenderingTimestamp = timestamp;
+            return;
+        }
+
+        var deltaSeconds = Math.Max(
+            0,
+            (timestamp - _roamLastRenderingTimestamp) / (double)Stopwatch.Frequency);
+        _roamLastRenderingTimestamp = timestamp;
+        if (deltaSeconds <= 0)
         {
             return;
         }
 
-        if (delta > TimeSpan.FromMilliseconds(100))
+        // A suspended or blocked UI must resume from the current position instead
+        // of replaying queued movement and visibly teleporting around a corner.
+        if (deltaSeconds > MaximumRoamDeltaSeconds)
         {
-            delta = TimeSpan.FromMilliseconds(100);
-        }
-
-        var distance = GetRoamSpeed(_roamMode) * delta.TotalSeconds;
-        if (_roamApproaching)
-        {
-            MoveTowardRoamBoundary(distance);
-        }
-        else
-        {
+            var visualDelta = TimeSpan.FromSeconds(deltaSeconds);
+            _roamElapsed += visualDelta;
             if (_isRoamCornerTurning)
             {
-                AdvanceRoamCornerTurn(delta);
+                // Keep the pose clock absolute, but deliberately do not turn the
+                // skipped wall-clock interval into boundary movement distance.
+                AdvanceRoamCornerTurn(visualDelta);
             }
-            else
+
+            UpdateRoamVisual();
+            return;
+        }
+
+        var remainingSeconds = deltaSeconds;
+        var roamSpeed = GetRoamSpeed(_roamMode);
+        while (remainingSeconds > 0.000_001 && _isEdgeRoaming)
+        {
+            var substepRemainingSeconds = Math.Min(
+                remainingSeconds,
+                MaximumRoamSubstepSeconds);
+            remainingSeconds -= substepRemainingSeconds;
+            while (substepRemainingSeconds > 0.000_001 && _isEdgeRoaming)
             {
-                AdvanceRoamAlongBoundary(distance);
+                if (ConsumeRoamVisualTransitionPause(ref substepRemainingSeconds))
+                {
+                    continue;
+                }
+
+                if (_isRoamCornerTurning)
+                {
+                    var cornerRemainingSeconds = Math.Max(
+                        0,
+                        (RoamCornerTurnDuration - _roamCornerTurnElapsed).TotalSeconds);
+                    var consumedSeconds = Math.Min(
+                        substepRemainingSeconds,
+                        cornerRemainingSeconds);
+                    if (consumedSeconds <= 0.000_001)
+                    {
+                        // Resolve a duration reached within floating-point tolerance,
+                        // then continue this rendering substep on the new edge.
+                        AdvanceRoamCornerTurn(
+                            RoamCornerTurnDuration - _roamCornerTurnElapsed);
+                        continue;
+                    }
+
+                    var consumed = TimeSpan.FromSeconds(consumedSeconds);
+                    _roamElapsed += consumed;
+                    AdvanceRoamCornerTurn(consumed);
+                    substepRemainingSeconds -= consumedSeconds;
+                    continue;
+                }
+
+                var requestedDistance = roamSpeed * substepRemainingSeconds;
+                var wasApproaching = _roamApproaching;
+                var travelled = _roamApproaching
+                    ? MoveTowardRoamBoundary(requestedDistance)
+                    : AdvanceRoamAlongBoundary(requestedDistance);
+                _roamVisualTravelDistance += travelled;
+
+                var consumedSecondsByMovement = roamSpeed > 0
+                    ? Math.Min(substepRemainingSeconds, travelled / roamSpeed)
+                    : substepRemainingSeconds;
+                if (consumedSecondsByMovement > 0)
+                {
+                    _roamElapsed += TimeSpan.FromSeconds(consumedSecondsByMovement);
+                    substepRemainingSeconds -= consumedSecondsByMovement;
+                }
+
+                var stateChanged = wasApproaching != _roamApproaching ||
+                                   _isRoamCornerTurning ||
+                                   !_isEdgeRoaming;
+                if (stateChanged)
+                {
+                    if (wasApproaching && !_roamApproaching &&
+                        !_isRoamCornerTurning && _isEdgeRoaming)
+                    {
+                        // Resolve the approach -> boundary direction before consuming
+                        // this substep's remainder. UpdateRoamVisual starts the 120ms
+                        // contact transition, which the next loop iteration pauses.
+                        UpdateRoamVisual();
+                    }
+
+                    // The movement reached a boundary, corner, or lap endpoint before
+                    // this substep ended. Consume the remainder in the new state.
+                    continue;
+                }
+
+                // Ordinary movement consumes the complete requested interval. This
+                // fallback also prevents a floating-point no-progress loop.
+                if (substepRemainingSeconds > 0.000_001)
+                {
+                    _roamElapsed += TimeSpan.FromSeconds(substepRemainingSeconds);
+                    substepRemainingSeconds = 0;
+                }
             }
         }
 
         if (_isEdgeRoaming)
         {
+            ApplyLogicalRoamPosition();
+            if (_isRoamCornerTurning)
+            {
+                // Corner frames use their own absolute corner phase below.
+                _roamVisualTravelDistance = 0;
+            }
+
             UpdateRoamVisual();
         }
     }
 
-    private void MoveTowardRoamBoundary(double distance)
+    private bool ConsumeRoamVisualTransitionPause(ref double remainingSeconds)
     {
-        var deltaX = _roamApproachTarget.X - Left;
-        var deltaY = _roamApproachTarget.Y - Top;
+        if (_isRoamCornerTurning || remainingSeconds <= 0.000_001)
+        {
+            return false;
+        }
+
+        var transitionRemainingSeconds =
+            (_roamVisualTransitionEndsAt - _roamElapsed).TotalSeconds;
+        if (transitionRemainingSeconds <= 0.000_001)
+        {
+            return false;
+        }
+
+        // The state clock remains absolute, but the logical window position and
+        // distance-driven pose phase stay fixed until the one-off transition ends.
+        // If this rendering slice crosses the deadline, its unconsumed remainder
+        // immediately continues as ordinary movement in the next loop iteration.
+        var consumedSeconds = Math.Min(remainingSeconds, transitionRemainingSeconds);
+        _roamElapsed += TimeSpan.FromSeconds(consumedSeconds);
+        remainingSeconds -= consumedSeconds;
+        return true;
+    }
+
+    private double MoveTowardRoamBoundary(double distance)
+    {
+        var deltaX = _roamApproachTarget.X - _roamLogicalLeft;
+        var deltaY = _roamApproachTarget.Y - _roamLogicalTop;
         var remaining = Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
         if (remaining <= distance || remaining <= 0.5)
         {
-            Left = _roamApproachTarget.X;
-            Top = _roamApproachTarget.Y;
+            _roamLogicalLeft = _roamApproachTarget.X;
+            _roamLogicalTop = _roamApproachTarget.Y;
             _roamApproaching = false;
             _roamBoundaryStart = _roamApproachTarget;
             _roamBoundaryTravelled = 0;
-            return;
+            return remaining;
         }
 
-        Left = SnapDipToPhysicalPixel(
-            Left + deltaX / remaining * distance,
-            horizontal: true);
-        Top = SnapDipToPhysicalPixel(
-            Top + deltaY / remaining * distance,
-            horizontal: false);
+        _roamLogicalLeft += deltaX / remaining * distance;
+        _roamLogicalTop += deltaY / remaining * distance;
+        return distance;
+    }
+
+    private void ApplyLogicalRoamPosition()
+    {
+        var snappedLeft = SnapDipToPhysicalPixel(_roamLogicalLeft, horizontal: true);
+        var snappedTop = SnapDipToPhysicalPixel(_roamLogicalTop, horizontal: false);
+        if (Left != snappedLeft)
+        {
+            Left = snappedLeft;
+        }
+
+        if (Top != snappedTop)
+        {
+            Top = snappedTop;
+        }
     }
 
     private double AdvanceRoamAlongBoundary(double distance)
@@ -1531,7 +1727,7 @@ public partial class MainWindow : Window
 
         var positiveDirection = IsPositiveRoamDirection(_roamEdge, _roamClockwise);
         var horizontal = _roamEdge is EdgeDock.Top or EdgeDock.Bottom;
-        var current = horizontal ? Left : Top;
+        var current = horizontal ? _roamLogicalLeft : _roamLogicalTop;
         var minimum = horizontal ? _roamWorkArea.Left : _roamWorkArea.Top;
         var maximum = horizontal
             ? _roamWorkArea.Right - ActualWidth
@@ -1544,15 +1740,11 @@ public partial class MainWindow : Window
         {
             if (horizontal)
             {
-                Left = SnapDipToPhysicalPixel(
-                    Left + (positiveDirection ? travelled : -travelled),
-                    horizontal: true);
+                _roamLogicalLeft += positiveDirection ? travelled : -travelled;
             }
             else
             {
-                Top = SnapDipToPhysicalPixel(
-                    Top + (positiveDirection ? travelled : -travelled),
-                    horizontal: false);
+                _roamLogicalTop += positiveDirection ? travelled : -travelled;
             }
 
             _roamBoundaryTravelled += travelled;
@@ -1568,11 +1760,11 @@ public partial class MainWindow : Window
         {
             if (horizontal)
             {
-                Left = positiveDirection ? maximum : minimum;
+                _roamLogicalLeft = positiveDirection ? maximum : minimum;
             }
             else
             {
-                Top = positiveDirection ? maximum : minimum;
+                _roamLogicalTop = positiveDirection ? maximum : minimum;
             }
 
             BeginRoamCornerTurn(GetNextRoamEdge(_roamEdge, _roamClockwise));
@@ -1583,8 +1775,9 @@ public partial class MainWindow : Window
 
     private void CompleteRoamLap()
     {
-        Left = _roamBoundaryStart.X;
-        Top = _roamBoundaryStart.Y;
+        _roamLogicalLeft = _roamBoundaryStart.X;
+        _roamLogicalTop = _roamBoundaryStart.Y;
+        ApplyLogicalRoamPosition();
         _roamBoundaryTravelled = _roamBoundaryTargetDistance;
         StopEdgeRoaming(
             "完整一圈完成",
@@ -1609,6 +1802,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        _roamCornerSourceEdge = _roamEdge;
         _roamCornerTargetEdge = targetEdge;
         _roamCornerTurnElapsed = TimeSpan.Zero;
         _isRoamCornerTurning = true;
@@ -1640,8 +1834,16 @@ public partial class MainWindow : Window
         }
 
         _isRoamCornerTurning = false;
+        _roamCornerSourceEdge = EdgeDock.None;
         _roamCornerTargetEdge = EdgeDock.None;
         _roamCornerTurnElapsed = TimeSpan.Zero;
+        var horizontal = _roamEdge is EdgeDock.Top or EdgeDock.Bottom;
+        _roamVisualDirection = GetRoamVisualDirection(
+            horizontal,
+            IsPositiveRoamDirection(_roamEdge, _roamClockwise));
+        _roamVisualPhaseStartedAt = _roamElapsed;
+        _roamVisualTransitionEndsAt = _roamElapsed;
+        _roamVisualTravelDistance = 0;
         PetCornerScale.ScaleX = 1;
         PetCornerScale.ScaleY = 1;
     }
@@ -1653,36 +1855,33 @@ public partial class MainWindow : Window
             return;
         }
 
-        var elapsed = _roamStopwatch.Elapsed;
+        var elapsed = _roamElapsed;
+        if (_roamMode == RoamMode.Wriggle && _isRoamCornerTurning)
+        {
+            UpdateWriggleCornerVisual(elapsed);
+            return;
+        }
+
         var horizontal = _roamApproaching
-            ? Math.Abs(_roamApproachTarget.X - Left) >=
-              Math.Abs(_roamApproachTarget.Y - Top)
+            ? Math.Abs(_roamApproachTarget.X - _roamLogicalLeft) >=
+              Math.Abs(_roamApproachTarget.Y - _roamLogicalTop)
             : _roamEdge is EdgeDock.Top or EdgeDock.Bottom;
         var movingPositive = _roamApproaching
             ? horizontal
-                ? _roamApproachTarget.X >= Left
-                : _roamApproachTarget.Y >= Top
+                ? _roamApproachTarget.X >= _roamLogicalLeft
+                : _roamApproachTarget.Y >= _roamLogicalTop
             : IsPositiveRoamDirection(_roamEdge, _roamClockwise);
-        var direction = horizontal
-            ? RoamVisualDirection.Horizontal
-            : movingPositive
-                ? RoamVisualDirection.VerticalDown
-                : RoamVisualDirection.VerticalUp;
+        var direction = GetRoamVisualDirection(horizontal, movingPositive);
         var previousDirection = _roamVisualDirection;
         var directionChanged = direction != previousDirection;
         if (directionChanged)
         {
-            // Every new edge begins at its contact pose.  Reusing the global
-            // stopwatch phase used to jump from an arbitrary crawl frame to an
-            // unrelated climbing frame at the exact middle of a corner.
             _roamVisualDirection = direction;
-            _roamVisualPhaseStartedAt = elapsed + RoamVisualTransitionDuration;
+            _roamVisualPhaseStartedAt = elapsed;
+            _roamVisualTransitionEndsAt = elapsed + RoamVisualTransitionDuration;
+            _roamVisualTravelDistance = 0;
         }
 
-        var phaseElapsed = elapsed - _roamVisualPhaseStartedAt;
-        var frameIndex = (int)(Math.Max(0, phaseElapsed.TotalMilliseconds) /
-                               RoamSpriteFrameInterval.TotalMilliseconds) %
-                         RoamFrameCount;
         var modeIndex = (int)_roamMode;
         var frames = direction switch
         {
@@ -1690,11 +1889,22 @@ public partial class MainWindow : Window
             RoamVisualDirection.VerticalDown => _roamVerticalDownFrames[modeIndex],
             _ => _roamVerticalUpFrames[modeIndex]
         };
+        var transitioning = elapsed < _roamVisualTransitionEndsAt;
+        if (transitioning)
+        {
+            _roamVisualTravelDistance = 0;
+        }
+
+        var frameIndex = transitioning
+            ? 0
+            : (int)(_roamVisualTravelDistance / WriggleFrameTravelDistance) %
+              frames.Length;
 
         var targetFacingScaleX = horizontal
             // 横向原画朝右；朝左移动时镜像，始终让脸朝向前进方向。
             ? movingPositive ? 1 : -1
-            : _roamEdge == EdgeDock.Left ? -1 : 1;
+            // 竖边原画朝右；左边缘保持原向，右边缘镜像，始终面向屏幕内部。
+            : _roamEdge == EdgeDock.Left ? 1 : -1;
         if (directionChanged &&
             Math.Abs(PetFacingScale.ScaleX - targetFacingScaleX) > 0.001)
         {
@@ -1717,7 +1927,10 @@ public partial class MainWindow : Window
                 : _roamEdge;
         if (visualEdge != _roamVisualEdge)
         {
-            AnimateRoamBaseOffset(visualEdge, elapsed);
+            var transitionStartedAt = _isRoamCornerTurning
+                ? elapsed - _roamCornerTurnElapsed
+                : elapsed;
+            AnimateRoamBaseOffset(visualEdge, transitionStartedAt);
             _roamVisualEdge = visualEdge;
         }
         UpdateRoamBaseOffsetTransition(elapsed);
@@ -1728,8 +1941,81 @@ public partial class MainWindow : Window
         var nextFrame = frames[frameIndex];
         _nextFrameBlendDuration = directionChanged
             ? RoamVisualTransitionDuration
-            : RoamFrameBlendDuration;
+            : TimeSpan.Zero;
         ShowStableFrame(nextFrame);
+    }
+
+    private void UpdateWriggleCornerVisual(TimeSpan elapsed)
+    {
+        var targetEdge = _roamCornerTargetEdge;
+        if (targetEdge == EdgeDock.None)
+        {
+            return;
+        }
+
+        var progress = Math.Clamp(
+            _roamCornerTurnElapsed.TotalMilliseconds /
+            RoamCornerTurnDuration.TotalMilliseconds,
+            0,
+            0.999_999);
+        var targetHorizontal = targetEdge is EdgeDock.Top or EdgeDock.Bottom;
+        var frameIndex = Math.Min(
+            _roamWriggleCornerFrames.Length - 1,
+            (int)(progress * _roamWriggleCornerFrames.Length));
+        // The authored sequence is prone-horizontal -> upright-vertical.
+        // Leaving a vertical edge reuses it in reverse.
+        if (targetHorizontal)
+        {
+            frameIndex = _roamWriggleCornerFrames.Length - 1 - frameIndex;
+        }
+
+        // Every authored corner pose faces right, so the two corner orientations
+        // that change mirror direction need one discrete hand-off. Frame 43 has
+        // the highest horizontal Alpha-mask symmetry at the final 190x242 size;
+        // switching only there is less visible than an unconditional midpoint flip
+        // and avoids scale-through-zero, fading, or overlapping silhouettes.
+        var switchFrameIndex = Math.Clamp(
+            WriggleCornerFacingSwitchFrameNumber - 1,
+            0,
+            _roamWriggleCornerFrames.Length - 1);
+        var useTargetFacing = targetHorizontal
+            ? frameIndex <= switchFrameIndex
+            : frameIndex >= switchFrameIndex;
+        var facingEdge = useTargetFacing || _roamCornerSourceEdge == EdgeDock.None
+            ? targetEdge
+            : _roamCornerSourceEdge;
+        var facingHorizontal = facingEdge is EdgeDock.Top or EdgeDock.Bottom;
+        var facingMovingPositive = IsPositiveRoamDirection(facingEdge, _roamClockwise);
+        PetFacingScale.ScaleX = facingHorizontal
+            ? facingMovingPositive ? 1 : -1
+            : facingEdge == EdgeDock.Left ? 1 : -1;
+        PetFacingScale.ScaleY = 1;
+
+        if (targetEdge != _roamVisualEdge)
+        {
+            AnimateRoamBaseOffset(
+                targetEdge,
+                elapsed - _roamCornerTurnElapsed);
+            _roamVisualEdge = targetEdge;
+        }
+
+        UpdateRoamBaseOffsetTransition(elapsed);
+        PetRoamOffset.X = 0;
+        PetRoamOffset.Y = 0;
+
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        ShowStableFrame(_roamWriggleCornerFrames[frameIndex]);
+    }
+
+    private static RoamVisualDirection GetRoamVisualDirection(
+        bool horizontal,
+        bool movingPositive)
+    {
+        return horizontal
+            ? RoamVisualDirection.Horizontal
+            : movingPositive
+                ? RoamVisualDirection.VerticalDown
+                : RoamVisualDirection.VerticalUp;
     }
 
     private void AnimateRoamBaseOffset(EdgeDock edge, TimeSpan elapsed)
@@ -1858,46 +2144,37 @@ public partial class MainWindow : Window
 
     private static double GetRoamSpeed(RoamMode mode)
     {
-        return mode switch
-        {
-            RoamMode.Wriggle => 94,
-            RoamMode.Crawl => 126,
-            RoamMode.Hop => 164,
-            _ => 126
-        };
+        return mode == RoamMode.Wriggle
+            ? 60
+            : throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
+    }
+
+    private static int GetRoamFrameCount(RoamMode mode)
+    {
+        return mode == RoamMode.Wriggle
+            ? WriggleRoamFrameCount
+            : throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
     }
 
     private static double GetTopRoamOffset(RoamMode mode)
     {
-        return mode switch
-        {
-            RoamMode.Wriggle => 118,
-            RoamMode.Crawl => 97,
-            RoamMode.Hop => 56,
-            _ => 0
-        };
+        return mode == RoamMode.Wriggle
+            ? 118
+            : throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
     }
 
     private static string GetRoamAssetName(RoamMode mode)
     {
-        return mode switch
-        {
-            RoamMode.Wriggle => "wriggle",
-            RoamMode.Crawl => "crawl",
-            RoamMode.Hop => "hop",
-            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
-        };
+        return mode == RoamMode.Wriggle
+            ? "wriggle"
+            : throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
     }
 
     private static string GetRoamModeName(RoamMode mode)
     {
-        return mode switch
-        {
-            RoamMode.Wriggle => "趴着蠕动",
-            RoamMode.Crawl => "爬行",
-            RoamMode.Hop => "走跳",
-            _ => "未知"
-        };
+        return mode == RoamMode.Wriggle
+            ? "趴着蠕动"
+            : "未知";
     }
 
     private void ShowCuteReaction()
@@ -1940,7 +2217,8 @@ public partial class MainWindow : Window
             SetBubbleMode(BubbleMode.Cute);
         }
 
-        _frameTimer.Stop();
+        _nextFrameBlendDuration = RoamVisualTransitionDuration;
+        _nextFrameMinimumHold = RoamVisualTransitionDuration;
         ShowActiveClipFrame(0);
         return true;
     }
@@ -2116,9 +2394,8 @@ public partial class MainWindow : Window
         PetScale.ScaleY = 1;
     }
 
-    private void FrameTimer_Tick(object? sender, EventArgs e)
+    private void AdvanceActiveClip(long timestamp)
     {
-        _frameTimer.Stop();
         if (_bubbleMode == BubbleMode.Todo &&
             !ReferenceEquals(_activeClip, _todoEnterClip))
         {
@@ -2132,28 +2409,60 @@ public partial class MainWindow : Window
             return;
         }
 
-        var nextFrameIndex = _activeFrameIndex + 1;
-        if (nextFrameIndex < clip.Frames.Length)
+        var resolvedFrameIndex = _activeFrameIndex;
+        while (timestamp >= _activeFrameDeadlineTimestamp)
         {
-            ShowActiveClipFrame(nextFrameIndex);
-            return;
+            var nextFrameIndex = resolvedFrameIndex + 1;
+            if (nextFrameIndex >= clip.Frames.Length)
+            {
+                CompleteActiveClip(clip);
+                return;
+            }
+
+            resolvedFrameIndex = nextFrameIndex;
+            _activeFrameDeadlineTimestamp +=
+                ToStopwatchTicks(clip.Frames[resolvedFrameIndex].HoldDuration);
         }
 
+        if (resolvedFrameIndex != _activeFrameIndex)
+        {
+            if (resolvedFrameIndex - _activeFrameIndex > 1)
+            {
+                _nextFrameBlendDuration = TimeSpan.Zero;
+            }
+
+            _activeFrameIndex = resolvedFrameIndex;
+            ShowStableFrame(clip.Frames[resolvedFrameIndex].Image);
+        }
+    }
+
+    private void CompleteActiveClip(AnimationClip clip)
+    {
         ShowStableFrame(clip.Frames[^1].Image);
         if (!ReferenceEquals(_activeClip, clip))
         {
             return;
         }
 
+        var elapsedMilliseconds = _activeClipStartedTimestamp > 0
+            ? Math.Max(
+                0,
+                (Stopwatch.GetTimestamp() - _activeClipStartedTimestamp) * 1000d /
+                Stopwatch.Frequency)
+            : 0;
         _activeClip = null;
         _activeFrameIndex = -1;
-        AppLogger.Info($"动作完成：{clip.ActionName}");
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        AppLogger.Info(
+            $"动作完成：{clip.ActionName}，实际耗时 {elapsedMilliseconds:F1} ms");
         ScheduleUnusedSpritePageCollection($"动作完成/{clip.ActionName}");
         if (_bubbleMode == BubbleMode.Cute)
         {
             SetBubbleMode(BubbleMode.None);
         }
         RestartAutomaticCountdown();
+        UpdateVisualClockSubscription();
     }
 
     private void ShowActiveClipFrame(int frameIndex)
@@ -2179,8 +2488,10 @@ public partial class MainWindow : Window
         }
 
         _nextFrameMinimumHold = TimeSpan.Zero;
-        _frameTimer.Interval = holdDuration;
-        _frameTimer.Start();
+        _activeClipStartedTimestamp = Stopwatch.GetTimestamp();
+        _activeFrameDeadlineTimestamp = _activeClipStartedTimestamp +
+                                        ToStopwatchTicks(holdDuration);
+        UpdateVisualClockSubscription();
     }
 
     private void ShowStableFrame(SpriteFrame frame)
@@ -2220,8 +2531,7 @@ public partial class MainWindow : Window
             _activeFrameBlendDuration = requestedBlendDuration;
             _frameBlendStartedTimestamp = Stopwatch.GetTimestamp();
             _isFrameBlending = true;
-            CompositionTarget.Rendering -= FrameBlend_Rendering;
-            CompositionTarget.Rendering += FrameBlend_Rendering;
+            UpdateVisualClockSubscription();
         }
         else
         {
@@ -2250,22 +2560,105 @@ public partial class MainWindow : Window
             return;
         }
 
-        var stride = checked(DisplayPixelWidth * 4);
-        var sourceBounds = new Int32Rect(
-            frame.X + visibleLeft - frame.DestinationX,
-            frame.Y + visibleTop - frame.DestinationY,
-            visibleWidth,
-            visibleHeight);
-        _spritePageBuffer.CopyPixels(
-            sourceBounds,
-            destination,
-            stride,
-            checked(visibleTop * stride + visibleLeft * 4));
+        if (_loadedSpritePageStride <= 0)
+        {
+            throw new InvalidOperationException("精灵分页尚未载入像素缓冲区。");
+        }
+
+        var destinationStride = checked(DisplayPixelWidth * 4);
+        var sourceX = frame.X + visibleLeft - frame.DestinationX;
+        var sourceY = frame.Y + visibleTop - frame.DestinationY;
+        var rowBytes = checked(visibleWidth * 4);
+        for (var row = 0; row < visibleHeight; row++)
+        {
+            Buffer.BlockCopy(
+                _spritePagePixels,
+                checked((sourceY + row) * _loadedSpritePageStride + sourceX * 4),
+                destination,
+                checked((visibleTop + row) * destinationStride + visibleLeft * 4),
+                rowBytes);
+        }
     }
 
-    private void FrameBlend_Rendering(object? sender, EventArgs e)
+    private void VisualClock_Rendering(object? sender, EventArgs e)
     {
-        UpdateFrameBlend(Stopwatch.GetTimestamp(), force: false);
+        if (_isClosing)
+        {
+            StopVisualClock();
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        if (_isPetSizeTransitioning)
+        {
+            AdvancePetSizeTransition(timestamp);
+            if (_petSizeTodoPositionNeedsUpdate && _todoWindow.IsVisible)
+            {
+                _petSizeTodoPositionNeedsUpdate = false;
+                UpdateTodoWindowPosition();
+            }
+        }
+
+        if (_activeClip is not null)
+        {
+            AdvanceActiveClip(timestamp);
+        }
+
+        if (_edgeDock != EdgeDock.None)
+        {
+            AdvanceEdgePeek(timestamp);
+        }
+
+        if (_isEdgeRoaming)
+        {
+            AdvanceEdgeRoaming(timestamp);
+        }
+
+        UpdateFrameBlend(timestamp, force: false);
+        UpdateVisualClockSubscription();
+    }
+
+    private void UpdateVisualClockSubscription()
+    {
+        var shouldRun = !_isClosing &&
+                        (_isPetSizeTransitioning ||
+                         _activeClip is not null ||
+                         _edgeDock != EdgeDock.None ||
+                         _isEdgeRoaming ||
+                         _isFrameBlending);
+        if (shouldRun == _isVisualClockSubscribed)
+        {
+            return;
+        }
+
+        if (shouldRun)
+        {
+            CompositionTarget.Rendering += VisualClock_Rendering;
+        }
+        else
+        {
+            CompositionTarget.Rendering -= VisualClock_Rendering;
+        }
+
+        _isVisualClockSubscribed = shouldRun;
+    }
+
+    private void StopVisualClock()
+    {
+        if (!_isVisualClockSubscribed)
+        {
+            return;
+        }
+
+        CompositionTarget.Rendering -= VisualClock_Rendering;
+        _isVisualClockSubscribed = false;
+    }
+
+    private static long ToStopwatchTicks(TimeSpan duration)
+    {
+        return Math.Max(
+            1,
+            (long)Math.Round(duration.TotalSeconds * Stopwatch.Frequency));
     }
 
     private void UpdateFrameBlend(long timestamp, bool force)
@@ -2321,14 +2714,31 @@ public partial class MainWindow : Window
     private Matrix GetPetVisualMatrix()
     {
         var transform = PetVisual.RenderTransform.Value;
-        var origin = new Point(
-            PetVisual.RenderTransformOrigin.X * DisplayPixelWidth,
-            PetVisual.RenderTransformOrigin.Y * DisplayPixelHeight);
-        var visualMatrix = Matrix.Identity;
-        visualMatrix.Translate(-origin.X, -origin.Y);
-        visualMatrix.Append(transform);
-        visualMatrix.Translate(origin.X, origin.Y);
-        return visualMatrix;
+        var logicalOrigin = new Point(
+            PetVisual.RenderTransformOrigin.X * PetWidth,
+            PetVisual.RenderTransformOrigin.Y * PetHeight);
+        var logicalMatrix = Matrix.Identity;
+        logicalMatrix.Translate(-logicalOrigin.X, -logicalOrigin.Y);
+        logicalMatrix.Append(transform);
+        logicalMatrix.Translate(logicalOrigin.X, logicalOrigin.Y);
+
+        var pixelToLogical = new Matrix(
+            PetWidth / DisplayPixelWidth,
+            0,
+            0,
+            PetHeight / DisplayPixelHeight,
+            0,
+            0);
+        var logicalToPixel = new Matrix(
+            DisplayPixelWidth / PetWidth,
+            0,
+            0,
+            DisplayPixelHeight / PetHeight,
+            0,
+            0);
+        pixelToLogical.Append(logicalMatrix);
+        pixelToLogical.Append(logicalToPixel);
+        return pixelToLogical;
     }
 
     private void RebaseDisplayFrameForPetTransformChange(
@@ -2545,49 +2955,149 @@ public partial class MainWindow : Window
 
         _isFrameBlending = false;
         _frameBlendStartedTimestamp = 0;
-        CompositionTarget.Rendering -= FrameBlend_Rendering;
+        UpdateVisualClockSubscription();
     }
 
     private void LoadSpritePageIntoBuffer(string pageName, SpriteAtlasPage page)
     {
         var loadStopwatch = Stopwatch.StartNew();
-        var bitmap = LoadPackagedBitmap(page.ResourcePath);
-        if (bitmap.PixelWidth != page.Width || bitmap.PixelHeight != page.Height)
-        {
-            throw new InvalidOperationException(
-                $"精灵图集分页尺寸不匹配：{pageName}");
-        }
-
-        BitmapSource premultipliedBitmap = bitmap;
-        if (bitmap.Format != PixelFormats.Pbgra32)
-        {
-            premultipliedBitmap = new FormatConvertedBitmap(
-                bitmap,
-                PixelFormats.Pbgra32,
-                null,
-                0);
-            premultipliedBitmap.Freeze();
-        }
-
+        var resource = Application.GetResourceStream(CreatePackUri(page.ResourcePath))
+            ?? throw new InvalidOperationException(
+                $"找不到精灵图集分页：{page.ResourcePath}");
         var stride = checked(page.Width * 4);
-        var byteCount = checked(stride * page.Height);
-        var pixels = ArrayPool<byte>.Shared.Rent(byteCount);
-        try
+        var readStartedAt = Stopwatch.GetTimestamp();
+        TimeSpan readElapsed;
+        using (resource.Stream)
         {
-            var pageBounds = new Int32Rect(0, 0, page.Width, page.Height);
-            premultipliedBitmap.CopyPixels(pageBounds, pixels, stride, 0);
-            _spritePageBuffer.WritePixels(pageBounds, pixels, stride, 0);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(pixels, clearArray: false);
+            resource.Stream.ReadExactly(
+                _spritePageCompressedBytes.AsSpan(0, page.CompressedByteCount));
+            if (resource.Stream.ReadByte() != -1)
+            {
+                throw new InvalidDataException("LZ4分页压缩尺寸与清单不一致。");
+            }
+
+            readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
+            DecodeLz4Block(
+                _spritePageCompressedBytes.AsSpan(0, page.CompressedByteCount),
+                _spritePagePixels,
+                page.UncompressedByteCount);
         }
 
         _loadedSpritePageName = pageName;
+        _loadedSpritePageStride = stride;
         loadStopwatch.Stop();
         AppLogger.Info(
             $"精灵分页已写入复用缓冲区：{pageName}，" +
-            $"{page.Width}x{page.Height}，{loadStopwatch.Elapsed.TotalMilliseconds:F1} ms");
+            $"{page.Width}x{page.Height}，{loadStopwatch.Elapsed.TotalMilliseconds:F1} ms" +
+            $"（读取 {readElapsed.TotalMilliseconds:F1} ms，" +
+            $"解压 {loadStopwatch.Elapsed.TotalMilliseconds - readElapsed.TotalMilliseconds:F1} ms）");
+    }
+
+    private static void DecodeLz4Block(
+        ReadOnlySpan<byte> input,
+        byte[] output,
+        int expectedLength)
+    {
+        if (expectedLength < 0 || expectedLength > output.Length)
+        {
+            throw new InvalidDataException("LZ4分页输出尺寸超出复用缓冲区。");
+        }
+
+        var inputIndex = 0;
+        var outputIndex = 0;
+        while (outputIndex < expectedLength)
+        {
+            var token = ReadRequiredLz4Byte(input, ref inputIndex);
+            var literalLength = ReadLz4Length(input, ref inputIndex, token >> 4);
+            if (literalLength > expectedLength - outputIndex ||
+                literalLength > input.Length - inputIndex)
+            {
+                throw new InvalidDataException("LZ4分页字面量越过输出边界。");
+            }
+
+            input.Slice(inputIndex, literalLength).CopyTo(
+                output.AsSpan(outputIndex, literalLength));
+            inputIndex += literalLength;
+            outputIndex += literalLength;
+            if (outputIndex == expectedLength)
+            {
+                if (inputIndex != input.Length)
+                {
+                    throw new InvalidDataException("LZ4分页包含多余压缩数据。");
+                }
+
+                return;
+            }
+
+            var offsetLow = ReadRequiredLz4Byte(input, ref inputIndex);
+            var offsetHigh = ReadRequiredLz4Byte(input, ref inputIndex);
+            var matchOffset = offsetLow | (offsetHigh << 8);
+            if (matchOffset <= 0 || matchOffset > outputIndex)
+            {
+                throw new InvalidDataException("LZ4分页回溯偏移无效。");
+            }
+
+            var matchLength = checked(
+                ReadLz4Length(input, ref inputIndex, token & 0x0f) + 4);
+            if (matchLength > expectedLength - outputIndex)
+            {
+                throw new InvalidDataException("LZ4分页匹配段越过输出边界。");
+            }
+
+            var matchDestination = outputIndex;
+            var copiedMatchLength = Math.Min(matchOffset, matchLength);
+            output.AsSpan(outputIndex - matchOffset, copiedMatchLength).CopyTo(
+                output.AsSpan(matchDestination, copiedMatchLength));
+            while (copiedMatchLength < matchLength)
+            {
+                var copyLength = Math.Min(
+                    copiedMatchLength,
+                    matchLength - copiedMatchLength);
+                output.AsSpan(matchDestination, copyLength).CopyTo(
+                    output.AsSpan(
+                        matchDestination + copiedMatchLength,
+                        copyLength));
+                copiedMatchLength += copyLength;
+            }
+
+            outputIndex += matchLength;
+        }
+
+        throw new InvalidDataException("LZ4分页未以完整字面量序列结束。");
+    }
+
+    private static int ReadLz4Length(
+        ReadOnlySpan<byte> input,
+        ref int inputIndex,
+        int initialLength)
+    {
+        var length = initialLength;
+        if (initialLength != 15)
+        {
+            return length;
+        }
+
+        int extension;
+        do
+        {
+            extension = ReadRequiredLz4Byte(input, ref inputIndex);
+            length = checked(length + extension);
+        }
+        while (extension == byte.MaxValue);
+
+        return length;
+    }
+
+    private static int ReadRequiredLz4Byte(
+        ReadOnlySpan<byte> input,
+        ref int inputIndex)
+    {
+        if ((uint)inputIndex >= (uint)input.Length)
+        {
+            throw new EndOfStreamException("LZ4分页数据提前结束。");
+        }
+
+        return input[inputIndex++];
     }
 
     private void SetBubbleMode(BubbleMode mode)
@@ -2639,16 +3149,16 @@ public partial class MainWindow : Window
 
         if (_activeClip is { } activeClip)
         {
-            _frameTimer.Stop();
             _activeClip = null;
             _activeFrameIndex = -1;
+            _activeFrameDeadlineTimestamp = 0;
             AppLogger.Info(
                 $"动作中止：{activeClip.ActionName}，原因：打开待办");
         }
         else
         {
-            _frameTimer.Stop();
             _activeFrameIndex = -1;
+            _activeFrameDeadlineTimestamp = 0;
         }
 
         ExitEdgePeek(
@@ -2660,7 +3170,6 @@ public partial class MainWindow : Window
             scheduleNextRoam: true,
             restoreIdleFrame: false);
         ResetPetVisualTransforms();
-        _frameTimer.Stop();
         _activeClip = _todoEnterClip;
         _activeFrameIndex = enterStartIndex - 1;
         _nextFrameBlendDuration = TodoStateBlendDuration;
@@ -2691,7 +3200,7 @@ public partial class MainWindow : Window
             return Math.Clamp(wakeFrameNumber, 1, WakeFrameCount);
         }
 
-        // 普通动作、跑步、绕屏和边缘探头都已是离开枕头的姿势；从 wake14
+        // 普通动作、绕屏和边缘探头都已是离开枕头的姿势；从 wake14
         // 接入思考动作可避免右键时先闪回趴枕头状态。
         return WakeFrameCount;
     }
@@ -2722,7 +3231,6 @@ public partial class MainWindow : Window
             restartAutomaticCountdown: false,
             restoreIdleFrame: false);
         ResetPetVisualTransforms();
-        _frameTimer.Stop();
         _activeClip = _todoExitClip;
         _activeFrameIndex = exitStartIndex - 1;
         _nextFrameBlendDuration = TodoStateBlendDuration;
@@ -2733,10 +3241,11 @@ public partial class MainWindow : Window
 
     private void ShowStableTodoFrame()
     {
-        _frameTimer.Stop();
         _activeClip = null;
         _activeFrameIndex = -1;
+        _activeFrameDeadlineTimestamp = 0;
         ShowStableFrame(_todoFrame);
+        UpdateVisualClockSubscription();
     }
 
     private void ResetPetVisualTransforms()
@@ -2770,6 +3279,7 @@ public partial class MainWindow : Window
         CuteBubble.Visibility = Visibility.Collapsed;
         if (_todoWindow.IsVisible)
         {
+            var wasDeactivateSuppressed = _suppressTodoWindowDeactivate;
             _suppressTodoWindowDeactivate = true;
             try
             {
@@ -2777,7 +3287,7 @@ public partial class MainWindow : Window
             }
             finally
             {
-                _suppressTodoWindowDeactivate = false;
+                _suppressTodoWindowDeactivate = wasDeactivateSuppressed;
             }
         }
     }
@@ -2822,7 +3332,31 @@ public partial class MainWindow : Window
 
     private void TodoWindow_PetSizeScaleChanged(double scale)
     {
-        ApplyPetSizeScale(scale, persist: true, preservePosition: true);
+        StartPetSizeScaleTransition(scale);
+    }
+
+    private void TodoWindow_PetSizeAdjustmentStarted()
+    {
+        _isPetSizeAdjustmentActive = true;
+        _petSizeCommitPending = false;
+        _petSizePersistTimer.Stop();
+    }
+
+    private void TodoWindow_PetSizeAdjustmentCompleted()
+    {
+        _isPetSizeAdjustmentActive = false;
+        var shouldScheduleCommit =
+            _petSizeCommitPending ||
+            _isPetSizePreviewSessionActive ||
+            _petSizeSettingsDirty;
+        if (!shouldScheduleCommit)
+        {
+            return;
+        }
+
+        _petSizeCommitPending = false;
+        _petSizePersistTimer.Stop();
+        _petSizePersistTimer.Start();
     }
 
     private static double NormalizePetSizeScale(double scale)
@@ -2833,59 +3367,318 @@ public partial class MainWindow : Window
         }
 
         var clamped = Math.Clamp(scale, MinimumPetSizeScale, MaximumPetSizeScale);
-        return Math.Round(clamped * 20) / 20;
+        return Math.Round(clamped, 3, MidpointRounding.AwayFromZero);
     }
 
-    private void ApplyPetSizeScale(
-        double scale,
-        bool persist,
-        bool preservePosition)
+    private void StartPetSizeScaleTransition(double scale)
     {
-        var normalizedScale = NormalizePetSizeScale(scale);
-        var previousWidth = double.IsFinite(Width) && Width > 0 ? Width : ActualWidth;
-        var previousHeight = double.IsFinite(Height) && Height > 0 ? Height : ActualHeight;
-        var previousLeft = Left;
-        var previousTop = Top;
-        Rect workArea = Rect.Empty;
-        var preserveLeftEdge = false;
-        var preserveRightEdge = false;
-        var preserveTopEdge = false;
-        var preserveBottomEdge = false;
-        if (preservePosition && IsLoaded)
+        StartPetSizeScaleTransitionAt(scale, Stopwatch.GetTimestamp());
+    }
+
+    private void StartPetSizeScaleTransitionAt(double scale, long timestamp)
+    {
+        if (_isClosing)
         {
-            workArea = MonitorWorkArea.GetForWindow(this);
-            preserveLeftEdge = Math.Abs(previousLeft - workArea.Left) <= 1;
-            preserveRightEdge = Math.Abs(
-                previousLeft + previousWidth - workArea.Right) <= 1;
-            preserveTopEdge = Math.Abs(previousTop - workArea.Top) <= 1;
-            preserveBottomEdge = Math.Abs(
-                previousTop + previousHeight - workArea.Bottom) <= 1;
+            return;
         }
 
-        var displayedWidth = PetWidth * normalizedScale;
-        var displayedHeight = PetHeight * normalizedScale;
-        _petSizeScale = normalizedScale;
-        Width = displayedWidth;
-        Height = displayedHeight;
-        PetColumn.Width = new GridLength(displayedWidth);
-        PetHost.Width = displayedWidth;
-        PetHost.Height = displayedHeight;
-        PetSizeViewbox.Width = displayedWidth;
-        PetSizeViewbox.Height = displayedHeight;
-        _todoWindow.SetPetSizeScale(normalizedScale);
-
-        if (preservePosition && IsLoaded && workArea != Rect.Empty)
+        var normalizedScale = NormalizePetSizeScale(scale);
+        var currentMotion = GetPetSizeMotionStateAt(timestamp);
+        var currentScale = currentMotion.Scale;
+        var currentVelocity = currentMotion.Velocity;
+        if (!_isPetSizePreviewSessionActive &&
+            Math.Abs(normalizedScale - currentScale) < 0.0005)
         {
-            var desiredLeft = preserveLeftEdge
+            _todoWindow.SetPetSizeScale(normalizedScale);
+            return;
+        }
+
+        if (!_isPetSizePreviewSessionActive)
+        {
+            _petSizePreviewAnchor = CapturePetSizeAnchor(preservePosition: true);
+            _petSizeTodoChildOnLeft = _todoWindow.IsVisible
+                ? _todoWindow.Left < Left + Width / 2
+                : null;
+            _petSizePreviewBaseScale = currentScale;
+            _isPetSizePreviewSessionActive = true;
+            _petSizeEnvelopePrepared = false;
+            PreparePetSizePreviewEnvelope();
+        }
+
+        ApplyPetSizePreviewScale(currentScale);
+        var previousTargetScale = _petSizeTargetScale;
+        _petSizeTransitionStartScale = currentScale;
+        _petSizeTargetScale = normalizedScale;
+        var distanceToTarget = _petSizeTargetScale - _petSizeTransitionStartScale;
+        var targetDelta = _petSizeTargetScale - previousTargetScale;
+        var targetContinuesWithVelocity = Math.Abs(targetDelta) < 0.0005 ||
+                                          targetDelta * currentVelocity > 0;
+        if (distanceToTarget * currentVelocity <= 0 ||
+            !targetContinuesWithVelocity)
+        {
+            currentVelocity = 0;
+        }
+        else
+        {
+            var maximumNoOvershootVelocity =
+                PetSizeSpringAngularFrequency * Math.Abs(distanceToTarget);
+            currentVelocity = Math.CopySign(
+                Math.Min(Math.Abs(currentVelocity), maximumNoOvershootVelocity),
+                currentVelocity);
+        }
+
+        _petSizeTransitionStartVelocity = Math.Clamp(
+            currentVelocity,
+            -MaximumPetSizeVelocity,
+            MaximumPetSizeVelocity);
+        _petSizeVelocity = _petSizeTransitionStartVelocity;
+        _petSizeTransitionStartedTimestamp = timestamp;
+        _isPetSizeTransitioning =
+            Math.Abs(distanceToTarget) >= 0.0005 ||
+            Math.Abs(_petSizeTransitionStartVelocity) >= 0.005;
+        _petSizeSettingsDirty =
+            Math.Abs(_petSizeTargetScale - _persistedPetSizeScale) >= 0.0005;
+        if (!_isPetSizeTransitioning)
+        {
+            ApplyPetSizePreviewScale(_petSizeTargetScale);
+        }
+
+        _petSizePersistTimer.Stop();
+        if (!_isPetSizeAdjustmentActive)
+        {
+            _petSizePersistTimer.Start();
+        }
+        UpdateVisualClockSubscription();
+    }
+
+    private double GetPetSizeScaleAt(long timestamp)
+    {
+        return GetPetSizeMotionStateAt(timestamp).Scale;
+    }
+
+    private PetSizeMotionState GetPetSizeMotionStateAt(long timestamp)
+    {
+        if (!_isPetSizeTransitioning)
+        {
+            return new PetSizeMotionState(_petSizeScale, 0);
+        }
+
+        var elapsedTicks = Math.Max(0, timestamp - _petSizeTransitionStartedTimestamp);
+        var durationTicks = ToStopwatchTicks(PetSizeTransitionDuration);
+        if (elapsedTicks >= durationTicks)
+        {
+            return new PetSizeMotionState(_petSizeTargetScale, 0);
+        }
+
+        var elapsedSeconds = elapsedTicks / (double)Stopwatch.Frequency;
+        var initialOffset = _petSizeTransitionStartScale - _petSizeTargetScale;
+        var dampingTerm = _petSizeTransitionStartVelocity +
+                          PetSizeSpringAngularFrequency * initialOffset;
+        var decay = Math.Exp(-PetSizeSpringAngularFrequency * elapsedSeconds);
+        var scale = _petSizeTargetScale +
+                    (initialOffset + dampingTerm * elapsedSeconds) * decay;
+        var velocity = (_petSizeTransitionStartVelocity -
+                        PetSizeSpringAngularFrequency * dampingTerm * elapsedSeconds) * decay;
+        return new PetSizeMotionState(
+            Math.Clamp(scale, MinimumPetSizeScale, MaximumPetSizeScale),
+            velocity);
+    }
+
+    private void AdvancePetSizeTransition(long timestamp)
+    {
+        if (!_isPetSizeTransitioning)
+        {
+            return;
+        }
+
+        PreparePetSizePreviewEnvelope();
+        var motion = GetPetSizeMotionStateAt(timestamp);
+        _petSizeVelocity = motion.Velocity;
+        ApplyPetSizePreviewScale(motion.Scale);
+        if (timestamp - _petSizeTransitionStartedTimestamp >=
+                ToStopwatchTicks(PetSizeTransitionDuration) ||
+            (Math.Abs(motion.Scale - _petSizeTargetScale) < 0.0005 &&
+             Math.Abs(motion.Velocity) < 0.005))
+        {
+            _isPetSizeTransitioning = false;
+            _petSizeVelocity = 0;
+            ApplyPetSizePreviewScale(_petSizeTargetScale);
+        }
+    }
+
+    private void PreparePetSizePreviewEnvelope()
+    {
+        if (_petSizeEnvelopePrepared || !_isPetSizePreviewSessionActive)
+        {
+            return;
+        }
+
+        ConfigurePetSizeViewboxAnchor(_petSizePreviewAnchor);
+        PetSizeViewbox.Width = PetWidth * _petSizePreviewBaseScale;
+        PetSizeViewbox.Height = PetHeight * _petSizePreviewBaseScale;
+        PetUserSizeScale.ScaleX = 1;
+        PetUserSizeScale.ScaleY = 1;
+        PetUserSizeOffset.X = 0;
+        PetUserSizeOffset.Y = 0;
+        ApplyPetSizeWindowBounds(MaximumPetSizeScale, _petSizePreviewAnchor);
+        _petSizeEnvelopePrepared = true;
+        _petSizeTodoPositionNeedsUpdate = true;
+        QueueTodoWindowPositionUpdate();
+    }
+
+    private void ApplyPetSizePreviewScale(double scale)
+    {
+        var previousScaleX = PetUserSizeScale.ScaleX;
+        var previousScaleY = PetUserSizeScale.ScaleY;
+        var previousOffsetX = PetUserSizeOffset.X;
+        var previousOffsetY = PetUserSizeOffset.Y;
+        var baseWidth = PetSizeViewbox.ActualWidth > 0
+            ? PetSizeViewbox.ActualWidth
+            : PetWidth * Math.Max(MinimumPetSizeScale, _petSizePreviewBaseScale);
+        var baseHeight = PetSizeViewbox.ActualHeight > 0
+            ? PetSizeViewbox.ActualHeight
+            : PetHeight * Math.Max(MinimumPetSizeScale, _petSizePreviewBaseScale);
+        var alignedWidth = SnapDipToPhysicalPixel(PetWidth * scale, horizontal: true);
+        var alignedHeight = SnapDipToPhysicalPixel(PetHeight * scale, horizontal: false);
+        var visualScaleX = alignedWidth / baseWidth;
+        var visualScaleY = alignedHeight / baseHeight;
+        _petSizeScale = scale;
+        PetUserSizeScale.ScaleX = visualScaleX;
+        PetUserSizeScale.ScaleY = visualScaleY;
+        PetUserSizeOffset.X = 0;
+        PetUserSizeOffset.Y = 0;
+        AlignPetSizePreviewToPhysicalPixels();
+        var transformChanged =
+            Math.Abs(previousScaleX - visualScaleX) >= 0.000001 ||
+            Math.Abs(previousScaleY - visualScaleY) >= 0.000001 ||
+            Math.Abs(previousOffsetX - PetUserSizeOffset.X) >= 0.000001 ||
+            Math.Abs(previousOffsetY - PetUserSizeOffset.Y) >= 0.000001;
+        _petSizeTodoPositionNeedsUpdate |= transformChanged;
+    }
+
+    private void AlignPetSizePreviewToPhysicalPixels()
+    {
+        if (!PetSizeViewbox.IsLoaded)
+        {
+            return;
+        }
+
+        var compositionTarget = PresentationSource.FromVisual(this)?.CompositionTarget;
+        if (compositionTarget is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var topLeft = PetSizeViewbox.PointToScreen(new Point(0, 0));
+            var transform = compositionTarget.TransformToDevice;
+            if (double.IsFinite(transform.M11) && transform.M11 > 0)
+            {
+                PetUserSizeOffset.X =
+                    (Math.Round(topLeft.X, MidpointRounding.AwayFromZero) - topLeft.X) /
+                    transform.M11;
+            }
+
+            if (double.IsFinite(transform.M22) && transform.M22 > 0)
+            {
+                PetUserSizeOffset.Y =
+                    (Math.Round(topLeft.Y, MidpointRounding.AwayFromZero) - topLeft.Y) /
+                    transform.M22;
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            PetUserSizeOffset.X = 0;
+            PetUserSizeOffset.Y = 0;
+        }
+    }
+
+    private PetSizeAnchor? CapturePetSizeAnchor(bool preservePosition)
+    {
+        if (!preservePosition || !IsLoaded)
+        {
+            return null;
+        }
+
+        var workArea = MonitorWorkArea.GetForWindow(this);
+        var currentWidth = double.IsFinite(Width) && Width > 0 ? Width : ActualWidth;
+        var currentHeight = double.IsFinite(Height) && Height > 0 ? Height : ActualHeight;
+        var currentLeft = Left;
+        var currentTop = Top;
+        var preserveLeftEdge = Math.Abs(currentLeft - workArea.Left) <= EdgeContactTolerance;
+        var preserveRightEdge = Math.Abs(
+            currentLeft + currentWidth - workArea.Right) <= EdgeContactTolerance;
+        var preserveTopEdge = Math.Abs(currentTop - workArea.Top) <= EdgeContactTolerance;
+        var preserveBottomEdge = Math.Abs(
+            currentTop + currentHeight - workArea.Bottom) <= EdgeContactTolerance;
+        var horizontal = preserveLeftEdge
+            ? workArea.Left
+            : preserveRightEdge
+                ? workArea.Right
+                : currentLeft + currentWidth / 2;
+        var vertical = preserveTopEdge
+            ? workArea.Top
+            : preserveBottomEdge
+                ? workArea.Bottom
+                : currentTop + currentHeight;
+        return new PetSizeAnchor(
+            workArea,
+            preserveLeftEdge,
+            preserveRightEdge,
+            preserveTopEdge,
+            preserveBottomEdge,
+            horizontal,
+            vertical);
+    }
+
+    private void ConfigurePetSizeViewboxAnchor(PetSizeAnchor? anchor)
+    {
+        var horizontalAlignment = anchor is { PreserveLeftEdge: true }
+            ? HorizontalAlignment.Left
+            : anchor is { PreserveRightEdge: true }
+                ? HorizontalAlignment.Right
+                : HorizontalAlignment.Center;
+        var verticalAlignment = anchor is { PreserveTopEdge: true }
+            ? VerticalAlignment.Top
+            : VerticalAlignment.Bottom;
+        var originX = horizontalAlignment switch
+        {
+            HorizontalAlignment.Left => 0,
+            HorizontalAlignment.Right => 1,
+            _ => 0.5
+        };
+        var originY = verticalAlignment == VerticalAlignment.Top ? 0 : 1;
+
+        PetSizeViewbox.HorizontalAlignment = horizontalAlignment;
+        PetSizeViewbox.VerticalAlignment = verticalAlignment;
+        PetSizeViewbox.RenderTransformOrigin = new Point(originX, originY);
+    }
+
+    private void ApplyPetSizeWindowBounds(double scale, PetSizeAnchor? anchor)
+    {
+        var displayedWidth = PetWidth * scale;
+        var displayedHeight = PetHeight * scale;
+        var wasApplyingLayout = _isApplyingPetSizeLayout;
+        _isApplyingPetSizeLayout = true;
+        try
+        {
+            Width = displayedWidth;
+            Height = displayedHeight;
+            if (anchor is not { } fixedAnchor)
+            {
+                return;
+            }
+
+            var workArea = fixedAnchor.WorkArea;
+            var desiredLeft = fixedAnchor.PreserveLeftEdge
                 ? workArea.Left
-                : preserveRightEdge
+                : fixedAnchor.PreserveRightEdge
                     ? workArea.Right - displayedWidth
-                    : previousLeft + previousWidth / 2 - displayedWidth / 2;
-            var desiredTop = preserveTopEdge
+                    : fixedAnchor.Horizontal - displayedWidth / 2;
+            var desiredTop = fixedAnchor.PreserveTopEdge
                 ? workArea.Top
-                : preserveBottomEdge
-                    ? workArea.Bottom - displayedHeight
-                    : previousTop + previousHeight - displayedHeight;
+                : fixedAnchor.Vertical - displayedHeight;
             Left = SnapDipToPhysicalPixel(
                 Math.Clamp(
                     desiredLeft,
@@ -2899,13 +3692,122 @@ public partial class MainWindow : Window
                     Math.Max(workArea.Top, workArea.Bottom - displayedHeight)),
                 horizontal: false);
         }
-
-        if (_todoWindow.IsVisible)
+        finally
         {
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.Loaded,
-                new Action(UpdateTodoWindowPosition));
+            _isApplyingPetSizeLayout = wasApplyingLayout;
         }
+    }
+
+    private void PetSizePersistTimer_Tick(object? sender, EventArgs e)
+    {
+        _petSizePersistTimer.Stop();
+        if (_isPetSizeAdjustmentActive)
+        {
+            _petSizeCommitPending = true;
+            return;
+        }
+
+        if (_isPetSizePreviewSessionActive)
+        {
+            CommitPetSizePreviewSession(persist: true);
+            return;
+        }
+
+        if (_petSizeSettingsDirty && SaveSettings())
+        {
+            _petSizeSettingsDirty = false;
+            _petSizeCommitPending = false;
+        }
+    }
+
+    private void CommitPetSizePreviewSession(bool persist)
+    {
+        if (!_isPetSizePreviewSessionActive)
+        {
+            return;
+        }
+
+        _petSizePersistTimer.Stop();
+        var finalScale = _petSizeTargetScale;
+        var fixedAnchor = _petSizePreviewAnchor;
+        _isPetSizeTransitioning = false;
+        _petSizeVelocity = 0;
+        _petSizeTransitionStartVelocity = 0;
+        _petSizeScale = finalScale;
+        PetUserSizeScale.ScaleX = 1;
+        PetUserSizeScale.ScaleY = 1;
+        PetUserSizeOffset.X = 0;
+        PetUserSizeOffset.Y = 0;
+        ConfigurePetSizeViewboxAnchor(fixedAnchor);
+        PetSizeViewbox.Width = PetWidth * finalScale;
+        PetSizeViewbox.Height = PetHeight * finalScale;
+        ApplyPetSizeWindowBounds(finalScale, fixedAnchor);
+        _todoWindow.SetPetSizeScale(finalScale);
+
+        _isPetSizePreviewSessionActive = false;
+        _petSizeEnvelopePrepared = false;
+        _petSizePreviewBaseScale = finalScale;
+        _petSizeTransitionStartScale = finalScale;
+        _petSizePreviewAnchor = null;
+        _petSizeTodoChildOnLeft = null;
+        _petSizeTodoPositionNeedsUpdate = false;
+        _petSizeCommitPending = false;
+        QueueTodoWindowPositionUpdate();
+        UpdateVisualClockSubscription();
+
+        var saved = true;
+        if (persist && _petSizeSettingsDirty)
+        {
+            saved = SaveSettings();
+            if (saved)
+            {
+                _petSizeSettingsDirty = false;
+            }
+        }
+
+        AppLogger.Info(
+            $"桌宠大小：{finalScale:P1}，" +
+            $"显示尺寸 {PetWidth * finalScale:F1}×{PetHeight * finalScale:F1} DIP，" +
+            $"设置保存：{saved}");
+    }
+
+    private void ApplyPetSizeScale(
+        double scale,
+        bool persist,
+        bool preservePosition)
+    {
+        var normalizedScale = NormalizePetSizeScale(scale);
+        var fixedAnchor = preservePosition
+            ? _petSizePreviewAnchor ?? CapturePetSizeAnchor(preservePosition: true)
+            : null;
+        _petSizePersistTimer.Stop();
+        _isPetSizeTransitioning = false;
+        _isPetSizePreviewSessionActive = false;
+        _petSizeEnvelopePrepared = false;
+        _petSizeSettingsDirty = false;
+        _petSizeCommitPending = false;
+        _petSizeTodoPositionNeedsUpdate = false;
+        _petSizeVelocity = 0;
+        _petSizeTransitionStartVelocity = 0;
+        var displayedWidth = PetWidth * normalizedScale;
+        var displayedHeight = PetHeight * normalizedScale;
+        _petSizeScale = normalizedScale;
+        _petSizeTargetScale = normalizedScale;
+        _petSizeTransitionStartScale = normalizedScale;
+        _petSizePreviewBaseScale = normalizedScale;
+        _petSizePreviewAnchor = null;
+        _petSizeTodoChildOnLeft = null;
+        PetUserSizeScale.ScaleX = 1;
+        PetUserSizeScale.ScaleY = 1;
+        PetUserSizeOffset.X = 0;
+        PetUserSizeOffset.Y = 0;
+        ConfigurePetSizeViewboxAnchor(fixedAnchor);
+        PetSizeViewbox.Width = displayedWidth;
+        PetSizeViewbox.Height = displayedHeight;
+        ApplyPetSizeWindowBounds(normalizedScale, fixedAnchor);
+        _todoWindow.SetPetSizeScale(normalizedScale);
+        QueueTodoWindowPositionUpdate();
+        UpdateVisualClockSubscription();
 
         if (persist)
         {
@@ -2913,8 +3815,8 @@ public partial class MainWindow : Window
         }
 
         AppLogger.Info(
-            $"桌宠大小：{normalizedScale:P0}，" +
-            $"显示尺寸 {displayedWidth:F0}×{displayedHeight:F0} DIP");
+            $"桌宠大小：{normalizedScale:P1}，" +
+            $"显示尺寸 {displayedWidth:F1}×{displayedHeight:F1} DIP");
     }
 
     private void ApplyAutoRoamSetting(bool enabled)
@@ -2937,9 +3839,9 @@ public partial class MainWindow : Window
             StopPillowBreathing();
             if (_activeClip is { } activeClip)
             {
-                _frameTimer.Stop();
                 _activeClip = null;
                 _activeFrameIndex = -1;
+                _activeFrameDeadlineTimestamp = 0;
                 ShowStableFrame(activeClip.Frames[^1].Image);
                 AppLogger.Info($"动作中止：{activeClip.ActionName}，原因：立即开始自动绕屏");
             }
@@ -2970,11 +3872,23 @@ public partial class MainWindow : Window
 
     private bool SaveSettings()
     {
-        return _settingsStore.Save(new AppSettings
+        var scaleToPersist = NormalizePetSizeScale(
+            _petSizeSettingsDirty ? _petSizeTargetScale : _petSizeScale);
+        var saved = _settingsStore.Save(new AppSettings
         {
             EdgeRoamingEnabled = _edgeRoamingEnabled,
-            PetSizeScale = _petSizeScale
+            PetSizeScale = scaleToPersist
         });
+        if (saved)
+        {
+            _persistedPetSizeScale = scaleToPersist;
+            if (Math.Abs(_petSizeTargetScale - scaleToPersist) < 0.0005)
+            {
+                _petSizeSettingsDirty = false;
+            }
+        }
+
+        return saved;
     }
 
     private void TodoWindow_AddRequested(string text)
@@ -3050,9 +3964,7 @@ public partial class MainWindow : Window
 
     private enum RoamMode
     {
-        Wriggle,
-        Crawl,
-        Hop
+        Wriggle
     }
 
     private enum RoamVisualDirection
@@ -3062,6 +3974,19 @@ public partial class MainWindow : Window
         VerticalUp,
         VerticalDown
     }
+
+    private readonly record struct PetSizeAnchor(
+        Rect WorkArea,
+        bool PreserveLeftEdge,
+        bool PreserveRightEdge,
+        bool PreserveTopEdge,
+        bool PreserveBottomEdge,
+        double Horizontal,
+        double Vertical);
+
+    private readonly record struct PetSizeMotionState(
+        double Scale,
+        double Velocity);
 
     private sealed record AnimationClip(
         string Message,
@@ -3079,8 +4004,11 @@ public partial class MainWindow : Window
 
     private sealed record SpriteAtlasPageManifest(
         string Resource,
+        string PreviewResource,
         int Width,
         int Height,
+        int UncompressedByteCount,
+        int CompressedByteCount,
         int LogicalFrameCount,
         int UniqueSpriteCount,
         Dictionary<string, SpriteAtlasFrameManifest> Frames);
@@ -3105,8 +4033,11 @@ public partial class MainWindow : Window
 
     private sealed record SpriteAtlasPage(
         string ResourcePath,
+        string PreviewResourcePath,
         int Width,
         int Height,
+        int UncompressedByteCount,
+        int CompressedByteCount,
         IReadOnlyDictionary<string, SpriteFrame> Frames);
 
     private sealed record AnimationFrame(

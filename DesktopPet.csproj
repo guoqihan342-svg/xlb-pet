@@ -7,10 +7,11 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LubanDesktopPet</RootNamespace>
     <AssemblyName>LubanDesktopPet</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\sprite-pages\*.png" />
+    <Resource Include="Assets\sprite-pages\*.pbgra.lz4" />
     <Resource Include="Assets\luban-sprite-pages.json" />
     <None Update="log\.gitkeep"
           CopyToOutputDirectory="PreserveNewest"
