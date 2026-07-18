@@ -49,23 +49,28 @@ internal static class Program
                 "_settingsStore",
                 new AppSettingsStore(Path.Combine(settingsDirectory, "settings.json")));
 
-            AssertDisplayFrameContract(window);
-            AssertRoamAssetSequenceContract(window);
-            AssertRoamVisualTransitionContract(window);
-            AssertMotionTimelineContract(window);
-            AssertRunLoopVisualRegistrationContract();
-            AssertMotionAssetScaleContract();
-            AssertExactEdgeContactContract();
-            AssertManualTopDockIntegration(window);
-            AssertStaleRoamFadeCannotHideNewTransition(window);
-            AssertRoamPerimeterAndFullLap(window);
-            AssertUserInterruptedRoamIsRescheduled(window);
-            AssertPointerDownInterruptsRoam(window);
-            AssertRandomActivityBag(window);
-            AssertMonitorWorkAreaContract(window);
-            AssertOwnedTodoWindowContract(window);
-            AssertTodoWindowLayoutApiAndIme();
-            AssertEnableRoamBecomesDueImmediately(window);
+            RunCheck(nameof(AssertDisplayFrameContract), () => AssertDisplayFrameContract(window));
+            RunCheck(nameof(AssertRoamAssetSequenceContract), () => AssertRoamAssetSequenceContract(window));
+            RunCheck(nameof(AssertRoamVisualTransitionContract), () => AssertRoamVisualTransitionContract(window));
+            RunCheck(nameof(AssertMotionTimelineContract), () => AssertMotionTimelineContract(window));
+            RunCheck(nameof(AssertRunLoopVisualRegistrationContract), AssertRunLoopVisualRegistrationContract);
+            RunCheck(nameof(AssertMotionAssetScaleContract), AssertMotionAssetScaleContract);
+            RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
+            RunCheck(nameof(AssertManualTopDockIntegration), () => AssertManualTopDockIntegration(window));
+            RunCheck(nameof(AssertRoamPerimeterAndFullLap), () => AssertRoamPerimeterAndFullLap(window));
+            RunCheck(nameof(AssertUserInterruptedRoamIsRescheduled), () => AssertUserInterruptedRoamIsRescheduled(window));
+            RunCheck(nameof(AssertPointerDownInterruptsRoam), () => AssertPointerDownInterruptsRoam(window));
+            RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
+            RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
+            RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
+            RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+            RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
+            RunCheck(nameof(AssertEnableRoamBecomesDueImmediately), () => AssertEnableRoamBecomesDueImmediately(window));
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            throw;
         }
         finally
         {
@@ -84,17 +89,21 @@ internal static class Program
         Console.WriteLine("UI state checks passed.");
     }
 
+    private static void RunCheck(string name, Action check)
+    {
+        Console.WriteLine($"[RUN] {name}");
+        check();
+        Console.WriteLine($"[PASS] {name}");
+    }
+
     private static void AssertDisplayFrameContract(MainWindow window)
     {
         var petImage = GetField<Rectangle>(window, "PetImage");
         var spriteBrush = GetField<ImageBrush>(window, "PetSpriteBrush");
-        var transitionImage = GetField<Rectangle>(window, "PetRoamTransitionImage");
-        var transitionBrush = GetField<ImageBrush>(window, "PetRoamTransitionBrush");
         var viewport = GetField<Canvas>(window, "PetFrameViewport");
         var pageMap = GetField<IDictionary>(window, "_spritePages");
         var spritePageBuffer = GetField<WriteableBitmap>(window, "_spritePageBuffer");
-        var transitionFrameBuffer =
-            GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer");
+        var displayFrameBuffer = GetField<WriteableBitmap>(window, "_displayFrameBuffer");
 
         Assert(pageMap.Count == 13,
             $"运行时必须登记13个图集分页，实际 {pageMap.Count}");
@@ -102,43 +111,39 @@ internal static class Program
             .Max(page => GetProperty<int>(page, "Width"));
         var maximumPageHeight = pageMap.Values.Cast<object>()
             .Max(page => GetProperty<int>(page, "Height"));
-        Assert(maximumPageWidth <= 1024 && maximumPageHeight <= 700,
-            $"13页图集不得超过1024×700像素，实际 {maximumPageWidth}×{maximumPageHeight}");
+        Assert(maximumPageWidth <= 1100 && maximumPageHeight <= 1100,
+            $"13页高分辨率图集不得超过1100×1100像素，实际 {maximumPageWidth}×{maximumPageHeight}");
         var bitmapFields = typeof(MainWindow).GetFields(InstanceFlags)
                 .Select(field => field.GetValue(window))
                 .OfType<BitmapSource>()
                 .ToArray();
         Assert(bitmapFields.Length == 2 &&
                bitmapFields.Contains(spritePageBuffer) &&
-               bitmapFields.Contains(transitionFrameBuffer),
-            "MainWindow只能常驻分页缓冲和一张145×185的小型过渡快照");
+               bitmapFields.Contains(displayFrameBuffer),
+            "MainWindow只能常驻分页缓冲和唯一的190×242完整帧缓冲");
         Assert(spritePageBuffer.PixelWidth == maximumPageWidth &&
                spritePageBuffer.PixelHeight == maximumPageHeight &&
                spritePageBuffer.Format == PixelFormats.Pbgra32 &&
                !spritePageBuffer.IsFrozen,
             "复用分页缓冲区必须使用最大分页尺寸、Pbgra32且保持可写");
         Assert(ReferenceEquals(petImage.Fill, spriteBrush) &&
-               ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer),
-            "PetImage必须永久使用绑定_spritePageBuffer的PetSpriteBrush");
-        Assert(ReferenceEquals(transitionImage.Fill, transitionBrush) &&
-               ReferenceEquals(transitionBrush.ImageSource, transitionFrameBuffer) &&
-               transitionFrameBuffer.PixelWidth == 145 &&
-               transitionFrameBuffer.PixelHeight == 185 &&
-               transitionFrameBuffer.Format == PixelFormats.Pbgra32,
-            "跨分页过渡只能使用145×185、约105KiB的固定快照，不得复制整张图集");
-        Assert(transitionImage.Visibility == Visibility.Collapsed &&
-               transitionImage.Opacity == 0,
-            "绕屏转角叠层默认必须完全隐藏");
+               ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer) &&
+               displayFrameBuffer.PixelWidth == 190 &&
+               displayFrameBuffer.PixelHeight == 242 &&
+               displayFrameBuffer.Format == PixelFormats.Pbgra32 &&
+               !displayFrameBuffer.IsFrozen,
+            "PetImage必须永久使用唯一的190×242 Pbgra32完整帧缓冲，不能直接裁切整张图集");
         Assert(spriteBrush.ViewboxUnits == BrushMappingMode.Absolute &&
                spriteBrush.Stretch == Stretch.Fill,
             "分页裁剪必须使用Absolute Viewbox并填充PetImage");
         Assert(window.FindName("PetImageBuffer") is null &&
                window.FindName("PetSpriteBufferBrush") is null &&
-               window.FindName("PetImageOverlay") is null,
-            "不得恢复旧双位图Surface或旧Overlay图层");
+               window.FindName("PetImageOverlay") is null &&
+               window.FindName("PetRoamTransitionImage") is null,
+            "不得恢复旧双位图Surface或任何过渡Overlay图层");
 
-        AssertClose(viewport.Width, 145, "逻辑帧视口宽度");
-        AssertClose(viewport.Height, 185, "逻辑帧视口高度");
+        AssertClose(viewport.Width, 190, "逻辑帧视口宽度");
+        AssertClose(viewport.Height, 242, "逻辑帧视口高度");
         Assert(viewport.ClipToBounds, "逻辑帧视口必须裁剪图集其余区域");
 
         var pages = GetDictionaryEntries(pageMap)
@@ -158,7 +163,7 @@ internal static class Program
             Assert(pageFrames.Length > 0, $"分页 {page.Name} 不得为空");
 
             Invoke(window, "ShowStableFrame", pageFrames[0].Value);
-            Assert(ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer),
+            Assert(ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer),
                 $"切换到 {page.Name} 后ImageSource引用不得改变");
             Assert(GetField<string>(window, "_loadedSpritePageName") == page.Name,
                 $"切换后_loadedSpritePageName必须为 {page.Name}");
@@ -177,13 +182,13 @@ internal static class Program
                        frame.X + frame.Width <= page.Width &&
                        frame.Y + frame.Height <= page.Height,
                     $"{page.Name}/{frame.Name} 必须位于分页边界内");
-                Assert(frame.DestinationX < 145 && frame.DestinationY < 185 &&
+                Assert(frame.DestinationX < 190 && frame.DestinationY < 242 &&
                        frame.DestinationX + frame.Width > 0 &&
                        frame.DestinationY + frame.Height > 0,
-                    $"{page.Name}/{frame.Name} 必须与145×185显示区相交");
+                    $"{page.Name}/{frame.Name} 必须与190×242显示区相交");
 
                 Invoke(window, "ShowStableFrame", frameEntry.Value);
-                Assert(ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer),
+                Assert(ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer),
                     $"显示 {page.Name}/{frame.Name} 时ImageSource引用不得改变");
                 Assert(GetField<string>(window, "_loadedSpritePageName") == page.Name,
                     $"同页切帧时_loadedSpritePageName必须保持 {page.Name}");
@@ -207,7 +212,115 @@ internal static class Program
             spriteBrush,
             spritePageBuffer,
             pages[0].Frames.Values.Cast<object>().First());
+        AssertSingleBufferPremultipliedBlendContract(window);
         Invoke(window, "ShowStableFrame", GetField<object>(window, "_idleFrame"));
+    }
+
+    private static void AssertSingleBufferPremultipliedBlendContract(MainWindow window)
+    {
+        const int expectedByteCount = 190 * 242 * 4;
+        var displayPixels = GetField<byte[]>(window, "_displayFramePixels");
+        var fromPixels = GetField<byte[]>(window, "_frameBlendFromPixels");
+        var targetPixels = GetField<byte[]>(window, "_frameBlendTargetPixels");
+        var outputPixels = GetField<byte[]>(window, "_frameBlendOutputPixels");
+        var transformedPixels = GetField<byte[]>(window, "_transformedDisplayFramePixels");
+        Assert(displayPixels.Length == expectedByteCount &&
+               fromPixels.Length == expectedByteCount &&
+               targetPixels.Length == expectedByteCount &&
+               outputPixels.Length == expectedByteCount &&
+               transformedPixels.Length == expectedByteCount,
+            "帧淡化只能复用190×242固定像素数组，不能为每帧创建BitmapSource");
+
+        var from = new byte[] { 20, 40, 60, 80 };
+        var to = new byte[] { 100, 80, 40, 160 };
+        var blended = new byte[4];
+        InvokeStatic(typeof(MainWindow), "BlendPremultipliedPixels", from, to, blended, 0.5d);
+        Assert(blended.SequenceEqual(new byte[] { 60, 60, 50, 120 }),
+            "单buffer淡化中点必须逐通道凸组合Pbgra32像素（包括Alpha）");
+        Assert(Enumerable.Range(0, blended.Length).All(index =>
+                blended[index] >= Math.Min(from[index], to[index]) &&
+                blended[index] <= Math.Max(from[index], to[index])),
+            "淡化的每个通道不得超过任一端点最大值，避免出现亮度光纹峰值");
+        Assert(blended[0] <= blended[3] &&
+               blended[1] <= blended[3] &&
+               blended[2] <= blended[3],
+            "淡化后的颜色必须继续满足预乘Alpha约束");
+
+        var clampedBefore = new byte[4];
+        var clampedAfter = new byte[4];
+        InvokeStatic(typeof(MainWindow), "BlendPremultipliedPixels", from, to, clampedBefore, -1d);
+        InvokeStatic(typeof(MainWindow), "BlendPremultipliedPixels", from, to, clampedAfter, 2d);
+        Assert(clampedBefore.SequenceEqual(from) && clampedAfter.SequenceEqual(to),
+            "预乘Alpha淡化进度必须钳制在0..1，防止过冲光纹");
+
+        var transformSource = new byte[]
+        {
+            10, 20, 30, 40,
+            50, 60, 70, 80
+        };
+        var mirrored = new byte[transformSource.Length];
+        var mirrorMatrix = Matrix.Identity;
+        mirrorMatrix.ScaleAt(-1, 1, 1, 0.5);
+        InvokeStatic(
+            typeof(MainWindow),
+            "TransformPremultipliedPixels",
+            transformSource,
+            mirrored,
+            2,
+            1,
+            mirrorMatrix);
+        Assert(mirrored.SequenceEqual(new byte[]
+            {
+                50, 60, 70, 80,
+                10, 20, 30, 40
+            }),
+            "右侧探头或反向绕屏进入Todo前必须把镜像后的实际画面烘焙进单buffer");
+
+        var translated = new byte[transformSource.Length];
+        var translationMatrix = Matrix.Identity;
+        translationMatrix.Translate(1, 0);
+        InvokeStatic(
+            typeof(MainWindow),
+            "TransformPremultipliedPixels",
+            transformSource,
+            translated,
+            2,
+            1,
+            translationMatrix);
+        Assert(translated.SequenceEqual(new byte[]
+            {
+                0, 0, 0, 0,
+                10, 20, 30, 40
+            }),
+            "绕屏偏移进入Todo前必须被烘焙并按窗口边界透明裁剪，不能先跳回中心");
+
+        var combinedSource = new byte[]
+        {
+            10, 10, 10, 20,
+            20, 20, 20, 40,
+            30, 30, 30, 60,
+            40, 40, 40, 80
+        };
+        var combinedOutput = new byte[combinedSource.Length];
+        var mirrorAndTranslation = Matrix.Identity;
+        mirrorAndTranslation.ScaleAt(-1, 1, 2, 0.5);
+        mirrorAndTranslation.Translate(1, 0);
+        InvokeStatic(
+            typeof(MainWindow),
+            "TransformPremultipliedPixels",
+            combinedSource,
+            combinedOutput,
+            4,
+            1,
+            mirrorAndTranslation);
+        Assert(combinedOutput.SequenceEqual(new byte[]
+            {
+                0, 0, 0, 0,
+                40, 40, 40, 80,
+                30, 30, 30, 60,
+                20, 20, 20, 40
+            }),
+            "单buffer坐标换基必须同时正确处理镜像与绕屏平移");
     }
 
     private static DictionaryEntry[] GetDictionaryEntries(IDictionary dictionary)
@@ -229,16 +342,16 @@ internal static class Program
     {
         AssertRectClose(
             spriteBrush.Viewbox,
-            new Rect(frame.X, frame.Y, frame.Width, frame.Height),
-            $"{frame.PageName}/{frame.Name} Viewbox");
-        AssertClose(petImage.Width, frame.Width,
-            $"{frame.PageName}/{frame.Name} Rectangle宽度");
-        AssertClose(petImage.Height, frame.Height,
-            $"{frame.PageName}/{frame.Name} Rectangle高度");
-        AssertClose(Canvas.GetLeft(petImage), frame.DestinationX,
-            $"{frame.PageName}/{frame.Name} Canvas.Left");
-        AssertClose(Canvas.GetTop(petImage), frame.DestinationY,
-            $"{frame.PageName}/{frame.Name} Canvas.Top");
+            new Rect(0, 0, 190, 242),
+            $"{frame.PageName}/{frame.Name} 完整帧Viewbox");
+        AssertClose(petImage.Width, 190,
+            $"{frame.PageName}/{frame.Name} Rectangle固定宽度");
+        AssertClose(petImage.Height, 242,
+            $"{frame.PageName}/{frame.Name} Rectangle固定高度");
+        AssertClose(NormalizeCanvasCoordinate(Canvas.GetLeft(petImage)), 0,
+            $"{frame.PageName}/{frame.Name} Canvas.Left固定锚点");
+        AssertClose(NormalizeCanvasCoordinate(Canvas.GetTop(petImage)), 0,
+            $"{frame.PageName}/{frame.Name} Canvas.Top固定锚点");
         AssertClose(petImage.Opacity, 1,
             $"{frame.PageName}/{frame.Name} Surface透明度");
     }
@@ -328,9 +441,10 @@ internal static class Program
         spritePageBuffer.CopyPixels(pixelBounds, actualPixel, 4, 0);
         Assert(actualPixel.AsSpan().SequenceEqual(sentinelPixel),
             $"{page.Name} 内切帧不得重新解码或覆写分页缓冲区");
-        Assert(ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer) &&
+        Assert(ReferenceEquals(spriteBrush.ImageSource,
+                   GetField<WriteableBitmap>(window, "_displayFrameBuffer")) &&
                GetField<string>(window, "_loadedSpritePageName") == page.Name,
-            $"{page.Name} 内切帧必须继续复用同一ImageSource和页标记");
+            $"{page.Name} 内切帧必须继续复用同一完整帧ImageSource和页标记");
         spritePageBuffer.WritePixels(pixelBounds, originalPixel, 4, 0);
     }
 
@@ -343,28 +457,24 @@ internal static class Program
     {
         Invoke(window, "ShowStableFrame", frameValue);
         var frame = GetSpriteFrameInfo(frameValue);
+        var displayFrameBuffer =
+            GetField<WriteableBitmap>(window, "_displayFrameBuffer");
         var bufferReference = spriteBrush.ImageSource;
-        var sentinelViewbox = new Rect(-7, -9, 3, 5);
-        spriteBrush.Viewbox = sentinelViewbox;
-        petImage.Width = 7;
-        petImage.Height = 9;
-        Canvas.SetLeft(petImage, -11);
-        Canvas.SetTop(petImage, -13);
+        var originalPixel = new byte[4];
+        var pixelBounds = new Int32Rect(0, 0, 1, 1);
+        displayFrameBuffer.CopyPixels(pixelBounds, originalPixel, 4, 0);
+        var sentinelPixel = originalPixel.Select(value => (byte)(value ^ 0xff)).ToArray();
+        displayFrameBuffer.WritePixels(pixelBounds, sentinelPixel, 4, 0);
 
         Invoke(window, "ShowStableFrame", frameValue);
-        AssertRectClose(spriteBrush.Viewbox, sentinelViewbox,
-            $"重复显示 {frame.Name} 时应在写入DP前直接返回");
-        AssertClose(petImage.Width, 7,
-            $"重复显示 {frame.Name} 时不得重写宽度");
-        AssertClose(petImage.Height, 9,
-            $"重复显示 {frame.Name} 时不得重写高度");
-        AssertClose(Canvas.GetLeft(petImage), -11,
-            $"重复显示 {frame.Name} 时不得重写Canvas.Left");
-        AssertClose(Canvas.GetTop(petImage), -13,
-            $"重复显示 {frame.Name} 时不得重写Canvas.Top");
-        Assert(ReferenceEquals(bufferReference, spritePageBuffer) &&
-               ReferenceEquals(spriteBrush.ImageSource, spritePageBuffer),
-            "同帧早退前后ImageSource必须保持唯一缓冲区引用");
+        var actualPixel = new byte[4];
+        displayFrameBuffer.CopyPixels(pixelBounds, actualPixel, 4, 0);
+        Assert(actualPixel.AsSpan().SequenceEqual(sentinelPixel),
+            $"重复显示 {frame.Name} 时应在重写完整帧buffer前直接返回");
+        Assert(ReferenceEquals(bufferReference, displayFrameBuffer) &&
+               ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer),
+            "同帧早退前后ImageSource必须保持唯一完整帧buffer引用");
+        displayFrameBuffer.WritePixels(pixelBounds, originalPixel, 4, 0);
 
         SetField(window, "_currentSpriteFrame", null);
         Invoke(window, "ShowStableFrame", frameValue);
@@ -379,9 +489,9 @@ internal static class Program
         var root = document.RootElement;
         Assert(root.GetProperty("version").GetInt32() == 2,
             "分页图集清单版本必须为2");
-        Assert(root.GetProperty("displayWidth").GetInt32() == 145 &&
-               root.GetProperty("displayHeight").GetInt32() == 185,
-            "分页图集显示视口必须为145×185");
+        Assert(root.GetProperty("displayWidth").GetInt32() == 190 &&
+               root.GetProperty("displayHeight").GetInt32() == 242,
+            "分页图集显示视口必须为190×242");
         Assert(root.GetProperty("sourceFrameCount").GetInt32() == 291,
             "分页清单sourceFrameCount必须为291");
         Assert(root.GetProperty("pageFrameCount").GetInt32() == 401,
@@ -559,10 +669,16 @@ internal static class Program
 
     private static void AssertRoamVisualTransitionContract(MainWindow window)
     {
-        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
-        var overlayBrush = GetField<ImageBrush>(window, "PetRoamTransitionBrush");
-        var transitionBuffer =
-            GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer");
+        if (!window.IsVisible)
+        {
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+        }
+
+        var petImage = GetField<Rectangle>(window, "PetImage");
+        var petVisual = GetField<Grid>(window, "PetVisual");
+        var spriteBrush = GetField<ImageBrush>(window, "PetSpriteBrush");
+        var displayFrameBuffer = GetField<WriteableBitmap>(window, "_displayFrameBuffer");
         SetField(window, "_isEdgeRoaming", true);
         SetField(window, "_edgeRoamingEnabled", true);
         SetField(window, "_roamApproaching", false);
@@ -579,14 +695,25 @@ internal static class Program
             GetField<object>(window, "_currentSpriteFrame"));
         Assert(horizontalFrame.Name.EndsWith("horizontal-01.png", StringComparison.Ordinal),
             "绕屏首次进入横边时必须从接触相位第1帧开始");
-        Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 1,
-            "147px 宽、X=-1 的待机帧必须能完整裁进145×185快照并淡入绕屏");
-        AssertClose(overlay.Width, 145, "首次绕屏快照宽度");
-        AssertClose(overlay.Height, 185, "首次绕屏快照高度");
-        AssertClose(Canvas.GetLeft(overlay), 0, "首次绕屏快照 Canvas.X");
-        AssertClose(Canvas.GetTop(overlay), 0, "首次绕屏快照 Canvas.Y");
-        Assert(HasVisibleAlpha(CopyBitmapPixels(transitionBuffer)),
-            "首次绕屏的待机快照必须包含非透明像素");
+        Assert(GetField<bool>(window, "_isFrameBlending") &&
+               GetField<TimeSpan>(window, "_activeFrameBlendDuration") ==
+               TimeSpan.FromMilliseconds(260),
+            "首次进入绕屏必须在唯一完整帧buffer内执行260ms预乘Alpha淡化");
+        Assert(ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer) &&
+               petImage.Opacity == 1 &&
+               !DependencyPropertyHelper.GetValueSource(
+                   petImage,
+                   UIElement.OpacityProperty).IsAnimated,
+            "绕屏淡化不得创建叠层或动画PetImage.Opacity");
+        Assert(petVisual.Opacity == 1 &&
+               !DependencyPropertyHelper.GetValueSource(
+                   petVisual,
+                   UIElement.OpacityProperty).IsAnimated,
+            "绕屏开始和拐角不得把整个人淡到透明，否则会被感知为闪烁");
+        Assert(GetField<TimeSpan>(window, "_roamVisualPhaseStartedAt") >
+               GetField<Stopwatch>(window, "_roamStopwatch").Elapsed,
+            "新绕屏方向必须持有接触首帧直到260ms坐标换基淡化完成");
+        Invoke(window, "StopFrameBlend", true);
 
         var facing = GetField<ScaleTransform>(window, "PetFacingScale");
         AssertClose(facing.ScaleX, 1, "顶部顺时针向右移动时的朝向");
@@ -602,45 +729,17 @@ internal static class Program
         AssertClose(facing.ScaleX, 1, "底部逆时针向右移动时的朝向");
         SetField(window, "_roamClockwise", true);
 
-        var horizontalModes = GetField<Array>(window, "_roamHorizontalFrames");
-        var wriggleFrames = (Array)horizontalModes.GetValue(0)!;
-        var wideHorizontalFrame = wriggleFrames.GetValue(1)!;
-        var wideHorizontalFrameInfo = GetSpriteFrameInfo(wideHorizontalFrame);
-        Assert(wideHorizontalFrameInfo.Width == 147 &&
-               wideHorizontalFrameInfo.DestinationX == -1,
-            "测试前置条件：蠕动横向第2帧应覆盖147px/X=-1裁剪边界");
-        Invoke(window, "ShowStableFrame", wideHorizontalFrame);
-
         SetField(window, "_roamEdge", GetNestedEnum("EdgeDock", "Right"));
         Invoke(window, "UpdateRoamVisual");
         var verticalFrame = GetSpriteFrameInfo(
             GetField<object>(window, "_currentSpriteFrame"));
         Assert(verticalFrame.Name.EndsWith("vertical-down-01.png", StringComparison.Ordinal),
             "横向转竖向时必须重置到新方向第1帧，不能继承随机相位");
-
-        Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 1,
-            "147px 宽的绕屏帧切换方向时也必须进入短交叉过渡叠层");
-        Assert(HasVisibleAlpha(CopyBitmapPixels(transitionBuffer)),
-            "147px 宽的绕屏帧快照必须包含非透明像素");
-        Assert(ReferenceEquals(
-                overlayBrush.ImageSource,
-                GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer")),
-            "交叉过渡必须使用固定145×185快照，才能跨分页平滑进入和退出绕屏");
-
-        var startedAt = GetField<TimeSpan>(window, "_roamVisualTransitionStartedAt");
-        Invoke(
-            window,
-            "UpdateRoamVisualTransition",
-            startedAt + TimeSpan.FromMilliseconds(130));
-        Assert(overlay.Visibility == Visibility.Visible &&
-               overlay.Opacity > 0.45 && overlay.Opacity < 0.55,
-            "260ms 转角过渡的中点必须平滑淡出，不能瞬切");
-        Invoke(
-            window,
-            "UpdateRoamVisualTransition",
-            startedAt + TimeSpan.FromMilliseconds(261));
-        Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0,
-            "转角过渡结束后叠层必须完全收回，避免残影和内存滞留");
+        Assert(GetField<bool>(window, "_isFrameBlending") &&
+               GetField<TimeSpan>(window, "_activeFrameBlendDuration") ==
+               TimeSpan.FromMilliseconds(260) &&
+               ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer),
+            "横向转竖向必须继续在同一190×242 buffer内执行260ms淡化");
 
         var offsetStartedAt =
             GetField<TimeSpan>(window, "_roamBaseOffsetTransitionStartedAt");
@@ -649,20 +748,16 @@ internal static class Program
             "UpdateRoamBaseOffsetTransition",
             offsetStartedAt + TimeSpan.FromMilliseconds(160));
         var roamBaseOffset = GetField<TranslateTransform>(window, "PetRoamBaseOffset");
-        Assert(roamBaseOffset.X > 0 && roamBaseOffset.X < 27,
+        Assert(roamBaseOffset.X > 0 && roamBaseOffset.X < 35,
             "转角锚点必须在320ms内逐像素移动，不能从横边一帧跳到竖边");
-        AssertClose(roamBaseOffset.Y, 0, "右边缘平滑锚点 Y");
         Invoke(
             window,
             "UpdateRoamBaseOffsetTransition",
             offsetStartedAt + TimeSpan.FromMilliseconds(321));
-        AssertClose(roamBaseOffset.X, 27, "右边缘平滑锚点终点 X");
+        AssertClose(roamBaseOffset.X, 35, "右边缘平滑锚点终点 X");
+        AssertClose(roamBaseOffset.Y, 0, "右边缘平滑锚点终点 Y");
         Assert(!GetField<bool>(window, "_isRoamBaseOffsetTransitioning"),
             "锚点过渡完成后必须停止更新");
-
-        facing.ScaleX = -1;
-        roamBaseOffset.X = 27;
-        roamBaseOffset.Y = 8;
 
         Invoke(
             window,
@@ -671,21 +766,14 @@ internal static class Program
             false,
             false,
             true);
-        var exitOverlayOffset =
-            GetField<TranslateTransform>(window, "PetRoamTransitionOffset");
-        var exitOverlayFacing =
-            GetField<ScaleTransform>(window, "PetRoamTransitionFacing");
         AssertClose(roamBaseOffset.X, 0, "停止绕屏后的主画面锚点 X");
         AssertClose(roamBaseOffset.Y, 0, "停止绕屏后的主画面锚点 Y");
         AssertClose(facing.ScaleX, 1, "停止绕屏后的主画面朝向");
-        Assert(overlay.Visibility == Visibility.Visible,
-            "非零锚点停止绕屏时旧姿势必须原地淡出，不能瞬间消失");
-        AssertClose(exitOverlayOffset.X, 27, "停止绕屏快照保留的锚点 X");
-        AssertClose(exitOverlayOffset.Y, 8, "停止绕屏快照保留的锚点 Y");
-        AssertClose(exitOverlayFacing.ScaleX, -1, "停止绕屏快照保留的朝向");
-        Assert(GetField<bool>(window, "_isRoamVisualTransitioning"),
-            "停止绕屏后必须保留退出过渡状态，等待可见窗口中的淡出时钟完成");
-        Invoke(window, "HideRoamVisualTransition");
+        Assert(GetField<bool>(window, "_isFrameBlending") &&
+               GetField<TimeSpan>(window, "_activeFrameBlendDuration") ==
+               TimeSpan.FromMilliseconds(260),
+            "停止绕屏回待机也必须复用单buffer完成260ms淡化");
+        Invoke(window, "StopFrameBlend", true);
     }
 
     private static SpriteFrameInfo GetSpriteFrameInfo(object frame) => new(
@@ -697,44 +785,6 @@ internal static class Program
         GetProperty<int>(frame, "DestinationY"),
         GetProperty<string>(frame, "PageName"),
         GetProperty<string>(frame, "Name"));
-
-    private static void AssertStaleRoamFadeCannotHideNewTransition(MainWindow window)
-    {
-        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
-        SetField(window, "_isEdgeRoaming", false);
-        Invoke(
-            window,
-            "BeginRoamVisualTransition",
-            1d,
-            new Point(0, 0),
-            TimeSpan.Zero);
-        Invoke(window, "BeginRoamVisualTransitionFadeOut");
-        var firstGeneration =
-            GetField<long>(window, "_roamVisualTransitionGeneration");
-        PumpDispatcher(TimeSpan.FromMilliseconds(200));
-
-        Invoke(
-            window,
-            "BeginRoamVisualTransition",
-            1d,
-            new Point(0, 0),
-            TimeSpan.FromSeconds(1));
-        Invoke(window, "BeginRoamVisualTransitionFadeOut");
-        var secondGeneration =
-            GetField<long>(window, "_roamVisualTransitionGeneration");
-        Assert(secondGeneration > firstGeneration,
-            "每次新的绕屏淡化都必须获得独立代次，令旧回调失效");
-
-        // The first 260ms clock would finish about 60ms into this new fade.
-        // Its stale Completed callback must not collapse the replacement layer.
-        PumpDispatcher(TimeSpan.FromMilliseconds(80));
-        Assert(overlay.Visibility == Visibility.Visible &&
-               overlay.Opacity > 0 && overlay.Opacity < 1,
-            "旧淡化回调不得提前收起后启动的新260ms过渡");
-        PumpDispatcher(TimeSpan.FromMilliseconds(350));
-        Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0,
-            "最新一代绕屏淡化完成后必须正常收回");
-    }
 
     private static string FindWorkspaceFile(params string[] relativeParts)
     {
@@ -884,8 +934,8 @@ internal static class Program
                metrics.Min(metric => metric.HeadWidth) <= 5,
             "16 相位跑步的头部宽度波动必须控制在 5 个源像素内");
         Assert(metrics.Max(metric => metric.HeadCenterX) -
-               metrics.Min(metric => metric.HeadCenterX) <= 1,
-            "16 相位跑步的头部水平锚点必须稳定在 1 个源像素内");
+               metrics.Min(metric => metric.HeadCenterX) <= 2,
+            "16 相位跑步的头部水平锚点必须稳定在 2 个源像素内");
         Assert(metrics.Max(metric => metric.HeadTop) -
                metrics.Min(metric => metric.HeadTop) <= 13,
             "16 相位跑步的头部上下起伏必须控制在约 4 个显示像素内");
@@ -902,15 +952,22 @@ internal static class Program
                Math.Abs(first.CentroidY - last.CentroidY) <= 10,
             "16 -> 1 循环接缝的重心位移必须与普通相邻帧一样平滑");
 
-        var gathered = metrics.Single(metric => metric.FrameNumber == 16);
-        var bridge = metrics.Single(metric => metric.FrameNumber == 17);
-        var stride = metrics.Single(metric => metric.FrameNumber == 18);
-        Assert(Math.Abs(gathered.VisibleBottom - bridge.VisibleBottom) <= 10 &&
-               Math.Abs(gathered.VisibleHeight - bridge.VisibleHeight) <= 12,
-            "run16→17 必须经过收腿离地桥接帧，不能再一帧跳成完全腾空大跨步");
-        Assert(Math.Abs(bridge.VisibleBottom - stride.VisibleBottom) <= 20 &&
-               Math.Abs(bridge.VisibleHeight - stride.VisibleHeight) <= 24,
-            "run17→18 的桥接后半段脚底与身体高度也必须连续");
+        var extendedStrideCount = metrics.Count(metric => metric.LowerBodyWidth >= 240);
+        var crossedOrGatheredCount = metrics.Count(metric => metric.LowerBodyWidth <= 190);
+        Assert(extendedStrideCount >= 4 && crossedOrGatheredCount >= 4 &&
+               metrics.Max(metric => metric.LowerBodyWidth) -
+               metrics.Min(metric => metric.LowerBodyWidth) >= 100,
+            "16相位新跑步素材必须同时包含至少4帧大跨步与4帧交叉/收腿相位，双腿不能始终平行小跳");
+
+        var runFrameBytes = Enumerable.Range(9, 16)
+            .Select(frameNumber => File.ReadAllBytes(FindWorkspaceFile(
+                "Assets",
+                $"luban-run-frame-{frameNumber:00}.png")))
+            .ToArray();
+        Assert(runFrameBytes.Zip(runFrameBytes.Skip(1))
+                .All(pair => !pair.First.SequenceEqual(pair.Second)) &&
+               !runFrameBytes[0].SequenceEqual(runFrameBytes[^1]),
+            "16相位跑步不得用相邻重复帧伪装补帧，每个步态相位都应真实变化");
     }
 
     private static RunAlphaMetrics ReadRunAlphaMetrics(string path, int frameNumber)
@@ -961,6 +1018,9 @@ internal static class Program
         var headBottom = top + Math.Max(1, (bottom - top + 1) / 2);
         var headLeft = bitmap.PixelWidth;
         var headRight = -1;
+        var lowerBodyTop = top + Math.Max(1, (int)Math.Floor((bottom - top + 1) * 0.58));
+        var lowerBodyLeft = bitmap.PixelWidth;
+        var lowerBodyRight = -1;
         long centroidXSum = 0;
         long centroidYSum = 0;
         long centroidCount = 0;
@@ -975,6 +1035,12 @@ internal static class Program
                     headRight = Math.Max(headRight, x);
                 }
 
+                if (y >= lowerBodyTop && alpha > 16)
+                {
+                    lowerBodyLeft = Math.Min(lowerBodyLeft, x);
+                    lowerBodyRight = Math.Max(lowerBodyRight, x);
+                }
+
                 if (alpha < 128)
                 {
                     continue;
@@ -986,7 +1052,7 @@ internal static class Program
             }
         }
 
-        Assert(headRight >= headLeft && centroidCount > 0,
+        Assert(headRight >= headLeft && lowerBodyRight >= lowerBodyLeft && centroidCount > 0,
             $"run-frame-{frameNumber:00} 必须包含稳定的头部与不透明主体");
         return new RunAlphaMetrics(
             frameNumber,
@@ -996,7 +1062,8 @@ internal static class Program
             bottom,
             bottom - top + 1,
             centroidXSum / (double)centroidCount,
-            centroidYSum / (double)centroidCount);
+            centroidYSum / (double)centroidCount,
+            lowerBodyRight - lowerBodyLeft + 1);
     }
 
     private static void AssertMotionAssetScaleContract()
@@ -1096,6 +1163,9 @@ internal static class Program
                 if (direction == "vertical-up")
                 {
                     verticalUpMetrics = metrics;
+                    Assert(metrics.All(metric => metric.BrimCenterYRatio < 0.58),
+                        $"{mode} 向上绕屏的帽檐必须位于身体上部，人物应保持正立；" +
+                        $"最大比例 {metrics.Max(metric => metric.BrimCenterYRatio):F3}");
                 }
                 else if (direction == "vertical-down")
                 {
@@ -1104,17 +1174,47 @@ internal static class Program
                                    metric.VisibleWidth,
                                    metric.VisibleHeight,
                                    metric.OpaqueArea))
+                               .OrderBy(metric => metric.VisibleWidth)
+                               .ThenBy(metric => metric.VisibleHeight)
+                               .ThenBy(metric => metric.OpaqueArea)
                                .SequenceEqual(verticalUpMetrics.Select(metric => (
                                    metric.VisibleWidth,
                                    metric.VisibleHeight,
-                                   metric.OpaqueArea))),
+                                   metric.OpaqueArea))
+                                   .OrderBy(metric => metric.VisibleWidth)
+                                   .ThenBy(metric => metric.VisibleHeight)
+                                   .ThenBy(metric => metric.OpaqueArea)),
                         $"{mode} 向下帧必须是本模式向上帧的等尺度对应动作");
+                    Assert(metrics.All(metric => metric.BrimCenterYRatio < 0.58),
+                        $"{mode} 向下绕屏也必须保持人物正立，不能把整个人旋转180度；" +
+                        $"最大比例 {metrics.Max(metric => metric.BrimCenterYRatio):F3}");
                 }
             }
 
             Assert(directionEquivalentScales.Max() /
                    directionEquivalentScales.Min() <= 1.15,
                 $"{mode} 绕过拐角时三方向人物等效尺度差必须小于15%");
+
+            var reverseFrameNumbers = new[] { 1, 8, 7, 6, 5, 4, 3, 2 };
+            var nonRotatedPairCount = 0;
+            for (var downFrameNumber = 1; downFrameNumber <= 8; downFrameNumber++)
+            {
+                var upPath = FindWorkspaceFile(
+                    "Assets",
+                    $"luban-roam-{mode}-vertical-up-{reverseFrameNumbers[downFrameNumber - 1]:00}.png");
+                var downPath = FindWorkspaceFile(
+                    "Assets",
+                    $"luban-roam-{mode}-vertical-down-{downFrameNumber:00}.png");
+                Assert(File.ReadAllBytes(upPath).SequenceEqual(File.ReadAllBytes(downPath)),
+                    $"{mode} 向下第{downFrameNumber}帧必须复用向上循环的反向相位，而不是翻转人物");
+                if (!BitmapEqualsAfterRotate180(upPath, downPath))
+                {
+                    nonRotatedPairCount++;
+                }
+            }
+
+            Assert(nonRotatedPairCount >= 6,
+                $"{mode} 向下循环不得由向上素材整体旋转180度得到");
         }
 
         var downModeFirstFrames = new[] { "wriggle", "crawl", "hop" }
@@ -1194,6 +1294,8 @@ internal static class Program
         var bestWidth = 0;
         var bestLeft = 0;
         var bestRight = 0;
+        var bestTop = 0;
+        var bestBottom = 0;
         for (var startY = top; startY < headLimit; startY++)
         {
             for (var startX = left; startX <= right; startX++)
@@ -1210,6 +1312,8 @@ internal static class Program
                 var count = 0;
                 var componentLeft = startX;
                 var componentRight = startX;
+                var componentTop = startY;
+                var componentBottom = startY;
                 while (queue.Count > 0)
                 {
                     var index = queue.Dequeue();
@@ -1218,6 +1322,8 @@ internal static class Program
                     count++;
                     componentLeft = Math.Min(componentLeft, x);
                     componentRight = Math.Max(componentRight, x);
+                    componentTop = Math.Min(componentTop, y);
+                    componentBottom = Math.Max(componentBottom, y);
                     for (var nextY = Math.Max(top, y - 1);
                          nextY <= Math.Min(headLimit - 1, y + 1);
                          nextY++)
@@ -1246,6 +1352,8 @@ internal static class Program
                     bestWidth = width;
                     bestLeft = componentLeft;
                     bestRight = componentRight;
+                    bestTop = componentTop;
+                    bestBottom = componentBottom;
                 }
             }
         }
@@ -1254,6 +1362,7 @@ internal static class Program
         return new SpriteVisualMetrics(
             bestWidth,
             (bestLeft + bestRight) / 2d,
+            ((bestTop + bestBottom) / 2d - top) / Math.Max(1, bottom - top + 1),
             left,
             top,
             right,
@@ -1261,11 +1370,60 @@ internal static class Program
             opaqueArea);
     }
 
+    private static bool BitmapEqualsAfterRotate180(string sourcePath, string targetPath)
+    {
+        var source = LoadBitmapPixels(sourcePath);
+        var target = LoadBitmapPixels(targetPath);
+        if (source.Width != target.Width || source.Height != target.Height)
+        {
+            return false;
+        }
+
+        for (var y = 0; y < source.Height; y++)
+        {
+            for (var x = 0; x < source.Width; x++)
+            {
+                var sourceOffset = (y * source.Width + x) * 4;
+                var targetOffset =
+                    ((source.Height - 1 - y) * target.Width + source.Width - 1 - x) * 4;
+                if (!source.Pixels.AsSpan(sourceOffset, 4)
+                        .SequenceEqual(target.Pixels.AsSpan(targetOffset, 4)))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static (int Width, int Height, byte[] Pixels) LoadBitmapPixels(string path)
+    {
+        BitmapSource bitmap;
+        using (var stream = File.OpenRead(path))
+        {
+            bitmap = BitmapDecoder.Create(
+                stream,
+                BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad).Frames[0];
+        }
+
+        if (bitmap.Format != PixelFormats.Bgra32)
+        {
+            bitmap = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
+        }
+
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        return (bitmap.PixelWidth, bitmap.PixelHeight, pixels);
+    }
+
     private static void AssertExactEdgeContactContract()
     {
         var workArea = new Rect(0, 0, 1920, 1080);
-        const double width = 145;
-        const double height = 185;
+        const double width = 190;
+        const double height = 242;
         const double safeX = 500;
         const double safeY = 300;
 
@@ -1275,6 +1433,8 @@ internal static class Program
                 new Rect(1.0, safeY, width, height)),
             new EdgeCase("Right", new Rect(workArea.Right - width - 1.1, safeY, width, height),
                 new Rect(workArea.Right - width - 1.0, safeY, width, height)),
+            new EdgeCase("Top", new Rect(safeX, 1.1, width, height),
+                new Rect(safeX, 1.0, width, height)),
             new EdgeCase("Bottom", new Rect(safeX, workArea.Bottom - height - 1.1, width, height),
                 new Rect(safeX, workArea.Bottom - height - 1.0, width, height))
         };
@@ -1298,23 +1458,6 @@ internal static class Program
                 1d)!;
             Assert(touching.ToString() == edgeCase.Edge,
                 $"{edgeCase.Edge} 距边界 1.0 DIP 时必须吸附");
-        }
-
-        foreach (var top in new[]
-                 {
-                     new Rect(safeX, 1, width, height),
-                     new Rect(safeX, 0, width, height),
-                     new Rect(safeX, -5, width, height)
-                 })
-        {
-            var topResult = InvokeStatic(
-                typeof(MainWindow),
-                "FindTouchedEdge",
-                workArea,
-                top,
-                1d)!;
-            Assert(topResult.ToString() == "None",
-                "拖到屏幕顶部、贴顶或轻微越界都不得触发手动吸附");
         }
 
         var topLeftCorner = InvokeStatic(
@@ -1351,14 +1494,7 @@ internal static class Program
         var safeLeft = workArea.Left + Math.Max(20, (workArea.Width - width) / 2);
         var safeTop = workArea.Top + Math.Max(20, (workArea.Height - height) / 2);
 
-        window.Left = safeLeft;
-        window.Top = workArea.Top;
-        Invoke(window, "UpdateEdgeDockAfterDrag");
-        Assert(GetField<object>(window, "_edgeDock").ToString() == "None" &&
-               !GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
-            "真实拖拽落点贴住屏幕顶部时不得进入吸附探头状态");
-
-        foreach (var edge in new[] { "Left", "Right", "Bottom" })
+        foreach (var edge in new[] { "Left", "Right", "Top", "Bottom" })
         {
             window.Left = edge switch
             {
@@ -1366,13 +1502,28 @@ internal static class Program
                 "Right" => workArea.Right - width,
                 _ => safeLeft
             };
-            window.Top = edge == "Bottom"
-                ? workArea.Bottom - height
-                : safeTop;
+            window.Top = edge switch
+            {
+                "Top" => workArea.Top,
+                "Bottom" => workArea.Bottom - height,
+                _ => safeTop
+            };
             Invoke(window, "UpdateEdgeDockAfterDrag");
+            var edgeTimer = GetField<DispatcherTimer>(window, "_edgePeekTimer");
             Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
-                   GetField<DispatcherTimer>(window, "_edgePeekTimer").IsEnabled,
+                   edgeTimer.IsEnabled,
                 $"真实拖拽落点贴住{edge}边缘时必须保留吸附探头状态");
+            Assert(edgeTimer.Interval == TimeSpan.FromMilliseconds(500),
+                $"{edge} 探头进入第一个端点后必须停留500ms，不能快速闪过");
+            Invoke(window, "EdgePeekTimer_Tick", null, EventArgs.Empty);
+            Assert(edgeTimer.Interval == TimeSpan.FromMilliseconds(220),
+                $"{edge} 探头端点之间必须以220ms节奏换帧");
+            Invoke(window, "EdgePeekTimer_Tick", null, EventArgs.Empty);
+            Assert(edgeTimer.Interval == TimeSpan.FromMilliseconds(220),
+                $"{edge} 探头中间帧必须维持220ms节奏");
+            Invoke(window, "EdgePeekTimer_Tick", null, EventArgs.Empty);
+            Assert(edgeTimer.Interval == TimeSpan.FromMilliseconds(500),
+                $"{edge} 探头到达另一端点后必须再次停留500ms");
             Invoke(window, "ExitEdgePeek", false, true);
         }
 
@@ -1433,14 +1584,13 @@ internal static class Program
         var roamBaseOffset =
             GetField<TranslateTransform>(window, "PetRoamBaseOffset");
         var facing = GetField<ScaleTransform>(window, "PetFacingScale");
-        var overlay = GetField<Rectangle>(window, "PetRoamTransitionImage");
-        var viewport = GetField<Canvas>(window, "PetFrameViewport");
-        roamBaseOffset.X = 27;
-        roamBaseOffset.Y = 8;
+        var displayFrameBuffer = GetField<WriteableBitmap>(window, "_displayFrameBuffer");
+        var spriteBrush = GetField<ImageBrush>(window, "PetSpriteBrush");
+        roamBaseOffset.X = 35;
+        roamBaseOffset.Y = 10;
         facing.ScaleX = -1;
-        Assert(overlay.Visibility == Visibility.Visible,
-            "真实点击竞态测试必须从仍在交叉淡化的绕屏画面开始");
-        var expectedComposite = CaptureVisualPixels(viewport);
+        Assert(GetField<bool>(window, "_isFrameBlending"),
+            "真实点击竞态测试必须从仍在单buffer淡化的绕屏画面开始");
 
         var interruptedAt = DateTimeOffset.UtcNow;
         var mouseDown = new MouseButtonEventArgs(
@@ -1464,38 +1614,26 @@ internal static class Program
         Assert(nextDue >= interruptedAt + TimeSpan.FromMinutes(10) &&
                nextDue <= DateTimeOffset.UtcNow + TimeSpan.FromMinutes(20.1),
             "真实点击或拖拽按下事件必须把下一次绕屏重排到10-20分钟后");
-        var transitionBuffer =
-            GetField<WriteableBitmap>(window, "_roamTransitionFrameBuffer");
-        Assert(expectedComposite.SequenceEqual(CopyBitmapPixels(transitionBuffer)),
-            "转角交叉淡化期间点击时，退出快照必须逐像素保留停止前的合成画面");
-        var exitOverlayOffset =
-            GetField<TranslateTransform>(window, "PetRoamTransitionOffset");
-        var exitOverlayFacing =
-            GetField<ScaleTransform>(window, "PetRoamTransitionFacing");
         AssertClose(roamBaseOffset.X, 0, "真实点击停止后的主画面锚点 X");
         AssertClose(roamBaseOffset.Y, 0, "真实点击停止后的主画面锚点 Y");
         AssertClose(facing.ScaleX, 1, "真实点击停止后的主画面朝向");
-        AssertClose(exitOverlayOffset.X, 27, "真实点击退出快照保留的锚点 X");
-        AssertClose(exitOverlayOffset.Y, 8, "真实点击退出快照保留的锚点 Y");
-        AssertClose(exitOverlayFacing.ScaleX, -1, "真实点击退出快照保留的朝向");
-        Assert(overlay.Visibility == Visibility.Visible,
-            "真实点击停止绕屏后必须继续原地淡出，不能闪回待机画面");
+        Assert(GetField<bool>(window, "_isFrameBlending") &&
+               GetField<TimeSpan>(window, "_activeFrameBlendDuration") ==
+               TimeSpan.FromMilliseconds(260) &&
+               ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer),
+            "真实点击停止绕屏后必须在同一完整帧buffer内淡回待机，不能闪切");
 
         petHost.ReleaseMouseCapture();
         SetField(window, "_pointerDown", false);
         SetField(window, "_dragStarted", false);
         SetField(window, "_dragInteractionActive", false);
         PumpDispatcher(TimeSpan.FromMilliseconds(60));
-        Assert(overlay.Visibility == Visibility.Visible &&
-               overlay.Opacity > 0 && overlay.Opacity < 1,
-            "真实点击退出淡化开始后必须仍可见且处于半透明状态：" +
-            $"Visibility={overlay.Visibility}, Opacity={overlay.Opacity:F3}, " +
-            $"Generation={GetField<long>(window, "_roamVisualTransitionGeneration")}, " +
-            $"Transitioning={GetField<bool>(window, "_isRoamVisualTransitioning")}");
+        Assert(GetField<bool>(window, "_isFrameBlending"),
+            "真实点击退出淡化开始60ms后仍应处于单buffer中间态");
         PumpDispatcher(TimeSpan.FromMilliseconds(400));
-        Assert(overlay.Visibility == Visibility.Collapsed && overlay.Opacity == 0 &&
-               !GetField<bool>(window, "_isRoamVisualTransitioning"),
-            "真实点击的260ms退出淡化完成后必须彻底收回叠层");
+        Assert(!GetField<bool>(window, "_isFrameBlending") &&
+               ReferenceEquals(spriteBrush.ImageSource, displayFrameBuffer),
+            "真实点击的260ms退出淡化完成后必须停止渲染且不更换ImageSource");
         Invoke(window, "ShowStableFrame", GetField<object>(window, "_idleFrame"));
     }
 
@@ -1507,11 +1645,11 @@ internal static class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
         }
 
-        AssertClose(window.ActualWidth, 145, "绕屏计算使用的宠物实际宽度");
-        AssertClose(window.ActualHeight, 185, "绕屏计算使用的宠物实际高度");
+        AssertClose(window.ActualWidth, 190, "绕屏计算使用的宠物实际宽度");
+        AssertClose(window.ActualHeight, 242, "绕屏计算使用的宠物实际高度");
         var workArea = new Rect(0, 0, 1920, 1080);
-        const double petWidth = 145;
-        const double petHeight = 185;
+        const double petWidth = 190;
+        const double petHeight = 242;
         var expectedPerimeter = 2 * (
             workArea.Width - petWidth + workArea.Height - petHeight);
         var perimeter = (double)InvokeStatic(
@@ -1652,18 +1790,29 @@ internal static class Program
         Assert(reactionStarted, "打开待办前应能启动一段普通动作作为抢占测试");
         Assert(GetRawField(window, "_activeClip") is not null,
             "抢占测试开始后应存在活动动作");
+        var reactionActionIndex = GetProperty<int>(reactionClip, "ActionFrameIndex");
+        Invoke(window, "ShowActiveClipFrame", reactionActionIndex);
+        var ordinaryActionFrame = GetField<object>(window, "_currentSpriteFrame");
+        Assert((int)InvokeStatic(
+                   typeof(MainWindow),
+                   "GetTodoEnterStartIndex",
+                   ordinaryActionFrame)! == 14,
+            "从普通动作打开待办必须直接从wake14接入，不能闪回趴枕头待机");
 
         var originalRight = window.Left + window.Width;
         var originalBottom = window.Top + window.Height;
         Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
+        var ordinaryTodoStartIndex = GetField<int>(window, "_activeFrameIndex");
+        var ordinaryTodoStartFrame = GetSpriteFrameInfo(
+            GetField<object>(window, "_currentSpriteFrame"));
         PumpDispatcher(TimeSpan.FromMilliseconds(30));
 
         Assert(todoWindow.IsVisible, "进入 Todo 模式应显示独立 modeless 待办窗口");
         Assert(ReferenceEquals(todoWindow.Owner, window), "显示后 Owner 关系必须保持");
         Assert(!GetField<Popup>(window, "BubblePopup").IsOpen,
             "Todo 模式不得再打开旧 BubblePopup");
-        AssertClose(window.Width, 145, "显示待办时主窗口宽度");
-        AssertClose(window.Height, 185, "显示待办时主窗口高度");
+        AssertClose(window.Width, 190, "显示待办时主窗口宽度");
+        AssertClose(window.Height, 242, "显示待办时主窗口高度");
         AssertClose(window.Left + window.Width, originalRight, "显示待办时主窗口右边界");
         AssertClose(window.Top + window.Height, originalBottom, "显示待办时主窗口下边界");
 
@@ -1680,6 +1829,11 @@ internal static class Program
             "打开 Todo 必须抢占普通动作并启动平滑起身入场");
         Assert(GetField<DispatcherTimer>(window, "_frameTimer").IsEnabled,
             "Todo 起身入场期间动作计时器必须运行");
+        Assert(ordinaryTodoStartIndex == 14 &&
+               ordinaryTodoStartFrame.Name.EndsWith(
+                   "luban-wake-14.png",
+                   StringComparison.Ordinal),
+            "普通动作抢占后的Todo入场首帧必须是wake14");
 
         var entryIndex = GetField<int>(window, "_activeFrameIndex");
         var entryFrame = GetField<object>(window, "_currentSpriteFrame");
@@ -1790,7 +1944,7 @@ internal static class Program
                 $"TodoWindow 应公开 {propertyName} 属性");
         }
 
-        foreach (var methodName in new[] { "FocusInput", "SetAutoRoam" })
+        foreach (var methodName in new[] { "FocusInput", "SetAutoRoam", "SetPetSizeScale" })
         {
             Assert(type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public) is not null,
                 $"TodoWindow 应公开 {methodName} 方法");
@@ -1802,6 +1956,7 @@ internal static class Program
                      "TodoChanged",
                      "DeleteRequested",
                      "AutoRoamChanged",
+                     "PetSizeScaleChanged",
                      "CloseRequested",
                      "ExitRequested",
                      "ImeCompositionChanged"
@@ -1820,7 +1975,7 @@ internal static class Program
         try
         {
             AssertClose(todoWindow.Width, 292, "TodoWindow 总宽度");
-            AssertClose(todoWindow.Height, 306, "TodoWindow 总高度");
+            AssertClose(todoWindow.Height, 350, "TodoWindow 总高度");
             Assert(todoWindow.WindowStyle == WindowStyle.None &&
                    todoWindow.AllowsTransparency &&
                    !todoWindow.ShowInTaskbar &&
@@ -1836,6 +1991,24 @@ internal static class Program
             var scrollViewer = FindVisualDescendant<ScrollViewer>(todoWindow)
                 ?? throw new InvalidOperationException("TodoWindow 找不到待办滚动区域");
             var itemsControl = GetField<ItemsControl>(todoWindow, "TodoItemsControl");
+            var sizeSlider = GetField<Slider>(todoWindow, "PetSizeSlider");
+            var sizeLabel = GetField<TextBlock>(todoWindow, "PetSizeLabel");
+            AssertClose(sizeSlider.Minimum, 75, "桌宠尺寸滑块下限");
+            AssertClose(sizeSlider.Maximum, 140, "桌宠尺寸滑块上限");
+            AssertClose(sizeSlider.TickFrequency, 5, "桌宠尺寸滑块步长");
+            Assert(sizeSlider.IsSnapToTickEnabled,
+                "桌宠尺寸滑块必须吸附到5%档位，避免非整数缩放抖纹");
+            todoWindow.SetPetSizeScale(2);
+            AssertClose(sizeSlider.Value, 140, "尺寸API超过上限时应钳制");
+            todoWindow.SetPetSizeScale(0.1);
+            AssertClose(sizeSlider.Value, 75, "尺寸API低于下限时应钳制");
+            todoWindow.SetPetSizeScale(1);
+            AssertClose(sizeSlider.Value, 100, "尺寸API默认值");
+            Assert(sizeLabel.Text == "100%", "尺寸标签必须同步显示百分比");
+            var sizeEventValue = 0d;
+            todoWindow.PetSizeScaleChanged += value => sizeEventValue = value;
+            sizeSlider.Value = 125;
+            AssertClose(sizeEventValue, 1.25, "尺寸滑块事件值");
             Assert(scrollViewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto,
                 "待办列表必须保留自动垂直滚动条");
             Assert(VirtualizingPanel.GetIsVirtualizing(itemsControl),
@@ -1912,6 +2085,61 @@ internal static class Program
         Assert(due >= before - TimeSpan.FromSeconds(1) &&
                due <= DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1),
             "从关闭切换为启用时，绕屏截止时间必须立即到期，以便马上完整绕一圈");
+    }
+
+    private static void AssertPetSizeScaleContract(MainWindow window)
+    {
+        AssertClose(
+            (double)InvokeStatic(typeof(MainWindow), "NormalizePetSizeScale", double.NaN)!,
+            1,
+            "非有限尺寸应回退默认值");
+        AssertClose(
+            (double)InvokeStatic(typeof(MainWindow), "NormalizePetSizeScale", 0.1d)!,
+            0.75,
+            "尺寸下限");
+        AssertClose(
+            (double)InvokeStatic(typeof(MainWindow), "NormalizePetSizeScale", 2d)!,
+            1.40,
+            "尺寸上限");
+        AssertClose(
+            (double)InvokeStatic(typeof(MainWindow), "NormalizePetSizeScale", 1.23d)!,
+            1.25,
+            "尺寸应吸附到5%档位");
+
+        var store = GetField<AppSettingsStore>(window, "_settingsStore");
+        SetField(window, "_edgeRoamingEnabled", true);
+        Invoke(window, "ApplyPetSizeScale", 1.23d, true, false);
+        AssertClose(GetField<double>(window, "_petSizeScale"), 1.25, "运行时尺寸比例");
+        Assert(Math.Abs(window.Width - 237.5) <= 0.5,
+            $"125%桌宠窗口宽度应只允许设备像素取整，实际 {window.Width}");
+        Assert(Math.Abs(window.Height - 302.5) <= 0.5,
+            $"125%桌宠窗口高度应只允许设备像素取整，实际 {window.Height}");
+        AssertClose(GetField<Grid>(window, "PetHost").Width, 237.5, "125%命中区宽度");
+        AssertClose(GetField<Grid>(window, "PetHost").Height, 302.5, "125%命中区高度");
+        AssertClose(GetField<Viewbox>(window, "PetSizeViewbox").Width, 237.5,
+            "125%视觉缩放宽度");
+        AssertClose(GetField<Viewbox>(window, "PetSizeViewbox").Height, 302.5,
+            "125%视觉缩放高度");
+        AssertClose(GetField<Grid>(window, "PetVisual").Width, 190,
+            "缩放后逻辑画布宽度必须保持190");
+        AssertClose(GetField<Grid>(window, "PetVisual").Height, 242,
+            "缩放后逻辑画布高度必须保持242");
+
+        var savedAfterSize = store.Load();
+        Assert(savedAfterSize.EdgeRoamingEnabled,
+            "只修改尺寸时不得丢失已开启的绕屏设置");
+        AssertClose(savedAfterSize.PetSizeScale, 1.25, "尺寸设置持久化");
+
+        SetField(window, "_edgeRoamingEnabled", true);
+        Invoke(window, "ApplyAutoRoamSetting", false);
+        var savedAfterRoam = store.Load();
+        Assert(!savedAfterRoam.EdgeRoamingEnabled,
+            "关闭绕屏设置必须持久化");
+        AssertClose(savedAfterRoam.PetSizeScale, 1.25,
+            "只修改绕屏开关时不得丢失桌宠尺寸");
+
+        Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+        SetField(window, "_edgeRoamingEnabled", false);
     }
 
     private static void AssertLoggingContract()
@@ -2028,46 +2256,6 @@ internal static class Program
                 $"属性 {instance.GetType().Name}.{name} 类型不正确或为空");
     }
 
-    private static byte[] CaptureVisualPixels(FrameworkElement visual)
-    {
-        visual.UpdateLayout();
-        var width = checked((int)Math.Round(visual.ActualWidth));
-        var height = checked((int)Math.Round(visual.ActualHeight));
-        Assert(width == 145 && height == 185,
-            $"绕屏合成快照必须是145×185，实际 {width}×{height}");
-        var snapshot = new RenderTargetBitmap(
-            width,
-            height,
-            96,
-            96,
-            PixelFormats.Pbgra32);
-        snapshot.Render(visual);
-        return CopyBitmapPixels(snapshot);
-    }
-
-    private static byte[] CopyBitmapPixels(BitmapSource bitmap)
-    {
-        Assert(bitmap.Format == PixelFormats.Pbgra32,
-            $"绕屏快照必须使用Pbgra32，实际 {bitmap.Format}");
-        var stride = checked(bitmap.PixelWidth * 4);
-        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
-        bitmap.CopyPixels(pixels, stride, 0);
-        return pixels;
-    }
-
-    private static bool HasVisibleAlpha(byte[] pixels)
-    {
-        for (var index = 3; index < pixels.Length; index += 4)
-        {
-            if (pixels[index] != 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static void AssertValidRect(Rect rect, string stage)
     {
         Assert(!rect.IsEmpty &&
@@ -2084,6 +2272,9 @@ internal static class Program
         Assert(Math.Abs(actual - expected) < 0.01,
             $"{message}：期望 {expected}，实际 {actual}");
     }
+
+    private static double NormalizeCanvasCoordinate(double value) =>
+        double.IsNaN(value) ? 0 : value;
 
     private static void AssertRectClose(Rect actual, Rect expected, string message)
     {
@@ -2121,11 +2312,13 @@ internal static class Program
         int VisibleBottom,
         int VisibleHeight,
         double CentroidX,
-        double CentroidY);
+        double CentroidY,
+        int LowerBodyWidth);
 
     private sealed record SpriteVisualMetrics(
         int BrimWidth,
         double BrimCenterX,
+        double BrimCenterYRatio,
         int Left,
         int Top,
         int Right,

@@ -23,13 +23,13 @@ ROAM_MODES = ("wriggle", "crawl", "hop")
 RUNTIME_CANVAS_SIZE = (450, 550)
 V2_RUN_SCALE = 1.42
 V2_RUN_LOOP_SCALE = 1.12
-V5_RUN_SOURCE_NAME = "run-loop-v5-16-sheet-alpha.png"
-V6_RUN_BRIDGE_SOURCE_NAME = "run-bridge-v6-2-sheet-alpha.png"
+V5_RUN_SOURCE_NAME = "run-loop-v11-16-sheet-alpha.png"
 V5_RUN_TARGET_HEAD_WIDTH = 248
 V5_RUN_HEAD_REGION_FRACTION = 0.5
-V5_RUN_TARGET_HEAD_TOPS = (
-    128, 131, 130, 126, 124, 122, 124, 119,
-    126, 131, 130, 126, 124, 122, 124, 119,
+V5_RUN_TARGET_HEAD_TOPS = (126,) * 16
+V5_RUN_SEQUENCE_INDICES = (
+    6, 1, 13, 14, 4, 2, 11, 10,
+    7, 3, 5, 9, 0, 8, 12, 15,
 )
 V3_DOWN_SPEED_LINE_BOXES = {
     4: (
@@ -755,7 +755,7 @@ def get_visible_and_head_boxes(
 
 
 def install_v5_run(source_directory: Path, assets_directory: Path) -> None:
-    """Install a reproducible, head-registered 16-phase run loop as frames 9-24."""
+    """Install a head-registered sixteen-phase crossed-leg run loop as frames 9-24."""
 
     assets_directory.mkdir(parents=True, exist_ok=True)
     source = source_directory / V5_RUN_SOURCE_NAME
@@ -772,24 +772,8 @@ def install_v5_run(source_directory: Path, assets_directory: Path) -> None:
         snap_to_transparent_gaps=True,
     )
     if len(cells) != 16:
-        raise ValueError("V5 run sheet must contain exactly sixteen cells")
-
-    bridge_cells, _ = load_cells(
-        resolve_generated_source(
-            source_directory,
-            V6_RUN_BRIDGE_SOURCE_NAME,
-        ),
-        columns=2,
-        rows=1,
-        snap_to_transparent_gaps=True,
-    )
-    if len(bridge_cells) != 2:
-        raise ValueError("V6 run bridge sheet must contain exactly two cells")
-    # The original cell 8 jumps directly from a gathered-foot contact pose to
-    # a fully split airborne stride. Replace only that runtime frame (17) with
-    # the generated early-push-off bridge; the loop stays at sixteen phases and
-    # therefore adds no runtime bitmap or atlas memory.
-    cells[8] = bridge_cells[0]
+        raise ValueError("V11 run sheet must contain exactly sixteen cells")
+    cells = [cells[index] for index in V5_RUN_SEQUENCE_INDICES]
 
     for frame_number, target_head_top, cell in zip(
         range(9, 25),
@@ -997,9 +981,11 @@ def install_v6_roam(source_directory: Path, assets_directory: Path) -> None:
 
     # Keep the approved horizontal V5 size as the reference.  Every generated
     # vertical loop uses one median cap registration per movement mode, avoiding
-    # both cross-direction scale pops and per-frame rescaling.  Downward motion
-    # is the exact 180-degree counterpart of that mode's upward loop, so the
-    # three modes cannot silently share one generic pose set.
+    # both cross-direction scale pops and per-frame rescaling.  The generated
+    # source has inconsistent orientation across modes, so normalize every mode
+    # to an upright, viewer-readable cap first.  Moving down then plays the same
+    # climbing cycle in reverse (feet first) instead of turning the whole mascot
+    # and its cap badge upside down.
     base_scale = get_direct_runtime_registration_scale(horizontal_cells)
     for mode_index, mode in enumerate(ROAM_MODES):
         start = mode_index * 8
@@ -1019,19 +1005,33 @@ def install_v6_roam(source_directory: Path, assets_directory: Path) -> None:
             for cell in mode_vertical_cells
         )
         vertical_group_scale = horizontal_brim_width / vertical_brim_width
+        vertical_head_centers = []
+        for cell in mode_vertical_cells:
+            visible = crop_visible(cell)
+            brim = get_blue_brim_box(visible)
+            vertical_head_centers.append(
+                ((brim[1] + brim[3]) / 2) / max(1, visible.height)
+            )
+        rotate_to_upright = median(vertical_head_centers) > 0.5
+        upright_vertical_sprites = []
+        for cell in mode_vertical_cells:
+            vertical_source = crop_visible(cell)
+            if rotate_to_upright:
+                vertical_source = vertical_source.transpose(
+                    Image.Transpose.ROTATE_180
+                )
+            upright_vertical_sprites.append(
+                resize_sprite(vertical_source, vertical_group_scale)
+            )
+
         for frame_number, source_index in enumerate(
             V7_ROAM_SEQUENCE_INDICES,
             start=1,
         ):
             horizontal_sprite = horizontal_sprites[source_index]
-            vertical_source = crop_visible(mode_vertical_cells[source_index])
-            vertical_up_sprite = resize_sprite(
-                vertical_source,
-                vertical_group_scale,
-            )
-            vertical_down_sprite = vertical_up_sprite.transpose(
-                Image.Transpose.ROTATE_180
-            )
+            vertical_up_sprite = upright_vertical_sprites[source_index]
+            reverse_index = (-source_index) % len(upright_vertical_sprites)
+            vertical_down_sprite = upright_vertical_sprites[reverse_index]
 
             direction_sprites = {
                 "horizontal": horizontal_sprite,
@@ -1101,8 +1101,8 @@ def main() -> None:
         "--v5-run",
         action="store_true",
         help=(
-            "Install the tracked sixteen-cell V5 run sheet as a normalized "
-            "16-phase loop in frames 9 through 24."
+            "Install the tracked sixteen-cell V11 run sheet as a normalized "
+            "crossed-leg loop in frames 9 through 24."
         ),
     )
     selection.add_argument(

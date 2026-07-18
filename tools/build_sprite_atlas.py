@@ -13,8 +13,8 @@ from PIL import Image
 from split_sprite_sheet import resize_rgba_premultiplied
 
 
-DISPLAY_WIDTH = 145
-DISPLAY_HEIGHT = 185
+DISPLAY_WIDTH = 190
+DISPLAY_HEIGHT = 242
 TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1024
 

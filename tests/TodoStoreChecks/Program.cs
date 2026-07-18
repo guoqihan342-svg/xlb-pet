@@ -48,11 +48,19 @@ static void CheckAppSettingsStore(string tempDirectory)
 
     var settingsPath = Path.Combine(tempDirectory, "nested", "settings.json");
     var store = new AppSettingsStore(settingsPath);
-    Assert(store.Load().EdgeRoamingEnabled, "设置文件缺失时应默认开启绕屏移动");
+    var defaults = store.Load();
+    Assert(defaults.EdgeRoamingEnabled, "设置文件缺失时应默认开启绕屏移动");
+    AssertClose(defaults.PetSizeScale, 1.0, "设置文件缺失时桌宠尺寸应为100%");
 
-    Assert(store.Save(new AppSettings { EdgeRoamingEnabled = false }), "首次保存 false 应成功");
+    Assert(store.Save(new AppSettings
+    {
+        EdgeRoamingEnabled = false,
+        PetSizeScale = 1.25
+    }), "首次保存绕屏和尺寸设置应成功");
     Assert(Directory.Exists(Path.GetDirectoryName(settingsPath)), "保存时应自动创建设置目录");
-    Assert(!store.Load().EdgeRoamingEnabled, "false 设置应能往返保存和加载");
+    var firstLoaded = store.Load();
+    Assert(!firstLoaded.EdgeRoamingEnabled, "false 设置应能往返保存和加载");
+    AssertClose(firstLoaded.PetSizeScale, 1.25, "125%尺寸应能往返保存和加载");
 
     var bytes = File.ReadAllBytes(settingsPath);
     Assert(
@@ -60,13 +68,31 @@ static void CheckAppSettingsStore(string tempDirectory)
         "设置 JSON 应使用无 BOM 的 UTF-8 编码");
     Assert(File.ReadAllText(settingsPath).Contains("\"edgeRoamingEnabled\"", StringComparison.Ordinal),
         "设置 JSON 应使用 camelCase 字段名");
+    Assert(File.ReadAllText(settingsPath).Contains("\"petSizeScale\"", StringComparison.Ordinal),
+        "设置 JSON 必须持久化 camelCase 的桌宠尺寸字段");
 
-    Assert(store.Save(new AppSettings { EdgeRoamingEnabled = true }), "覆盖保存 true 应成功");
-    Assert(store.Load().EdgeRoamingEnabled, "true 设置应能往返保存和加载");
+    Assert(store.Save(new AppSettings
+    {
+        EdgeRoamingEnabled = true,
+        PetSizeScale = 0.75
+    }), "覆盖保存绕屏和尺寸下限应成功");
+    var secondLoaded = store.Load();
+    Assert(secondLoaded.EdgeRoamingEnabled, "true 设置应能往返保存和加载");
+    AssertClose(secondLoaded.PetSizeScale, 0.75, "尺寸下限应能往返保存和加载");
     Assert(!File.Exists(settingsPath + ".tmp"), "成功保存后不应残留临时文件");
 
+    File.WriteAllText(settingsPath, "{\"edgeRoamingEnabled\":false}");
+    var migratedLegacySettings = store.Load();
+    Assert(!migratedLegacySettings.EdgeRoamingEnabled,
+        "旧版仅含绕屏开关的 JSON 不得丢失 false 设置");
+    AssertClose(migratedLegacySettings.PetSizeScale, 1.0,
+        "旧版设置缺少尺寸字段时应平滑迁移到100%");
+
     File.WriteAllText(settingsPath, "这不是有效 JSON");
-    Assert(store.Load().EdgeRoamingEnabled, "损坏 JSON 应回退到默认开启且不抛异常");
+    var corruptedFallback = store.Load();
+    Assert(corruptedFallback.EdgeRoamingEnabled, "损坏 JSON 应回退到默认开启且不抛异常");
+    AssertClose(corruptedFallback.PetSizeScale, 1.0,
+        "损坏 JSON 应同时回退到100%桌宠尺寸");
 
     var blockedPath = Path.Combine(tempDirectory, "blocked-settings.json");
     Directory.CreateDirectory(blockedPath);
@@ -81,5 +107,13 @@ static void Assert(bool condition, string message)
     if (!condition)
     {
         throw new InvalidOperationException(message);
+    }
+}
+
+static void AssertClose(double actual, double expected, string message)
+{
+    if (Math.Abs(actual - expected) >= 0.0001)
+    {
+        throw new InvalidOperationException($"{message}：期望 {expected}，实际 {actual}");
     }
 }

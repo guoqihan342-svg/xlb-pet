@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="小鲁班待办事项"
         Width="292"
-        Height="306"
+        Height="350"
         AllowsTransparency="True"
         Background="Transparent"
         ResizeMode="NoResize"
@@ -33,6 +33,7 @@
                     <RowDefinition Height="30" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="32" />
+                    <RowDefinition Height="44" />
                     <RowDefinition Height="38" />
                 </Grid.RowDefinitions>
 
@@ -180,7 +181,41 @@
                           Checked="AutoRoamToggle_Changed"
                           Unchecked="AutoRoamToggle_Changed" />
 
-                <Grid Grid.Row="3">
+                <Grid Grid.Row="3" Margin="0,2,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="72" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="46" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center"
+                               FontFamily="Microsoft YaHei UI"
+                               FontSize="12"
+                               Foreground="#515966"
+                               Text="桌宠大小" />
+                    <Slider x:Name="PetSizeSlider"
+                            Grid.Column="1"
+                            Margin="2,0,8,0"
+                            VerticalAlignment="Center"
+                            Cursor="Hand"
+                            Minimum="75"
+                            Maximum="140"
+                            TickFrequency="5"
+                            IsSnapToTickEnabled="True"
+                            SmallChange="5"
+                            LargeChange="10"
+                            ToolTip="默认 100% 比旧版高度增加约 1.5 厘米"
+                            ValueChanged="PetSizeSlider_ValueChanged" />
+                    <TextBlock x:Name="PetSizeLabel"
+                               Grid.Column="2"
+                               VerticalAlignment="Center"
+                               FontFamily="Microsoft YaHei UI"
+                               FontSize="12"
+                               Foreground="#515966"
+                               TextAlignment="Right"
+                               Text="100%" />
+                </Grid>
+
+                <Grid Grid.Row="4">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="54" />

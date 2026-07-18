@@ -12,6 +12,7 @@ namespace LubanDesktopPet;
 public partial class TodoWindow : Window
 {
     private bool _settingAutoRoam;
+    private bool _settingPetSizeScale;
     private bool _tailOnRight = true;
     private bool _allowClose;
     private bool _hasClosed;
@@ -48,6 +49,8 @@ public partial class TodoWindow : Window
 
     public event Action<bool>? AutoRoamChanged;
 
+    public event Action<double>? PetSizeScaleChanged;
+
     public event EventHandler? CloseRequested;
 
     public event EventHandler? ExitRequested;
@@ -80,6 +83,24 @@ public partial class TodoWindow : Window
         finally
         {
             _settingAutoRoam = false;
+        }
+    }
+
+    public void SetPetSizeScale(double scale)
+    {
+        var normalizedScale = Math.Clamp(
+            double.IsFinite(scale) ? scale : 1.0,
+            0.75,
+            1.40);
+        _settingPetSizeScale = true;
+        try
+        {
+            PetSizeSlider.Value = Math.Round(normalizedScale * 100 / 5) * 5;
+            PetSizeLabel.Text = $"{PetSizeSlider.Value:F0}%";
+        }
+        finally
+        {
+            _settingPetSizeScale = false;
         }
     }
 
@@ -238,6 +259,23 @@ public partial class TodoWindow : Window
         if (!_settingAutoRoam)
         {
             AutoRoamChanged?.Invoke(AutoRoamToggle.IsChecked == true);
+        }
+    }
+
+
+    private void PetSizeSlider_ValueChanged(
+        object sender,
+        RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (PetSizeLabel is null)
+        {
+            return;
+        }
+
+        PetSizeLabel.Text = $"{e.NewValue:F0}%";
+        if (!_settingPetSizeScale)
+        {
+            PetSizeScaleChanged?.Invoke(e.NewValue / 100);
         }
     }
 }
