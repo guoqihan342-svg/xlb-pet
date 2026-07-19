@@ -1,6 +1,7 @@
 bin/
 obj/
 tmp/
+.codex_tmp/
 tests/**/bin/
 tests/**/obj/
 **/__pycache__/

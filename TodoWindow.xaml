@@ -16,6 +16,12 @@
         UseLayoutRounding="True"
         WindowStartupLocation="Manual"
         WindowStyle="None">
+    <Window.CommandBindings>
+        <CommandBinding Command="ApplicationCommands.Copy"
+                        PreviewCanExecute="CopyCommand_CanExecute"
+                        PreviewExecuted="CopyCommand_Executed" />
+    </Window.CommandBindings>
+
     <Grid KeyboardNavigation.TabNavigation="Cycle">
         <Grid.ColumnDefinitions>
             <ColumnDefinition x:Name="FirstColumn" Width="280" />
@@ -33,7 +39,6 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="30" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="32" />
                     <RowDefinition Height="44" />
                     <RowDefinition Height="38" />
                 </Grid.RowDefinitions>
@@ -100,8 +105,18 @@
                                 <DataTemplate>
                                     <Border Margin="0,0,0,3"
                                             Padding="7,2"
-                                            Background="#F6F7F9"
+                                            MaxHeight="41"
                                             CornerRadius="8">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="#F6F7F9" />
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#EAF3FF" />
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -114,15 +129,38 @@
                                                       Cursor="Hand"
                                                       IsChecked="{Binding IsCompleted, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                       Click="TodoCheckBox_Click" />
-                                            <TextBlock Grid.Column="1"
-                                                       VerticalAlignment="Center"
-                                                       FontFamily="Microsoft YaHei"
-                                                       FontSize="13"
-                                                       Text="{Binding Text}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding Text}">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
+                                            <TextBox Grid.Column="1"
+                                                     MinWidth="0"
+                                                     MaxHeight="36"
+                                                     Padding="0"
+                                                     VerticalAlignment="Center"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Cursor="IBeam"
+                                                     FontFamily="Microsoft YaHei"
+                                                     FontSize="13"
+                                                     HorizontalScrollBarVisibility="Disabled"
+                                                     IsReadOnly="True"
+                                                     IsReadOnlyCaretVisible="False"
+                                                     IsTabStop="False"
+                                                     MaxLines="2"
+                                                     MinLines="1"
+                                                     Text="{Binding Text, Mode=OneWay}"
+                                                     TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Hidden"
+                                                     ToolTipService.InitialShowDelay="300"
+                                                     ToolTipService.ShowDuration="30000">
+                                                <TextBox.ToolTip>
+                                                    <ToolTip MaxWidth="360"
+                                                             Padding="8">
+                                                        <TextBlock MaxWidth="344"
+                                                                   FontFamily="Microsoft YaHei"
+                                                                   Text="{Binding Text}"
+                                                                   TextWrapping="Wrap" />
+                                                    </ToolTip>
+                                                </TextBox.ToolTip>
+                                                <TextBox.Style>
+                                                    <Style TargetType="TextBox">
                                                         <Setter Property="Foreground" Value="#303744" />
                                                         <Style.Triggers>
                                                             <DataTrigger Binding="{Binding IsCompleted}" Value="True">
@@ -131,8 +169,8 @@
                                                             </DataTrigger>
                                                         </Style.Triggers>
                                                     </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
+                                                </TextBox.Style>
+                                            </TextBox>
                                             <Button Grid.Column="2"
                                                     Width="24"
                                                     Height="24"
@@ -170,19 +208,7 @@
                     </TextBlock>
                 </Grid>
 
-                <CheckBox x:Name="AutoRoamToggle"
-                          Grid.Row="2"
-                          VerticalAlignment="Center"
-                          Cursor="Hand"
-                          FontFamily="Microsoft YaHei"
-                          FontSize="12"
-                          Foreground="#515966"
-                          Content="自动绕屏移动"
-                          ToolTip="仅控制沿屏幕边缘移动，其他自动可爱动作不受影响"
-                          Checked="AutoRoamToggle_Changed"
-                          Unchecked="AutoRoamToggle_Changed" />
-
-                <Grid Grid.Row="3" Margin="0,2,0,4">
+                <Grid Grid.Row="2" Margin="0,2,0,4">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="72" />
                         <ColumnDefinition Width="*" />
@@ -198,9 +224,12 @@
                             Margin="2,0,8,0"
                             VerticalAlignment="Center"
                             Cursor="Hand"
+                            FontFamily="Microsoft YaHei"
                             Minimum="75"
                             Maximum="140"
+                            SnapsToDevicePixels="False"
                             TickFrequency="1"
+                            UseLayoutRounding="False"
                             IsSnapToTickEnabled="False"
                             IsMoveToPointEnabled="True"
                             SmallChange="1"
@@ -217,7 +246,7 @@
                                Text="100%" />
                 </Grid>
 
-                <Grid Grid.Row="4">
+                <Grid Grid.Row="3">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="54" />

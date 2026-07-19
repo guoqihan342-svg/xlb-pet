@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -11,9 +12,17 @@ namespace LubanDesktopPet;
 
 public partial class TodoWindow : Window
 {
-    private bool _settingAutoRoam;
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
+    private bool _petSizeScaleNotificationQueued;
+    private double _pendingPetSizeScale = 1;
+    private int _displayedPetSizePercent = int.MinValue;
+    private readonly Action _flushPetSizeScaleChangedAction;
+    private readonly Action _resetImeCompositionAfterFocusLossAction;
+    private readonly Action _focusInputAction;
+    private readonly Action _retryClipboardCopyAction;
+    private string? _pendingClipboardCopyText;
+    private bool _clipboardCopyRetryQueued;
     private bool _tailOnRight = true;
     private bool _allowClose;
     private bool _hasClosed;
@@ -21,6 +30,11 @@ public partial class TodoWindow : Window
     public TodoWindow()
     {
         InitializeComponent();
+        _flushPetSizeScaleChangedAction = FlushPendingPetSizeScaleChanged;
+        _resetImeCompositionAfterFocusLossAction =
+            ResetImeCompositionAfterFocusLoss;
+        _focusInputAction = FocusInputCore;
+        _retryClipboardCopyAction = RetryClipboardCopy;
 
         TextCompositionManager.AddPreviewTextInputStartHandler(
             TodoInput,
@@ -36,6 +50,7 @@ public partial class TodoWindow : Window
         PetSizeSlider.PreviewKeyDown += PetSizeSlider_PreviewKeyDown;
         PetSizeSlider.PreviewKeyUp += PetSizeSlider_PreviewKeyUp;
         PetSizeSlider.LostKeyboardFocus += PetSizeSlider_LostKeyboardFocus;
+        PreviewKeyDown += TodoWindow_PreviewKeyDown;
         Closing += TodoWindow_Closing;
         Closed += (_, _) => _hasClosed = true;
     }
@@ -53,8 +68,6 @@ public partial class TodoWindow : Window
     public event Action<TodoItem>? TodoChanged;
 
     public event Action<TodoItem>? DeleteRequested;
-
-    public event Action<bool>? AutoRoamChanged;
 
     public event Action<double>? PetSizeScaleChanged;
 
@@ -76,24 +89,151 @@ public partial class TodoWindow : Window
         }
 
         Activate();
-        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
-        {
-            TodoInput.Focus();
-            Keyboard.Focus(TodoInput);
-            TodoInput.Select(TodoInput.Text.Length, 0);
-        }));
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, _focusInputAction);
     }
 
-    public void SetAutoRoam(bool enabled)
+    private void FocusInputCore()
     {
-        _settingAutoRoam = true;
+        // A rapid second right-click can hide the owned window before the Input
+        // priority callback runs. Do not revive focus/IME state after it closed.
+        if (!IsVisible || _hasClosed)
+        {
+            return;
+        }
+
+        // Do not steal a selection from either the input or a read-only todo
+        // row when a delayed Input-priority focus request finally runs.
+        if (IsKeyboardFocusWithin)
+        {
+            return;
+        }
+
+        TodoInput.Focus();
+        Keyboard.Focus(TodoInput);
+        TodoInput.Select(TodoInput.Text.Length, 0);
+    }
+
+    private void CopyCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
+    {
+        if (Keyboard.FocusedElement is not TextBox textBox)
+        {
+            e.CanExecute = false;
+            return;
+        }
+
+        if (!IsCopySource(textBox))
+        {
+            return;
+        }
+
+        e.CanExecute = CanCopyFromTextBox(textBox);
+        e.Handled = true;
+    }
+
+    private void CopyCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+    {
+        if (Keyboard.FocusedElement is not TextBox textBox)
+        {
+            return;
+        }
+
+        var text = GetCopyText(textBox);
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        CopyTextToClipboard(text);
+        e.Handled = true;
+    }
+
+    private void TodoWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // TextBox's built-in Copy command disables itself when the selection
+        // is empty before a parent CommandBinding can reliably replace that
+        // behavior. Intercept the physical shortcut at the owned-window root:
+        // input copies its full value without a selection, while read-only
+        // rows still require an explicit text selection.
+        if (e.Key != Key.C ||
+            (Keyboard.Modifiers & ModifierKeys.Control) == 0 ||
+            Keyboard.FocusedElement is not TextBox textBox ||
+            !IsCopySource(textBox))
+        {
+            return;
+        }
+
+        var text = GetCopyText(textBox);
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        CopyTextToClipboard(text);
+        e.Handled = true;
+    }
+
+    private bool IsCopySource(TextBox textBox) =>
+        ReferenceEquals(textBox, TodoInput) ||
+        textBox is { IsReadOnly: true, DataContext: TodoItem };
+
+    private bool CanCopyFromTextBox(TextBox textBox) =>
+        !string.IsNullOrEmpty(GetCopyText(textBox));
+
+    private string? GetCopyText(TextBox textBox)
+    {
+        if (ReferenceEquals(textBox, TodoInput))
+        {
+            return textBox.SelectionLength > 0
+                ? textBox.SelectedText
+                : textBox.Text;
+        }
+
+        return textBox is { IsReadOnly: true, DataContext: TodoItem } &&
+               textBox.SelectionLength > 0
+            ? textBox.SelectedText
+            : null;
+    }
+
+    private void CopyTextToClipboard(string text)
+    {
         try
         {
-            AutoRoamToggle.IsChecked = enabled;
+            Clipboard.SetDataObject(text, true);
+            _pendingClipboardCopyText = null;
         }
-        finally
+        catch (ExternalException)
         {
-            _settingAutoRoam = false;
+            _pendingClipboardCopyText = text;
+            if (_clipboardCopyRetryQueued)
+            {
+                return;
+            }
+
+            _clipboardCopyRetryQueued = true;
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                _retryClipboardCopyAction);
+        }
+    }
+
+    private void RetryClipboardCopy()
+    {
+        _clipboardCopyRetryQueued = false;
+        var text = _pendingClipboardCopyText;
+        _pendingClipboardCopyText = null;
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetDataObject(text, true);
+        }
+        catch (ExternalException)
+        {
+            // The clipboard can be held briefly by another process. One
+            // deferred retry keeps Ctrl+C responsive without a blocking loop.
         }
     }
 
@@ -107,7 +247,7 @@ public partial class TodoWindow : Window
         try
         {
             PetSizeSlider.Value = normalizedScale * 100;
-            PetSizeLabel.Text = $"{PetSizeSlider.Value:F0}%";
+            UpdatePetSizeLabel(PetSizeSlider.Value);
         }
         finally
         {
@@ -188,13 +328,15 @@ public partial class TodoWindow : Window
     {
         Dispatcher.BeginInvoke(
             DispatcherPriority.ContextIdle,
-            new Action(() =>
-            {
-                if (!TodoInput.IsKeyboardFocusWithin)
-                {
-                    SetImeComposing(false);
-                }
-            }));
+            _resetImeCompositionAfterFocusLossAction);
+    }
+
+    private void ResetImeCompositionAfterFocusLoss()
+    {
+        if (!TodoInput.IsKeyboardFocusWithin)
+        {
+            SetImeComposing(false);
+        }
     }
 
     private void SetImeComposing(bool value)
@@ -265,14 +407,6 @@ public partial class TodoWindow : Window
         }
     }
 
-    private void AutoRoamToggle_Changed(object sender, RoutedEventArgs e)
-    {
-        if (!_settingAutoRoam)
-        {
-            AutoRoamChanged?.Invoke(AutoRoamToggle.IsChecked == true);
-        }
-    }
-
     private void PetSizeSlider_PreviewMouseLeftButtonDown(
         object sender,
         MouseButtonEventArgs e) => BeginPetSizeAdjustment();
@@ -327,8 +461,37 @@ public partial class TodoWindow : Window
             return;
         }
 
+        FlushPendingPetSizeScaleChanged();
         _petSizeAdjustmentActive = false;
         PetSizeAdjustmentCompleted?.Invoke();
+    }
+
+    private void QueuePetSizeScaleChanged(double scale)
+    {
+        _pendingPetSizeScale = scale;
+        if (_petSizeScaleNotificationQueued)
+        {
+            return;
+        }
+
+        _petSizeScaleNotificationQueued = true;
+        Dispatcher.BeginInvoke(
+            // Keep the Thumb's pointer input ahead of scale notifications.
+            // MainWindow coalesces the latest value on its composition clock,
+            // and EndPetSizeAdjustment explicitly flushes the final value.
+            DispatcherPriority.Background,
+            _flushPetSizeScaleChangedAction);
+    }
+
+    internal void FlushPendingPetSizeScaleChanged()
+    {
+        if (!_petSizeScaleNotificationQueued)
+        {
+            return;
+        }
+
+        _petSizeScaleNotificationQueued = false;
+        PetSizeScaleChanged?.Invoke(_pendingPetSizeScale);
     }
 
 
@@ -341,10 +504,31 @@ public partial class TodoWindow : Window
             return;
         }
 
-        PetSizeLabel.Text = $"{e.NewValue:F0}%";
+        UpdatePetSizeLabel(e.NewValue);
+
         if (!_settingPetSizeScale)
         {
-            PetSizeScaleChanged?.Invoke(e.NewValue / 100);
+            var scale = e.NewValue / 100;
+            if (_petSizeAdjustmentActive)
+            {
+                QueuePetSizeScaleChanged(scale);
+            }
+            else
+            {
+                PetSizeScaleChanged?.Invoke(scale);
+            }
         }
+    }
+
+    private void UpdatePetSizeLabel(double percentage)
+    {
+        var roundedPercentage = (int)Math.Round(percentage);
+        if (_displayedPetSizePercent == roundedPercentage)
+        {
+            return;
+        }
+
+        _displayedPetSizePercent = roundedPercentage;
+        PetSizeLabel.Text = $"{roundedPercentage}%";
     }
 }

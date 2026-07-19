@@ -19,12 +19,15 @@ DISPLAY_WIDTH = 399
 DISPLAY_HEIGHT = 509
 TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1540
+MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
 ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
-ROAM_FRAME_COUNTS = {
-    "wriggle": 48,
+WAKE_FRAME_COUNT = 27
+ACTION_ENTRY_BRIDGES = frozenset(ACTION_NAMES)
+ACTION_INTERNAL_BRIDGES = {
+    "yawn": (6,),
+    "cry": (3,),
+    "think": (6,),
 }
-ROAM_DIRECTIONS = ("horizontal", "vertical-up", "vertical-down")
-WRIGGLE_CORNER_FRAME_COUNT = 48
 
 
 def replace_with_retry(temporary: Path, destination: Path) -> None:
@@ -90,10 +93,31 @@ def encode_pbgra32_lz4(image: Image.Image) -> bytes:
     pbgra[:, :, 3] = alpha[:, :, 0].astype(np.uint8)
     return lz4.block.compress(
         pbgra.tobytes(),
-        mode="fast",
-        acceleration=8,
+        # High-compression mode changes only the on-disk LZ4 representation;
+        # the decoder still reconstructs the exact same Pbgra32 bytes.  Level
+        # 9 keeps the single-file publish safely below GitHub's 100 MB object
+        # limit without trading runtime memory or sprite quality for size.
+        mode="high_compression",
+        compression=9,
         store_size=False,
     )
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_set_fingerprint(root: Path, paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for resource_path in paths:
+        digest.update(resource_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(file_sha256(root / resource_path)))
+    return digest.hexdigest()
 
 
 @dataclass
@@ -108,46 +132,33 @@ class PackedSprite:
     atlas_y: int = 0
 
 
-def wriggle_corner_paths(root: Path) -> list[str]:
-    paths = [
-        f"Assets/luban-roam-wriggle-corner-{number:02}.png"
-        for number in range(1, WRIGGLE_CORNER_FRAME_COUNT + 1)
-    ]
-    present = [(root / path).is_file() for path in paths]
-    if not all(present):
-        missing = [
-            path
-            for path, exists in zip(paths, present, strict=True)
-            if not exists
-        ]
-        raise RuntimeError(
-            "Wriggle corner transition must contain all "
-            f"{WRIGGLE_CORNER_FRAME_COUNT} frames; "
-            f"missing={missing}"
-        )
+def action_resource_paths(action: str) -> list[str]:
+    paths: list[str] = []
+    if action in ACTION_ENTRY_BRIDGES:
+        paths.append(f"Assets/luban-{action}-entry-bridge.png")
+    bridge_after_frames = ACTION_INTERNAL_BRIDGES.get(action, ())
+    for number in range(1, 25):
+        paths.append(f"Assets/luban-{action}-frame-{number:02}.png")
+        if number in bridge_after_frames:
+            paths.append(
+                f"Assets/luban-{action}-bridge-{number:02}-{number + 1:02}.png"
+            )
     return paths
 
 
 def resource_paths(root: Path) -> list[str]:
     paths = ["Assets/luban-idle.png"]
-    paths.extend(f"Assets/luban-wake-{number:02}.png" for number in range(1, 15))
+    paths.extend(
+        f"Assets/luban-wake-{number:02}.png"
+        for number in range(1, WAKE_FRAME_COUNT + 1)
+    )
     for edge in ("left", "top", "bottom"):
         paths.extend(
             f"Assets/luban-edge-{edge}-{number:02}.png"
             for number in range(1, 5)
-        )
-    for mode, frame_count in ROAM_FRAME_COUNTS.items():
-        for direction in ROAM_DIRECTIONS:
-            paths.extend(
-                f"Assets/luban-roam-{mode}-{direction}-{number:02}.png"
-                for number in range(1, frame_count + 1)
-            )
-    paths.extend(wriggle_corner_paths(root))
+    )
     for action in ACTION_NAMES:
-        paths.extend(
-            f"Assets/luban-{action}-frame-{number:02}.png"
-            for number in range(1, 25)
-        )
+        paths.extend(action_resource_paths(action))
     if len(set(paths)) != len(paths):
         raise RuntimeError(
             f"Sprite resource list contains duplicates: {len(paths)} paths"
@@ -277,12 +288,42 @@ def simulate_shelf_pack(
 
 
 def pack_sprites(sprites: list[PackedSprite]) -> tuple[int, int]:
-    width, height, placements = simulate_shelf_pack(
-        sprites,
+    # Search deterministic shelf widths and retain the smallest-area valid
+    # layout while keeping every decoded page under the runtime memory limit.
+    minimum_width = max(
         REUSABLE_PAGE_MAX_WIDTH,
+        max(sprite.width for sprite in sprites),
     )
-    if width > 4096 or height > 4096:
+    candidates: list[
+        tuple[int, int, int, list[tuple[PackedSprite, int, int]]]
+    ] = []
+    candidate_widths = [
+        *range(minimum_width, 4097, 32),
+        4096,
+    ]
+    for maximum_width in dict.fromkeys(candidate_widths):
+        width, height, placements = simulate_shelf_pack(
+            sprites,
+            maximum_width,
+        )
+        if (
+            width <= 4096
+            and height <= 4096
+            and width * height * 4 <= MAX_DECODED_PAGE_BYTES
+        ):
+            candidates.append((
+                width * height,
+                max(width, height),
+                width,
+                placements,
+            ))
+    if not candidates:
         raise RuntimeError("Could not pack sprite atlas within 4096x4096")
+    _, _, width, placements = min(candidates, key=lambda item: item[:3])
+    height = max(
+        atlas_y + sprite.height
+        for sprite, _, atlas_y in placements
+    )
     for sprite, atlas_x, atlas_y in placements:
         sprite.atlas_x = atlas_x
         sprite.atlas_y = atlas_y
@@ -291,32 +332,25 @@ def pack_sprites(sprites: list[PackedSprite]) -> tuple[int, int]:
 
 def page_resource_paths(root: Path) -> dict[str, list[str]]:
     idle = "Assets/luban-idle.png"
-    wake = [f"Assets/luban-wake-{number:02}.png" for number in range(1, 15)]
-    pages: dict[str, list[str]] = {"idle": [idle]}
-    for action in ACTION_NAMES:
-        pages[f"action-{action}"] = [idle, *wake, *[
-            f"Assets/luban-{action}-frame-{number:02}.png"
-            for number in range(1, 25)
-        ]]
-    pages["edge"] = [idle, *[
-        f"Assets/luban-edge-{edge}-{number:02}.png"
-        for edge in ("left", "top", "bottom")
-        for number in range(1, 5)
-    ]]
-    wriggle_count = ROAM_FRAME_COUNTS["wriggle"]
-    pages["roam-wriggle-horizontal"] = [idle, *[
-        f"Assets/luban-roam-wriggle-horizontal-{number:02}.png"
-        for number in range(1, wriggle_count + 1)
-    ]]
-    pages["roam-wriggle-vertical"] = [idle, *[
-        f"Assets/luban-roam-wriggle-{direction}-{number:02}.png"
-        for direction in ("vertical-up", "vertical-down")
-        for number in range(1, wriggle_count + 1)
-    ]]
-    pages["roam-wriggle-corner"] = [
-        idle,
-        *wriggle_corner_paths(root),
+    wake = [
+        f"Assets/luban-wake-{number:02}.png"
+        for number in range(1, WAKE_FRAME_COUNT + 1)
     ]
+    # The shared idle/wake page is always hot. Each action page contains its
+    # own poses and approved transition bridges, so wake pixels are not
+    # duplicated seven times and a cold action page can decode in the
+    # background while the wake path plays.
+    edge = [
+        f"Assets/luban-edge-{edge_name}-{number:02}.png"
+        for edge_name in ("left", "top", "bottom")
+        for number in range(1, 5)
+    ]
+    # Idle, wake, and manual edge-peek frames share one always-hot page. A
+    # drag release can therefore switch to the first edge pose atomically,
+    # without a cold page decode advancing the edge clock before it is shown.
+    pages: dict[str, list[str]] = {"idle": [idle, *wake, *edge]}
+    for action in ACTION_NAMES:
+        pages[f"action-{action}"] = action_resource_paths(action)
     expected = set(resource_paths(root))
     actual = {path for paths in pages.values() for path in paths}
     if actual != expected:
@@ -344,6 +378,12 @@ def build_page(
 ) -> dict[str, object]:
     sprites = build_unique_sprites(root, paths)
     atlas_width, atlas_height = pack_sprites(sprites)
+    uncompressed_byte_count = atlas_width * atlas_height * 4
+    if uncompressed_byte_count > MAX_DECODED_PAGE_BYTES:
+        raise RuntimeError(
+            f"Atlas page {page_name} decodes to {uncompressed_byte_count} bytes, "
+            f"above the {MAX_DECODED_PAGE_BYTES}-byte reusable-buffer limit"
+        )
     atlas = Image.new("RGBA", (atlas_width, atlas_height), (0, 0, 0, 0))
     frames: dict[str, dict[str, int]] = {}
     for sprite in sprites:
@@ -366,6 +406,9 @@ def build_page(
     runtime_path = atlas_path.with_suffix(".pbgra.lz4")
     runtime_bytes = encode_pbgra32_lz4(atlas)
     write_bytes_atomically(runtime_path, runtime_bytes)
+    source_fingerprint = source_set_fingerprint(root, paths)
+    content_sha256 = hashlib.sha256(runtime_bytes).hexdigest()
+    preview_sha256 = file_sha256(atlas_path)
     print(
         f"  {page_name}: {atlas_width}x{atlas_height}, "
         f"{len(ordered_frames)} frames, {len(sprites)} unique, "
@@ -376,8 +419,11 @@ def build_page(
         "previewResource": atlas_path.relative_to(root).as_posix(),
         "width": atlas_width,
         "height": atlas_height,
-        "uncompressedByteCount": atlas_width * atlas_height * 4,
+        "uncompressedByteCount": uncompressed_byte_count,
         "compressedByteCount": len(runtime_bytes),
+        "sourceFingerprint": source_fingerprint,
+        "contentSha256": content_sha256,
+        "previewSha256": preview_sha256,
         "logicalFrameCount": len(ordered_frames),
         "uniqueSpriteCount": len(sprites),
         "frames": ordered_frames,
@@ -430,6 +476,8 @@ def write_outputs(
         "displayHeight": DISPLAY_HEIGHT,
         "sourceFrameCount": source_frame_count,
         "pageFrameCount": page_frame_count,
+        "sourceSetFingerprint": source_set_fingerprint(root, source_paths),
+        "maxDecodedPageBytes": MAX_DECODED_PAGE_BYTES,
         "pages": manifest_pages,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

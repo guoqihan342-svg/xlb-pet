@@ -91,6 +91,7 @@
                      VerticalAlignment="Stretch"
                      RenderTransformOrigin="0.5,1"
                      RenderOptions.BitmapScalingMode="Fant"
+                     UseLayoutRounding="False"
                      Stretch="Fill">
                 <Viewbox.RenderTransform>
                     <TransformGroup>
@@ -107,9 +108,6 @@
                     <TransformGroup>
                         <ScaleTransform x:Name="PetFacingScale" ScaleX="1" ScaleY="1" />
                         <ScaleTransform x:Name="PetScale" ScaleX="1" ScaleY="1" />
-                        <ScaleTransform x:Name="PetCornerScale" ScaleX="1" ScaleY="1" />
-                        <TranslateTransform x:Name="PetRoamBaseOffset" X="0" Y="0" />
-                        <TranslateTransform x:Name="PetRoamOffset" X="0" Y="0" />
                     </TransformGroup>
                 </Grid.RenderTransform>
                 <Canvas x:Name="PetFrameViewport"
