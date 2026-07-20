@@ -116,6 +116,14 @@
                         ClipToBounds="True"
                         IsHitTestVisible="False"
                         SnapsToDevicePixels="True">
+                    <Image x:Name="PillowImage"
+                           Width="190"
+                           Height="242"
+                           Source="/LubanDesktopPet;component/Assets/luban-pillow-layer.png"
+                           Stretch="Fill"
+                           IsHitTestVisible="False"
+                           SnapsToDevicePixels="True"
+                           RenderOptions.BitmapScalingMode="Fant" />
                     <Rectangle x:Name="PetImage"
                                Width="190"
                                Height="242"

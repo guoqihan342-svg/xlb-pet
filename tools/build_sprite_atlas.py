@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import brotli
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
+import struct
 import time
 
-import lz4.block
 import numpy as np
 from PIL import Image
 
@@ -21,13 +24,18 @@ TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1540
 MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
 ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
-WAKE_FRAME_COUNT = 27
-ACTION_ENTRY_BRIDGES = frozenset(ACTION_NAMES)
-ACTION_INTERNAL_BRIDGES = {
-    "yawn": (6,),
-    "cry": (3,),
-    "think": (6,),
-}
+ACTION_LOOP_FRAME_COUNT = 48
+EDGE_PEEK_FRAME_COUNT = 24
+WAKE_PAGE_FRAME_LIMIT = 32
+WAKE_PAGE_MIN_PREFETCH_FRAMES = 8
+ACTION_PAGE_FRAME_LIMIT = 32
+ACTION_PAGE_MIN_PREFETCH_FRAMES = 8
+DELTA_SUB_HEADER = struct.Struct("<4H")
+DELTA_SUB_ENCODING = "pbgra32-delta-sub-v1"
+DIRECT_ENCODING = "pbgra32"
+DELTA_MIN_SAVING_BYTES = 256 * 1024
+DELTA_MIN_SAVING_PERCENT = 10
+MAX_DELTA_PAYLOAD_BYTES = 32 * 1024 * 1024
 
 
 def replace_with_retry(temporary: Path, destination: Path) -> None:
@@ -82,7 +90,7 @@ def write_bytes_atomically(destination: Path, content: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def encode_pbgra32_lz4(image: Image.Image) -> bytes:
+def image_to_pbgra32(image: Image.Image) -> np.ndarray:
     rgba = np.asarray(image.convert("RGBA"), dtype=np.uint16)
     alpha = rgba[:, :, 3:4]
     premultiplied = ((rgba[:, :, :3] * alpha + 127) // 255).astype(np.uint8)
@@ -91,15 +99,18 @@ def encode_pbgra32_lz4(image: Image.Image) -> bytes:
     pbgra[:, :, 1] = premultiplied[:, :, 1]
     pbgra[:, :, 2] = premultiplied[:, :, 0]
     pbgra[:, :, 3] = alpha[:, :, 0].astype(np.uint8)
-    return lz4.block.compress(
-        pbgra.tobytes(),
-        # High-compression mode changes only the on-disk LZ4 representation;
-        # the decoder still reconstructs the exact same Pbgra32 bytes.  Level
-        # 9 keeps the single-file publish safely below GitHub's 100 MB object
-        # limit without trading runtime memory or sprite quality for size.
-        mode="high_compression",
-        compression=9,
-        store_size=False,
+    return pbgra
+
+
+def encode_brotli(payload: bytes) -> bytes:
+    return brotli.compress(
+        payload,
+        # Quality 11 is intentionally an offline-build cost. It reconstructs
+        # the exact Pbgra32 bytes while keeping the much denser 60 fps atlas
+        # below GitHub's single-object limit. Runtime decoding stays on the
+        # background page loader and never runs in CompositionTarget.Rendering.
+        mode=brotli.MODE_GENERIC,
+        quality=11,
     )
 
 
@@ -132,33 +143,365 @@ class PackedSprite:
     atlas_y: int = 0
 
 
-def action_resource_paths(action: str) -> list[str]:
-    paths: list[str] = []
-    if action in ACTION_ENTRY_BRIDGES:
-        paths.append(f"Assets/luban-{action}-entry-bridge.png")
-    bridge_after_frames = ACTION_INTERNAL_BRIDGES.get(action, ())
-    for number in range(1, 25):
-        paths.append(f"Assets/luban-{action}-frame-{number:02}.png")
-        if number in bridge_after_frames:
-            paths.append(
-                f"Assets/luban-{action}-bridge-{number:02}-{number + 1:02}.png"
+@dataclass
+class BuiltPage:
+    manifest: dict[str, object]
+    direct_compressed_byte_count: int
+    delta_compressed_byte_count: int
+    selected_saving_byte_count: int
+
+
+def build_delta_sub_payload(root: Path, paths: list[str]) -> bytes:
+    """Encode full-canvas frame deltas in page path order."""
+
+    previous = np.zeros(
+        (DISPLAY_HEIGHT, DISPLAY_WIDTH, 4),
+        dtype=np.uint8,
+    )
+    payload = bytearray()
+    for resource_path in paths:
+        frame = make_display_frame(root / resource_path, resource_path)
+        try:
+            current = image_to_pbgra32(frame)
+        finally:
+            frame.close()
+
+        changed = np.any(current != previous, axis=2)
+        changed_rows = np.flatnonzero(np.any(changed, axis=1))
+        changed_columns = np.flatnonzero(np.any(changed, axis=0))
+        if changed_rows.size == 0:
+            payload.extend(DELTA_SUB_HEADER.pack(0, 0, 0, 0))
+            previous = current
+            continue
+
+        x = int(changed_columns[0])
+        y = int(changed_rows[0])
+        width = int(changed_columns[-1]) - x + 1
+        height = int(changed_rows[-1]) - y + 1
+        payload.extend(DELTA_SUB_HEADER.pack(x, y, width, height))
+        delta = np.subtract(
+            current[y : y + height, x : x + width],
+            previous[y : y + height, x : x + width],
+            dtype=np.uint8,
+        )
+        payload.extend(delta.tobytes())
+        previous = current
+    return bytes(payload)
+
+
+def reconstruct_delta_sub_atlas(
+    payload: bytes,
+    paths: list[str],
+    frames: dict[str, dict[str, int]],
+    atlas_width: int,
+    atlas_height: int,
+) -> bytes:
+    """Rebuild final atlas bytes and fail closed on malformed delta data."""
+
+    previous = np.zeros(
+        (DISPLAY_HEIGHT, DISPLAY_WIDTH, 4),
+        dtype=np.uint8,
+    )
+    atlas = np.zeros((atlas_height, atlas_width, 4), dtype=np.uint8)
+    offset = 0
+    for resource_path in paths:
+        if offset + DELTA_SUB_HEADER.size > len(payload):
+            raise RuntimeError("Delta-sub payload ends before a frame header")
+        x, y, width, height = DELTA_SUB_HEADER.unpack_from(payload, offset)
+        offset += DELTA_SUB_HEADER.size
+        if width == 0 or height == 0:
+            if (x, y, width, height) != (0, 0, 0, 0):
+                raise RuntimeError(
+                    "An unchanged delta-sub frame must use a zero header"
+                )
+        if x + width > DISPLAY_WIDTH or y + height > DISPLAY_HEIGHT:
+            raise RuntimeError("Delta-sub rectangle exceeds the display canvas")
+        block_byte_count = width * height * 4
+        if offset + block_byte_count > len(payload):
+            raise RuntimeError("Delta-sub payload ends inside a frame block")
+        if block_byte_count:
+            delta = np.frombuffer(
+                payload,
+                dtype=np.uint8,
+                count=block_byte_count,
+                offset=offset,
+            ).reshape((height, width, 4))
+            region = previous[y : y + height, x : x + width]
+            np.add(region, delta, out=region)
+            offset += block_byte_count
+
+        descriptor = frames[resource_path]
+        sprite_x = descriptor["x"]
+        sprite_y = descriptor["y"]
+        sprite_width = descriptor["width"]
+        sprite_height = descriptor["height"]
+        destination_x = descriptor["destinationX"]
+        destination_y = descriptor["destinationY"]
+        crop = np.zeros((sprite_height, sprite_width, 4), dtype=np.uint8)
+        source_x0 = max(0, destination_x)
+        source_y0 = max(0, destination_y)
+        source_x1 = min(DISPLAY_WIDTH, destination_x + sprite_width)
+        source_y1 = min(DISPLAY_HEIGHT, destination_y + sprite_height)
+        if source_x1 > source_x0 and source_y1 > source_y0:
+            target_x0 = source_x0 - destination_x
+            target_y0 = source_y0 - destination_y
+            crop[
+                target_y0 : target_y0 + source_y1 - source_y0,
+                target_x0 : target_x0 + source_x1 - source_x0,
+            ] = previous[source_y0:source_y1, source_x0:source_x1]
+        atlas[
+            sprite_y : sprite_y + sprite_height,
+            sprite_x : sprite_x + sprite_width,
+        ] = crop
+
+    if offset != len(payload):
+        raise RuntimeError(
+            f"Delta-sub payload has {len(payload) - offset} trailing bytes"
+        )
+    return atlas.tobytes()
+
+
+def numbered_resource_paths(
+    root: Path,
+    prefix: str,
+    *,
+    expected_count: int | None = None,
+) -> list[str]:
+    """Return a fail-closed, numerically sorted three-digit PNG sequence."""
+
+    assets_directory = root / "Assets"
+    expression = re.compile(rf"^{re.escape(prefix)}-(\d{{3}})\.png$")
+    numbered: list[tuple[int, str]] = []
+    for path in assets_directory.glob(f"{prefix}-*.png"):
+        match = expression.fullmatch(path.name)
+        if match is None:
+            raise RuntimeError(
+                f"Malformed dense sprite name for {prefix}: {path.name}"
             )
-    return paths
+        numbered.append((int(match.group(1)), f"Assets/{path.name}"))
+
+    numbered.sort(key=lambda item: item[0])
+    numbers = [number for number, _ in numbered]
+    if not numbered or numbers != list(range(1, len(numbered) + 1)):
+        raise RuntimeError(
+            f"Dense sprite sequence {prefix} must be contiguous from 001; "
+            f"found {numbers[:8]}{'...' if len(numbers) > 8 else ''}"
+        )
+    if expected_count is not None and len(numbered) != expected_count:
+        raise RuntimeError(
+            f"Dense sprite sequence {prefix} must contain exactly "
+            f"{expected_count} frames, found {len(numbered)}"
+        )
+    return [resource_path for _, resource_path in numbered]
+
+
+def wake_resource_paths(root: Path) -> list[str]:
+    return numbered_resource_paths(root, "luban-wake-smooth")
+
+
+def action_resource_paths(root: Path, action: str) -> list[str]:
+    return numbered_resource_paths(root, f"luban-{action}-smooth")
+
+
+def action_loop_resource_paths(root: Path, action: str) -> list[str]:
+    return numbered_resource_paths(
+        root,
+        f"luban-{action}-loop",
+        expected_count=ACTION_LOOP_FRAME_COUNT,
+    )
+
+
+def edge_peek_resource_paths(root: Path, direction: str) -> list[str]:
+    return numbered_resource_paths(
+        root,
+        f"luban-edge-{direction}-smooth",
+        expected_count=EDGE_PEEK_FRAME_COUNT,
+    )
+
+
+def partition_wake_resource_paths(
+    wake_paths: list[str],
+    edge_paths: list[str],
+) -> list[tuple[str, list[str]]]:
+    """Keep idle/edge hot while splitting an arbitrary positive wake sequence."""
+
+    if not wake_paths:
+        raise RuntimeError("Dense wake sequence must contain at least one frame")
+
+    chunks = [
+        list(wake_paths[offset : offset + WAKE_PAGE_FRAME_LIMIT])
+        for offset in range(0, len(wake_paths), WAKE_PAGE_FRAME_LIMIT)
+    ]
+    if (
+        len(chunks) > 1
+        and len(chunks[-1]) < WAKE_PAGE_MIN_PREFETCH_FRAMES
+    ):
+        transfer_count = WAKE_PAGE_MIN_PREFETCH_FRAMES - len(chunks[-1])
+        transfer_start = len(chunks[-2]) - transfer_count
+        if transfer_start <= 0:
+            raise RuntimeError(
+                "Dense wake sequence cannot reserve a final "
+                f"{WAKE_PAGE_MIN_PREFETCH_FRAMES}-frame prefetch window"
+            )
+        chunks[-1] = chunks[-2][transfer_start:] + chunks[-1]
+        chunks[-2] = chunks[-2][:transfer_start]
+
+    partitions: list[tuple[str, list[str]]] = []
+    for part_number, chunk in enumerate(chunks, start=1):
+        page_name = (
+            "idle"
+            if part_number == 1
+            else f"idle-part-{part_number:02d}"
+        )
+        page_paths = (
+            ["Assets/luban-idle.png", *chunk, *edge_paths]
+            if part_number == 1
+            else chunk
+        )
+        partitions.append((page_name, page_paths))
+
+    expected_page_names = [
+        "idle"
+        if part_number == 1
+        else f"idle-part-{part_number:02d}"
+        for part_number in range(1, len(partitions) + 1)
+    ]
+    actual_page_names = [page_name for page_name, _ in partitions]
+    invalid_page_names = [
+        page_name
+        for page_name in actual_page_names
+        if page_name != "idle"
+        and re.fullmatch(r"idle-part-\d{2}", page_name) is None
+    ]
+    expected_first_page = [
+        "Assets/luban-idle.png",
+        *chunks[0],
+        *edge_paths,
+    ]
+    flattened_wake_paths = [path for chunk in chunks for path in chunk]
+    trailing_pages_contain_only_wake = all(
+        partition_paths == chunks[index]
+        for index, (_, partition_paths) in enumerate(partitions[1:], start=1)
+    )
+    if (
+        actual_page_names != expected_page_names
+        or invalid_page_names
+        or partitions[0][1] != expected_first_page
+        or not trailing_pages_contain_only_wake
+        or flattened_wake_paths != wake_paths
+        or any(
+            not chunk or len(chunk) > WAKE_PAGE_FRAME_LIMIT
+            for chunk in chunks
+        )
+        or (
+            len(chunks) > 1
+            and len(chunks[-1]) < WAKE_PAGE_MIN_PREFETCH_FRAMES
+        )
+    ):
+        raise RuntimeError(
+            "Invalid continuous idle/wake page partition: "
+            f"pages={actual_page_names}, wakeSizes="
+            f"{[len(chunk) for chunk in chunks]}"
+        )
+
+    return partitions
+
+
+def partition_action_resource_paths(
+    action: str,
+    paths: list[str],
+) -> list[tuple[str, list[str]]]:
+    """Split one action into ordered pages with a usable final prefetch window."""
+
+    if len(paths) < ACTION_PAGE_MIN_PREFETCH_FRAMES:
+        raise RuntimeError(
+            f"Dense action {action} must contain at least "
+            f"{ACTION_PAGE_MIN_PREFETCH_FRAMES} frames so the loop page can be "
+            f"prefetched; found {len(paths)}"
+        )
+
+    chunks = [
+        list(paths[offset : offset + ACTION_PAGE_FRAME_LIMIT])
+        for offset in range(0, len(paths), ACTION_PAGE_FRAME_LIMIT)
+    ]
+    if (
+        len(chunks) > 1
+        and len(chunks[-1]) < ACTION_PAGE_MIN_PREFETCH_FRAMES
+    ):
+        transfer_count = ACTION_PAGE_MIN_PREFETCH_FRAMES - len(chunks[-1])
+        transfer_start = len(chunks[-2]) - transfer_count
+        if transfer_start <= 0:
+            raise RuntimeError(
+                f"Dense action {action} cannot reserve a final "
+                f"{ACTION_PAGE_MIN_PREFETCH_FRAMES}-frame prefetch window"
+            )
+        chunks[-1] = chunks[-2][transfer_start:] + chunks[-1]
+        chunks[-2] = chunks[-2][:transfer_start]
+
+    base_page_name = f"action-{action}"
+    partitions = [
+        (
+            base_page_name
+            if part_number == 1
+            else f"{base_page_name}-part-{part_number:02d}",
+            chunk,
+        )
+        for part_number, chunk in enumerate(chunks, start=1)
+    ]
+    expected_page_names = [
+        base_page_name
+        if part_number == 1
+        else f"{base_page_name}-part-{part_number:02d}"
+        for part_number in range(1, len(partitions) + 1)
+    ]
+    actual_page_names = [page_name for page_name, _ in partitions]
+    flattened_paths = [
+        path
+        for _, partition_paths in partitions
+        for path in partition_paths
+    ]
+    invalid_page_names = [
+        page_name
+        for page_name in actual_page_names
+        if page_name != base_page_name
+        and re.fullmatch(
+            rf"{re.escape(base_page_name)}-part-\d{{2}}",
+            page_name,
+        )
+        is None
+    ]
+    if (
+        actual_page_names != expected_page_names
+        or invalid_page_names
+        or flattened_paths != paths
+        or any(
+            not partition_paths
+            or len(partition_paths) > ACTION_PAGE_FRAME_LIMIT
+            for _, partition_paths in partitions
+        )
+        or len(partitions[-1][1]) < ACTION_PAGE_MIN_PREFETCH_FRAMES
+    ):
+        raise RuntimeError(
+            f"Invalid continuous action page partition for {action}: "
+            f"pages={actual_page_names}, sizes="
+            f"{[len(partition_paths) for _, partition_paths in partitions]}"
+        )
+
+    return partitions
 
 
 def resource_paths(root: Path) -> list[str]:
-    paths = ["Assets/luban-idle.png"]
-    paths.extend(
-        f"Assets/luban-wake-{number:02}.png"
-        for number in range(1, WAKE_FRAME_COUNT + 1)
-    )
-    for edge in ("left", "top", "bottom"):
-        paths.extend(
-            f"Assets/luban-edge-{edge}-{number:02}.png"
-            for number in range(1, 5)
-    )
+    wake = wake_resource_paths(root)
+    paths = [
+        path
+        for _, partition_paths in partition_wake_resource_paths(wake, [])
+        for path in partition_paths
+    ]
+    for direction in ("left", "top", "bottom"):
+        paths.extend(edge_peek_resource_paths(root, direction))
     for action in ACTION_NAMES:
-        paths.extend(action_resource_paths(action))
+        paths.extend(action_resource_paths(root, action))
+        paths.extend(action_loop_resource_paths(root, action))
     if len(set(paths)) != len(paths):
         raise RuntimeError(
             f"Sprite resource list contains duplicates: {len(paths)} paths"
@@ -331,26 +674,35 @@ def pack_sprites(sprites: list[PackedSprite]) -> tuple[int, int]:
 
 
 def page_resource_paths(root: Path) -> dict[str, list[str]]:
-    idle = "Assets/luban-idle.png"
-    wake = [
-        f"Assets/luban-wake-{number:02}.png"
-        for number in range(1, WAKE_FRAME_COUNT + 1)
-    ]
-    # The shared idle/wake page is always hot. Each action page contains its
-    # own poses and approved transition bridges, so wake pixels are not
-    # duplicated seven times and a cold action page can decode in the
-    # background while the wake path plays.
-    edge = [
-        f"Assets/luban-edge-{edge_name}-{number:02}.png"
-        for edge_name in ("left", "top", "bottom")
-        for number in range(1, 5)
-    ]
-    # Idle, wake, and manual edge-peek frames share one always-hot page. A
-    # drag release can therefore switch to the first edge pose atomically,
-    # without a cold page decode advancing the edge clock before it is shown.
-    pages: dict[str, list[str]] = {"idle": [idle, *wake, *edge]}
+    wake = wake_resource_paths(root)
+    # Wake, dense actions, and natural loops use bounded sequential pages so
+    # every decoded page can remain below the fixed 24 MiB runtime limit.
+    # Dense edge-peek loops live on three small direction pages. Keeping all
+    # 72 frames on the idle page would violate the fixed 24 MiB decoded-page
+    # budget; the runtime can prefetch the one direction selected by dragging.
+    pages: dict[str, list[str]] = {}
+    wake_partitions = partition_wake_resource_paths(wake, [])
+    first_page_name, first_page_paths = wake_partitions[0]
+    pages[first_page_name] = first_page_paths
+    # Manifest order is also the background warm-up priority. Put all three
+    # edge directions immediately after the primary idle page, before trailing
+    # wake/action pages, so entering edge mode does not flash a cold fallback.
+    for direction in ("left", "top", "bottom"):
+        pages[f"edge-{direction}"] = edge_peek_resource_paths(root, direction)
+    for page_name, partition_paths in wake_partitions[1:]:
+        if page_name in pages:
+            raise RuntimeError(f"Duplicate sprite page name: {page_name}")
+        pages[page_name] = partition_paths
     for action in ACTION_NAMES:
-        pages[f"action-{action}"] = action_resource_paths(action)
+        action_paths = action_resource_paths(root, action)
+        for page_name, partition_paths in partition_action_resource_paths(
+            action,
+            action_paths,
+        ):
+            if page_name in pages:
+                raise RuntimeError(f"Duplicate sprite page name: {page_name}")
+            pages[page_name] = partition_paths
+        pages[f"loop-{action}"] = action_loop_resource_paths(root, action)
     expected = set(resource_paths(root))
     actual = {path for paths in pages.values() for path in paths}
     if actual != expected:
@@ -367,6 +719,24 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
         raise RuntimeError(
             f"Page resource lists contain duplicates: {duplicate_page_paths}"
         )
+    resource_page_owners: dict[str, list[str]] = {}
+    for page_name, paths in pages.items():
+        for path in paths:
+            resource_page_owners.setdefault(path, []).append(page_name)
+    cross_page_duplicates = {
+        path: owner_pages
+        for path, owner_pages in resource_page_owners.items()
+        if len(set(owner_pages)) > 1
+    }
+    if cross_page_duplicates:
+        raise RuntimeError(
+            f"Sprite resources appear on multiple pages: {cross_page_duplicates}"
+        )
+    if sum(len(paths) for paths in pages.values()) != len(actual):
+        raise RuntimeError(
+            "Page frame count must equal the unique source union; duplicated "
+            "page-local resources are not allowed"
+        )
     return pages
 
 
@@ -375,7 +745,7 @@ def build_page(
     page_name: str,
     paths: list[str],
     atlas_path: Path,
-) -> dict[str, object]:
+) -> BuiltPage:
     sprites = build_unique_sprites(root, paths)
     atlas_width, atlas_height = pack_sprites(sprites)
     uncompressed_byte_count = atlas_width * atlas_height * 4
@@ -403,31 +773,75 @@ def build_page(
     ordered_frames = {path: frames[path] for path in paths}
     atlas_path.parent.mkdir(parents=True, exist_ok=True)
     save_png_atomically(atlas, atlas_path)
-    runtime_path = atlas_path.with_suffix(".pbgra.lz4")
-    runtime_bytes = encode_pbgra32_lz4(atlas)
+    runtime_path = atlas_path.with_suffix(".pbgra.br")
+    decoded_atlas = image_to_pbgra32(atlas).tobytes()
+    if len(decoded_atlas) != uncompressed_byte_count:
+        raise RuntimeError(
+            f"Atlas page {page_name} Pbgra32 length changed unexpectedly: "
+            f"{len(decoded_atlas)} != {uncompressed_byte_count}"
+        )
+    delta_payload = build_delta_sub_payload(root, paths)
+    reconstructed_atlas = reconstruct_delta_sub_atlas(
+        delta_payload,
+        paths,
+        ordered_frames,
+        atlas_width,
+        atlas_height,
+    )
+    if reconstructed_atlas != decoded_atlas:
+        mismatch_count = sum(
+            left != right
+            for left, right in zip(reconstructed_atlas, decoded_atlas)
+        )
+        raise RuntimeError(
+            f"Atlas page {page_name} delta-sub round trip changed "
+            f"{mismatch_count} decoded bytes"
+        )
+
+    direct_runtime_bytes = encode_brotli(decoded_atlas)
+    delta_runtime_bytes = encode_brotli(delta_payload)
+    delta_saving = len(direct_runtime_bytes) - len(delta_runtime_bytes)
+    use_delta = (
+        len(delta_payload) <= MAX_DELTA_PAYLOAD_BYTES
+        and delta_saving >= DELTA_MIN_SAVING_BYTES
+        and delta_saving * 100
+        >= len(direct_runtime_bytes) * DELTA_MIN_SAVING_PERCENT
+    )
+    encoding = DELTA_SUB_ENCODING if use_delta else DIRECT_ENCODING
+    runtime_payload = delta_payload if use_delta else decoded_atlas
+    runtime_bytes = delta_runtime_bytes if use_delta else direct_runtime_bytes
+    if len(runtime_bytes) > len(runtime_payload):
+        raise RuntimeError(
+            f"Atlas page {page_name} Brotli output is larger than its payload: "
+            f"{len(runtime_bytes)} > {len(runtime_payload)} bytes"
+        )
     write_bytes_atomically(runtime_path, runtime_bytes)
     source_fingerprint = source_set_fingerprint(root, paths)
     content_sha256 = hashlib.sha256(runtime_bytes).hexdigest()
+    decoded_sha256 = hashlib.sha256(decoded_atlas).hexdigest()
     preview_sha256 = file_sha256(atlas_path)
-    print(
-        f"  {page_name}: {atlas_width}x{atlas_height}, "
-        f"{len(ordered_frames)} frames, {len(sprites)} unique, "
-        f"{runtime_path.stat().st_size / 1024 / 1024:.2f} MiB LZ4"
+    return BuiltPage(
+        manifest={
+            "resource": runtime_path.relative_to(root).as_posix(),
+            "previewResource": atlas_path.relative_to(root).as_posix(),
+            "width": atlas_width,
+            "height": atlas_height,
+            "encoding": encoding,
+            "uncompressedByteCount": uncompressed_byte_count,
+            "payloadByteCount": len(runtime_payload),
+            "compressedByteCount": len(runtime_bytes),
+            "sourceFingerprint": source_fingerprint,
+            "contentSha256": content_sha256,
+            "decodedSha256": decoded_sha256,
+            "previewSha256": preview_sha256,
+            "logicalFrameCount": len(ordered_frames),
+            "uniqueSpriteCount": len(sprites),
+            "frames": ordered_frames,
+        },
+        direct_compressed_byte_count=len(direct_runtime_bytes),
+        delta_compressed_byte_count=len(delta_runtime_bytes),
+        selected_saving_byte_count=delta_saving if use_delta else 0,
     )
-    return {
-        "resource": runtime_path.relative_to(root).as_posix(),
-        "previewResource": atlas_path.relative_to(root).as_posix(),
-        "width": atlas_width,
-        "height": atlas_height,
-        "uncompressedByteCount": uncompressed_byte_count,
-        "compressedByteCount": len(runtime_bytes),
-        "sourceFingerprint": source_fingerprint,
-        "contentSha256": content_sha256,
-        "previewSha256": preview_sha256,
-        "logicalFrameCount": len(ordered_frames),
-        "uniqueSpriteCount": len(sprites),
-        "frames": ordered_frames,
-    }
 
 
 def write_outputs(
@@ -442,28 +856,99 @@ def write_outputs(
         for page_name in pages
         for name in (
             f"luban-{page_name}.png",
-            f"luban-{page_name}.pbgra.lz4",
+            f"luban-{page_name}.pbgra.br",
         )
     }
-    for pattern in ("luban-*.png", "luban-*.pbgra.lz4"):
+    for pattern in (
+        "luban-*.png",
+        "luban-*.pbgra.br",
+        # Remove stale legacy encodings so the project wildcard cannot
+        # accidentally carry two compression formats into single-file publish.
+        "luban-*.pbgra.*",
+    ):
         for stale_page in output_directory.glob(pattern):
             if stale_page.name not in expected_page_files:
                 stale_page.unlink()
-    manifest_pages: dict[str, dict[str, object]] = {}
-    print(f"Building {len(pages)} sprite pages:")
-    for page_name, paths in pages.items():
-        manifest_pages[page_name] = build_page(
-            root,
-            page_name,
-            paths,
-            output_directory / f"luban-{page_name}.png",
+    requested_workers = int(os.environ.get("XLB_ATLAS_WORKERS", "3"))
+    worker_count = max(1, min(requested_workers, 4, len(pages)))
+    print(f"Building {len(pages)} sprite pages with {worker_count} workers:")
+    # Each job owns distinct output paths and writes both files atomically.
+    # Brotli's native encoder releases the GIL, so bounded page parallelism
+    # shortens the offline quality-11 build without changing any page bytes.
+    # Results are collected in manifest order to keep JSON deterministic.
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="xlb-atlas",
+    ) as executor:
+        page_futures = {
+            page_name: executor.submit(
+                build_page,
+                root,
+                page_name,
+                paths,
+                output_directory / f"luban-{page_name}.png",
+            )
+            for page_name, paths in pages.items()
+        }
+        built_pages = {
+            page_name: page_futures[page_name].result()
+            for page_name in pages
+        }
+
+    manifest_pages = {
+        page_name: built_pages[page_name].manifest
+        for page_name in pages
+    }
+    for page_name in pages:
+        result = built_pages[page_name]
+        page = result.manifest
+        direct_bytes = result.direct_compressed_byte_count
+        selected_bytes = int(page["compressedByteCount"])
+        print(
+            f"  {page_name}: {page['width']}x{page['height']}, "
+            f"{page['logicalFrameCount']} frames, "
+            f"{page['uniqueSpriteCount']} unique, {page['encoding']}, "
+            f"{selected_bytes / 1024 / 1024:.2f} MiB Brotli "
+            f"(direct {direct_bytes / 1024 / 1024:.2f} MiB)"
         )
+
+    selected_delta_pages = [
+        page_name
+        for page_name in pages
+        if built_pages[page_name].manifest["encoding"] == DELTA_SUB_ENCODING
+    ]
+    total_direct_bytes = sum(
+        result.direct_compressed_byte_count
+        for result in built_pages.values()
+    )
+    total_selected_bytes = sum(
+        int(result.manifest["compressedByteCount"])
+        for result in built_pages.values()
+    )
+    total_saving_bytes = total_direct_bytes - total_selected_bytes
+    saving_percent = (
+        total_saving_bytes * 100 / total_direct_bytes
+        if total_direct_bytes
+        else 0.0
+    )
+    print(
+        f"Selective delta-sub: {len(selected_delta_pages)}/{len(pages)} pages; "
+        f"saved {total_saving_bytes / 1024 / 1024:.2f} MiB "
+        f"({saving_percent:.2f}%) vs all-direct Brotli."
+    )
+    if selected_delta_pages:
+        print("  selected: " + ", ".join(selected_delta_pages))
 
     source_paths = resource_paths(root)
     source_frame_count = len(source_paths)
     page_frame_count = sum(len(paths) for paths in pages.values())
     if source_frame_count != len({path for paths in pages.values() for path in paths}):
         raise RuntimeError("Manifest source frame count does not match page union")
+    if page_frame_count != source_frame_count:
+        raise RuntimeError(
+            "Manifest page frame count must equal source frame count; "
+            "cross-page resource duplication is not allowed"
+        )
     if page_frame_count != sum(
         int(page["logicalFrameCount"])
         for page in manifest_pages.values()
@@ -471,7 +956,8 @@ def write_outputs(
         raise RuntimeError("Manifest page frame count does not match built pages")
 
     manifest = {
-        "version": 3,
+        "version": 4,
+        "compression": "brotli",
         "displayWidth": DISPLAY_WIDTH,
         "displayHeight": DISPLAY_HEIGHT,
         "sourceFrameCount": source_frame_count,

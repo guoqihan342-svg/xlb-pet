@@ -17,7 +17,6 @@ public partial class TodoWindow : Window
     private bool _petSizeScaleNotificationQueued;
     private double _pendingPetSizeScale = 1;
     private int _displayedPetSizePercent = int.MinValue;
-    private readonly Action _flushPetSizeScaleChangedAction;
     private readonly Action _resetImeCompositionAfterFocusLossAction;
     private readonly Action _focusInputAction;
     private readonly Action _retryClipboardCopyAction;
@@ -30,7 +29,6 @@ public partial class TodoWindow : Window
     public TodoWindow()
     {
         InitializeComponent();
-        _flushPetSizeScaleChangedAction = FlushPendingPetSizeScaleChanged;
         _resetImeCompositionAfterFocusLossAction =
             ResetImeCompositionAfterFocusLoss;
         _focusInputAction = FocusInputCore;
@@ -52,7 +50,7 @@ public partial class TodoWindow : Window
         PetSizeSlider.LostKeyboardFocus += PetSizeSlider_LostKeyboardFocus;
         PreviewKeyDown += TodoWindow_PreviewKeyDown;
         Closing += TodoWindow_Closing;
-        Closed += (_, _) => _hasClosed = true;
+        Closed += TodoWindow_Closed;
     }
 
     public IEnumerable? Todos
@@ -303,6 +301,19 @@ public partial class TodoWindow : Window
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    private void TodoWindow_Closed(object? sender, EventArgs e)
+    {
+        _hasClosed = true;
+        if (_petSizeAdjustmentActive)
+        {
+            EndPetSizeAdjustment();
+        }
+        else
+        {
+            FlushPendingPetSizeScaleChanged();
+        }
+    }
+
     private void TodoInput_PreviewTextInputStart(object sender, TextCompositionEventArgs e)
     {
         SetImeComposing(true);
@@ -458,6 +469,10 @@ public partial class TodoWindow : Window
     {
         if (!_petSizeAdjustmentActive)
         {
+            // Lost focus/capture and key-up can arrive in either order. Always
+            // commit a value already sampled by ValueChanged, but only pair a
+            // completion event with a matching start event.
+            FlushPendingPetSizeScaleChanged();
             return;
         }
 
@@ -469,18 +484,7 @@ public partial class TodoWindow : Window
     private void QueuePetSizeScaleChanged(double scale)
     {
         _pendingPetSizeScale = scale;
-        if (_petSizeScaleNotificationQueued)
-        {
-            return;
-        }
-
         _petSizeScaleNotificationQueued = true;
-        Dispatcher.BeginInvoke(
-            // Keep the Thumb's pointer input ahead of scale notifications.
-            // MainWindow coalesces the latest value on its composition clock,
-            // and EndPetSizeAdjustment explicitly flushes the final value.
-            DispatcherPriority.Background,
-            _flushPetSizeScaleChangedAction);
     }
 
     internal void FlushPendingPetSizeScaleChanged()
@@ -490,8 +494,9 @@ public partial class TodoWindow : Window
             return;
         }
 
+        var scale = _pendingPetSizeScale;
         _petSizeScaleNotificationQueued = false;
-        PetSizeScaleChanged?.Invoke(_pendingPetSizeScale);
+        PetSizeScaleChanged?.Invoke(scale);
     }
 
 

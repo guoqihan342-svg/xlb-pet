@@ -11,8 +11,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\sprite-pages\*.pbgra.lz4" />
+    <Resource Include="Assets\sprite-pages\*.pbgra.br" />
     <Resource Include="Assets\luban-sprite-pages.json" />
+    <Resource Include="Assets\luban-pillow-layer.png" />
     <None Update="log\.gitkeep"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest" />

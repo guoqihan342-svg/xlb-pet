@@ -77,11 +77,7 @@ V9_WAKE_TARGET_BRIM_CENTER_Y = (
     289, 284, 279, 274, 269, 264, 259, 254,
     249, 244, 239, 234, 230, 226, 223, 220,
 )
-V9_PILLOW_ALPHA = (
-    255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 230, 190, 145, 95, 45, 0,
-)
+DISPLAY_CANVAS_SIZE = (399, 509)
 
 
 def resolve_generated_source(source_directory: Path, name: str) -> Path:
@@ -530,27 +526,16 @@ def place_wake_character(
     return canvas
 
 
-def set_layer_alpha(image: Image.Image, opacity: int) -> Image.Image:
-    if opacity >= 255:
-        return image.copy()
-    if opacity <= 0:
-        return Image.new("RGBA", image.size, (0, 0, 0, 0))
-
-    frame = image.convert("RGBA")
-    pixels = bytearray(frame.tobytes())
-    for offset in range(0, len(pixels), 4):
-        pixels[offset + 3] = (pixels[offset + 3] * opacity + 127) // 255
-    return Image.frombytes("RGBA", frame.size, bytes(pixels))
-
-
 def install_v6_wake(source_directory: Path, assets_directory: Path) -> None:
-    """Install a 27-frame wake with one pixel-stable pillow layer.
+    """Install a 27-frame pillow-free wake plus one static pillow layer.
 
     The three bridge poses are deliberately curated instead of applying a
     blanket whole-image dissolve. Two are RIFE-anime character-only
     intermediates and the kneel-to-stand bridge is a generated anatomical
-    pose. The pillow is composited from the exact same pixels in every frame,
-    so adding motion samples cannot reintroduce texture shimmer.
+    pose. The pillow is emitted once at the final display resolution and is
+    rendered by WPF beneath every normal character pose. Keeping those pixels
+    out of the changing atlas frames prevents alpha pulses and resampling
+    shimmer while the character wakes or changes action pages.
     """
 
     cells, _ = load_cells(
@@ -576,19 +561,37 @@ def install_v6_wake(source_directory: Path, assets_directory: Path) -> None:
         ),
     )
 
-    source_poses: list[tuple[Image.Image, int, int, int, bool]] = []
+    display_pillow_height = round(
+        RUNTIME_CANVAS_SIZE[1] * DISPLAY_CANVAS_SIZE[0] /
+        RUNTIME_CANVAS_SIZE[0]
+    )
+    display_pillow = resize_rgba_premultiplied(
+        pillow_layer,
+        (DISPLAY_CANVAS_SIZE[0], display_pillow_height),
+    )
+    pillow_display_canvas = Image.new(
+        "RGBA", DISPLAY_CANVAS_SIZE, (0, 0, 0, 0)
+    )
+    pillow_display_canvas.alpha_composite(
+        display_pillow,
+        (0, DISPLAY_CANVAS_SIZE[1] - display_pillow_height),
+    )
+    save_png_atomically(
+        pillow_display_canvas,
+        assets_directory / "luban-pillow-layer.png",
+    )
+
+    source_poses: list[tuple[Image.Image, int, int, bool]] = []
     for source_number, values in enumerate(zip(
             cells,
             V9_WAKE_TARGET_HEAD_CENTERS,
             V9_WAKE_TARGET_BRIM_CENTER_Y,
-            V9_PILLOW_ALPHA,
             strict=True), start=1):
-        cell, target_head_center, target_brim_center_y, pillow_alpha = values
+        cell, target_head_center, target_brim_center_y = values
         source_poses.append((
             cell,
             target_head_center,
             target_brim_center_y,
-            pillow_alpha,
             False,
         ))
         bridge_name = V10_WAKE_BRIDGE_SOURCE_NAMES.get(source_number)
@@ -605,7 +608,6 @@ def install_v6_wake(source_directory: Path, assets_directory: Path) -> None:
                    V9_WAKE_TARGET_HEAD_CENTERS[next_index]) / 2),
             round((target_brim_center_y +
                    V9_WAKE_TARGET_BRIM_CENTER_Y[next_index]) / 2),
-            round((pillow_alpha + V9_PILLOW_ALPHA[next_index]) / 2),
             source_number in V10_PRE_REGISTERED_WAKE_BRIDGES,
         ))
 
@@ -613,7 +615,7 @@ def install_v6_wake(source_directory: Path, assets_directory: Path) -> None:
         raise ValueError("V10 wake path must contain twenty-seven poses")
 
     registered_frames: list[Image.Image] = []
-    for (cell, target_head_center, target_brim_center_y, pillow_alpha,
+    for (cell, target_head_center, target_brim_center_y,
          is_pre_registered) in source_poses:
         if is_pre_registered:
             character = neutralize_green_fringe(cell)
@@ -627,13 +629,11 @@ def install_v6_wake(source_directory: Path, assets_directory: Path) -> None:
                 head_center_x=target_head_center,
                 brim_center_y=target_brim_center_y,
             )
-        frame = set_layer_alpha(pillow_layer, pillow_alpha)
-        frame.alpha_composite(character)
-        registered_frames.append(frame)
+        registered_frames.append(character)
 
-    # Use the same pixels for the sleeping idle and the first wake sample, so
-    # clicking cannot flash to a newly redrawn pillow or a differently-sized
-    # head before motion begins. The user's original pic assets stay untouched.
+    # Use the same character pixels for sleeping idle and the first wake sample;
+    # the invariant pillow is rendered by its own visual layer. The user's
+    # original pic assets stay untouched.
     save_png_atomically(registered_frames[0], assets_directory / "luban-idle.png")
     for frame_number, frame in enumerate(registered_frames, start=1):
         save_png_atomically(

@@ -10,3 +10,4 @@ tests/**/obj/
 *.user
 *.suo
 Assets/luban.png
+runtime/**/*.exe

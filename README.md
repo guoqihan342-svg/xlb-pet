@@ -7,15 +7,16 @@
 ### 人物动作
 
 - 左键单击小鲁班会依次触发 7 组独立动作：打哈欠、委屈、欢呼卖萌、点赞、吃饼干、挥手和托腮思考；第 8 次有效点击重新从打哈欠开始。原有跑步动作已经完整移除，不会出现在点击或随机动作中。
-- 每组点击动作都会经过“趴枕头待机 → 连续起身 → 专属动作 → 缓慢循环 → 原路返回待机”。姿势时钟约为 30fps，并在起身、动作入口和变化较大的动作内部加入经过逐帧检查的真实补间姿势；循环次数同步增加，因此丝滑度提高但整段动作不会突然变快。
+- 每组点击动作都会经过“趴枕头待机 → 连续起身 → 专属动作 → 缓慢循环 → 原路返回待机”。姿势以 60fps 目标节拍播放，起身、动作入口和变化较大的动作内部使用经过连续性检查的补间姿势；实际帧数由最终资源序列和图集清单动态决定，不在代码或文档中写死。
 - 动画播放期间再次点击不会重启动作或追加队列；拖动也不会误触点击动作。
 - 没有操作时，每轮活动结束并空闲约 10 秒后，小鲁班会从 7 组动作和趴枕头打呼噜待机中随机选择一种，不按固定顺序机械重复。
 
-### 屏幕边缘探头
+### 手动屏幕边缘探头
 
 - 左键拖动可以移动小鲁班。只有人物窗口真正碰到当前显示器工作区的左、右、上、下边界并松手，才会吸附并进入探头状态；距离边界还有空隙时不会提前触发。
 - 四个方向都有对应姿势。边缘画面只保留小鲁班的头和扒住边界的两只手，背景透明，不绘制黑墙或黑色挡板。
 - 探头只在手动拖到边缘并松手后触发；再次把小鲁班拖离边缘后，会恢复普通待机和随机可爱动作。
+- 自动绕屏、沿边爬行、跑步和蠕动已经取消。空闲时只播放原地可爱动作，不会自行沿屏幕边界移动；右键菜单也不再保留绕屏开关。
 - 支持双屏和多屏：按人物当前所在显示器读取独立工作区，支持副屏负坐标、不同 DPI/缩放率，并避开各屏任务栏。显示器热插拔或分辨率变化后，会重新校准人物位置和边缘吸附状态。
 
 ### 待办事项
@@ -32,11 +33,14 @@
 ## 动画与内存
 
 - `pic` 文件夹中的 9 张原图全部保留：`小鲁班2.png` 用作趴枕头打呼噜待机，7 张对应现有点击动作；`小鲁班4.png` 仅作为原始参考图保留，跑步动作移除后不再参与运行时动画和图集。
-- 218 个逻辑源帧离线整理为 8 张紧凑分页图集，分页后共 218 个页内帧；只裁掉完全透明的空白，每个精灵保留 2 像素透明隔离带，人物像素和透明通道不降低。起身过程使用 27 个独立姿势，7 种动作都带独立入口桥，其中打哈欠、哭泣和思考还各有一帧动作内部桥；待机、起身和手动边缘探头共用常驻分页，构建脚本从资源清单动态校验逻辑帧数和分页帧数，不依赖硬编码总数。
+- 最终起身、动作和循环序列采用可变长度编号帧。构建器根据磁盘上的连续编号资源自动分配分页；最终逻辑帧数、页内帧数和分页数以 `Assets\luban-sprite-pages.json` 的 `sourceFrameCount`、`pageFrameCount` 和 `pages` 为准。生成尚未完成时不要沿用旧清单中的数字。
 - 精灵以 `399×509` 高密度像素渲染，对应 `190×242` 逻辑显示基准。即使 Windows 使用 150% DPI 且桌宠大小调到 140%，仍有足够的源像素，不需要把低清小图放大；所有姿势使用统一逻辑边界和基线，避免动画中的缩放抖动。
-- 分页图集以无损 Pbgra32 LZ4 数据嵌入程序，PNG 只作为构建和目视检查预览；运行时复用一个共享压缩输入缓冲、当前页和预取页两个固定解码缓冲、一个可见 `399×509 Pbgra32` 位图及固定工作数组。分页在后台解码，完成后由 UI 线程原子交换，渲染回调不会读盘或解压，也不会为每帧重复创建位图。所有相邻姿势都直接发布清晰单帧，较大变化由专用桥接姿势连接，不叠加两个半透明人物，因此不会出现逐帧重影、像素光纹或旧帧双重亮边。
-- 人物动作与边缘探头由单一 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴驱动。不同刷新率下都按同一绝对时间定位姿势，不逐帧重启计时器，也不会在卡顿后快速补播积压帧。手动边缘探头的表情姿势以 70ms 间隔直接切换，进出状态不做整图交叉淡化，避免两个轮廓叠加形成闪烁和像素光纹。
-- 图集分页首次载入和动作完成都会写入日志。运行时复用固定分页缓冲并交由 .NET 自然回收，不在动作结束帧安排手工 GC 或额外的内存扫描，避免收尾时出现卡点。这里不承诺固定内存数字，实际占用会随 Windows、DPI、显卡驱动和运行环境变化。
+- 枕头使用独立的静态透明层，人物待机和起身帧只更新人物本身。这样枕头不会随每一帧反复淡入淡出，也不会把枕头边缘的 Alpha 波动表现成光纹。
+- 图集清单使用 `version: 4`、`compression: "brotli"` 契约。运行时资源是无损 Brotli 压缩的 Pbgra32 分页（`*.pbgra.br`），PNG 只用于构建和目视检查；每一页解码后不超过清单声明的 24 MiB 上限。
+- 启动时只同步解码首个待机页，随后在后台依次预热其余分页并保留在常驻页缓存；用户立即触发的动作可以抢占普通预热。此实现明确用更多稳定内存换取后续切页无解压卡点，不在动作结束时驱逐页面或强制 GC。总内存取决于最终清单中各页的 `uncompressedByteCount`、Windows、DPI 和显卡驱动，因此不承诺固定数字。
+- 人物动作和手动边缘探头由单一 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴驱动。人物姿势目标为 60fps，窗口呈现跟随显示器合成刷新；回调稍晚时直接定位正确姿势，不快速补播积压帧。相邻姿势直接发布清晰单帧，较大变化由专用桥接姿势连接，不做整图交叉淡化。
+- 动画播放速度通过 `MainWindow.xaml.cs` 顶部的代码常量 `AnimationPlaybackSpeed` 配置，默认值为 `1.25`；`1.0` 表示原速，大于 `1.0` 时播放更快。当前不提供 UI 滑块，也不会持久化该值，修改后需要重新编译程序；自动待机间隔和桌宠大小缩放动画不受影响。
+- 渲染过程复用一个可见 `399×509 Pbgra32` 位图和工作缓冲，只提交新旧人物边界的脏矩形。渲染回调不读盘、不解压、不写日志，也不会为每一帧创建新位图；图集载入、动作开始和结束摘要通过后台日志队列写入。
 
 ## 动画素材对应关系
 
@@ -61,12 +65,11 @@
 ## 运行环境
 
 - 系统：Windows 11 x64
-- 框架：.NET 8 Desktop Runtime
+- 框架：x64 `.NET 8 Desktop Runtime 8.0.29`
 - 已发布程序：`dist\LubanDesktopPet.exe`
-- 随项目提供的微软官方安装包：`runtime\dotnet-desktop-runtime-8.0.29-win-x64\windowsdesktop-runtime-8.0.29-win-x64.exe`
-- 安装包版本、SHA-512 和数字签名校验信息见 [`runtime\dotnet-desktop-runtime-8.0.29-win-x64\README.md`](runtime/dotnet-desktop-runtime-8.0.29-win-x64/README.md)。
+- 为避免把约 56 MiB 的微软安装包重复提交到 GitHub，仓库只记录版本、官方地址和校验信息，详见 [`runtime\dotnet-desktop-runtime-8.0.29-win-x64\README.md`](runtime/dotnet-desktop-runtime-8.0.29-win-x64/README.md)。
 
-首次使用时，如系统尚未安装 .NET 8 Desktop Runtime，请先双击上述安装包，再运行 `dist\LubanDesktopPet.exe`。当前桌宠 EXE 未做商业代码签名，从网络下载后 Windows SmartScreen 可能显示提示。
+首次使用时，如系统尚未安装该运行时，请从微软官方地址下载并安装，再运行 `dist\LubanDesktopPet.exe`。当前桌宠 EXE 未做商业代码签名，从网络下载后 Windows SmartScreen 可能显示提示。
 
 ## 开发、构建与验证
 
@@ -79,11 +82,32 @@ dotnet run --project .\DesktopPet.csproj
 # Release 构建
 dotnet build .\DesktopPet.csproj -c Release
 
-# 安装统一缩放和定位的起身、七种点击动作与手动边缘探头帧
+# 安装统一缩放和定位的基础姿势、静态枕头层与手动边缘探头帧
 python .\tools\install_generated_motion_assets.py --v6-motion --source-directory .\tools\generated_sources --assets-directory .\Assets
 
-# 确定性重建 8 张分页图集及清单
+# 首次从基础姿势生成60fps可变长度序列（需要RIFE；离线生成耗时较长）
+# 如工具不在默认的.codex_tmp目录，先设置：
+# $env:XLB_RIFE_ROOT = 'C:\path\to\rife-ncnn-vulkan-20221029-windows'
+python .\tools\generate_dense_motion_assets.py --wake --actions --loops --edge-peek
+
+# 源PNG连续性、透明通道与相邻姿势检查
+python .\tools\qa_dense_motion_assets.py --contacts
+
+# 确定性重建Brotli v4分页图集及清单；分页数由最终资源动态决定
 python .\tools\build_sprite_atlas.py
+
+# 解码最终Pbgra分页并检查清单、像素和连续性
+python .\tools\qa_sprite_atlas_motion.py --contacts
+
+# 查看最终动态计数，不要从旧README或旧清单复制数字
+$manifest = Get-Content .\Assets\luban-sprite-pages.json -Raw | ConvertFrom-Json
+[pscustomobject]@{
+    Version = $manifest.version
+    Compression = $manifest.compression
+    SourceFrames = $manifest.sourceFrameCount
+    PageFrames = $manifest.pageFrameCount
+    Pages = $manifest.pages.PSObject.Properties.Count
+}
 
 # UI 状态、动画、手动边缘探头、多屏与待办契约检查
 dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj -c Release
@@ -100,4 +124,42 @@ dotnet run --project .\tests\TodoStoreChecks\TodoStoreChecks.csproj -c Release
 dotnet publish .\DesktopPet.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=None -o .\dist
 ```
 
-发布结果位于 `dist\LubanDesktopPet.exe`。
+发布结果位于 `dist\LubanDesktopPet.exe`。这是依赖 .NET 8 Desktop Runtime 的框架依赖单文件程序，不是自包含运行时包。
+
+发布前必须先确认最终清单已经是 Brotli v4，并检查 EXE 大小和哈希：
+
+```powershell
+$manifest = Get-Content .\Assets\luban-sprite-pages.json -Raw | ConvertFrom-Json
+if ($manifest.version -ne 4 -or $manifest.compression -ne 'brotli') {
+    throw '最终图集不是Brotli v4，禁止发布'
+}
+
+$exe = Get-Item .\dist\LubanDesktopPet.exe
+if ($exe.Length -ge 100MB) {
+    throw 'EXE达到GitHub普通Git对象100 MiB硬限制，请改用Release附件或Git LFS'
+}
+if ($exe.Length -ge 95MB) {
+    Write-Warning 'EXE已接近100 MiB硬限制；发布前应减少边缘序列或启用选择性无损差分压缩'
+}
+if ($exe.Length -ge 50MB) {
+    Write-Warning 'GitHub会对超过50 MiB的普通Git对象给出大文件警告'
+}
+
+$exe | Select-Object FullName, Length, LastWriteTime
+Get-FileHash $exe.FullName -Algorithm SHA256
+Get-AuthenticodeSignature $exe.FullName | Select-Object Status, StatusMessage
+```
+
+当前程序没有商业代码签名，因此签名状态预计为 `NotSigned`；这不是哈希失败。最终发布还需要实际启动 EXE，逐项冒烟检查点击动作、快速拖动大小、待办输入与复制、窗口外点击收起、手动四边探头、双屏/DPI，以及 `log` 文件夹中的异常和分页预热记录。
+
+### 发布验收清单
+
+- [ ] 源 PNG QA、最终 Pbgra 图集 QA、Release 构建、UI 检查和持久化检查全部通过，且没有忽略失败项。
+- [ ] 最终清单声明 `version: 4` 和 `compression: "brotli"`；`sourceFrameCount`、`pageFrameCount`、实际分页和嵌入资源彼此一致，输出目录不再残留 `*.pbgra.lz4`。
+- [ ] 使用上面的框架依赖单文件命令发布；目标机器已安装 x64 .NET 8 Desktop Runtime。
+- [ ] `LubanDesktopPet.exe` 小于 GitHub 普通 Git 对象的 100 MiB 硬限制，并记录最终字节数和 SHA-256；超过限制时不要强行提交，改用 GitHub Release 附件或 Git LFS。
+- [ ] 实机连续触发七种点击动作并观察起身、循环、返回和随机待机；无自动绕屏、逐帧抖动、透明光纹、忽大忽小或冷页快速补播。
+- [ ] 快速往返拖动大小滑块，人物和滑块都连续；待办支持 `Ctrl+C`、长文本换行/提示、文字选择复制、浅蓝色行悬停，以及微软/搜狗输入法。
+- [ ] 待办随人物跨屏拖动，点击其他位置自动收起；四边手动探头、负坐标副屏、100%/125%/150% DPI 和显示器变化恢复正常。
+- [ ] 等后台分页预热结束后复测动作，并检查内存进入稳定区间、没有持续增长；`log` 中没有未处理异常、Brotli 解码失败或分页预热失败。
+- [ ] Git 暂存仅包含计划交付文件，不包含 `.codex_tmp`、生成缓存、绿幕中间图或无关历史 QA 文件。
