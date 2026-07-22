@@ -284,6 +284,9 @@ public partial class MainWindow : Window
         _todoWindowPositionCache = new OwnedWindowPositioner.PositionCache(_todoWindow);
         _todoWindow.AddRequested += TodoWindow_AddRequested;
         _todoWindow.TodoChanged += TodoWindow_TodoChanged;
+        _todoWindow.TodoEdited += TodoWindow_TodoEdited;
+        _todoWindow.TodoMoveRequested += TodoWindow_TodoMoveRequested;
+        _todoWindow.TodoDragCompleted += TodoWindow_TodoDragCompleted;
         _todoWindow.DeleteRequested += TodoWindow_DeleteRequested;
         _todoWindow.PetSizeScaleChanged += TodoWindow_PetSizeScaleChanged;
         _todoWindow.PetSizeAdjustmentStarted += TodoWindow_PetSizeAdjustmentStarted;
@@ -1066,6 +1069,7 @@ public partial class MainWindow : Window
             _outsideTodoCloseScheduledGeneration != _outsideTodoCloseGeneration ||
             _bubbleMode != BubbleMode.Todo ||
             _todoWindow.IsImeComposing ||
+            _todoWindow.IsTodoDragInProgress ||
             _todoWindow.IsKeyboardFocusWithin ||
             _todoWindow.IsActive || IsActive ||
             _dragInteractionActive || _pointerDown)
@@ -3966,6 +3970,7 @@ public partial class MainWindow : Window
         CuteBubble.Visibility = Visibility.Collapsed;
         if (_todoWindow.IsVisible)
         {
+            _todoWindow.CommitPendingTodoEdit();
             var wasDeactivateSuppressed = _suppressTodoWindowDeactivate;
             _suppressTodoWindowDeactivate = true;
             try
@@ -4742,6 +4747,31 @@ public partial class MainWindow : Window
     {
         SaveTodos();
         AppLogger.Info($"待办完成状态已更新，已完成：{item.IsCompleted}");
+    }
+
+    private void TodoWindow_TodoEdited(TodoItem item)
+    {
+        SaveTodos();
+        AppLogger.Info("待办文字已修改");
+    }
+
+    private void TodoWindow_TodoMoveRequested(TodoItem item, int newIndex)
+    {
+        var oldIndex = _todos.IndexOf(item);
+        if (oldIndex < 0 || newIndex < 0 || newIndex >= _todos.Count ||
+            oldIndex == newIndex)
+        {
+            return;
+        }
+
+        _todos.Move(oldIndex, newIndex);
+        SaveTodos();
+        AppLogger.Info($"待办顺序已调整：{oldIndex + 1} -> {newIndex + 1}");
+    }
+
+    private void TodoWindow_TodoDragCompleted()
+    {
+        ScheduleOutsideTodoClose();
     }
 
     private void TodoWindow_DeleteRequested(TodoItem item)

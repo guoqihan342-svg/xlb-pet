@@ -33,118 +33,154 @@ internal static class Program
         BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
 
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
-        _ = new Application();
-        AssertLoggingContract();
-        RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
-
-        if (args.Contains("--atlas-hash-only", StringComparer.OrdinalIgnoreCase))
-        {
-            RunCheck(nameof(AssertSpriteAtlasDecodedPageLimitFailClosed),
-                AssertSpriteAtlasDecodedPageLimitFailClosed);
-            RunCheck(nameof(AssertSpritePagePayloadEncodingContract),
-                AssertSpritePagePayloadEncodingContract);
-            return;
-        }
-
-        var settingsDirectory = Path.Combine(
-            Path.GetTempPath(),
-            $"xlb-pet-ui-checks-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(settingsDirectory);
-
-        var window = new MainWindow
-        {
-            Left = 200,
-            Top = 160,
-            ShowActivated = false
-        };
-
         try
         {
-            SetField(
-                window,
-                "_settingsStore",
-                new AppSettingsStore(Path.Combine(settingsDirectory, "settings.json")));
-
-            if (args.Contains("--resident-cache-only", StringComparer.OrdinalIgnoreCase))
-            {
-                RunCheck(nameof(AssertResidentSpritePageWarmupContract),
-                    () => AssertResidentSpritePageWarmupContract(window));
-                return;
-            }
-
-            if (args.Contains("--pet-size-only", StringComparer.OrdinalIgnoreCase))
-            {
-                RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
-                RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
-                return;
-            }
-
-            if (args.Contains("--clip-clock-only", StringComparer.OrdinalIgnoreCase))
-            {
-                RunCheck(nameof(AssertSingleBufferPremultipliedBlendContract),
-                    () => AssertSingleBufferPremultipliedBlendContract(window));
-                RunCheck(nameof(AssertColdSpritePageClipClockContract),
-                    () => AssertColdSpritePageClipClockContract(window));
-                RunCheck(nameof(AssertAbsoluteTimelineMathContract),
-                    () => AssertAbsoluteTimelineMathContract(window));
-                return;
-            }
-
-            if (args.Contains("--todo-only", StringComparer.OrdinalIgnoreCase))
-            {
-                Invoke(window, "ApplyPetSizeScale", 1d, false, false);
-                RunCheck(nameof(AssertOwnedTodoWindowContract),
-                    () => AssertOwnedTodoWindowContract(window));
-                RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
-                return;
-            }
-
-            RunCheck(nameof(AssertResidentSpritePageWarmupContract),
-                () => AssertResidentSpritePageWarmupContract(window));
-            RunCheck(nameof(AssertDisplayFrameContract), () => AssertDisplayFrameContract(window));
-            RunCheck(nameof(AssertSupersededPendingSpriteFrameDoesNotFlashBack),
-                () => AssertSupersededPendingSpriteFrameDoesNotFlashBack(window));
-            RunCheck(nameof(AssertColdSpritePageClipClockContract),
-                () => AssertColdSpritePageClipClockContract(window));
-            RunCheck(nameof(AssertSpriteAtlasDecodedPageLimitFailClosed),
-                AssertSpriteAtlasDecodedPageLimitFailClosed);
-            RunCheck(nameof(AssertSpritePagePayloadEncodingContract),
-                AssertSpritePagePayloadEncodingContract);
-            RunCheck(nameof(AssertHighDensityScalingAndDpiContract), () => AssertHighDensityScalingAndDpiContract(window));
-            RunCheck(nameof(AssertMotionTimelineContract), () => AssertMotionTimelineContract(window));
-            RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
-            RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
-            RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
-            RunCheck(nameof(AssertManualTopDockIntegration), () => AssertManualTopDockIntegration(window));
-            RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
-            RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
-            RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
-            RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
-            RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
-            RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
+            return Run(args);
         }
         catch (Exception exception)
         {
+            // 测试失败必须通过退出码报告。不要把断言异常交给 Windows 错误报告，
+            // 否则会触发“UiStateChecks 已停止工作/CrashSender.exe”弹窗。
             Console.Error.WriteLine(exception);
-            throw;
+            return 1;
+        }
+    }
+
+    private static int Run(string[] args)
+    {
+        if (args.Contains("--failure-exit-probe", StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Intentional failure-exit probe.");
+        }
+
+        var application = new Application
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown
+        };
+        try
+        {
+            AssertLoggingContract();
+            RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
+
+            if (args.Contains("--atlas-hash-only", StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(nameof(AssertSpriteAtlasDecodedPageLimitFailClosed),
+                    AssertSpriteAtlasDecodedPageLimitFailClosed);
+                RunCheck(nameof(AssertSpritePagePayloadEncodingContract),
+                    AssertSpritePagePayloadEncodingContract);
+                return 0;
+            }
+
+            var settingsDirectory = Path.Combine(
+                Path.GetTempPath(),
+                $"xlb-pet-ui-checks-{Guid.NewGuid():N}");
+            MainWindow? window = null;
+
+            try
+            {
+                Directory.CreateDirectory(settingsDirectory);
+                window = new MainWindow
+                {
+                    Left = 200,
+                    Top = 160,
+                    ShowActivated = false
+                };
+
+                SetField(
+                    window,
+                    "_settingsStore",
+                    new AppSettingsStore(Path.Combine(settingsDirectory, "settings.json")));
+
+                if (args.Contains("--resident-cache-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertResidentSpritePageWarmupContract),
+                        () => AssertResidentSpritePageWarmupContract(window));
+                    return 0;
+                }
+
+                if (args.Contains("--pet-size-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                    RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
+                    return 0;
+                }
+
+                if (args.Contains("--clip-clock-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertSingleBufferPremultipliedBlendContract),
+                        () => AssertSingleBufferPremultipliedBlendContract(window));
+                    RunCheck(nameof(AssertColdSpritePageClipClockContract),
+                        () => AssertColdSpritePageClipClockContract(window));
+                    RunCheck(nameof(AssertAbsoluteTimelineMathContract),
+                        () => AssertAbsoluteTimelineMathContract(window));
+                    return 0;
+                }
+
+                if (args.Contains("--todo-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+                    RunCheck(nameof(AssertOwnedTodoWindowContract),
+                        () => AssertOwnedTodoWindowContract(window));
+                    RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                    RunCheck(nameof(AssertTodoReorderPersistenceContract),
+                        () => AssertTodoReorderPersistenceContract(window));
+                    return 0;
+                }
+
+                RunCheck(nameof(AssertResidentSpritePageWarmupContract),
+                    () => AssertResidentSpritePageWarmupContract(window));
+                RunCheck(nameof(AssertDisplayFrameContract), () => AssertDisplayFrameContract(window));
+                RunCheck(nameof(AssertSupersededPendingSpriteFrameDoesNotFlashBack),
+                    () => AssertSupersededPendingSpriteFrameDoesNotFlashBack(window));
+                RunCheck(nameof(AssertColdSpritePageClipClockContract),
+                    () => AssertColdSpritePageClipClockContract(window));
+                RunCheck(nameof(AssertSpriteAtlasDecodedPageLimitFailClosed),
+                    AssertSpriteAtlasDecodedPageLimitFailClosed);
+                RunCheck(nameof(AssertSpritePagePayloadEncodingContract),
+                    AssertSpritePagePayloadEncodingContract);
+                RunCheck(nameof(AssertHighDensityScalingAndDpiContract), () => AssertHighDensityScalingAndDpiContract(window));
+                RunCheck(nameof(AssertMotionTimelineContract), () => AssertMotionTimelineContract(window));
+                RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
+                RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
+                RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
+                RunCheck(nameof(AssertManualTopDockIntegration), () => AssertManualTopDockIntegration(window));
+                RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
+                RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
+                RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
+                RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
+                RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                RunCheck(nameof(AssertTodoReorderPersistenceContract),
+                    () => AssertTodoReorderPersistenceContract(window));
+                RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
+            }
+            finally
+            {
+                try
+                {
+                    window?.Close();
+                }
+                finally
+                {
+                    try
+                    {
+                        Directory.Delete(settingsDirectory, recursive: true);
+                    }
+                    catch
+                    {
+                        // 测试临时目录清理失败不应掩盖产品契约结果。
+                    }
+                }
+            }
+
+            Console.WriteLine("UI state checks passed.");
+            return 0;
         }
         finally
         {
-            window.Close();
-            Application.Current.Shutdown();
-            try
-            {
-                Directory.Delete(settingsDirectory, recursive: true);
-            }
-            catch
-            {
-                // 测试临时目录清理失败不应掩盖产品契约结果。
-            }
+            application.Shutdown();
         }
-
-        Console.WriteLine("UI state checks passed.");
     }
 
     private static void RunCheck(string name, Action check)
@@ -4119,13 +4155,17 @@ internal static class Program
 
         // 这项测试会打开真实的可激活 Owned Window。测试运行期间终端或
         // 其他进程抢焦点不应被误判为用户在待办外部点击。
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var originalMainHitTestVisible = window.IsHitTestVisible;
+        var originalTodoHitTestVisible = todoWindow.IsHitTestVisible;
+        window.IsHitTestVisible = false;
+        todoWindow.IsHitTestVisible = false;
         SetField(window, "_suppressTodoWindowDeactivate", true);
         try
         {
             window.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(40));
 
-            var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
             Assert(ReferenceEquals(todoWindow.Owner, window),
                 "待办窗口必须是 MainWindow 的 Owned Window");
             Assert(!todoWindow.IsVisible, "待办窗口不得在主窗口启动时自动显示");
@@ -4155,16 +4195,22 @@ internal static class Program
                        ordinaryActionFrame)! == wakeFrameCount,
                 $"从普通动作打开待办必须直接从第{wakeFrameCount}帧起身终点接入，不能闪回趴枕头待机");
 
+            var todoEnterClip = GetField<object>(window, "_todoEnterClip");
+            var requestedTodoEntryFrame = GetProperty<object>(
+                GetClipFrames(todoEnterClip).GetValue(wakeFrameCount)!,
+                "Image");
+            var requestedTodoEntryFrameInfo = GetSpriteFrameInfo(requestedTodoEntryFrame);
+            // This contract inspects the first live Todo pose. Warm that one page
+            // before starting the clip so background atlas decoding cannot consume
+            // the entire short wake-to-think segment before the assertion runs.
+            PrimeSpritePageForFrame(window, requestedTodoEntryFrame);
+
             var originalRight = window.Left + window.Width;
             var originalBottom = window.Top + window.Height;
             Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
             var ordinaryTodoStartIndex = GetField<int>(window, "_activeFrameIndex");
-            var todoEnterClip = GetRawField(window, "_activeClip")!;
-            var requestedTodoEntryFrame = GetProperty<object>(
-                GetClipFrames(todoEnterClip).GetValue(ordinaryTodoStartIndex)!,
-                "Image");
-            var requestedTodoEntryFrameInfo = GetSpriteFrameInfo(requestedTodoEntryFrame);
-            WaitForPrefetchedSpritePage(window, requestedTodoEntryFrame);
+            Assert(ReferenceEquals(GetRawField(window, "_activeClip"), todoEnterClip),
+                "打开待办必须把活动片段切换为唯一的 Todo 入场片段实例");
             Invoke(window, "TryShowPendingSpriteFrame");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
 
@@ -4320,14 +4366,96 @@ internal static class Program
         }
         finally
         {
+            window.IsHitTestVisible = originalMainHitTestVisible;
+            todoWindow.IsHitTestVisible = originalTodoHitTestVisible;
             SetField(window, "_suppressTodoWindowDeactivate", false);
+        }
+    }
+
+    private static void AssertTodoReorderPersistenceContract(MainWindow window)
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-todo-order-{Guid.NewGuid():N}");
+        var todoPath = Path.Combine(tempDirectory, "todos.json");
+        var todoStore = new TodoStore(todoPath);
+        var originalTodoStore = GetField<TodoStore>(window, "_todoStore");
+        var todos = GetField<ObservableCollection<TodoItem>>(window, "_todos");
+        var originalTodos = todos.ToArray();
+        SetField(window, "_todoStore", todoStore);
+
+        try
+        {
+            todos.Clear();
+            var first = new TodoItem { Text = "第一项" };
+            var second = new TodoItem { Text = "第二项", IsCompleted = true };
+            var third = new TodoItem { Text = "第三项" };
+            todos.Add(first);
+            todos.Add(second);
+            todos.Add(third);
+
+            var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+            Assert(ReferenceEquals(todoWindow.Todos, todos),
+                "TodoWindow 必须直接绑定 MainWindow 的 ObservableCollection，拖放后界面才能立即反映新顺序");
+
+            Invoke(window, "TodoWindow_TodoMoveRequested", third, 0);
+            Assert(todos.Count == 3 &&
+                   ReferenceEquals(todos[0], third) &&
+                   ReferenceEquals(todos[1], first) &&
+                   ReferenceEquals(todos[2], second),
+                "拖拽重排必须通过 ObservableCollection.Move 更新原集合，不能复制或重建待办项");
+
+            var persistedAfterMove = todoStore.Load();
+            Assert(persistedAfterMove.Select(item => item.Text)
+                    .SequenceEqual(new[] { "第三项", "第一项", "第二项" }) &&
+                   persistedAfterMove[2].IsCompleted,
+                "拖拽落下后必须按 ObservableCollection 的最终顺序立即保存，并保留完成状态");
+
+            third.Text = "修改后的第三项";
+            Invoke(window, "TodoWindow_TodoEdited", third);
+            var persistedAfterEdit = todoStore.Load();
+            Assert(persistedAfterEdit.Select(item => item.Text)
+                    .SequenceEqual(new[] { "修改后的第三项", "第一项", "第二项" }),
+                "行内编辑事件必须立即保存修改后的文字，同时保持拖拽产生的顺序");
+
+            var orderBeforeNoOp = todos.ToArray();
+            Invoke(window, "TodoWindow_TodoMoveRequested", third, 0);
+            Assert(todos.SequenceEqual(orderBeforeNoOp),
+                "拖到原位置必须保持集合不变，不能制造无意义的二次移动");
+
+            Invoke(window, "TodoWindow_TodoMoveRequested", new TodoItem { Text = "外部项" }, 1);
+            Assert(todos.SequenceEqual(orderBeforeNoOp),
+                "不属于当前 ObservableCollection 的外部拖放项必须被忽略");
+        }
+        finally
+        {
+            SetField(window, "_todoStore", originalTodoStore);
+            todos.Clear();
+            foreach (var item in originalTodos)
+            {
+                todos.Add(item);
+            }
+
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // 临时持久化文件的清理失败不应掩盖待办顺序契约结果。
+            }
         }
     }
 
     private static void AssertTodoWindowLayoutApiAndIme()
     {
         var type = typeof(TodoWindow);
-        foreach (var propertyName in new[] { "Todos", "IsImeComposing" })
+        foreach (var propertyName in new[]
+                 {
+                     "Todos",
+                     "IsImeComposing",
+                     "IsTodoDragInProgress"
+                 })
         {
             Assert(type.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public) is not null,
                 $"TodoWindow 应公开 {propertyName} 属性");
@@ -4343,6 +4471,9 @@ internal static class Program
                  {
                      "AddRequested",
                      "TodoChanged",
+                     "TodoEdited",
+                     "TodoMoveRequested",
+                     "TodoDragCompleted",
                      "DeleteRequested",
                      "PetSizeScaleChanged",
                      "CloseRequested",
@@ -4425,6 +4556,27 @@ internal static class Program
             var endSizeSource = ExtractPrivateMethodSource(
                 todoSource,
                 "EndPetSizeAdjustment");
+            var beginEditSource = ExtractPrivateMethodSource(
+                todoSource,
+                "BeginTodoEdit");
+            var commitEditSource = ExtractPrivateMethodSource(
+                todoSource,
+                "CommitTodoEdit");
+            var cancelEditSource = ExtractPrivateMethodSource(
+                todoSource,
+                "CancelTodoEdit");
+            var editKeySource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoEditTextBox_PreviewKeyDown");
+            var dragMoveSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoDragHandle_PreviewMouseMove");
+            var dropSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoItemsControl_PreviewDrop");
+            var autoScrollSource = ExtractPrivateMethodSource(
+                todoSource,
+                "AutoScrollTodoList");
             Assert(todoSource.Contains(
                        "PreviewKeyDown += TodoWindow_PreviewKeyDown",
                        StringComparison.Ordinal) &&
@@ -4447,11 +4599,77 @@ internal static class Program
                    getCopyTextSource.Contains("? textBox.SelectedText", StringComparison.Ordinal) &&
                    getCopyTextSource.Contains(": textBox.Text", StringComparison.Ordinal) &&
                    getCopyTextSource.Contains(
-                       "textBox is { IsReadOnly: true, DataContext: TodoItem }",
+                       "textBox.DataContext is TodoItem",
                        StringComparison.Ordinal) &&
                    getCopyTextSource.Contains("? textBox.SelectedText", StringComparison.Ordinal) &&
                    getCopyTextSource.Contains(": null", StringComparison.Ordinal),
-                "Ctrl+C 取文契约必须是：输入框无选区复制全文、有选区复制选区；列表只读文字仅复制选区");
+                "Ctrl+C 取文契约必须是：输入框无选区复制全文、有选区复制选区；列表文字在只读或编辑状态都仅复制选区");
+            Assert(todoXaml.Contains("x:Name=\"TodoDragHandle\"", StringComparison.Ordinal) &&
+                   todoXaml.Contains("x:Name=\"TodoEditButton\"", StringComparison.Ordinal) &&
+                   todoXaml.Contains("x:Name=\"TodoTextBox\"", StringComparison.Ordinal) &&
+                   !todoXaml.Contains("Content=\"改\"", StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "AutomationProperties.Name=\"修改待办\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "M13.2,1.5 L14.5,2.8 L5,12.3 L1.7,14.3 L3.7,11 Z",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains("AllowDrop=\"True\"", StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "LostMouseCapture=\"TodoDragHandle_LostMouseCapture\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "DataContextChanged=\"TodoEditTextBox_DataContextChanged\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "Unloaded=\"TodoEditTextBox_Unloaded\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "PreviewDrop=\"TodoItemsControl_PreviewDrop\"",
+                       StringComparison.Ordinal),
+                "待办拖拽必须只从专用手柄发起，行内修改必须使用带无障碍名称的左下笔尖图标按钮，" +
+                "不能显示“改”字或占用只读文字的选词与复制手势");
+            Assert(beginEditSource.Contains("IsReadOnly = false", StringComparison.Ordinal) &&
+                   beginEditSource.Contains(
+                       "TextCompositionManager.AddPreviewTextInputStartHandler",
+                       StringComparison.Ordinal) &&
+                    beginEditSource.Contains(
+                        "textBox.PreviewTextInput += TodoInput_PreviewTextInputCommitted",
+                        StringComparison.Ordinal) &&
+                    commitEditSource.Contains(
+                        "_editingTodoDraftText.Trim()",
+                        StringComparison.Ordinal) &&
+                    todoSource.Contains("CaptureTodoEditDraft", StringComparison.Ordinal) &&
+                    commitEditSource.Contains("TodoEdited?.Invoke", StringComparison.Ordinal) &&
+                   cancelEditSource.Contains("EndTodoEdit", StringComparison.Ordinal) &&
+                   todoSource.Contains("textBox.IsReadOnly = true", StringComparison.Ordinal) &&
+                   editKeySource.Contains("IsImeComposing", StringComparison.Ordinal) &&
+                   editKeySource.Contains("Key.Enter", StringComparison.Ordinal) &&
+                   editKeySource.Contains("Key.Escape", StringComparison.Ordinal),
+                "行内编辑必须支持 Trim 后保存、Esc 取消和空白保护，且微软输入法组合中的 Enter/Esc 不得误提交或取消");
+            Assert(dragMoveSource.Contains(
+                       "SystemParameters.MinimumHorizontalDragDistance",
+                       StringComparison.Ordinal) &&
+                    dragMoveSource.Contains(
+                        "SystemParameters.MinimumVerticalDragDistance",
+                        StringComparison.Ordinal) &&
+                    !dragMoveSource.Contains("Opacity", StringComparison.Ordinal) &&
+                    autoScrollSource.Contains("_todoScrollViewer ??=", StringComparison.Ordinal) &&
+                    autoScrollSource.Contains("Stopwatch.GetElapsedTime", StringComparison.Ordinal) &&
+                    dropSource.Contains("TodoMoveRequested?.Invoke", StringComparison.Ordinal),
+                "拖拽必须超过 Windows 系统阈值后才启动、不得把状态留在回收容器上，" +
+                "自动滚动必须缓存并节流，而且一次 Drop 只发出一次最终索引移动请求");
+            var mainWindowSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+            var outsideCloseSource = ExtractPrivateMethodSource(
+                mainWindowSource,
+                "ProcessOutsideTodoClose");
+            Assert(outsideCloseSource.Contains(
+                       "_todoWindow.IsTodoDragInProgress",
+                       StringComparison.Ordinal) &&
+                   mainWindowSource.Contains(
+                       "_todoWindow.TodoDragCompleted += TodoWindow_TodoDragCompleted",
+                       StringComparison.Ordinal),
+                "DoDragDrop 嵌套消息循环期间外部失焦不得收起待办窗口，拖拽结束后才重新检查外部点击");
             Assert(queueSizeSource.Contains(
                        "_petSizeScaleNotificationQueued = true",
                        StringComparison.Ordinal) &&
@@ -4637,6 +4855,12 @@ internal static class Program
                 ?? throw new InvalidOperationException("长待办没有生成可视容器");
             var longItemTextBox = FindVisualDescendant<TextBox>(longItemContainer)
                 ?? throw new InvalidOperationException("待办列表项必须使用只读 TextBox");
+            var longItemEditButton = FindVisualDescendants<Button>(longItemContainer)
+                .SingleOrDefault(button => button.Name == "TodoEditButton")
+                ?? throw new InvalidOperationException("待办列表项必须提供独立编辑按钮");
+            var longItemDragHandle = FindVisualDescendants<FrameworkElement>(longItemContainer)
+                .SingleOrDefault(element => element.Name == "TodoDragHandle")
+                ?? throw new InvalidOperationException("待办列表项必须提供独立拖拽手柄");
             var longItemRowBorder = FindVisualDescendants<Border>(longItemContainer)
                 .FirstOrDefault(border =>
                     Math.Abs(border.MaxHeight - 41) < 0.01 &&
@@ -4656,6 +4880,7 @@ internal static class Program
                    textBackground.Color.A == 0,
                 "待办行 IsMouseOver 必须应用 #EAF3FF，内部透明只读文字框不能遮住浅蓝 hover");
             Assert(longItemTextBox.IsReadOnly &&
+                   longItemTextBox.Name == "TodoTextBox" &&
                    longItemTextBox.IsTabStop == false &&
                    longItemTextBox.Focusable &&
                    longItemTextBox.Cursor == Cursors.IBeam &&
@@ -4665,6 +4890,13 @@ internal static class Program
                    longItemTextBox.VerticalScrollBarVisibility == ScrollBarVisibility.Hidden &&
                    longItemTextBox.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled,
                 "列表文字必须是可鼠标选择的无边框只读 TextBox，并限制为两行换行显示");
+            Assert(longItemEditButton.Tag is TodoItem &&
+                   longItemEditButton.Content is Viewbox editIcon &&
+                   FindVisualDescendants<System.Windows.Shapes.Path>(editIcon).Count() == 2 &&
+                   longItemDragHandle.DataContext is TodoItem &&
+                   longItemDragHandle.Cursor == Cursors.SizeAll,
+                "编辑按钮必须显示双路径铅笔图标，编辑按钮和拖拽手柄都要绑定当前 TodoItem；" +
+                "文字 TextBox 本身不得兼任拖拽热区");
             Assert(longItemContainer.ActualHeight <= 44.5 &&
                    longItemContainer.ActualWidth <= itemsControl.ActualWidth + 0.5,
                 $"长待办不得撑高或撑宽列表：item={longItemContainer.ActualWidth:F1}x" +
@@ -4718,6 +4950,127 @@ internal static class Program
                    longItemTextBox.SelectionLength == listSelectionLength,
                 "TodoWindow 内列表正在选字时，延后的输入框聚焦回调不得抢焦点或折叠选区");
 
+            var longTodoItem = (TodoItem)longItemTextBox.DataContext;
+            var editedCount = 0;
+            TodoItem? lastEditedItem = null;
+            todoWindow.TodoEdited += item =>
+            {
+                editedCount++;
+                lastEditedItem = item;
+            };
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            Assert(!longItemTextBox.IsReadOnly && longItemTextBox.IsKeyboardFocusWithin,
+                "点击编辑按钮后必须在同一行 TextBox 内进入可编辑状态并获得焦点，避免 IME 候选框漂移");
+            longItemTextBox.Text = "  修改后的长待办  ";
+            longItemTextBox.Select(2, 4);
+            Assert(ApplicationCommands.Copy.CanExecute(
+                    parameter: null,
+                    target: longItemTextBox),
+                "行内编辑状态必须保留 TextBox 原生 Ctrl+C/V/X/A，不能被窗口级复制兼容逻辑禁用");
+
+            var editPresentationSource = PresentationSource.FromVisual(longItemTextBox)
+                ?? throw new InvalidOperationException("行内编辑 TextBox 未建立输入源");
+            Invoke(todoWindow, "SetImeComposing", true);
+            var composingEditEnter = CreateKeyEvent(editPresentationSource, Key.Enter);
+            Invoke(
+                todoWindow,
+                "TodoEditTextBox_PreviewKeyDown",
+                longItemTextBox,
+                composingEditEnter);
+            Assert(editedCount == 0 &&
+                   longTodoItem.Text == longTodoText &&
+                   !longItemTextBox.IsReadOnly,
+                "微软输入法仍在组合时，行内编辑 Enter 只能选词，不得提交、退出编辑或覆盖原文");
+
+            Invoke(todoWindow, "SetImeComposing", false);
+            var committedEditEnter = CreateKeyEvent(editPresentationSource, Key.Enter);
+            Invoke(
+                todoWindow,
+                "TodoEditTextBox_PreviewKeyDown",
+                longItemTextBox,
+                committedEditEnter);
+            Assert(editedCount == 1 &&
+                   ReferenceEquals(lastEditedItem, longTodoItem) &&
+                   longTodoItem.Text == "修改后的长待办" &&
+                   longItemTextBox.IsReadOnly &&
+                   committedEditEnter.Handled,
+                "行内编辑 Enter 必须 Trim 后提交一次 TodoEdited、更新原对象并返回只读选择状态");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "这一版应被取消";
+            var cancelEditEscape = CreateKeyEvent(editPresentationSource, Key.Escape);
+            Invoke(
+                todoWindow,
+                "TodoEditTextBox_PreviewKeyDown",
+                longItemTextBox,
+                cancelEditEscape);
+            Assert(editedCount == 1 &&
+                   longTodoItem.Text == "修改后的长待办" &&
+                   longItemTextBox.Text == "修改后的长待办" &&
+                   longItemTextBox.IsReadOnly &&
+                   cancelEditEscape.Handled,
+                "行内编辑 Esc 必须恢复进入编辑前的文字、退出编辑且不得触发保存事件");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "   \t  ";
+            Invoke(todoWindow, "CommitTodoEdit");
+            Assert(editedCount == 1 &&
+                   longTodoItem.Text == "修改后的长待办" &&
+                   longItemTextBox.Text == "修改后的长待办" &&
+                   longItemTextBox.IsReadOnly,
+                "空白编辑不得删除待办或写入空文本；应取消本次修改并保留原文");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "  修改后的长待办  ";
+            Invoke(todoWindow, "CommitTodoEdit");
+            Assert(editedCount == 1 &&
+                   longTodoItem.Text == "修改后的长待办" &&
+                   longItemTextBox.IsReadOnly,
+                "仅首尾空白不同的编辑应正常结束但不得重复触发 TodoEdited 保存");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "虚拟化回收前保存的草稿";
+            var recycledTodoItem = new TodoItem { Text = "回收容器的新待办" };
+            longItemTextBox.DataContext = recycledTodoItem;
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 2 &&
+                   longTodoItem.Text == "虚拟化回收前保存的草稿" &&
+                   recycledTodoItem.Text == "回收容器的新待办" &&
+                   longItemTextBox.IsReadOnly,
+                "Recycling 复用行容器时必须把已输入草稿提交给原 TodoItem，不能把新行文字写回旧项或污染新项");
+            longItemTextBox.ClearValue(FrameworkElement.DataContextProperty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(ReferenceEquals(longItemTextBox.DataContext, longTodoItem),
+                "虚拟化回收模拟完成后 TextBox 必须恢复继承原行 DataContext");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "失去焦点后自动保存";
+            input.Focus();
+            Keyboard.Focus(input);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 3 &&
+                   longTodoItem.Text == "失去焦点后自动保存" &&
+                   longItemTextBox.IsReadOnly,
+                "行内编辑失去键盘焦点后必须延后提交一次，点击窗口其他位置不能丢失修改");
+
+            longItemTextBox.Select(1, 5);
+            Assert((bool)Invoke(todoWindow, "CanCopyFromTextBox", longItemTextBox)! &&
+                   string.Equals(
+                       (string?)Invoke(todoWindow, "GetCopyText", longItemTextBox),
+                       longItemTextBox.SelectedText,
+                       StringComparison.Ordinal),
+                "编辑完成后必须恢复列表只读文字的选中复制契约");
+
+            longItemTextBox.Focus();
+            Keyboard.Focus(longItemTextBox);
+            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            Invoke(todoWindow, "ResetImeCompositionAfterFocusLoss");
+            Assert(todoWindow.IsImeComposing,
+                "底部输入框旧的延后失焦回调不得清除已经转移到行内编辑框的微软 IME 组合状态");
+            Invoke(todoWindow, "SetImeComposing", false);
+
             var addCount = 0;
             todoWindow.AddRequested += _ => addCount++;
             input.Text = "微软拼音组合文本";
@@ -4736,6 +5089,67 @@ internal static class Program
             Invoke(todoWindow, "TodoInput_PreviewKeyDown", input, committedEnter);
             Assert(addCount == 1 && input.Text.Length == 0 && committedEnter.Handled,
                 "组合完成后 Enter 应正常发出一次新增请求并清空输入框");
+
+            var dragItems = new ObservableCollection<TodoItem>
+            {
+                new() { Text = "拖拽第一项" },
+                new() { Text = "拖拽第二项" },
+                new() { Text = "拖拽第三项" }
+            };
+            todoWindow.Todos = dragItems;
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var dragList = GetField<ListBox>(todoWindow, "TodoItemsControl");
+            var firstDragContainer = dragList.ItemContainerGenerator.ContainerFromIndex(0)
+                as ListBoxItem
+                ?? throw new InvalidOperationException("拖拽第一项没有生成容器");
+            var thirdDragContainer = dragList.ItemContainerGenerator.ContainerFromIndex(2)
+                as ListBoxItem
+                ?? throw new InvalidOperationException("拖拽第三项没有生成容器");
+            Assert(ReferenceEquals(firstDragContainer.DataContext, dragItems[0]) &&
+                   ReferenceEquals(thirdDragContainer.DataContext, dragItems[2]),
+                "真实拖放测试必须先确认 Recycling 容器已经绑定新的三项集合");
+            var moveRequests = new List<(TodoItem Item, int Index)>();
+            todoWindow.TodoMoveRequested += (item, index) =>
+                moveRequests.Add((item, index));
+            SetField(todoWindow, "_todoDragInProgress", true);
+            try
+            {
+                var moveFirstToEnd = CreateDragEvent(
+                    dragItems[0],
+                    thirdDragContainer,
+                    new Point(4, Math.Max(1, thirdDragContainer.ActualHeight - 1)));
+                thirdDragContainer.RaiseEvent(moveFirstToEnd);
+                Assert(moveRequests.Count == 1 &&
+                       ReferenceEquals(moveRequests[0].Item, dragItems[0]) &&
+                       moveRequests[0].Index == 2 &&
+                       ReferenceEquals(moveFirstToEnd.OriginalSource, thirdDragContainer) &&
+                       moveFirstToEnd.Handled,
+                    "真实 PreviewDrop 向下拖到末项下半区必须只请求移动到最终索引 2");
+
+                var moveThirdToStart = CreateDragEvent(
+                    dragItems[2],
+                    firstDragContainer,
+                    new Point(4, 1));
+                firstDragContainer.RaiseEvent(moveThirdToStart);
+                Assert(moveRequests.Count == 2 &&
+                       ReferenceEquals(moveRequests[1].Item, dragItems[2]) &&
+                       moveRequests[1].Index == 0 &&
+                       ReferenceEquals(moveThirdToStart.OriginalSource, firstDragContainer),
+                    "真实 PreviewDrop 向上拖到首项上半区必须只请求移动到最终索引 0；" +
+                    $"实际请求：{string.Join(", ", moveRequests.Select(request => $"{request.Item.Text}->{request.Index}"))}");
+
+                var noOpDrop = CreateDragEvent(
+                    dragItems[1],
+                    firstDragContainer,
+                    new Point(4, Math.Max(1, firstDragContainer.ActualHeight - 1)));
+                firstDragContainer.RaiseEvent(noOpDrop);
+                Assert(moveRequests.Count == 2,
+                    "拖到当前相邻位置不得额外发出无意义的移动请求");
+            }
+            finally
+            {
+                SetField(todoWindow, "_todoDragInProgress", false);
+            }
         }
         finally
         {
@@ -4743,11 +5157,44 @@ internal static class Program
         }
     }
 
-    private static KeyEventArgs CreateEnterKeyEvent(PresentationSource source) => new(
+    private static KeyEventArgs CreateEnterKeyEvent(PresentationSource source) =>
+        CreateKeyEvent(source, Key.Enter);
+
+    private static DragEventArgs CreateDragEvent(
+        TodoItem item,
+        DependencyObject dragTarget,
+        Point position)
+    {
+        var constructor = typeof(DragEventArgs).GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            new[]
+            {
+                typeof(IDataObject),
+                typeof(DragDropKeyStates),
+                typeof(DragDropEffects),
+                typeof(DependencyObject),
+                typeof(Point)
+            },
+            modifiers: null)
+            ?? throw new InvalidOperationException("找不到 WPF DragEventArgs 内部构造函数");
+        var dragEvent = (DragEventArgs)constructor.Invoke(new object[]
+        {
+            new DataObject(typeof(TodoItem), item),
+            DragDropKeyStates.LeftMouseButton,
+            DragDropEffects.Move,
+            dragTarget,
+            position
+        });
+        dragEvent.RoutedEvent = DragDrop.PreviewDropEvent;
+        return dragEvent;
+    }
+
+    private static KeyEventArgs CreateKeyEvent(PresentationSource source, Key key) => new(
         Keyboard.PrimaryDevice,
         source,
         Environment.TickCount,
-        Key.Enter)
+        key)
     {
         RoutedEvent = Keyboard.PreviewKeyDownEvent
     };
@@ -6322,7 +6769,11 @@ internal static class Program
     private static void PumpDispatcher(TimeSpan duration)
     {
         var frame = new DispatcherFrame();
-        var timer = new DispatcherTimer(DispatcherPriority.Background)
+        // Background priority can be starved by a continuously subscribed
+        // CompositionTarget.Rendering callback, turning a 30 ms pump into
+        // several seconds and letting the clip finish before an intermediate
+        // state assertion. Normal priority keeps the requested wall-clock bound.
+        var timer = new DispatcherTimer(DispatcherPriority.Normal)
         {
             Interval = duration
         };

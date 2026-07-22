@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,14 +13,31 @@ namespace LubanDesktopPet;
 
 public partial class TodoWindow : Window
 {
+    private static readonly Brush TodoDropIndicatorBrush =
+        CreateTodoDropIndicatorBrush();
+
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
     private bool _petSizeScaleNotificationQueued;
     private double _pendingPetSizeScale = 1;
     private int _displayedPetSizePercent = int.MinValue;
     private readonly Action _resetImeCompositionAfterFocusLossAction;
+    private readonly Action _finishTodoEditAfterFocusLossAction;
     private readonly Action _focusInputAction;
     private readonly Action _retryClipboardCopyAction;
+    private TextBox? _imeCompositionOwner;
+    private TextBox? _editingTodoTextBox;
+    private Button? _editingTodoButton;
+    private TodoItem? _editingTodoItem;
+    private string _editingTodoOriginalText = string.Empty;
+    private string _editingTodoDraftText = string.Empty;
+    private TodoItem? _todoDragCandidate;
+    private Point _todoDragStartPoint;
+    private bool _todoDragInProgress;
+    private ListBoxItem? _todoDropTargetContainer;
+    private bool _todoDropTargetInsertAfter;
+    private ScrollViewer? _todoScrollViewer;
+    private long _lastTodoAutoScrollTimestamp;
     private string? _pendingClipboardCopyText;
     private bool _clipboardCopyRetryQueued;
     private bool _tailOnRight = true;
@@ -31,6 +49,8 @@ public partial class TodoWindow : Window
         InitializeComponent();
         _resetImeCompositionAfterFocusLossAction =
             ResetImeCompositionAfterFocusLoss;
+        _finishTodoEditAfterFocusLossAction =
+            FinishTodoEditAfterFocusLoss;
         _focusInputAction = FocusInputCore;
         _retryClipboardCopyAction = RetryClipboardCopy;
 
@@ -53,6 +73,13 @@ public partial class TodoWindow : Window
         Closed += TodoWindow_Closed;
     }
 
+    private static Brush CreateTodoDropIndicatorBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0x5B, 0x8D, 0xEF));
+        brush.Freeze();
+        return brush;
+    }
+
     public IEnumerable? Todos
     {
         get => TodoItemsControl.ItemsSource;
@@ -61,9 +88,17 @@ public partial class TodoWindow : Window
 
     public bool IsImeComposing { get; private set; }
 
+    public bool IsTodoDragInProgress => _todoDragInProgress;
+
     public event Action<string>? AddRequested;
 
     public event Action<TodoItem>? TodoChanged;
+
+    public event Action<TodoItem>? TodoEdited;
+
+    public event Action<TodoItem, int>? TodoMoveRequested;
+
+    public event Action? TodoDragCompleted;
 
     public event Action<TodoItem>? DeleteRequested;
 
@@ -172,7 +207,7 @@ public partial class TodoWindow : Window
 
     private bool IsCopySource(TextBox textBox) =>
         ReferenceEquals(textBox, TodoInput) ||
-        textBox is { IsReadOnly: true, DataContext: TodoItem };
+        textBox.DataContext is TodoItem;
 
     private bool CanCopyFromTextBox(TextBox textBox) =>
         !string.IsNullOrEmpty(GetCopyText(textBox));
@@ -186,7 +221,7 @@ public partial class TodoWindow : Window
                 : textBox.Text;
         }
 
-        return textBox is { IsReadOnly: true, DataContext: TodoItem } &&
+        return textBox.DataContext is TodoItem &&
                textBox.SelectionLength > 0
             ? textBox.SelectedText
             : null;
@@ -316,6 +351,7 @@ public partial class TodoWindow : Window
 
     private void TodoInput_PreviewTextInputStart(object sender, TextCompositionEventArgs e)
     {
+        _imeCompositionOwner = sender as TextBox;
         SetImeComposing(true);
     }
 
@@ -325,12 +361,24 @@ public partial class TodoWindow : Window
         var hasCompositionText =
             !string.IsNullOrEmpty(composition.CompositionText) ||
             !string.IsNullOrEmpty(composition.SystemCompositionText);
-        SetImeComposing(hasCompositionText);
+        if (hasCompositionText)
+        {
+            _imeCompositionOwner = sender as TextBox;
+            SetImeComposing(true);
+        }
+        else if (ReferenceEquals(_imeCompositionOwner, sender))
+        {
+            SetImeComposing(false);
+        }
     }
 
     private void TodoInput_PreviewTextInputCommitted(object sender, TextCompositionEventArgs e)
     {
-        SetImeComposing(false);
+        if (_imeCompositionOwner is null ||
+            ReferenceEquals(_imeCompositionOwner, sender))
+        {
+            SetImeComposing(false);
+        }
     }
 
     private void TodoInput_LostKeyboardFocus(
@@ -344,6 +392,17 @@ public partial class TodoWindow : Window
 
     private void ResetImeCompositionAfterFocusLoss()
     {
+        var owner = _imeCompositionOwner;
+        if (owner is not null)
+        {
+            if (!owner.IsKeyboardFocusWithin)
+            {
+                SetImeComposing(false);
+            }
+
+            return;
+        }
+
         if (!TodoInput.IsKeyboardFocusWithin)
         {
             SetImeComposing(false);
@@ -352,6 +411,11 @@ public partial class TodoWindow : Window
 
     private void SetImeComposing(bool value)
     {
+        if (!value)
+        {
+            _imeCompositionOwner = null;
+        }
+
         if (IsImeComposing == value)
         {
             return;
@@ -397,6 +461,546 @@ public partial class TodoWindow : Window
 
         AddRequested?.Invoke(text);
         TodoInput.Clear();
+    }
+
+    public void CommitPendingTodoEdit()
+    {
+        CommitTodoEdit();
+    }
+
+    private void EditButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: TodoItem item })
+        {
+            return;
+        }
+
+        var container = TodoItemsControl.ItemContainerGenerator.ContainerFromItem(item)
+            as ListBoxItem;
+        var textBox = FindVisualDescendant<TextBox>(container, "TodoTextBox");
+        if (textBox is not null)
+        {
+            BeginTodoEdit(textBox, item);
+        }
+    }
+
+    private void BeginTodoEdit(TextBox textBox, TodoItem item)
+    {
+        if (ReferenceEquals(_editingTodoTextBox, textBox) &&
+            ReferenceEquals(_editingTodoItem, item))
+        {
+            textBox.Focus();
+            Keyboard.Focus(textBox);
+            return;
+        }
+
+        CommitTodoEdit();
+        _editingTodoTextBox = textBox;
+        _editingTodoItem = item;
+        _editingTodoOriginalText = item.Text;
+        _editingTodoDraftText = textBox.Text;
+        var container = TodoItemsControl.ItemContainerGenerator.ContainerFromItem(item)
+            as ListBoxItem;
+        _editingTodoButton = FindVisualDescendant<Button>(container, "TodoEditButton");
+        if (_editingTodoButton is not null)
+        {
+            _editingTodoButton.IsEnabled = false;
+        }
+
+        TextCompositionManager.AddPreviewTextInputStartHandler(
+            textBox,
+            TodoInput_PreviewTextInputStart);
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(
+            textBox,
+            TodoInput_PreviewTextInputUpdate);
+        textBox.PreviewTextInput += TodoInput_PreviewTextInputCommitted;
+        textBox.IsReadOnly = false;
+        textBox.Focus();
+        Keyboard.Focus(textBox);
+        textBox.SelectAll();
+    }
+
+    private bool CommitTodoEdit()
+    {
+        var textBox = _editingTodoTextBox;
+        var item = _editingTodoItem;
+        if (textBox is null || item is null)
+        {
+            return false;
+        }
+
+        if (IsImeComposing && textBox.IsKeyboardFocusWithin)
+        {
+            return false;
+        }
+
+        if (IsImeComposing &&
+            (_imeCompositionOwner is null ||
+             ReferenceEquals(_imeCompositionOwner, textBox)))
+        {
+            SetImeComposing(false);
+        }
+
+        var normalizedText = _editingTodoDraftText.Trim();
+        if (normalizedText.Length == 0)
+        {
+            CancelTodoEdit();
+            return false;
+        }
+
+        var changed = !string.Equals(item.Text, normalizedText, StringComparison.Ordinal);
+        if (changed)
+        {
+            item.Text = normalizedText;
+        }
+
+        EndTodoEdit(restoreBindingTarget: true);
+        if (changed)
+        {
+            TodoEdited?.Invoke(item);
+        }
+
+        return changed;
+    }
+
+    private void CancelTodoEdit()
+    {
+        if (_editingTodoItem is not null)
+        {
+            _editingTodoItem.Text = _editingTodoOriginalText;
+        }
+
+        EndTodoEdit(restoreBindingTarget: true);
+    }
+
+    private void EndTodoEdit(bool restoreBindingTarget)
+    {
+        var textBox = _editingTodoTextBox;
+        if (textBox is not null)
+        {
+            TextCompositionManager.RemovePreviewTextInputStartHandler(
+                textBox,
+                TodoInput_PreviewTextInputStart);
+            TextCompositionManager.RemovePreviewTextInputUpdateHandler(
+                textBox,
+                TodoInput_PreviewTextInputUpdate);
+            textBox.PreviewTextInput -= TodoInput_PreviewTextInputCommitted;
+            textBox.IsReadOnly = true;
+            if (restoreBindingTarget)
+            {
+                textBox.GetBindingExpression(TextBox.TextProperty)?.UpdateTarget();
+            }
+        }
+
+        if (_editingTodoButton is not null)
+        {
+            _editingTodoButton.IsEnabled = true;
+        }
+
+        _editingTodoTextBox = null;
+        _editingTodoButton = null;
+        _editingTodoItem = null;
+        _editingTodoOriginalText = string.Empty;
+        _editingTodoDraftText = string.Empty;
+        if (_imeCompositionOwner is null ||
+            ReferenceEquals(_imeCompositionOwner, textBox))
+        {
+            SetImeComposing(false);
+        }
+    }
+
+    private void TodoEditTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox { DataContext: TodoItem item } textBox)
+        {
+            return;
+        }
+
+        if (textBox.IsReadOnly)
+        {
+            if (e.Key == Key.F2)
+            {
+                BeginTodoEdit(textBox, item);
+                e.Handled = true;
+            }
+
+            return;
+        }
+
+        if (e.Key == Key.Escape)
+        {
+            if (!IsImeComposing)
+            {
+                CancelTodoEdit();
+                e.Handled = true;
+            }
+
+            return;
+        }
+
+        if (e.Key == Key.Enter && !IsImeComposing)
+        {
+            CommitTodoEdit();
+            e.Handled = true;
+        }
+    }
+
+    private void TodoEditTextBox_LostKeyboardFocus(
+        object sender,
+        KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not TextBox textBox ||
+            !ReferenceEquals(textBox, _editingTodoTextBox))
+        {
+            return;
+        }
+
+        CaptureTodoEditDraft(textBox);
+        ScheduleTodoEditAfterFocusLoss();
+    }
+
+    private void TodoEditTextBox_TextChanged(
+        object sender,
+        TextChangedEventArgs e)
+    {
+        if (sender is TextBox textBox &&
+            ReferenceEquals(textBox, _editingTodoTextBox))
+        {
+            CaptureTodoEditDraft(textBox);
+        }
+    }
+
+    private void TodoEditTextBox_DataContextChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is TextBox textBox &&
+            ReferenceEquals(textBox, _editingTodoTextBox) &&
+            !ReferenceEquals(e.NewValue, _editingTodoItem))
+        {
+            ScheduleTodoEditAfterFocusLoss();
+        }
+    }
+
+    private void TodoEditTextBox_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox textBox &&
+            ReferenceEquals(textBox, _editingTodoTextBox))
+        {
+            CaptureTodoEditDraft(textBox);
+            ScheduleTodoEditAfterFocusLoss();
+        }
+    }
+
+    private void CaptureTodoEditDraft(TextBox textBox)
+    {
+        if (ReferenceEquals(textBox.DataContext, _editingTodoItem))
+        {
+            _editingTodoDraftText = textBox.Text;
+        }
+    }
+
+    private void ScheduleTodoEditAfterFocusLoss()
+    {
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            _finishTodoEditAfterFocusLossAction);
+    }
+
+    private void FinishTodoEditAfterFocusLoss()
+    {
+        var textBox = _editingTodoTextBox;
+        if (textBox is null)
+        {
+            return;
+        }
+
+        var containerWasRecycled =
+            !ReferenceEquals(textBox.DataContext, _editingTodoItem) ||
+            !textBox.IsLoaded;
+        if (textBox.IsKeyboardFocusWithin && !containerWasRecycled)
+        {
+            return;
+        }
+
+        if (containerWasRecycled && IsImeComposing &&
+            (_imeCompositionOwner is null ||
+             ReferenceEquals(_imeCompositionOwner, textBox)))
+        {
+            SetImeComposing(false);
+        }
+
+        ResetImeCompositionAfterFocusLoss();
+        CommitTodoEdit();
+    }
+
+    private void TodoDragHandle_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: TodoItem item } handle)
+        {
+            return;
+        }
+
+        _todoDragCandidate = item;
+        _todoDragStartPoint = e.GetPosition(TodoItemsControl);
+        handle.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void TodoDragHandle_PreviewMouseLeftButtonUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement handle && handle.IsMouseCaptured)
+        {
+            handle.ReleaseMouseCapture();
+        }
+
+        _todoDragCandidate = null;
+        e.Handled = true;
+    }
+
+    private void TodoDragHandle_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        _todoDragCandidate = null;
+    }
+
+    private void TodoDragHandle_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_todoDragInProgress ||
+            _todoDragCandidate is not TodoItem item ||
+            e.LeftButton != MouseButtonState.Pressed ||
+            sender is not FrameworkElement handle)
+        {
+            return;
+        }
+
+        var position = e.GetPosition(TodoItemsControl);
+        if (Math.Abs(position.X - _todoDragStartPoint.X) <
+                SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(position.Y - _todoDragStartPoint.Y) <
+                SystemParameters.MinimumVerticalDragDistance)
+        {
+            return;
+        }
+
+        if (handle.IsMouseCaptured)
+        {
+            handle.ReleaseMouseCapture();
+        }
+
+        if (_editingTodoTextBox is { } editor &&
+            IsImeComposing && editor.IsKeyboardFocusWithin)
+        {
+            _todoDragCandidate = null;
+            return;
+        }
+
+        CommitTodoEdit();
+        _todoDragInProgress = true;
+        _todoDragCandidate = null;
+        _lastTodoAutoScrollTimestamp = 0;
+
+        try
+        {
+            var data = new DataObject(typeof(TodoItem), item);
+            DragDrop.DoDragDrop(handle, data, DragDropEffects.Move);
+        }
+        finally
+        {
+            ClearTodoDropTarget();
+            _lastTodoAutoScrollTimestamp = 0;
+            _todoDragInProgress = false;
+            TodoDragCompleted?.Invoke();
+        }
+
+        e.Handled = true;
+    }
+
+    private void TodoItemsControl_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        if (!_todoDragInProgress ||
+            !e.Data.GetDataPresent(typeof(TodoItem)))
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        var container = FindTodoContainer(e.OriginalSource as DependencyObject);
+        var insertAfter = container is not null &&
+                          e.GetPosition(container).Y >= container.ActualHeight / 2;
+        UpdateTodoDropTarget(container, insertAfter);
+        AutoScrollTodoList(e.GetPosition(TodoItemsControl).Y);
+        e.Effects = DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void TodoItemsControl_PreviewDrop(object sender, DragEventArgs e)
+    {
+        try
+        {
+            if (!_todoDragInProgress ||
+                e.Data.GetData(typeof(TodoItem)) is not TodoItem item)
+            {
+                return;
+            }
+
+            var oldIndex = TodoItemsControl.Items.IndexOf(item);
+            if (oldIndex < 0 || TodoItemsControl.Items.Count < 2)
+            {
+                return;
+            }
+
+            var container = FindTodoContainer(e.OriginalSource as DependencyObject);
+            var targetIndex = container?.DataContext is TodoItem target
+                ? TodoItemsControl.Items.IndexOf(target)
+                : TodoItemsControl.Items.Count - 1;
+            var insertAfter = container is null ||
+                              e.GetPosition(container).Y >= container.ActualHeight / 2;
+            var finalIndex = targetIndex + (insertAfter ? 1 : 0);
+            if (oldIndex < finalIndex)
+            {
+                finalIndex--;
+            }
+
+            finalIndex = Math.Clamp(finalIndex, 0, TodoItemsControl.Items.Count - 1);
+            if (finalIndex != oldIndex)
+            {
+                TodoMoveRequested?.Invoke(item, finalIndex);
+            }
+
+            e.Effects = DragDropEffects.Move;
+        }
+        finally
+        {
+            ClearTodoDropTarget();
+            e.Handled = true;
+        }
+    }
+
+    private ListBoxItem? FindTodoContainer(DependencyObject? source)
+    {
+        while (source is not null && !ReferenceEquals(source, TodoItemsControl))
+        {
+            if (source is ListBoxItem container &&
+                ReferenceEquals(
+                    ItemsControl.ItemsControlFromItemContainer(container),
+                    TodoItemsControl))
+            {
+                return container;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return null;
+    }
+
+    private void UpdateTodoDropTarget(ListBoxItem? container, bool insertAfter)
+    {
+        if (ReferenceEquals(_todoDropTargetContainer, container) &&
+            _todoDropTargetInsertAfter == insertAfter)
+        {
+            return;
+        }
+
+        if (!ReferenceEquals(_todoDropTargetContainer, container))
+        {
+            ClearTodoDropTarget();
+            _todoDropTargetContainer = container;
+        }
+
+        if (container is null)
+        {
+            return;
+        }
+
+        _todoDropTargetInsertAfter = insertAfter;
+        container.BorderBrush = TodoDropIndicatorBrush;
+        container.BorderThickness = insertAfter
+            ? new Thickness(0, 0, 0, 2)
+            : new Thickness(0, 2, 0, 0);
+    }
+
+    private void ClearTodoDropTarget()
+    {
+        if (_todoDropTargetContainer is null)
+        {
+            return;
+        }
+
+        _todoDropTargetContainer.ClearValue(Control.BorderBrushProperty);
+        _todoDropTargetContainer.ClearValue(Control.BorderThicknessProperty);
+        _todoDropTargetContainer = null;
+        _todoDropTargetInsertAfter = false;
+    }
+
+    private void AutoScrollTodoList(double pointerY)
+    {
+        var scrollViewer = _todoScrollViewer ??=
+            FindVisualDescendant<ScrollViewer>(TodoItemsControl);
+        if (scrollViewer is null)
+        {
+            return;
+        }
+
+        const double edgeSize = 20;
+        var scrollUp = pointerY < edgeSize;
+        var scrollDown = pointerY > TodoItemsControl.ActualHeight - edgeSize;
+        if (!scrollUp && !scrollDown)
+        {
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        if (_lastTodoAutoScrollTimestamp != 0 &&
+            Stopwatch.GetElapsedTime(_lastTodoAutoScrollTimestamp, now) <
+                TimeSpan.FromMilliseconds(50))
+        {
+            return;
+        }
+
+        _lastTodoAutoScrollTimestamp = now;
+        if (scrollUp)
+        {
+            scrollViewer.LineUp();
+        }
+        else
+        {
+            scrollViewer.LineDown();
+        }
+    }
+
+    private static T? FindVisualDescendant<T>(
+        DependencyObject? root,
+        string? name = null)
+        where T : FrameworkElement
+    {
+        if (root is null)
+        {
+            return null;
+        }
+
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match &&
+                (name is null || string.Equals(match.Name, name, StringComparison.Ordinal)))
+            {
+                return match;
+            }
+
+            var descendant = FindVisualDescendant<T>(child, name);
+            if (descendant is not null)
+            {
+                return descendant;
+            }
+        }
+
+        return null;
     }
 
     private void TodoCheckBox_Click(object sender, RoutedEventArgs e)

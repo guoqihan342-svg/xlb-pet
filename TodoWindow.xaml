@@ -79,18 +79,22 @@
 
                 <Grid Grid.Row="1" Margin="0,8">
                     <ListBox x:Name="TodoItemsControl"
+                             AllowDrop="True"
                              Background="Transparent"
                              BorderThickness="0"
                              ScrollViewer.CanContentScroll="True"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              ScrollViewer.VerticalScrollBarVisibility="Auto"
                              VirtualizingPanel.IsVirtualizing="True"
-                             VirtualizingPanel.VirtualizationMode="Recycling">
+                             VirtualizingPanel.VirtualizationMode="Recycling"
+                             PreviewDragOver="TodoItemsControl_PreviewDragOver"
+                             PreviewDrop="TodoItemsControl_PreviewDrop">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
-                                <Setter Property="Padding" Value="0" />
-                                <Setter Property="Margin" Value="0" />
-                                <Setter Property="BorderThickness" Value="0" />
+                                 <Setter Property="Padding" Value="0" />
+                                 <Setter Property="Margin" Value="0" />
+                                 <Setter Property="BorderBrush" Value="Transparent" />
+                                 <Setter Property="BorderThickness" Value="0,1" />
                                 <Setter Property="MinHeight" Value="0" />
                                 <Setter Property="Focusable" Value="False" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -103,7 +107,7 @@
                         </ListBox.ItemsPanel>
                         <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Margin="0,0,0,3"
+                                    <Border Margin="0,0,0,1"
                                             Padding="7,2"
                                             MaxHeight="41"
                                             CornerRadius="8">
@@ -119,37 +123,61 @@
                                         </Border.Style>
                                         <Grid>
                                             <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="22" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="26" />
+                                                <ColumnDefinition Width="26" />
                                             </Grid.ColumnDefinitions>
-                                            <CheckBox Grid.Column="0"
+                                            <Border x:Name="TodoDragHandle"
+                                                    Grid.Column="0"
+                                                    Width="18"
+                                                    Margin="0,0,4,0"
+                                                    VerticalAlignment="Stretch"
+                                                    Background="Transparent"
+                                                    Cursor="SizeAll"
+                                                     Tag="{Binding}"
+                                                     ToolTip="拖动调整顺序"
+                                                     LostMouseCapture="TodoDragHandle_LostMouseCapture"
+                                                     PreviewMouseLeftButtonDown="TodoDragHandle_PreviewMouseLeftButtonDown"
+                                                    PreviewMouseLeftButtonUp="TodoDragHandle_PreviewMouseLeftButtonUp"
+                                                    PreviewMouseMove="TodoDragHandle_PreviewMouseMove">
+                                                <TextBlock HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           FontFamily="Microsoft YaHei"
+                                                           FontSize="15"
+                                                           Foreground="#9AA1AC"
+                                                           IsHitTestVisible="False"
+                                                           Text="≡" />
+                                            </Border>
+                                            <CheckBox Grid.Column="1"
                                                       Margin="0,0,7,0"
                                                       VerticalAlignment="Center"
                                                       Cursor="Hand"
                                                       IsChecked="{Binding IsCompleted, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                       Click="TodoCheckBox_Click" />
-                                            <TextBox Grid.Column="1"
+                                            <TextBox x:Name="TodoTextBox"
+                                                     Grid.Column="2"
                                                      MinWidth="0"
                                                      MaxHeight="36"
-                                                     Padding="0"
                                                      VerticalAlignment="Center"
-                                                     Background="Transparent"
-                                                     BorderThickness="0"
                                                      Cursor="IBeam"
                                                      FontFamily="Microsoft YaHei"
                                                      FontSize="13"
                                                      HorizontalScrollBarVisibility="Disabled"
-                                                     IsReadOnly="True"
-                                                     IsReadOnlyCaretVisible="False"
-                                                     IsTabStop="False"
+                                                     MaxLength="80"
                                                      MaxLines="2"
                                                      MinLines="1"
-                                                     Text="{Binding Text, Mode=OneWay}"
+                                                     Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=Explicit}"
                                                      TextWrapping="Wrap"
                                                      VerticalScrollBarVisibility="Hidden"
                                                      ToolTipService.InitialShowDelay="300"
-                                                     ToolTipService.ShowDuration="30000">
+                                                     ToolTipService.ShowDuration="30000"
+                                                     DataContextChanged="TodoEditTextBox_DataContextChanged"
+                                                     LostKeyboardFocus="TodoEditTextBox_LostKeyboardFocus"
+                                                     TextChanged="TodoEditTextBox_TextChanged"
+                                                     Unloaded="TodoEditTextBox_Unloaded"
+                                                     PreviewKeyDown="TodoEditTextBox_PreviewKeyDown">
                                                 <TextBox.ToolTip>
                                                     <ToolTip MaxWidth="360"
                                                              Padding="8">
@@ -161,8 +189,22 @@
                                                 </TextBox.ToolTip>
                                                 <TextBox.Style>
                                                     <Style TargetType="TextBox">
+                                                        <Setter Property="Padding" Value="0" />
+                                                        <Setter Property="Background" Value="Transparent" />
+                                                        <Setter Property="BorderThickness" Value="0" />
                                                         <Setter Property="Foreground" Value="#303744" />
+                                                        <Setter Property="IsReadOnly" Value="True" />
+                                                        <Setter Property="IsReadOnlyCaretVisible" Value="False" />
+                                                        <Setter Property="IsTabStop" Value="False" />
                                                         <Style.Triggers>
+                                                            <Trigger Property="IsReadOnly" Value="False">
+                                                                <Setter Property="Padding" Value="4,1" />
+                                                                <Setter Property="Background" Value="White" />
+                                                                <Setter Property="BorderBrush" Value="#5B8DEF" />
+                                                                <Setter Property="BorderThickness" Value="1" />
+                                                                <Setter Property="IsReadOnlyCaretVisible" Value="True" />
+                                                                <Setter Property="IsTabStop" Value="True" />
+                                                            </Trigger>
                                                             <DataTrigger Binding="{Binding IsCompleted}" Value="True">
                                                                 <Setter Property="Foreground" Value="#9097A3" />
                                                                 <Setter Property="TextDecorations" Value="Strikethrough" />
@@ -171,7 +213,38 @@
                                                     </Style>
                                                 </TextBox.Style>
                                             </TextBox>
-                                            <Button Grid.Column="2"
+                                            <Button x:Name="TodoEditButton"
+                                                    Grid.Column="3"
+                                                    Width="24"
+                                                    Height="24"
+                                                    Padding="0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    FontFamily="Microsoft YaHei"
+                                                    Foreground="#A0A6B0"
+                                                    AutomationProperties.Name="修改待办"
+                                                    ToolTip="修改待办"
+                                                    Tag="{Binding}"
+                                                    Click="EditButton_Click">
+                                                <Viewbox Width="14"
+                                                         Height="14"
+                                                         IsHitTestVisible="False">
+                                                    <Canvas Width="16" Height="16">
+                                                        <Path Data="M13.2,1.5 L14.5,2.8 L5,12.3 L1.7,14.3 L3.7,11 Z"
+                                                              Fill="Transparent"
+                                                              Stroke="#A0A6B0"
+                                                              StrokeLineJoin="Round"
+                                                              StrokeThickness="1.4" />
+                                                        <Path Data="M3.7,11 L5,12.3"
+                                                              Stroke="#A0A6B0"
+                                                              StrokeStartLineCap="Round"
+                                                              StrokeEndLineCap="Round"
+                                                              StrokeThickness="1.4" />
+                                                    </Canvas>
+                                                </Viewbox>
+                                            </Button>
+                                            <Button Grid.Column="4"
                                                     Width="24"
                                                     Height="24"
                                                     Padding="0"

@@ -1,4 +1,5 @@
 using LubanDesktopPet;
+using System.Collections.ObjectModel;
 
 var tempDirectory = Path.Combine(Path.GetTempPath(), "LubanDesktopPetChecks", Guid.NewGuid().ToString("N"));
 
@@ -31,6 +32,20 @@ static void CheckTodoStore(string tempDirectory)
     Assert(loaded.Count == 2, "应加载两条待办");
     Assert(loaded[0].Text == "第一件事" && !loaded[0].IsCompleted, "未完成状态应保留");
     Assert(loaded[1].Text == "已经完成" && loaded[1].IsCompleted, "完成状态应保留");
+
+    var reordered = new ObservableCollection<TodoItem>(loaded);
+    reordered.Move(1, 0);
+    reordered[0].Text = "修改后的已完成事项";
+    Assert(store.Save(reordered), "拖拽重排并修改文字后应保存成功");
+
+    var reorderedReloaded = store.Load();
+    Assert(reorderedReloaded.Count == 2, "重排并修改后仍应加载两条待办");
+    Assert(reorderedReloaded[0].Text == "修改后的已完成事项" &&
+           reorderedReloaded[0].IsCompleted,
+        "持久化必须保留 ObservableCollection 的最新顺序、修改文字和完成状态");
+    Assert(reorderedReloaded[1].Text == "第一件事" &&
+           !reorderedReloaded[1].IsCompleted,
+        "拖拽后的第二项必须按集合当前顺序保存，不能回到旧索引");
 
     File.WriteAllText(filePath, "这不是有效 JSON");
     Assert(store.Load().Count == 0, "损坏的数据不应让桌宠崩溃");
