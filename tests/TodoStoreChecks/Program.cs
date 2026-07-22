@@ -258,6 +258,39 @@ static void CheckScheduledTaskStore(string tempDirectory)
         "覆盖保存后仍应按统一的时间顺序加载");
     Assert(!File.Exists(filePath + ".tmp"), "原子覆盖后不应残留临时文件");
 
+    var edited = overwritten.Single(item => item.Id == laterId);
+    var editedId = edited.Id;
+    var editedCreatedAt = edited.CreatedAt;
+    var requestedEarlierDueAt = dueAt.AddMinutes(-10).AddMilliseconds(222);
+    var expectedEarlierDueAt = requestedEarlierDueAt.AddTicks(
+        -(requestedEarlierDueAt.Ticks % TimeSpan.TicksPerSecond));
+    edited.Text = "  修改后提前提醒  ";
+    edited.DueAt = requestedEarlierDueAt;
+    Assert(store.Save(overwritten), "修改定时任务到更早时间后应保存成功");
+    var earlierReloaded = store.Load();
+    Assert(earlierReloaded.Count == 4 &&
+           earlierReloaded[0].Id == editedId &&
+           earlierReloaded[0].Text == "修改后提前提醒" &&
+           earlierReloaded[0].DueAt == expectedEarlierDueAt &&
+           earlierReloaded[0].CreatedAt == editedCreatedAt,
+        "编辑到更早时间必须保留 Id/CreatedAt、Trim文字、归一到整秒并移动到磁盘首位");
+
+    var editedAgain = earlierReloaded.Single(item => item.Id == editedId);
+    var requestedLaterDueAt = dueAt.AddMinutes(10).AddMilliseconds(444);
+    var expectedLaterDueAt = requestedLaterDueAt.AddTicks(
+        -(requestedLaterDueAt.Ticks % TimeSpan.TicksPerSecond));
+    editedAgain.Text = "修改后延后提醒";
+    editedAgain.DueAt = requestedLaterDueAt;
+    Assert(store.Save(earlierReloaded), "修改定时任务到更晚时间后应覆盖保存成功");
+    var laterReloaded = store.Load();
+    Assert(laterReloaded.Count == 4 &&
+           laterReloaded[^1].Id == editedId &&
+           laterReloaded[^1].Text == "修改后延后提醒" &&
+           laterReloaded[^1].DueAt == expectedLaterDueAt &&
+           laterReloaded[^1].CreatedAt == editedCreatedAt &&
+           !File.Exists(filePath + ".tmp"),
+        "编辑到更晚时间必须保留身份与创建顺序、移动到磁盘末位且不残留临时文件");
+
     var duplicateId = Guid.Parse("10000000-0000-0000-0000-000000000001");
     var validAfterInvalidDuplicateId =
         Guid.Parse("10000000-0000-0000-0000-000000000002");

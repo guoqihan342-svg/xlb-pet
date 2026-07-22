@@ -1,6 +1,7 @@
 bin/
 obj/
 tmp/
+dist-size-check/
 .codex_tmp/
 tests/**/bin/
 tests/**/obj/
@@ -11,3 +12,4 @@ tests/**/obj/
 *.suo
 Assets/luban.png
 runtime/**/*.exe
+dist/*.exe

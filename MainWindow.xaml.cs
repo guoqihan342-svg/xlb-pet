@@ -50,8 +50,6 @@ public partial class MainWindow : Window
         TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
-    private static readonly TimeSpan ReminderMotionFrameInterval =
-        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 180);
     private static readonly long VisualFrameDeadlineToleranceTicks =
         ToCharacterAnimationTicks(TimeSpan.FromMilliseconds(2));
     private static readonly TimeSpan MinimumNearSixtyHzPresentationInterval =
@@ -66,8 +64,6 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgeFrameBlendDuration = TimeSpan.Zero;
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ReminderMegaphoneAnimationDuration =
-        TimeSpan.FromSeconds(4);
     private static readonly TimeSpan MaximumReminderWakeInterval =
         TimeSpan.FromHours(12);
     private static readonly string[] ActionNames =
@@ -99,10 +95,13 @@ public partial class MainWindow : Window
     private readonly SpriteFrame[] _edgeLeftFrames;
     private readonly SpriteFrame[] _edgeTopFrames;
     private readonly SpriteFrame[] _edgeBottomFrames;
+    private readonly SpriteFrame[] _reminderEnterFrames;
+    private readonly SpriteFrame[] _reminderHoldFrames;
     private readonly AnimationClip[] _reactionClips;
     private readonly AnimationClip _todoEnterClip;
     private readonly AnimationClip _todoExitClip;
     private readonly AnimationClip _reminderEnterClip;
+    private readonly AnimationClip _reminderHoldClip;
     private readonly AnimationClip _reminderExitClip;
     private readonly AnimationClip?[] _automaticActivities;
     private readonly DispatcherTimer _automaticTimer;
@@ -181,11 +180,8 @@ public partial class MainWindow : Window
     private bool _isReminderActive;
     private bool _isTransientPetSizeOverride;
     private bool _isRestoringReminderSize;
-    private bool _isReminderMegaphoneAnimating;
     private double _reminderRestoreScale = 1;
     private double _reminderFacingScaleX = 1;
-    private long _reminderMegaphoneAnimationStartedTimestamp;
-    private long _reminderMegaphoneAnimationEndsTimestamp;
     private ScheduledTaskItem? _activeReminder;
     private Func<DateTimeOffset> _nowProvider = static () => DateTimeOffset.Now;
     private SpriteFrame? _currentSpriteFrame;
@@ -267,6 +263,14 @@ public partial class MainWindow : Window
         _edgeBottomFrames = LoadEdgeFrameSequence(
             "edge-bottom",
             "Assets/luban-edge-bottom-smooth-");
+        _reminderEnterFrames = LoadNumberedFrameSequence(
+            "action-reminder-enter",
+            "Assets/luban-reminder-enter-",
+            expectedFrameCount: 33);
+        _reminderHoldFrames = LoadNumberedFrameSequence(
+            "action-reminder-hold",
+            "Assets/luban-reminder-hold-",
+            expectedFrameCount: 48);
         _reactionClips =
         [
             CreateMotionClip("刚睡醒，让我伸个懒腰～", "yawn"),
@@ -280,6 +284,7 @@ public partial class MainWindow : Window
         _todoExitClip = CreateTodoExitClip();
         _todoEnterClip = CreateTodoEnterClip();
         _reminderEnterClip = CreateReminderEnterClip();
+        _reminderHoldClip = CreateReminderHoldClip();
         _reminderExitClip = CreateReminderExitClip();
         _automaticActivities =
         [
@@ -335,6 +340,8 @@ public partial class MainWindow : Window
         _todoWindow.DeleteRequested += TodoWindow_DeleteRequested;
         _todoWindow.ScheduledTaskAddRequested +=
             TodoWindow_ScheduledTaskAddRequested;
+        _todoWindow.ScheduledTaskEditRequested +=
+            TodoWindow_ScheduledTaskEditRequested;
         _todoWindow.ScheduledTaskDeleteRequested +=
             TodoWindow_ScheduledTaskDeleteRequested;
         _todoWindow.TransientInteractionCompleted +=
@@ -610,53 +617,50 @@ public partial class MainWindow : Window
 
     private AnimationClip CreateReminderEnterClip()
     {
-        var timeline = BuildActionTimeline("wave");
-        var loopFrames = _actionLoopFrames["wave"];
-        var frames = new List<AnimationFrame>(
-            timeline.Frames.Length - 1 + loopFrames.Length);
-        for (var timelineIndex = 1;
-             timelineIndex < timeline.Frames.Length;
-             timelineIndex++)
-        {
-            frames.Add(new AnimationFrame(
-                timeline.Frames[timelineIndex],
-                ReminderMotionFrameInterval,
-                timeline.Names[timelineIndex]));
-        }
-
-        foreach (var loopFrame in loopFrames)
-        {
-            frames.Add(new AnimationFrame(
-                loopFrame,
-                ActionLoopFrameInterval,
-                Path.GetFileName(loopFrame.Name)));
-        }
-
-        return new AnimationClip(
-            string.Empty,
+        return CreateReminderClip(
             "reminder-open",
-            frames.ToArray(),
-            ActionFrameIndex: timeline.ActionStartIndex - 1);
+            _reminderEnterFrames,
+            reverse: false);
+    }
+
+    private AnimationClip CreateReminderHoldClip()
+    {
+        return CreateReminderClip(
+            "reminder-hold",
+            _reminderHoldFrames,
+            reverse: false);
     }
 
     private AnimationClip CreateReminderExitClip()
     {
-        var timeline = BuildActionTimeline("wave");
-        var frames = new List<AnimationFrame>(timeline.Frames.Length);
-        for (var timelineIndex = timeline.Frames.Length - 1;
-             timelineIndex >= 0;
-             timelineIndex--)
+        return CreateReminderClip(
+            "reminder-close",
+            _reminderEnterFrames,
+            reverse: true);
+    }
+
+    private static AnimationClip CreateReminderClip(
+        string actionName,
+        IReadOnlyList<SpriteFrame> sourceFrames,
+        bool reverse)
+    {
+        var frames = new AnimationFrame[sourceFrames.Count];
+        for (var index = 0; index < sourceFrames.Count; index++)
         {
-            frames.Add(new AnimationFrame(
-                timeline.Frames[timelineIndex],
-                ReminderMotionFrameInterval,
-                timeline.Names[timelineIndex]));
+            var sourceIndex = reverse
+                ? sourceFrames.Count - 1 - index
+                : index;
+            var frame = sourceFrames[sourceIndex];
+            frames[index] = new AnimationFrame(
+                frame,
+                MotionFrameInterval,
+                Path.GetFileName(frame.Name));
         }
 
         return new AnimationClip(
             string.Empty,
-            "reminder-close",
-            frames.ToArray(),
+            actionName,
+            frames,
             ActionFrameIndex: 0);
     }
 
@@ -2130,7 +2134,6 @@ public partial class MainWindow : Window
 
             _activeFrameIndex = resolvedFrameIndex;
             ShowStableFrame(clip.Frames[resolvedFrameIndex].Image);
-            UpdateReminderMegaphoneVisibilityAt(timestamp);
             PrefetchNextClipPage(clip, resolvedFrameIndex);
         }
     }
@@ -2160,12 +2163,31 @@ public partial class MainWindow : Window
                 continue;
             }
 
+            currentPageName = nextPageName;
+            if (IsSpritePageImmediatelyAvailable(nextPageName))
+            {
+                continue;
+            }
+
             // Usually the idle warm-up has already made this a no-op. If the
             // user clicks immediately after launch, the next on-demand page
             // preempts sequential warm-up and becomes resident before this clip
             // reaches it.
             RequestSpritePagePrefetch(nextPageName, urgent: true);
             return;
+        }
+
+        if (ReferenceEquals(clip, _reminderEnterClip))
+        {
+            var holdPageName = _reminderHoldClip.Frames[0].Image.PageName;
+            if (!IsSpritePageImmediatelyAvailable(holdPageName))
+            {
+                // The hold sequence starts on a different atlas page. As soon
+                // as all entry pages are resident, spend the remaining entry
+                // time loading it so raising the megaphone cannot end in a
+                // cold-page pause.
+                RequestSpritePagePrefetch(holdPageName, urgent: true);
+            }
         }
     }
 
@@ -2179,14 +2201,19 @@ public partial class MainWindow : Window
 
         if (ReferenceEquals(clip, _reminderEnterClip) && _isReminderActive)
         {
-            var timestamp = Stopwatch.GetTimestamp();
+            LogInfo("定时提醒举喇叭入场完成，开始播报动作");
+            StartReminderHoldAnimation();
+            return;
+        }
+
+        if (ReferenceEquals(clip, _reminderHoldClip) && _isReminderActive)
+        {
             _activeClip = null;
             _activeFrameIndex = -1;
             _activeClipStartedTimestamp = 0;
             _activeFrameDeadlineTimestamp = 0;
             ClearDeferredActiveClipClock();
-            ShowReminderMegaphoneAt(timestamp, restartPulse: false);
-            LogInfo("定时提醒举喇叭入场完成，保持提醒姿势");
+            LogInfo("定时提醒播报动作完成，保持举喇叭姿势");
             UpdateVisualClockSubscription();
             return;
         }
@@ -2234,8 +2261,6 @@ public partial class MainWindow : Window
         var frame = clip.Frames[frameIndex];
         ClearDeferredActiveClipClock();
         ShowStableFrame(frame.Image);
-        UpdateReminderMegaphoneVisibilityAt(
-            timestamp > 0 ? timestamp : Stopwatch.GetTimestamp());
         PrefetchNextClipPage(clip, frameIndex);
         if (_isClosing || !ReferenceEquals(_activeClip, clip) || _activeFrameIndex != frameIndex)
         {
@@ -2496,7 +2521,6 @@ public partial class MainWindow : Window
 
         TryStartDeferredEdgePeekClockAt(timestamp);
         TryStartDeferredActiveClipClockAt(timestamp);
-        UpdateReminderMegaphoneVisibilityAt(timestamp);
     }
 
     private void TryStartDeferredActiveClipClockAt(long timestamp)
@@ -2680,11 +2704,6 @@ public partial class MainWindow : Window
                 AdvanceEdgePeek(timestamp);
             }
 
-            if (_isReminderMegaphoneAnimating)
-            {
-                AdvanceReminderMegaphoneAnimation(timestamp);
-            }
-
             UpdateFrameBlend(timestamp, force: false);
             UpdateVisualClockSubscription();
         }
@@ -2711,7 +2730,6 @@ public partial class MainWindow : Window
                           _petSizeTargetUpdatePending ||
                            _isPetSizeTransitioning ||
                            _activeClip is not null ||
-                           _isReminderMegaphoneAnimating ||
                             _edgeDock != EdgeDock.None ||
                            _isFrameBlending ||
                            _pendingSpriteFrame is not null ||
@@ -4193,7 +4211,6 @@ public partial class MainWindow : Window
         BakeCurrentPetVisualTransformIntoDisplayFrame();
         StopPillowBreathing();
 
-        var enterStartIndex = GetReminderEnterStartIndex(_currentSpriteFrame);
         if (_activeClip is { } activeClip)
         {
             AppLogger.Info(
@@ -4212,41 +4229,34 @@ public partial class MainWindow : Window
         PetFacingScale.ScaleX = _reminderFacingScaleX;
         PetFacingScale.ScaleY = 1;
         _activeClip = _reminderEnterClip;
-        _activeFrameIndex = enterStartIndex - 1;
+        _activeFrameIndex = -1;
         _nextFrameBlendDuration = TimeSpan.Zero;
         _nextFrameMinimumHold = TimeSpan.Zero;
         RequestSpritePagePrefetch(
-            _reminderEnterClip.Frames[_reminderEnterClip.ActionFrameIndex].Image.PageName,
+            _reminderEnterClip.Frames[0].Image.PageName,
             urgent: true);
         AppLogger.Info("定时提醒举喇叭入场开始");
-        ShowActiveClipFrame(enterStartIndex);
+        ShowActiveClipFrame(0);
     }
 
-    private int GetReminderEnterStartIndex(SpriteFrame? frame)
+    private void StartReminderHoldAnimation()
     {
-        if (frame is not { } currentFrame || currentFrame == _idleFrame)
+        if (_isClosing || !_isReminderActive)
         {
-            return 0;
+            return;
         }
 
-        var exactIndex = Array.FindIndex(
-            _reminderEnterClip.Frames,
-            animationFrame => string.Equals(
-                animationFrame.Image.Name,
-                currentFrame.Name,
-                StringComparison.OrdinalIgnoreCase));
-        if (exactIndex >= 0)
-        {
-            return exactIndex;
-        }
-
-        var wakeEndpointIndex = Array.FindIndex(
-            _reminderEnterClip.Frames,
-            animationFrame => string.Equals(
-                animationFrame.Image.Name,
-                _wakeFrames[^1].Name,
-                StringComparison.Ordinal));
-        return Math.Max(0, wakeEndpointIndex);
+        _activeClip = _reminderHoldClip;
+        _activeFrameIndex = -1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        ClearDeferredActiveClipClock();
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        _nextFrameMinimumHold = TimeSpan.Zero;
+        RequestSpritePagePrefetch(
+            _reminderHoldClip.Frames[0].Image.PageName,
+            urgent: true);
+        ShowActiveClipFrame(0);
     }
 
     private void StartReminderExitTransition()
@@ -4258,120 +4268,18 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
-        HideReminderMegaphone();
-        var exitStartIndex = GetReminderExitStartIndex(_currentSpriteFrame);
         ExitEdgePeek(
             restartAutomaticCountdown: false,
             restoreIdleFrame: false);
         _activeClip = _reminderExitClip;
-        _activeFrameIndex = exitStartIndex - 1;
+        _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
         _nextFrameBlendDuration = TimeSpan.Zero;
         _nextFrameMinimumHold = TimeSpan.Zero;
         AppLogger.Info("定时提醒收起过渡开始");
-        ShowActiveClipFrame(exitStartIndex);
-    }
-
-    private int GetReminderExitStartIndex(SpriteFrame? frame)
-    {
-        if (frame is not { } currentFrame)
-        {
-            return 0;
-        }
-
-        var exactIndex = Array.FindIndex(
-            _reminderExitClip.Frames,
-            animationFrame => string.Equals(
-                animationFrame.Image.Name,
-                currentFrame.Name,
-                StringComparison.OrdinalIgnoreCase));
-        return Math.Max(0, exactIndex);
-    }
-
-    private void UpdateReminderMegaphoneVisibilityAt(long timestamp)
-    {
-        var shouldShow = _isReminderActive &&
-                         _bubbleMode == BubbleMode.Reminder &&
-                         ((ReferenceEquals(_activeClip, _reminderEnterClip) &&
-                           _activeFrameIndex >= _reminderEnterClip.ActionFrameIndex &&
-                           _currentSpriteFrame is SpriteFrame displayedFrame &&
-                           displayedFrame ==
-                               _reminderEnterClip.Frames[_activeFrameIndex].Image) ||
-                          _activeClip is null);
-        if (shouldShow)
-        {
-            ShowReminderMegaphoneAt(timestamp, restartPulse: false);
-        }
-        else if (ReminderMegaphone.Visibility == Visibility.Visible)
-        {
-            HideReminderMegaphone();
-        }
-    }
-
-    private void ShowReminderMegaphoneAt(long timestamp, bool restartPulse)
-    {
-        var wasVisible = ReminderMegaphone.Visibility == Visibility.Visible;
-        ReminderMegaphone.Visibility = Visibility.Visible;
-        if (wasVisible && !restartPulse)
-        {
-            return;
-        }
-
-        var startedAt = timestamp > 0 ? timestamp : Stopwatch.GetTimestamp();
-        _reminderMegaphoneAnimationStartedTimestamp = startedAt;
-        _reminderMegaphoneAnimationEndsTimestamp = checked(
-            startedAt + ToStopwatchTicks(ReminderMegaphoneAnimationDuration));
-        _isReminderMegaphoneAnimating = true;
-        AdvanceReminderMegaphoneAnimation(startedAt);
-        UpdateVisualClockSubscription();
-    }
-
-    private void AdvanceReminderMegaphoneAnimation(long timestamp)
-    {
-        if (!_isReminderMegaphoneAnimating ||
-            ReminderMegaphone.Visibility != Visibility.Visible)
-        {
-            return;
-        }
-
-        if (timestamp >= _reminderMegaphoneAnimationEndsTimestamp)
-        {
-            _isReminderMegaphoneAnimating = false;
-            MegaphoneRotate.Angle = -7;
-            MegaphonePulseScale.ScaleX = 1;
-            MegaphonePulseScale.ScaleY = 1;
-            MegaphoneSoundWave1.Opacity = 0.72;
-            MegaphoneSoundWave2.Opacity = 0.38;
-            return;
-        }
-
-        var elapsedSeconds = Math.Max(
-            0,
-            timestamp - _reminderMegaphoneAnimationStartedTimestamp) /
-            (double)Stopwatch.Frequency;
-        var bob = Math.Sin(elapsedSeconds * Math.PI * 4.4);
-        var pulse = 1 + 0.035 * Math.Sin(elapsedSeconds * Math.PI * 3.4);
-        var wavePhase = elapsedSeconds * 1.8 % 1;
-        MegaphoneRotate.Angle = -7 + bob * 3;
-        MegaphonePulseScale.ScaleX = pulse;
-        MegaphonePulseScale.ScaleY = pulse;
-        MegaphoneSoundWave1.Opacity = 0.25 + 0.70 * (1 - wavePhase);
-        MegaphoneSoundWave2.Opacity = 0.12 + 0.58 * wavePhase;
-    }
-
-    private void HideReminderMegaphone()
-    {
-        ReminderMegaphone.Visibility = Visibility.Collapsed;
-        _isReminderMegaphoneAnimating = false;
-        _reminderMegaphoneAnimationStartedTimestamp = 0;
-        _reminderMegaphoneAnimationEndsTimestamp = 0;
-        MegaphoneRotate.Angle = -7;
-        MegaphonePulseScale.ScaleX = 1;
-        MegaphonePulseScale.ScaleY = 1;
-        MegaphoneSoundWave1.Opacity = 0.9;
-        MegaphoneSoundWave2.Opacity = 0.55;
+        ShowActiveClipFrame(0);
     }
 
     private void ConfigureReminderBubblePlacement()
@@ -4446,7 +4354,6 @@ public partial class MainWindow : Window
         BubbleTailHost.Visibility = Visibility.Collapsed;
         CuteBubble.Visibility = Visibility.Collapsed;
         ReminderBubble.Visibility = Visibility.Collapsed;
-        HideReminderMegaphone();
         if (_todoWindow.IsVisible)
         {
             _todoWindow.CommitPendingTodoEdit();
@@ -5432,6 +5339,37 @@ public partial class MainWindow : Window
         }
     }
 
+    private void TodoWindow_ScheduledTaskEditRequested(
+        ScheduledTaskItem item,
+        string text,
+        DateTimeOffset dueAt)
+    {
+        if (ReferenceEquals(item, _activeReminder))
+        {
+            AppLogger.Info($"忽略正在提示的定时任务修改：{item.Id}");
+            return;
+        }
+
+        var existingIndex = _scheduledTasks.IndexOf(item);
+        var normalizedText = text.Trim();
+        if (existingIndex < 0 || normalizedText.Length == 0)
+        {
+            return;
+        }
+
+        _scheduledTasks.RemoveAt(existingIndex);
+        item.Text = normalizedText;
+        item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt);
+        InsertScheduledTaskSorted(item);
+
+        var now = _nowProvider();
+        SaveScheduledTasks();
+        ProcessScheduledTasksAt(now);
+        AppLogger.Info(
+            $"修改定时任务：{item.Id}，触发时间 {item.DueAt:O}，" +
+            $"排序位置 {_scheduledTasks.IndexOf(item) + 1}/{_scheduledTasks.Count}");
+    }
+
     private void TodoWindow_TransientInteractionCompleted()
     {
         ScheduleOutsideTodoClose();
@@ -5536,9 +5474,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                ShowReminderMegaphoneAt(
-                    Stopwatch.GetTimestamp(),
-                    restartPulse: true);
+                StartReminderHoldAnimation();
             }
 
             AppLogger.Info(

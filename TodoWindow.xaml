@@ -476,6 +476,7 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="26" />
+                                                <ColumnDefinition Width="26" />
                                             </Grid.ColumnDefinitions>
                                             <Grid Grid.Column="0">
                                                 <Grid.RowDefinitions>
@@ -515,7 +516,40 @@
                                                     </TextBox.ToolTip>
                                                 </TextBox>
                                             </Grid>
-                                            <Button Grid.Column="1"
+                                            <Button x:Name="ScheduledTaskEditButton"
+                                                    Grid.Column="1"
+                                                    Width="24"
+                                                    Height="24"
+                                                    Padding="0"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Center"
+                                                    AutomationProperties.Name="修改定时任务"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    FontFamily="Microsoft YaHei"
+                                                    Foreground="#B69275"
+                                                    Tag="{Binding}"
+                                                    ToolTip="修改定时任务"
+                                                    Click="ScheduledTaskEditButton_Click">
+                                                <Viewbox Width="14"
+                                                         Height="14"
+                                                         IsHitTestVisible="False">
+                                                    <Canvas Width="16" Height="16">
+                                                        <Path Data="M13.2,1.5 L14.5,2.8 L5,12.3 L1.7,14.3 L3.7,11 Z"
+                                                              Fill="Transparent"
+                                                              Stroke="#B69275"
+                                                              StrokeLineJoin="Round"
+                                                              StrokeThickness="1.4" />
+                                                        <Path Data="M3.7,11 L5,12.3"
+                                                              Stroke="#B69275"
+                                                              StrokeStartLineCap="Round"
+                                                              StrokeEndLineCap="Round"
+                                                              StrokeThickness="1.4" />
+                                                    </Canvas>
+                                                </Viewbox>
+                                            </Button>
+                                            <Button Grid.Column="2"
                                                     Width="24"
                                                     Height="24"
                                                     Padding="0"
@@ -620,12 +654,14 @@
                                  BorderBrush="#E4C8AA"
                                  FontFamily="Microsoft YaHei"
                                  FontSize="12"
+                                 InputMethod.IsInputMethodEnabled="False"
                                  MaxLength="8"
                                  TextAlignment="Center"
                                  ToolTip="按 HH:mm:ss 输入，精确到秒"
                                  TextChanged="ScheduledTimeInput_TextChanged"
                                  PreviewKeyDown="ScheduledTimeInput_PreviewKeyDown" />
-                        <Button Grid.Column="4"
+                        <Button x:Name="ScheduledTaskSubmitButton"
+                                Grid.Column="4"
                                 Height="30"
                                 Background="#F2A65A"
                                 BorderThickness="0"
@@ -639,14 +675,38 @@
                                 Click="ScheduledTaskAddButton_Click" />
                     </Grid>
 
-                    <TextBlock x:Name="ScheduledTaskValidationText"
-                               Grid.Row="3"
-                               Height="18"
-                               VerticalAlignment="Bottom"
-                               FontFamily="Microsoft YaHei"
-                               FontSize="10.5"
-                               Foreground="#C65353"
-                               TextTrimming="CharacterEllipsis" />
+                    <Grid Grid.Row="3">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="ScheduledTaskValidationText"
+                                   Grid.Column="0"
+                                   Height="18"
+                                   VerticalAlignment="Bottom"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="10.5"
+                                   Foreground="#C65353"
+                                   TextTrimming="CharacterEllipsis" />
+                        <Button x:Name="ScheduledTaskEditCancelButton"
+                                Grid.Column="1"
+                                MinWidth="31"
+                                Height="18"
+                                Margin="4,0,0,0"
+                                Padding="2,0"
+                                VerticalAlignment="Bottom"
+                                AutomationProperties.Name="取消修改定时任务"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Content="取消"
+                                Cursor="Hand"
+                                FontFamily="Microsoft YaHei"
+                                FontSize="10.5"
+                                Foreground="#B47A4E"
+                                ToolTip="取消修改"
+                                Visibility="Collapsed"
+                                Click="ScheduledTaskEditCancelButton_Click" />
+                    </Grid>
                 </Grid>
 
                 <Grid Grid.Row="2" Margin="0,2,0,4">

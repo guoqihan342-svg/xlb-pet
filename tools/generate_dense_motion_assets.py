@@ -47,6 +47,9 @@ BASELINE_STEP_MAX_PHYSICAL_PX_LIMIT = 1.0
 BRIM_STEP_DIP_LIMIT = 2.0
 ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 EDGE_DIRECTIONS = ("left", "top", "bottom")
+REMINDER_KEY_COUNT = 8
+REMINDER_ENTER_FRAME_COUNT = 33
+REMINDER_HOLD_FRAME_COUNT = 48
 INTERNAL_BRIDGES = {"yawn": (6,), "cry": (3,), "think": (6,)}
 NEUTRAL_SPECS = {
     "cute": (
@@ -1532,6 +1535,182 @@ def build_edge_peek_sequences() -> dict[str, list[Path]]:
     return outputs_by_direction
 
 
+def emit_sequence(paths: list[Path], prefix: str) -> list[Path]:
+    """Copy an already-dense path to a contiguous runtime sequence."""
+
+    outputs: list[Path] = []
+    for frame_number, source in enumerate(paths, start=1):
+        destination = ASSETS / f"{prefix}-{frame_number:03d}.png"
+        atomic_copy_png(source, destination)
+        outputs.append(destination)
+    remove_stale(prefix, len(outputs))
+    return outputs
+
+
+def reminder_sources() -> tuple[list[Path], list[Path]]:
+    keys = [
+        ASSETS / f"luban-reminder-key-{number:02d}.png"
+        for number in range(1, REMINDER_KEY_COUNT + 1)
+    ]
+    bridges = [
+        ASSETS / f"luban-reminder-bridge-{number:02d}.png"
+        for number in range(1, REMINDER_KEY_COUNT + 1)
+    ]
+    missing = [str(path) for path in [*keys, *bridges] if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Install reminder keys first with "
+            "tools/install_generated_motion_assets.py --reminder; missing "
+            + ", ".join(missing)
+        )
+    return keys, bridges
+
+
+def reconstruct_warped_rgba(
+    premultiplied: np.ndarray,
+    alpha: np.ndarray,
+) -> Image.Image:
+    """Return straight RGBA after matching premultiplied/alpha transforms."""
+
+    alpha_u16 = alpha.astype(np.uint16)
+    premul_u32 = premultiplied.astype(np.uint32)
+    rgb = np.zeros_like(premul_u32, dtype=np.uint32)
+    visible = alpha_u16 > 0
+    rgb[visible] = np.minimum(
+        255,
+        (premul_u32[visible] * 255 + alpha_u16[visible, None] // 2)
+        // alpha_u16[visible, None],
+    )
+    rgba = np.concatenate(
+        (rgb.astype(np.uint8), alpha[..., None].astype(np.uint8)),
+        axis=2,
+    )
+    rgba[~visible] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+def shift_rgba_without_wrap(image: Image.Image, offset_y: int) -> Image.Image:
+    if offset_y == 0:
+        return image.copy()
+
+    source = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+    shifted = np.zeros_like(source)
+    if offset_y > 0:
+        shifted[offset_y:] = source[:-offset_y]
+    else:
+        shifted[:offset_y] = source[-offset_y:]
+    return Image.fromarray(shifted, "RGBA")
+
+
+def render_reminder_rigid_pose(source: Image.Image, angle_degrees: float) -> Image.Image:
+    """Rotate one complete authored pose without blending two silhouettes."""
+
+    rgba = np.asarray(source.convert("RGBA"), dtype=np.uint8)
+    alpha = rgba[..., 3]
+    premultiplied = (
+        (rgba[..., :3].astype(np.uint16) * alpha[..., None].astype(np.uint16) + 127)
+        // 255
+    ).astype(np.uint8)
+    transform = cv2.getRotationMatrix2D((225.0, 539.0), angle_degrees, 1.0)
+    warped_premultiplied = cv2.warpAffine(
+        premultiplied,
+        transform,
+        RUNTIME_SIZE,
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
+    warped_alpha = cv2.warpAffine(
+        alpha,
+        transform,
+        RUNTIME_SIZE,
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    rendered = reconstruct_warped_rgba(warped_premultiplied, warped_alpha)
+    rendered_alpha = np.asarray(rendered, dtype=np.uint8)[..., 3]
+    visible_rows = np.flatnonzero(np.any(rendered_alpha >= 24, axis=1))
+    if visible_rows.size == 0:
+        raise AssertionError("Rigid reminder pose became fully transparent")
+    rendered = shift_rgba_without_wrap(rendered, 539 - int(visible_rows[-1]))
+    result = np.asarray(rendered, dtype=np.uint8).copy()
+    result[result[..., 3] == 0] = 0
+    return Image.fromarray(result, "RGBA")
+
+
+def emit_rigid_reminder_sequence(
+    source_path: Path,
+    phase: str,
+    angles: list[float],
+) -> list[Path]:
+    source = load_rgba(source_path)
+    stage = WORK_ROOT / "reminder-rigid" / phase
+    stage.mkdir(parents=True, exist_ok=True)
+    staged: list[Path] = []
+    for frame_number, angle in enumerate(angles, start=1):
+        destination = stage / f"luban-reminder-{phase}-{frame_number:03d}.png"
+        installer.save_png_atomically(
+            render_reminder_rigid_pose(Image.fromarray(source, "RGBA"), angle),
+            destination,
+        )
+        staged.append(destination)
+    return emit_sequence(staged, f"luban-reminder-{phase}")
+
+
+def build_reminder_enter_sequence(source_path: Path) -> list[Path]:
+    angles = []
+    for frame_index in range(REMINDER_ENTER_FRAME_COUNT):
+        progress = frame_index / (REMINDER_ENTER_FRAME_COUNT - 1)
+        angle = -1.0 * (1 - progress) ** 2 * math.cos(2.75 * math.pi * progress)
+        angles.append(0.0 if frame_index == REMINDER_ENTER_FRAME_COUNT - 1 else angle)
+    return emit_rigid_reminder_sequence(source_path, "enter", angles)
+
+
+def build_reminder_hold_sequence(source_path: Path) -> list[Path]:
+    # Sample 1..48 so the last frame is the exact central pose.  The entry
+    # seam, the next queued reminder, and the runtime-reversed exit therefore
+    # all begin with only one normal small sway step.
+    angles = [
+        1.45 * math.sin(2 * math.pi * frame_number / REMINDER_HOLD_FRAME_COUNT)
+        for frame_number in range(1, REMINDER_HOLD_FRAME_COUNT + 1)
+    ]
+    angles[-1] = 0.0
+    return emit_rigid_reminder_sequence(source_path, "hold", angles)
+
+
+def build_reminder_exit_qa(enter: list[Path]) -> list[Path]:
+    """Materialize but do not package the exact reverse-entry exit contract."""
+
+    exit_directory = WORK_ROOT / "reminder-exit-qa"
+    exit_directory.mkdir(parents=True, exist_ok=True)
+    exit_paths: list[Path] = []
+    for frame_number, source in enumerate(reversed(enter), start=1):
+        destination = exit_directory / f"luban-reminder-exit-{frame_number:03d}.png"
+        atomic_copy_png(source, destination)
+        exit_paths.append(destination)
+    for stale in exit_directory.glob("luban-reminder-exit-*.png"):
+        suffix = stale.stem.rsplit("-", 1)[-1]
+        if suffix.isdigit() and int(suffix) > len(exit_paths):
+            stale.unlink()
+
+    for index, exit_path in enumerate(exit_paths):
+        if not pixel_equal(exit_path, enter[-1 - index]):
+            raise AssertionError("Reminder exit is not an exact enter reversal")
+    return exit_paths
+
+
+def build_reminder_sequences() -> dict[str, list[Path]]:
+    """Build single-silhouette reminder sways and a temporary reverse exit."""
+
+    _, bridges = reminder_sources()
+    source_path = bridges[7]
+    enter = build_reminder_enter_sequence(source_path)
+    hold = build_reminder_hold_sequence(source_path)
+    exit_paths = build_reminder_exit_qa(enter)
+    return {"enter": enter, "hold": hold, "exit-qa": exit_paths}
+
+
 def basic_qa(
     paths: list[Path], report_path: Path, *, require_all_unique: bool = True
 ) -> None:
@@ -1606,6 +1785,14 @@ def main() -> None:
         help="Generate 24-frame closed left/top/bottom edge-peek sequences",
     )
     parser.add_argument(
+        "--reminder",
+        action="store_true",
+        help=(
+            "Generate a 33-frame reminder entry and seamless 48-frame "
+            "megaphone hold loop; exit is validated as the exact reverse."
+        ),
+    )
+    parser.add_argument(
         "--clean-existing",
         action="store_true",
         help="Remove wide low-alpha RIFE trails without changing authored keys",
@@ -1626,11 +1813,13 @@ def main() -> None:
         and not args.adaptive_actions
         and not args.loops
         and not args.edge_peek
+        and not args.reminder
         and not args.clean_existing
     ):
         parser.error(
             "select --wake, --adaptive-wake, --actions, --wave, "
-            "--adaptive-actions, --loops, --edge-peek, and/or --clean-existing"
+            "--adaptive-actions, --loops, --edge-peek, --reminder, and/or "
+            "--clean-existing"
         )
     if args.wake:
         outputs = build_wake()
@@ -1695,6 +1884,24 @@ def main() -> None:
         for direction, outputs in edge_outputs.items():
             basic_qa(outputs, WORK_ROOT / f"qa-edge-{direction}.json")
         print(f"QA: {WORK_ROOT / 'qa-edge-*.json'}", flush=True)
+    if args.reminder:
+        reminder_outputs = build_reminder_sequences()
+        basic_qa(
+            reminder_outputs["enter"],
+            WORK_ROOT / "qa-reminder-enter.json",
+            require_all_unique=False,
+        )
+        basic_qa(
+            reminder_outputs["hold"],
+            WORK_ROOT / "qa-reminder-hold.json",
+            require_all_unique=False,
+        )
+        basic_qa(
+            reminder_outputs["exit-qa"],
+            WORK_ROOT / "qa-reminder-exit.json",
+            require_all_unique=False,
+        )
+        print(f"QA: {WORK_ROOT / 'qa-reminder-*.json'}", flush=True)
     if (
         args.wake
         or args.adaptive_wake

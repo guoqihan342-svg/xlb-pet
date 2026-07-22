@@ -42,6 +42,7 @@ public partial class TodoWindow : Window
     private long _lastTodoAutoScrollTimestamp;
     private string? _pendingClipboardCopyText;
     private bool _clipboardCopyRetryQueued;
+    private ScheduledTaskItem? _editingScheduledTask;
     private bool _tailOnRight = true;
     private bool _isTransientPopupOpen;
     private bool _allowClose;
@@ -126,6 +127,9 @@ public partial class TodoWindow : Window
 
     public event Action<string, DateTimeOffset>? ScheduledTaskAddRequested;
 
+    public event Action<ScheduledTaskItem, string, DateTimeOffset>?
+        ScheduledTaskEditRequested;
+
     public event Action<ScheduledTaskItem>? ScheduledTaskDeleteRequested;
 
     public event Action? TransientInteractionCompleted;
@@ -144,6 +148,7 @@ public partial class TodoWindow : Window
 
     public void ShowDefaultTab()
     {
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: false);
     }
 
@@ -380,6 +385,8 @@ public partial class TodoWindow : Window
 
     private void TodoWindow_Closing(object? sender, CancelEventArgs e)
     {
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
+
         if (_allowClose)
         {
             return;
@@ -482,6 +489,7 @@ public partial class TodoWindow : Window
 
     private void TodoTabButton_Click(object sender, RoutedEventArgs e)
     {
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: true);
     }
 
@@ -512,7 +520,7 @@ public partial class TodoWindow : Window
 
     private void ScheduledTaskAddButton_Click(object sender, RoutedEventArgs e)
     {
-        RequestScheduledTaskAdd();
+        RequestScheduledTaskSubmit();
     }
 
     private void ScheduledTaskInput_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -522,7 +530,7 @@ public partial class TodoWindow : Window
             return;
         }
 
-        RequestScheduledTaskAdd();
+        RequestScheduledTaskSubmit();
         e.Handled = true;
     }
 
@@ -533,25 +541,52 @@ public partial class TodoWindow : Window
             return;
         }
 
-        RequestScheduledTaskAdd();
+        RequestScheduledTaskSubmit();
         e.Handled = true;
     }
 
-    private void RequestScheduledTaskAdd()
+    private void RequestScheduledTaskSubmit()
     {
-        var text = ScheduledTaskInput.Text.Trim();
+        if (!TryReadScheduledTaskDraft(out var text, out var dueAt))
+        {
+            return;
+        }
+
+        if (_editingScheduledTask is { } item)
+        {
+            ScheduledTaskEditRequested?.Invoke(item, text, dueAt);
+            CancelScheduledTaskEdit(resetDraft: true, focusInput: true);
+            return;
+        }
+
+        ScheduledTaskAddRequested?.Invoke(text, dueAt);
+        ScheduledTaskInput.Clear();
+        ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+        SetScheduledTaskValidation(string.Empty);
+        ScheduledTaskInput.Focus();
+    }
+
+    // Kept as a small compatibility shim for the existing UI-state contract.
+    private void RequestScheduledTaskAdd() => RequestScheduledTaskSubmit();
+
+    private bool TryReadScheduledTaskDraft(
+        out string text,
+        out DateTimeOffset dueAt)
+    {
+        dueAt = default;
+        text = ScheduledTaskInput.Text.Trim();
         if (text.Length == 0)
         {
             SetScheduledTaskValidation("先写下要提醒的事情哦");
             ScheduledTaskInput.Focus();
-            return;
+            return false;
         }
 
         if (ScheduledDatePicker.SelectedDate is not { } selectedDate)
         {
             SetScheduledTaskValidation("请选择提醒日期");
             ScheduledDatePicker.Focus();
-            return;
+            return false;
         }
 
         if (!DateTime.TryParseExact(
@@ -564,7 +599,7 @@ public partial class TodoWindow : Window
             SetScheduledTaskValidation("时间格式要写成 HH:mm:ss");
             ScheduledTimeInput.Focus();
             ScheduledTimeInput.SelectAll();
-            return;
+            return false;
         }
 
         var localDateTime = DateTime.SpecifyKind(
@@ -574,10 +609,10 @@ public partial class TodoWindow : Window
         {
             SetScheduledTaskValidation("这个本地时间不存在，请换一个时间");
             ScheduledTimeInput.Focus();
-            return;
+            return false;
         }
 
-        var dueAt = new DateTimeOffset(
+        dueAt = new DateTimeOffset(
             localDateTime,
             TimeZoneInfo.Local.GetUtcOffset(localDateTime));
         if (dueAt <= DateTimeOffset.Now)
@@ -585,20 +620,79 @@ public partial class TodoWindow : Window
             SetScheduledTaskValidation("提醒时间要晚于现在哦");
             ScheduledTimeInput.Focus();
             ScheduledTimeInput.SelectAll();
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ScheduledTaskEditButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ScheduledTaskItem item })
+        {
             return;
         }
 
-        ScheduledTaskAddRequested?.Invoke(text, dueAt);
-        ScheduledTaskInput.Clear();
-        ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+        _editingScheduledTask = item;
+        var localDueAt = item.DueAt.ToLocalTime();
+        ScheduledTaskInput.Text = item.Text;
+        ScheduledDatePicker.SelectedDate = localDueAt.Date;
+        ScheduledTimeInput.Text = localDueAt.ToString(
+            "HH:mm:ss",
+            CultureInfo.InvariantCulture);
+        ScheduledTaskSubmitButton.Content = "保存";
+        ScheduledTaskSubmitButton.ToolTip = "保存定时任务修改";
+        ScheduledTaskEditCancelButton.Visibility = Visibility.Visible;
         SetScheduledTaskValidation(string.Empty);
         ScheduledTaskInput.Focus();
+        Keyboard.Focus(ScheduledTaskInput);
+        ScheduledTaskInput.SelectAll();
+        e.Handled = true;
+    }
+
+    private void ScheduledTaskEditCancelButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: true);
+        e.Handled = true;
+    }
+
+    private void CancelScheduledTaskEdit(bool resetDraft, bool focusInput)
+    {
+        if (_editingScheduledTask is null)
+        {
+            return;
+        }
+
+        _editingScheduledTask = null;
+        ScheduledTaskSubmitButton.Content = "设定";
+        ScheduledTaskSubmitButton.ToolTip = "添加定时任务";
+        ScheduledTaskEditCancelButton.Visibility = Visibility.Collapsed;
+        SetScheduledTaskValidation(string.Empty);
+
+        if (resetDraft)
+        {
+            ScheduledTaskInput.Clear();
+            ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+        }
+
+        if (focusInput && IsVisible && !_hasClosed)
+        {
+            ScheduledTaskInput.Focus();
+            Keyboard.Focus(ScheduledTaskInput);
+        }
     }
 
     private void ScheduledTaskDeleteButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: ScheduledTaskItem item })
         {
+            if (ReferenceEquals(item, _editingScheduledTask))
+            {
+                CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
+            }
+
             ScheduledTaskDeleteRequested?.Invoke(item);
         }
     }
@@ -669,11 +763,13 @@ public partial class TodoWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e)
     {
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         ExitRequested?.Invoke(this, EventArgs.Empty);
     }
 

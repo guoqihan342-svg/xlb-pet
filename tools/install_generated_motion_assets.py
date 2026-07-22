@@ -28,6 +28,8 @@ V10_WAKE_BRIDGE_SOURCE_NAMES = {
 }
 V10_PRE_REGISTERED_WAKE_BRIDGES = frozenset({20})
 V6_EDGE_SOURCE_NAME = "edge-v2-12-sheet-alpha.png"
+REMINDER_SOURCE_NAME = "reminder-megaphone-v1-8-key-sheet-alpha.png"
+REMINDER_BRIDGE_SOURCE_NAME = "reminder-megaphone-v2-8-bridge-sheet-alpha.png"
 V6_SCALE_REGISTERED_ACTIONS = ACTIONS
 V6_ACTION_SOURCE_NAMES = {
     "yawn": "yawn-v7-24-sheet-alpha.png",
@@ -747,6 +749,41 @@ def install_v6_motion(source_directory: Path, assets_directory: Path) -> None:
     install_v6_edge(source_directory, assets_directory)
 
 
+def install_reminder(source_directory: Path, assets_directory: Path) -> None:
+    """Install authored reminder poses and bridges on the shared runtime grid."""
+
+    assets_directory.mkdir(parents=True, exist_ok=True)
+    for source_name, destination_prefix in (
+        (REMINDER_SOURCE_NAME, "luban-reminder-key"),
+        (REMINDER_BRIDGE_SOURCE_NAME, "luban-reminder-bridge"),
+    ):
+        cells, _ = load_cells(
+            resolve_generated_source(source_directory, source_name),
+            columns=4,
+            rows=2,
+        )
+        if len(cells) != 8:
+            raise ValueError(
+                f"Reminder source {source_name} must contain exactly eight cells"
+            )
+
+        for frame_number, cell in enumerate(cells, start=1):
+            frame = register_by_brim(
+                cell,
+                target_brim_width=180,
+                head_center_x=225,
+            )
+            if frame.size != RUNTIME_CANVAS_SIZE:
+                raise AssertionError(
+                    f"Reminder {destination_prefix} {frame_number:02d} is "
+                    f"{frame.size}; expected {RUNTIME_CANVAS_SIZE}"
+                )
+            save_png_atomically(
+                frame,
+                assets_directory / f"{destination_prefix}-{frame_number:02d}.png",
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -778,11 +815,21 @@ def main() -> None:
             "actions, and manual edge-peek sets."
         ),
     )
+    selection.add_argument(
+        "--reminder",
+        action="store_true",
+        help=(
+            "Install the tracked reminder/megaphone poses and bridge poses "
+            "with a 180px brim and a 225px head center on 450x550 canvases."
+        ),
+    )
     args = parser.parse_args()
     if args.v2_subset:
         install_v2_subset(args.source_directory, args.assets_directory)
     elif args.v6_motion:
         install_v6_motion(args.source_directory, args.assets_directory)
+    elif args.reminder:
+        install_reminder(args.source_directory, args.assets_directory)
     else:
         install(args.source_directory, args.assets_directory)
 

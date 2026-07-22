@@ -74,6 +74,13 @@ internal static class Program
                 return 0;
             }
 
+            if (args.Contains("--scheduled-editor-only", StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(nameof(AssertScheduledTaskTabContract),
+                    AssertScheduledTaskTabContract);
+                return 0;
+            }
+
             var settingsDirectory = Path.Combine(
                 Path.GetTempPath(),
                 $"xlb-pet-ui-checks-{Guid.NewGuid():N}");
@@ -138,6 +145,8 @@ internal static class Program
                 {
                     RunCheck(nameof(AssertScheduledTaskTabContract),
                         AssertScheduledTaskTabContract);
+                    RunCheck(nameof(AssertScheduledTaskEditContract),
+                        () => AssertScheduledTaskEditContract(window));
                     RunCheck(nameof(AssertScheduledReminderContract),
                         () => AssertScheduledReminderContract(window));
                     return 0;
@@ -182,6 +191,8 @@ internal static class Program
                     AssertScheduledTaskTabContract);
                 RunCheck(nameof(AssertTodoReorderPersistenceContract),
                     () => AssertTodoReorderPersistenceContract(window));
+                RunCheck(nameof(AssertScheduledTaskEditContract),
+                    () => AssertScheduledTaskEditContract(window));
                 RunCheck(nameof(AssertScheduledReminderContract),
                     () => AssertScheduledReminderContract(window));
                 RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
@@ -1565,6 +1576,7 @@ internal static class Program
         var requiredPageNames = new[] { "idle", "edge-left", "edge-top", "edge-bottom" }
             .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" }
                 .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
+            .Concat(new[] { "action-reminder-enter", "action-reminder-hold" })
             .ToHashSet(StringComparer.Ordinal);
         var orderedPageNames = manifestPages.EnumerateObject()
             .Select(page => page.Name)
@@ -1577,7 +1589,8 @@ internal static class Program
                orderedPageNames.Take(4).SequenceEqual(
                    new[] { "idle", "edge-left", "edge-top", "edge-bottom" }) &&
                !manifestPages.TryGetProperty("edge", out _),
-            $"清单必须先包含idle与三组独立边缘页，再包含七个动作页和七个循环页，且页内帧不得少于逻辑源帧；" +
+            $"清单必须先包含idle与三组独立边缘页，再包含七个动作页、七个循环页和两组专用提醒页，" +
+            "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
         var expectedIdlePageFrames = expectedWakeFrameNames
@@ -1645,6 +1658,38 @@ internal static class Program
                         $"Assets/luban-{actionName}-loop-{frameNumber:000}.png")),
                 $"{loopPageName} 必须包含连续的48帧60fps自然循环");
         }
+
+        foreach (var (phase, expectedFrameCount) in new[]
+                 {
+                     (Phase: "enter", ExpectedFrameCount: 33),
+                     (Phase: "hold", ExpectedFrameCount: 48)
+                 })
+        {
+            var pageName = $"action-reminder-{phase}";
+            var reminderPageEntries = manifestPages.EnumerateObject()
+                .Where(page =>
+                    string.Equals(page.Name, pageName, StringComparison.Ordinal) ||
+                    page.Name.StartsWith(pageName + "-part-", StringComparison.Ordinal))
+                .OrderBy(page => page.Name, StringComparer.Ordinal)
+                .ToArray();
+            var actualReminderFrames = reminderPageEntries
+                .SelectMany(page => page.Value
+                    .GetProperty("frames")
+                    .EnumerateObject()
+                    .Select(frame => frame.Name))
+                .ToArray();
+            Assert(reminderPageEntries.Length ==
+                       (int)Math.Ceiling(expectedFrameCount / 32d) &&
+                   reminderPageEntries.All(page =>
+                       page.Value.GetProperty("logicalFrameCount").GetInt32()
+                           is > 0 and <= 32) &&
+                   actualReminderFrames.SequenceEqual(
+                       Enumerable.Range(1, expectedFrameCount).Select(frameNumber =>
+                           $"Assets/luban-reminder-{phase}-{frameNumber:000}.png")),
+                $"{pageName} 必须按32帧上限连续分页并且只包含专用提醒" +
+                $"{phase} 001..{expectedFrameCount:000}资源");
+        }
+
         var runtimeByName = pages.ToDictionary(page => page.Name, StringComparer.Ordinal);
         var pageResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var previewResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2309,6 +2354,31 @@ internal static class Program
         {
             paths.AddRange(Enumerable.Range(1, 24).Select(frameNumber =>
                 $"Assets/luban-edge-{direction}-smooth-{frameNumber:000}.png"));
+        }
+
+        foreach (var (phase, expectedFrameCount) in new[]
+                 {
+                     (Phase: "enter", ExpectedFrameCount: 33),
+                     (Phase: "hold", ExpectedFrameCount: 48)
+                 })
+        {
+            var reminderNames = Directory.EnumerateFiles(
+                    assetsDirectory,
+                    $"luban-reminder-{phase}-*.png",
+                    SearchOption.TopDirectoryOnly)
+                .Select(Path.GetFileName)
+                .Where(name => name is not null)
+                .Cast<string>()
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+            var expectedReminderNames = Enumerable.Range(1, expectedFrameCount)
+                .Select(frameNumber =>
+                    $"luban-reminder-{phase}-{frameNumber:000}.png")
+                .ToArray();
+            Assert(reminderNames.SequenceEqual(expectedReminderNames),
+                $"reminder-{phase}源资源必须严格连续编号为" +
+                $"001..{expectedFrameCount:000}");
+            paths.AddRange(reminderNames.Select(name => $"Assets/{name}"));
         }
 
         foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
@@ -3550,8 +3620,24 @@ internal static class Program
             SetField(window, "_synchronizeActiveClipToRenderingCadence", false);
         }
 
+        var nextBlendDuration = GetRawField(window, "_nextFrameBlendDuration");
+        Assert(!GetField<bool>(window, "_isFrameBlending") &&
+               GetRawField(window, "_pendingSpriteFrame") is null &&
+               (nextBlendDuration is null ||
+                nextBlendDuration is TimeSpan { Ticks: 0 }),
+            "绝对时间轴在正常vsync或250ms stall后必须直接显示正确姿势，" +
+            "不得启动整图淡化或留下逐帧补播队列");
+
         var displayedFrameIndex = GetDisplayedClipFrameIndex(window, clip, frames);
-        AssertDisplayedClipFrame(window, frames, displayedFrameIndex);
+        if (displayedFrameIndex < frames.Length)
+        {
+            AssertDisplayedClipFrame(window, frames, displayedFrameIndex);
+        }
+        else
+        {
+            Assert(!ReferenceEquals(GetRawField(window, "_activeClip"), clip),
+                "绝对时间轴到达片段末尾后必须完成该片段；最终静态画面由各片段自己的完成逻辑决定");
+        }
         return displayedFrameIndex;
     }
 
@@ -3562,6 +3648,7 @@ internal static class Program
         long startedAt,
         long firstHoldTicks)
     {
+        PauseSpritePageWarmupForClockSimulation(window);
         Invoke(window, "StopVisualClock");
         GetField<DispatcherTimer>(window, "_automaticTimer").Stop();
         Invoke(window, "StopFrameBlend", false);
@@ -3579,6 +3666,29 @@ internal static class Program
         SetField(window, "_activeClipStartedTimestamp", startedAt);
         SetField(window, "_activeFrameDeadlineTimestamp", checked(startedAt + firstHoldTicks));
         SetField(window, "_synchronizeActiveClipToRenderingCadence", false);
+    }
+
+    private static void PauseSpritePageWarmupForClockSimulation(MainWindow window)
+    {
+        SetField(window, "_spritePageWarmupEnabled", false);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        SetField(
+            window,
+            "_spritePagePrefetchGeneration",
+            GetField<int>(window, "_spritePagePrefetchGeneration") + 1);
+        Invoke(window, "RequestSpritePagePrefetchCancellation");
+
+        var deadline = Stopwatch.StartNew();
+        while (GetRawField(window, "_spritePagePrefetchTask") is not null &&
+               deadline.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            PumpDispatcher(TimeSpan.FromMilliseconds(5));
+            Thread.Yield();
+        }
+
+        Assert(GetRawField(window, "_spritePagePrefetchTask") is null,
+            "离散vsync测试开始前必须停止顺序预热，避免测试同步装载与后台解码竞争");
     }
 
     private static void CleanupProductionClipClockSimulation(MainWindow window)
@@ -4500,6 +4610,7 @@ internal static class Program
         foreach (var eventName in new[]
                  {
                      "ScheduledTaskAddRequested",
+                     "ScheduledTaskEditRequested",
                      "ScheduledTaskDeleteRequested",
                      "TransientInteractionCompleted"
                  })
@@ -4528,6 +4639,12 @@ internal static class Program
             var scheduledInput = GetField<TextBox>(todoWindow, "ScheduledTaskInput");
             var scheduledDate = GetField<DatePicker>(todoWindow, "ScheduledDatePicker");
             var scheduledTime = GetField<TextBox>(todoWindow, "ScheduledTimeInput");
+            var scheduledSubmit = GetField<Button>(
+                todoWindow,
+                "ScheduledTaskSubmitButton");
+            var scheduledEditCancel = GetField<Button>(
+                todoWindow,
+                "ScheduledTaskEditCancelButton");
             var validationText = GetField<TextBlock>(
                 todoWindow,
                 "ScheduledTaskValidationText");
@@ -4541,6 +4658,8 @@ internal static class Program
                 "定时任务列表必须直接绑定传入的 ObservableCollection");
             Assert(scheduledInput.MaxLength == 80 &&
                    scheduledTime.MaxLength == 8 &&
+                   Equals(scheduledSubmit.Content, "设定") &&
+                   scheduledEditCancel.Visibility == Visibility.Collapsed &&
                    scheduledDate.SelectedDate is not null &&
                    DateTime.TryParseExact(
                        scheduledTime.Text,
@@ -4599,6 +4718,13 @@ internal static class Program
                        "_todoWindow.IsTransientPopupOpen",
                        StringComparison.Ordinal),
                 "MainWindow 的外部点击收起判定必须显式保护 DatePicker transient popup");
+            Assert(mainSource.Contains(
+                       "_todoWindow.ScheduledTaskEditRequested +=",
+                       StringComparison.Ordinal) &&
+                   mainSource.Contains(
+                       "TodoWindow_ScheduledTaskEditRequested",
+                       StringComparison.Ordinal),
+                "MainWindow 必须订阅定时任务编辑事件并交给排序、持久化和重调度处理器");
 
             var requestedCount = 0;
             string? requestedText = null;
@@ -4629,7 +4755,7 @@ internal static class Program
             scheduledTime.Text = futureLocal.ToString(
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture);
-            Invoke(todoWindow, "RequestScheduledTaskAdd");
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
             var expectedDueAt = new DateTimeOffset(
                 futureLocal,
                 TimeZoneInfo.Local.GetUtcOffset(futureLocal));
@@ -4647,6 +4773,189 @@ internal static class Program
                        DateTimeStyles.None,
                        out _),
                 "成功设定后应清空内容并重置为新的秒级默认时间");
+
+            var editLocal = DateTime.Now.AddHours(4);
+            editLocal = new DateTime(
+                editLocal.Year,
+                editLocal.Month,
+                editLocal.Day,
+                editLocal.Hour,
+                editLocal.Minute,
+                editLocal.Second,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(editLocal))
+            {
+                editLocal = editLocal.AddHours(1);
+            }
+
+            var editItem = new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "要修改的定时任务",
+                DueAt = new DateTimeOffset(
+                    editLocal,
+                    TimeZoneInfo.Local.GetUtcOffset(editLocal)),
+                CreatedAt = DateTimeOffset.Now.AddMinutes(-2)
+            };
+            scheduledTasks.Add(editItem);
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            todoWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+
+            var editContainer = scheduledList.ItemContainerGenerator.ContainerFromItem(editItem)
+                as FrameworkElement
+                ?? throw new InvalidOperationException("定时任务编辑回归未生成列表行");
+            var editButton = FindVisualDescendants<Button>(editContainer)
+                .SingleOrDefault(button => button.Name == "ScheduledTaskEditButton")
+                ?? throw new InvalidOperationException("定时任务行缺少铅笔编辑按钮");
+            Assert(ReferenceEquals(editButton.Tag, editItem) &&
+                   editButton.Content is Viewbox editIcon &&
+                   FindVisualDescendants<System.Windows.Shapes.Path>(editIcon).Count() == 2,
+                "定时任务编辑按钮必须使用与待办关闭按钮同风格的双路径斜铅笔图标并绑定当前项");
+
+            var editRequestedCount = 0;
+            ScheduledTaskItem? requestedEditItem = null;
+            string? requestedEditText = null;
+            DateTimeOffset requestedEditDueAt = default;
+            todoWindow.ScheduledTaskEditRequested += (item, text, dueAt) =>
+            {
+                editRequestedCount++;
+                requestedEditItem = item;
+                requestedEditText = text;
+                requestedEditDueAt = dueAt;
+            };
+
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditButton_Click",
+                editButton,
+                new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
+            Assert(ReferenceEquals(
+                       GetRawField(todoWindow, "_editingScheduledTask"),
+                       editItem) &&
+                   scheduledInput.Text == editItem.Text &&
+                   scheduledDate.SelectedDate == editLocal.Date &&
+                   scheduledTime.Text == editLocal.ToString(
+                       "HH:mm:ss",
+                       CultureInfo.InvariantCulture) &&
+                   Equals(scheduledSubmit.Content, "保存") &&
+                   scheduledEditCancel.Visibility == Visibility.Visible,
+                "点击铅笔后必须回填原内容、本地日期和秒级时间，并切换到可取消的保存状态");
+
+            var savedLocal = DateTime.Now.AddHours(6);
+            savedLocal = new DateTime(
+                savedLocal.Year,
+                savedLocal.Month,
+                savedLocal.Day,
+                savedLocal.Hour,
+                savedLocal.Minute,
+                savedLocal.Second,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(savedLocal))
+            {
+                savedLocal = savedLocal.AddHours(1);
+            }
+
+            scheduledInput.Text = "  修改后的定时任务  ";
+            scheduledDate.SelectedDate = savedLocal.Date;
+            scheduledTime.Text = savedLocal.ToString(
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture);
+            var scheduledInputSource = PresentationSource.FromVisual(scheduledInput)
+                ?? throw new InvalidOperationException("定时任务输入框未建立输入源");
+            Invoke(todoWindow, "SetImeComposing", true);
+            var composingScheduledEnter = CreateKeyEvent(
+                scheduledInputSource,
+                Key.Enter);
+            Invoke(
+                todoWindow,
+                "ScheduledTaskInput_PreviewKeyDown",
+                scheduledInput,
+                composingScheduledEnter);
+            Assert(editRequestedCount == 0 &&
+                   ReferenceEquals(
+                       GetRawField(todoWindow, "_editingScheduledTask"),
+                       editItem),
+                "微软输入法仍在组合时，定时任务编辑 Enter 只能选词，不得提前保存或退出编辑");
+
+            Invoke(todoWindow, "SetImeComposing", false);
+            var committedScheduledEnter = CreateKeyEvent(
+                scheduledInputSource,
+                Key.Enter);
+            Invoke(
+                todoWindow,
+                "ScheduledTaskInput_PreviewKeyDown",
+                scheduledInput,
+                committedScheduledEnter);
+            var expectedEditedDueAt = new DateTimeOffset(
+                savedLocal,
+                TimeZoneInfo.Local.GetUtcOffset(savedLocal));
+            Assert(editRequestedCount == 1 &&
+                   ReferenceEquals(requestedEditItem, editItem) &&
+                   requestedEditText == "修改后的定时任务" &&
+                   requestedEditDueAt == expectedEditedDueAt &&
+                   committedScheduledEnter.Handled &&
+                   GetRawField(todoWindow, "_editingScheduledTask") is null &&
+                   Equals(scheduledSubmit.Content, "设定") &&
+                   scheduledEditCancel.Visibility == Visibility.Collapsed,
+                "定时任务编辑 Enter 必须只提交一次、Trim 内容、保留整秒时间并恢复新增状态");
+
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditButton_Click",
+                editButton,
+                new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
+            scheduledInput.Text = "这一版应该被取消";
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditCancelButton_Click",
+                scheduledEditCancel,
+                new RoutedEventArgs(ButtonBase.ClickEvent, scheduledEditCancel));
+            Assert(editRequestedCount == 1 &&
+                   editItem.Text == "要修改的定时任务" &&
+                   editItem.DueAt == new DateTimeOffset(
+                       editLocal,
+                       TimeZoneInfo.Local.GetUtcOffset(editLocal)) &&
+                   scheduledInput.Text.Length == 0 &&
+                   GetRawField(todoWindow, "_editingScheduledTask") is null &&
+                   Equals(scheduledSubmit.Content, "设定") &&
+                   scheduledEditCancel.Visibility == Visibility.Collapsed,
+                "取消修改不得触发保存或改动原任务，并必须清空草稿、恢复新增状态");
+
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditButton_Click",
+                editButton,
+                new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
+            var pastLocal = DateTime.Now.AddMinutes(-5);
+            pastLocal = new DateTime(
+                pastLocal.Year,
+                pastLocal.Month,
+                pastLocal.Day,
+                pastLocal.Hour,
+                pastLocal.Minute,
+                pastLocal.Second,
+                DateTimeKind.Unspecified);
+            scheduledInput.Text = "不能保存到过去";
+            scheduledDate.SelectedDate = pastLocal.Date;
+            scheduledTime.Text = pastLocal.ToString(
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture);
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            Assert(editRequestedCount == 1 &&
+                   ReferenceEquals(
+                       GetRawField(todoWindow, "_editingScheduledTask"),
+                       editItem) &&
+                   validationText.Text.Contains("晚于现在", StringComparison.Ordinal) &&
+                   editItem.Text == "要修改的定时任务",
+                "编辑到过去时间必须保留编辑态、显示校验提示并且不得改变原任务");
+
+            todoWindow.ShowDefaultTab();
+            Assert(GetRawField(todoWindow, "_editingScheduledTask") is null &&
+                   todoTab.IsChecked == true &&
+                   scheduledInput.Text.Length == 0 &&
+                   editRequestedCount == 1,
+                "切回默认待办页必须取消未提交的定时任务修改，不能静默保存草稿");
 
             var deleteItem = new ScheduledTaskItem
             {
@@ -4668,6 +4977,230 @@ internal static class Program
         finally
         {
             todoWindow.CloseForApplication();
+        }
+    }
+
+    private static void AssertScheduledTaskEditContract(MainWindow window)
+    {
+        var scheduledTasks = GetField<ObservableCollection<ScheduledTaskItem>>(
+            window,
+            "_scheduledTasks");
+        var reminderQueue = GetField<Queue<ScheduledTaskItem>>(
+            window,
+            "_reminderQueue");
+        var queuedReminderIds = GetField<HashSet<Guid>>(
+            window,
+            "_queuedReminderIds");
+        var scheduledStore = GetField<ScheduledTaskStore>(
+            window,
+            "_scheduledTaskStore");
+        var scheduledTimer = GetField<DispatcherTimer>(
+            window,
+            "_scheduledTaskTimer");
+        var originalNowProvider = GetField<Func<DateTimeOffset>>(
+            window,
+            "_nowProvider");
+        var now = new DateTimeOffset(
+            2026,
+            7,
+            22,
+            15,
+            0,
+            0,
+            TimeSpan.FromHours(8));
+        Func<DateTimeOffset> controlledNow = () => now;
+
+        scheduledTimer.Stop();
+        scheduledTasks.Clear();
+        reminderQueue.Clear();
+        queuedReminderIds.Clear();
+        SetField(window, "_activeReminder", null);
+        SetField(window, "_isReminderActive", false);
+        SetField(window, "_nowProvider", controlledNow);
+        Assert(scheduledStore.Save(scheduledTasks),
+            "定时任务编辑回归必须使用临时 ScheduledTaskStore");
+
+        try
+        {
+            var first = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("20000000-0000-0000-0000-000000000001"),
+                Text = "原本最早",
+                DueAt = now.AddSeconds(20),
+                CreatedAt = now.AddMinutes(-3).AddMilliseconds(111)
+            };
+            var middle = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("20000000-0000-0000-0000-000000000002"),
+                Text = "原本居中",
+                DueAt = now.AddSeconds(30),
+                CreatedAt = now.AddMinutes(-2).AddMilliseconds(222)
+            };
+            var moving = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("20000000-0000-0000-0000-000000000003"),
+                Text = "原本最晚",
+                DueAt = now.AddSeconds(40),
+                CreatedAt = now.AddMinutes(-1).AddMilliseconds(333)
+            };
+            foreach (var item in new[] { middle, moving, first })
+            {
+                Invoke(window, "InsertScheduledTaskSorted", item);
+            }
+
+            Assert(scheduledStore.Save(scheduledTasks),
+                "编辑排序回归的初始任务必须成功持久化");
+            var movingId = moving.Id;
+            var movingCreatedAt = moving.CreatedAt;
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                moving,
+                "  改到更早并修正文案  ",
+                now.AddSeconds(10).AddMilliseconds(875));
+            Assert(scheduledTasks.SequenceEqual([moving, first, middle]) &&
+                   moving.Id == movingId &&
+                   moving.CreatedAt == movingCreatedAt &&
+                   moving.Text == "改到更早并修正文案" &&
+                   moving.DueAt == now.AddSeconds(10) &&
+                   scheduledStore.Load().Select(item => item.Id)
+                       .SequenceEqual([moving.Id, first.Id, middle.Id]) &&
+                   scheduledTimer.IsEnabled &&
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(10))
+                       .TotalMilliseconds) < 1,
+                "编辑到更早时间必须保留 Id/CreatedAt、Trim并归一到整秒，" +
+                "同时重排内存/磁盘并重新对准最近触发点");
+
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                moving,
+                "改到更晚",
+                now.AddSeconds(50).AddMilliseconds(499));
+            Assert(scheduledTasks.SequenceEqual([first, middle, moving]) &&
+                   moving.Id == movingId &&
+                   moving.CreatedAt == movingCreatedAt &&
+                   moving.DueAt == now.AddSeconds(50) &&
+                   scheduledStore.Load().Select(item => item.Id)
+                       .SequenceEqual([first.Id, middle.Id, moving.Id]) &&
+                   scheduledTimer.IsEnabled &&
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(20))
+                       .TotalMilliseconds) < 1,
+                "编辑到更晚时间必须移动到正确位置并把调度器切回新的最早任务");
+
+            scheduledTimer.Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            var active = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("30000000-0000-0000-0000-000000000001"),
+                Text = "正在显示的提醒",
+                DueAt = now,
+                CreatedAt = now.AddMinutes(-3)
+            };
+            var queuedFirst = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("30000000-0000-0000-0000-000000000002"),
+                Text = "排队提醒甲",
+                DueAt = now,
+                CreatedAt = now.AddMinutes(-2)
+            };
+            var queuedSecond = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("30000000-0000-0000-0000-000000000003"),
+                Text = "排队提醒乙",
+                DueAt = now,
+                CreatedAt = now.AddMinutes(-1)
+            };
+            foreach (var item in new[] { active, queuedFirst, queuedSecond })
+            {
+                Invoke(window, "InsertScheduledTaskSorted", item);
+            }
+
+            SetField(window, "_activeReminder", active);
+            SetField(window, "_isReminderActive", true);
+            Invoke(window, "RebuildReminderQueueAt", now);
+            Assert(reminderQueue.SequenceEqual([queuedFirst, queuedSecond]) &&
+                   queuedReminderIds.SetEquals(
+                       [active.Id, queuedFirst.Id, queuedSecond.Id]),
+                "已到点的同秒任务必须先形成一个活动项和稳定顺序的等待队列");
+            Assert(scheduledStore.Save(scheduledTasks),
+                "排队编辑回归的初始状态必须成功持久化");
+
+            var activeCreatedAt = active.CreatedAt;
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                active,
+                "不允许覆盖正在显示的内容",
+                now.AddMinutes(10));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       active) &&
+                   active.Text == "正在显示的提醒" &&
+                   active.DueAt == now &&
+                   active.CreatedAt == activeCreatedAt &&
+                   reminderQueue.SequenceEqual([queuedFirst, queuedSecond]) &&
+                   scheduledStore.Load().Single(item => item.Id == active.Id).Text ==
+                       "正在显示的提醒",
+                "正在气泡中显示的任务必须拒绝编辑，避免画面、队列和磁盘内容分裂");
+
+            var queuedFirstId = queuedFirst.Id;
+            var queuedFirstCreatedAt = queuedFirst.CreatedAt;
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                queuedFirst,
+                "  排队任务延后  ",
+                now.AddSeconds(30).AddMilliseconds(900));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       active) &&
+                   queuedFirst.Id == queuedFirstId &&
+                   queuedFirst.CreatedAt == queuedFirstCreatedAt &&
+                   queuedFirst.Text == "排队任务延后" &&
+                   queuedFirst.DueAt == now.AddSeconds(30) &&
+                   reminderQueue.SequenceEqual([queuedSecond]) &&
+                   queuedReminderIds.SetEquals([active.Id, queuedSecond.Id]) &&
+                   scheduledTimer.IsEnabled &&
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(30))
+                       .TotalMilliseconds) < 1 &&
+                   scheduledStore.Load().Select(item => item.Id)
+                       .SequenceEqual([active.Id, queuedSecond.Id, queuedFirst.Id]),
+                "把已排队任务改到未来后必须立即移出等待队列、保留活动提醒，" +
+                "并按新时间持久化和重新定时");
+
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                queuedFirst,
+                "排队任务提前",
+                now.AddSeconds(-1));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       active) &&
+                   scheduledTasks.SequenceEqual([queuedFirst, active, queuedSecond]) &&
+                   reminderQueue.SequenceEqual([queuedFirst, queuedSecond]) &&
+                   queuedReminderIds.SetEquals(
+                       [active.Id, queuedFirst.Id, queuedSecond.Id]) &&
+                   queuedReminderIds.Count == 3 &&
+                   !scheduledTimer.IsEnabled &&
+                   scheduledStore.Load().Select(item => item.Id)
+                       .SequenceEqual([queuedFirst.Id, active.Id, queuedSecond.Id]),
+                "把已排队任务改回到期时间后必须按新顺序只入队一次，" +
+                "不得覆盖当前提醒或产生重复Id");
+        }
+        finally
+        {
+            scheduledTimer.Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            scheduledStore.Save(scheduledTasks);
+            SetField(window, "_activeReminder", null);
+            SetField(window, "_isReminderActive", false);
+            SetField(window, "_nowProvider", originalNowProvider);
         }
     }
 
@@ -4743,51 +5276,131 @@ internal static class Program
                 "定时提醒前的用户尺寸设置");
 
             var reminderEnterClip = GetField<object>(window, "_reminderEnterClip");
+            var reminderHoldClip = GetField<object>(window, "_reminderHoldClip");
             var reminderExitClip = GetField<object>(window, "_reminderExitClip");
             var enterFrames = GetClipFrames(reminderEnterClip);
+            var holdFrames = GetClipFrames(reminderHoldClip);
             var exitFrames = GetClipFrames(reminderExitClip);
-            var enterActionIndex = GetProperty<int>(
-                reminderEnterClip,
-                "ActionFrameIndex");
             Assert(GetProperty<string>(reminderEnterClip, "ActionName") ==
                    "reminder-open" &&
+                   GetProperty<string>(reminderHoldClip, "ActionName") ==
+                   "reminder-hold" &&
                    GetProperty<string>(reminderExitClip, "ActionName") ==
                    "reminder-close" &&
                    !ReferenceEquals(reminderEnterClip, reminderExitClip) &&
-                   enterFrames.Length > 8 &&
-                   exitFrames.Length > 8 &&
-                   enterActionIndex >= 0 &&
-                   enterActionIndex < enterFrames.Length,
-                "定时提醒必须拥有独立的 reminder-open / reminder-close 入退场 clip");
-            var reminderMotionFrameInterval = (TimeSpan)(
+                   !ReferenceEquals(reminderEnterClip, reminderHoldClip) &&
+                   !ReferenceEquals(reminderHoldClip, reminderExitClip) &&
+                   enterFrames.Length == 33 &&
+                   holdFrames.Length == 48 &&
+                   exitFrames.Length == 33 &&
+                   GetProperty<int>(reminderEnterClip, "ActionFrameIndex") == 0 &&
+                   GetProperty<int>(reminderHoldClip, "ActionFrameIndex") == 0 &&
+                   GetProperty<int>(reminderExitClip, "ActionFrameIndex") == 0,
+                "定时提醒必须使用独立的33帧入场、48帧播报保持和33帧退场clip");
+            var motionFrameInterval = (TimeSpan)(
                 typeof(MainWindow).GetField(
-                    "ReminderMotionFrameInterval",
+                    "MotionFrameInterval",
                     StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
-            var actionLoopFrameCount = Convert.ToInt32(
-                typeof(MainWindow).GetField(
-                    "ActionLoopFrameCount",
-                    StaticFlags)!.GetRawConstantValue(),
-                CultureInfo.InvariantCulture);
-            var reminderTransitionFrameCount =
-                enterFrames.Length - actionLoopFrameCount;
-            Assert(reminderMotionFrameInterval == TimeSpan.FromTicks(
-                       TimeSpan.TicksPerSecond / 180) &&
-                   reminderTransitionFrameCount > 0 &&
+            Assert(motionFrameInterval == TimeSpan.FromTicks(
+                       TimeSpan.TicksPerSecond / 60) &&
                    enterFrames.Cast<object>()
-                       .Take(reminderTransitionFrameCount)
-                       .All(frame =>
-                           GetFrameDuration(frame) == reminderMotionFrameInterval) &&
-                   enterFrames.Cast<object>()
-                       .Skip(reminderTransitionFrameCount)
-                       .All(frame =>
-                           GetFrameDuration(frame) == TimeSpan.FromTicks(
-                               TimeSpan.TicksPerSecond / 60)),
-                "reminder-open 必须用180fps authored进入举手姿态，" +
-                "再以原始60fps循环保持姿态");
+                        .All(frame =>
+                            GetFrameDuration(frame) == motionFrameInterval) &&
+                   holdFrames.Cast<object>()
+                        .All(frame =>
+                            GetFrameDuration(frame) == motionFrameInterval) &&
+                   exitFrames.Cast<object>()
+                        .All(frame =>
+                            GetFrameDuration(frame) == motionFrameInterval),
+                "提醒入场、播报保持和退场必须统一使用60fps绝对时间帧时长");
+
+            for (var frameIndex = 0; frameIndex < enterFrames.Length; frameIndex++)
+            {
+                var enterImage = GetProperty<object>(
+                    enterFrames.GetValue(frameIndex)!,
+                    "Image");
+                var exitImage = GetProperty<object>(
+                    exitFrames.GetValue(exitFrames.Length - 1 - frameIndex)!,
+                    "Image");
+                var enterInfo = GetSpriteFrameInfo(enterImage);
+                Assert(enterInfo.PageName.StartsWith(
+                           "action-reminder-enter",
+                           StringComparison.Ordinal) &&
+                       enterInfo.Name.EndsWith(
+                           $"luban-reminder-enter-{frameIndex + 1:000}.png",
+                           StringComparison.Ordinal) &&
+                       Equals(enterImage, exitImage),
+                    $"提醒入场第{frameIndex + 1}帧必须来自专用action-reminder-enter序列，" +
+                    "退场必须直接复用同一SpriteFrame的倒序，不能复制第二套图或混入wave");
+            }
+
+            for (var frameIndex = 0; frameIndex < holdFrames.Length; frameIndex++)
+            {
+                var holdInfo = GetSpriteFrameInfo(GetProperty<object>(
+                    holdFrames.GetValue(frameIndex)!,
+                    "Image"));
+                Assert(holdInfo.PageName.StartsWith(
+                           "action-reminder-hold",
+                           StringComparison.Ordinal) &&
+                       holdInfo.Name.EndsWith(
+                           $"luban-reminder-hold-{frameIndex + 1:000}.png",
+                           StringComparison.Ordinal),
+                    $"提醒播报第{frameIndex + 1}帧必须来自专用action-reminder-hold序列");
+            }
+
+            var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+            var mainXaml = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml"));
+            var createReminderEnterSource = ExtractPrivateMethodSource(
+                mainSource,
+                "CreateReminderEnterClip");
+            var createReminderHoldSource = ExtractPrivateMethodSource(
+                mainSource,
+                "CreateReminderHoldClip");
+            var createReminderExitSource = ExtractPrivateMethodSource(
+                mainSource,
+                "CreateReminderExitClip");
+            foreach (var reminderClipSource in new[]
+                     {
+                         createReminderEnterSource,
+                         createReminderHoldSource,
+                         createReminderExitSource
+                     })
+            {
+                Assert(!reminderClipSource.Contains("BuildActionTimeline", StringComparison.Ordinal) &&
+                       !reminderClipSource.Contains("\"wave\"", StringComparison.Ordinal),
+                    "专用提醒clip不得再次复用普通wave时间轴或wave素材");
+            }
+
+            Assert(createReminderExitSource.Contains(
+                       "_reminderEnterFrames",
+                       StringComparison.Ordinal) &&
+                   createReminderExitSource.Contains(
+                       "reverse: true",
+                       StringComparison.Ordinal) &&
+                   !mainSource.Contains("ReminderMotionFrameInterval", StringComparison.Ordinal) &&
+                   !mainSource.Contains("ShowReminderMegaphoneAt", StringComparison.Ordinal) &&
+                   !mainSource.Contains("AdvanceReminderMegaphoneAnimation", StringComparison.Ordinal) &&
+                   !mainSource.Contains("_isReminderMegaphoneAnimating", StringComparison.Ordinal) &&
+                   typeof(MainWindow).GetField(
+                       "ReminderMegaphone",
+                       InstanceFlags) is null &&
+                   !mainXaml.Contains("ReminderMegaphone", StringComparison.Ordinal) &&
+                   !mainXaml.Contains("MegaphonePulseScale", StringComparison.Ordinal) &&
+                   !mainXaml.Contains("MegaphoneSoundWave", StringComparison.Ordinal),
+                "喇叭必须烘焙进专用人物帧；不得保留独立矢量贴层、正弦漂浮动画或1/180秒旧时钟");
+
             AssertProductionDiscreteVsyncTimeline(
                 window,
                 reminderEnterClip,
-                "reminder-open-180fps");
+                "reminder-open-60fps");
+            AssertProductionDiscreteVsyncTimeline(
+                window,
+                reminderHoldClip,
+                "reminder-hold-60fps");
+            AssertProductionDiscreteVsyncTimeline(
+                window,
+                reminderExitClip,
+                "reminder-close-60fps");
 
             var dueAt = currentNow.AddSeconds(10);
             Invoke(
@@ -4844,7 +5457,6 @@ internal static class Program
 
             var reminderBubble = GetField<Border>(window, "ReminderBubble");
             var reminderMessage = GetField<TextBox>(window, "ReminderMessageText");
-            var reminderMegaphone = GetField<Canvas>(window, "ReminderMegaphone");
             var reminderButton = GetField<Button>(
                 window,
                 "ReminderAcknowledgeButton");
@@ -4858,20 +5470,15 @@ internal static class Program
             Assert(reminderMessage.SelectedText == firstActive.Text,
                 "提醒对话框内容必须可选中复制");
             reminderMessage.Select(0, 0);
-            Assert(reminderMegaphone.Children
-                       .OfType<System.Windows.Shapes.Path>()
-                       .Count() >= 5 &&
-                   GetField<RotateTransform>(window, "MegaphoneRotate") is not null &&
-                   GetField<ScaleTransform>(window, "MegaphonePulseScale") is not null,
-                "举喇叭提醒必须使用轻量矢量组件和可动画变换，不得增加大位图");
-            Invoke(
-                window,
-                "ShowReminderMegaphoneAt",
-                Stopwatch.GetTimestamp(),
-                true);
-            Assert(reminderMegaphone.Visibility == Visibility.Visible &&
-                   GetField<bool>(window, "_isReminderMegaphoneAnimating"),
-                "提醒动作进入举手姿态后必须显示并启动喇叭脉冲动画");
+            var firstReminderSprite = GetProperty<object>(
+                enterFrames.GetValue(0)!,
+                "Image");
+            Assert(GetField<int>(window, "_activeFrameIndex") == 0 &&
+                   Equals(GetRawField(window, "_currentSpriteFrame"), firstReminderSprite) &&
+                   !GetField<bool>(window, "_isFrameBlending") &&
+                   GetRawField(window, "_pendingSpriteFrame") is null,
+                "提醒到点后的首个可见姿势必须直接来自专用烘焙喇叭序列，" +
+                "不得整图淡化、叠加旧贴层或留下待补播帧");
 
             Invoke(window, "ProcessScheduledTasksAt", currentNow);
             Assert(ReferenceEquals(
@@ -4880,6 +5487,24 @@ internal static class Program
                    reminderQueue.Count == 1 &&
                    queuedReminderIds.Count == 2,
                 "在同一整秒重复执行调度不得重复入队或覆盖正在显示的提醒");
+
+            Invoke(window, "CompleteActiveClip", reminderEnterClip);
+            Assert(ReferenceEquals(
+                       GetRawField(window, "_activeClip"),
+                       reminderHoldClip) &&
+                   GetField<int>(window, "_activeFrameIndex") == 0 &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       GetProperty<object>(holdFrames.GetValue(0)!, "Image")),
+                "33帧专用入场完成后必须无缝衔接48帧专用播报动作的第一帧");
+            Invoke(window, "CompleteActiveClip", reminderHoldClip);
+            Assert(GetRawField(window, "_activeClip") is null &&
+                   GetField<int>(window, "_activeFrameIndex") == -1 &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       GetProperty<object>(holdFrames.GetValue(holdFrames.Length - 1)!, "Image")) &&
+                   !GetField<bool>(window, "_isFrameBlending"),
+                "48帧播报完成后必须定格在烘焙喇叭末姿势，不得循环漂浮、闪回或整图淡化");
 
             CompleteCurrentPetSizeTransitionForReminderTest(window);
             AssertClose(GetField<double>(window, "_petSizeScale"), maximumScale,
@@ -4900,10 +5525,11 @@ internal static class Program
             Assert(ReferenceEquals(secondActive, expectedSameSecondOrder[1]) &&
                    GetField<bool>(window, "_isReminderActive") &&
                    GetField<object>(window, "_bubbleMode").ToString() == "Reminder" &&
+                   ReferenceEquals(GetRawField(window, "_activeClip"), reminderHoldClip) &&
                    scheduledTasks.Count == 1 &&
                    persistedAfterFirstAcknowledge.Count == 1 &&
                    persistedAfterFirstAcknowledge[0].Id == secondActive.Id,
-                "确认第一条后必须只删除已确认任务并持久化，随即显示队列中第二条");
+                "确认第一条后必须只删除已确认任务并持久化，随即用专用hold动作显示第二条");
             AssertClose(GetField<double>(window, "_petSizeScale"), maximumScale,
                 "同秒提醒队列未清空前应继续保持最大尺寸");
 
@@ -4920,8 +5546,11 @@ internal static class Program
                    Math.Abs(GetField<double>(window, "_pendingPetSizeTargetScale") -
                             baselineScale) < 0.0001,
                 "最后一条确认后必须平滑返回提醒前的尺寸目标");
-            Assert(reminderMegaphone.Visibility == Visibility.Collapsed,
-                "reminder-close 开始时必须立即收起矢量喇叭图层");
+            Assert(Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       GetProperty<object>(exitFrames.GetValue(0)!, "Image")) &&
+                   !GetField<bool>(window, "_isFrameBlending"),
+                "reminder-close 必须从烘焙喇叭入场序列的末姿势直接倒放，不能闪回或整图淡化");
 
             CompleteCurrentPetSizeTransitionForReminderTest(window);
             Invoke(
@@ -5065,10 +5694,8 @@ internal static class Program
             SetField(window, "_isReminderActive", false);
             SetField(window, "_isTransientPetSizeOverride", false);
             SetField(window, "_isRestoringReminderSize", false);
-            SetField(window, "_isReminderMegaphoneAnimating", false);
             Invoke(window, "HideBubbleVisuals");
             SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
-            Invoke(window, "HideReminderMegaphone");
             Invoke(window, "StopVisualClock");
             SetField(window, "_activeClip", null);
             SetField(window, "_activeFrameIndex", -1);

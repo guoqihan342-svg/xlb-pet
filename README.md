@@ -31,8 +31,8 @@
 
 ### 定时任务
 
-- 在右键窗口切换到“定时任务”，填写提醒内容、日期和 `HH:mm:ss` 时间即可创建一次性提醒，精确保存到秒。待提醒列表按时间稳定排序，并自动保存到 `%LocalAppData%\LubanDesktopPet\scheduled-tasks.json`。
-- 到点时，小鲁班会中断普通动作、平滑放大到 140%，用现有高清挥手帧举起矢量小喇叭，并在黄白色可爱对话框中显示提醒内容；长内容可滚动、选中和复制。点击“知道啦”后才算完成，并平滑恢复提醒前的桌宠大小，不会把临时 140% 写进用户设置。
+- 在右键窗口切换到“定时任务”，填写提醒内容、日期和 `HH:mm:ss` 时间即可创建一次性提醒，精确保存到秒。单击任务右侧与关闭按钮同风格的铅笔图标，可把内容和时间回填到表单中修改；“保存”会保留任务身份、重新排序并重新调度，“取消”、切换选项卡或关闭窗口都不会误改原任务。待提醒列表自动保存到 `%LocalAppData%\LubanDesktopPet\scheduled-tasks.json`。
+- 到点时，小鲁班会中断普通动作、平滑放大到 140%，换成闭眼笑着双手举喇叭的专用姿势，先轻轻回正，再进行左右小幅播报摇摆，并在黄白色可爱对话框中显示提醒内容；人物、双手、喇叭和声效线始终是同一个完整高清轮廓，不再使用会悬空、穿模或产生光纹的矢量贴层。长内容可滚动、选中和复制。点击“知道啦”后才算完成，并平滑恢复提醒前的桌宠大小，不会把临时 140% 写进用户设置。
 - 同一秒到期的多条任务会按创建顺序逐条提示，确认上一条后显示下一条。程序休眠、界面短暂阻塞或到点时未运行，都不会快速补播计时；下次可用时会立即检查所有逾期任务。
 - 到点不会立刻从磁盘删除任务，只有用户点击“知道啦”后才原子保存删除结果。因此提醒期间退出或崩溃时，尚未确认的内容会在下次启动重新提示，不会静默丢失。
 - 如果启动时定时任务文件暂时被占用、无权读取或 JSON 损坏，本次运行会进入只读保护，不会在退出时把原文件覆盖成空列表；保护状态会写入 `log`。
@@ -48,6 +48,7 @@
 - 图集清单使用 `version: 4`、`compression: "brotli"` 契约。运行时资源是无损 Brotli 压缩的 Pbgra32 分页（`*.pbgra.br`），PNG 只用于构建和目视检查；每一页解码后不超过清单声明的 24 MiB 上限。
 - 启动时只同步解码首个待机页，随后在后台依次预热其余分页并保留在常驻页缓存；用户立即触发的动作可以抢占普通预热。此实现明确用更多稳定内存换取后续切页无解压卡点，不在动作结束时驱逐页面或强制 GC。总内存取决于最终清单中各页的 `uncompressedByteCount`、Windows、DPI 和显卡驱动，因此不承诺固定数字。
 - 人物动作和手动边缘探头由单一 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴驱动。人物姿势目标为 60fps，窗口呈现跟随显示器合成刷新；回调稍晚时直接定位正确姿势，不快速补播积压帧。相邻姿势直接发布清晰单帧，较大变化由专用桥接姿势连接，不做整图交叉淡化。
+- 定时提醒素材库保留 8 张核心姿势和 8 张桥接候选，运行时选用其中闭眼举喇叭的完整姿势生成 33 帧阻尼回正和 48 帧轻柔播报摇摆；收起过程反向复用入场帧，不保存第二套退场 PNG。生成时始终对人物、双手、喇叭和声效线这一整块预乘 Alpha 轮廓做确定性刚体变换，不在不同人物姿势之间做光流变形或整图淡化，因此不会生成双手、双喇叭、光纹和忽大忽小的插值中间态。
 - 动画播放速度通过 `MainWindow.xaml.cs` 顶部的代码常量 `AnimationPlaybackSpeed` 配置，默认值为 `1.25`；`1.0` 表示原速，大于 `1.0` 时播放更快。当前不提供 UI 滑块，也不会持久化该值，修改后需要重新编译程序；自动待机间隔和桌宠大小缩放动画不受影响。
 - 渲染过程复用一个可见 `399×509 Pbgra32` 位图和工作缓冲，只提交新旧人物边界的脏矩形。渲染回调不读盘、不解压、不写日志，也不会为每一帧创建新位图；图集载入、动作开始和结束摘要通过后台日志队列写入。
 
@@ -75,10 +76,10 @@
 
 - 系统：Windows 11 x64
 - 框架：x64 `.NET 8 Desktop Runtime 8.0.29`
-- 已发布程序：`dist\LubanDesktopPet.exe`
+- 本地发布结果：`dist\LubanDesktopPet.exe`；超过 GitHub 普通 Git 对象上限的成品 EXE 通过 [GitHub Releases](https://github.com/guoqihan342-svg/xlb-pet/releases) 提供，不再直接塞进仓库历史。
 - 为避免把约 56 MiB 的微软安装包重复提交到 GitHub，仓库只记录版本、官方地址和校验信息，详见 [`runtime\dotnet-desktop-runtime-8.0.29-win-x64\README.md`](runtime/dotnet-desktop-runtime-8.0.29-win-x64/README.md)。
 
-首次使用时，如系统尚未安装该运行时，请从微软官方地址下载并安装，再运行 `dist\LubanDesktopPet.exe`。当前桌宠 EXE 未做商业代码签名，从网络下载后 Windows SmartScreen 可能显示提示。
+首次使用时，如系统尚未安装该运行时，请从微软官方地址下载并安装，再运行本地发布的 `dist\LubanDesktopPet.exe` 或 Release 附件。当前桌宠 EXE 未做商业代码签名，从网络下载后 Windows SmartScreen 可能显示提示。
 
 ## 开发、构建与验证
 
@@ -94,10 +95,13 @@ dotnet build .\DesktopPet.csproj -c Release
 # 安装统一缩放和定位的基础姿势、静态枕头层与手动边缘探头帧
 python .\tools\install_generated_motion_assets.py --v6-motion --source-directory .\tools\generated_sources --assets-directory .\Assets
 
-# 首次从基础姿势生成60fps可变长度序列（需要RIFE；离线生成耗时较长）
+# 安装定时提醒的8张核心姿势与8张桥接候选（运行时序列从桥接第8张生成）
+python .\tools\install_generated_motion_assets.py --reminder --source-directory .\tools\generated_sources --assets-directory .\Assets
+
+# 首次从基础姿势生成60fps可变长度序列（普通动作需要RIFE；提醒序列使用确定性刚体生成）
 # 如工具不在默认的.codex_tmp目录，先设置：
 # $env:XLB_RIFE_ROOT = 'C:\path\to\rife-ncnn-vulkan-20221029-windows'
-python .\tools\generate_dense_motion_assets.py --wake --actions --loops --edge-peek
+python .\tools\generate_dense_motion_assets.py --wake --actions --loops --edge-peek --reminder
 
 # 源PNG连续性、透明通道与相邻姿势检查
 python .\tools\qa_dense_motion_assets.py --contacts
@@ -144,11 +148,11 @@ if ($manifest.version -ne 4 -or $manifest.compression -ne 'brotli') {
 }
 
 $exe = Get-Item .\dist\LubanDesktopPet.exe
-if ($exe.Length -ge 100MB) {
-    throw 'EXE达到GitHub普通Git对象100 MiB硬限制，请改用Release附件或Git LFS'
+if ($exe.Length -ge 100000000) {
+    throw 'EXE达到GitHub普通Git对象100,000,000字节硬限制，请改用Release附件或Git LFS'
 }
-if ($exe.Length -ge 95MB) {
-    Write-Warning 'EXE已接近100 MiB硬限制；发布前应减少边缘序列或启用选择性无损差分压缩'
+if ($exe.Length -ge 95000000) {
+    Write-Warning 'EXE已接近100,000,000字节硬限制；发布前应减少边缘序列或改用Release附件'
 }
 if ($exe.Length -ge 50MB) {
     Write-Warning 'GitHub会对超过50 MiB的普通Git对象给出大文件警告'
@@ -166,10 +170,10 @@ Get-AuthenticodeSignature $exe.FullName | Select-Object Status, StatusMessage
 - [ ] 源 PNG QA、最终 Pbgra 图集 QA、Release 构建、UI 检查和持久化检查全部通过，且没有忽略失败项。
 - [ ] 最终清单声明 `version: 4` 和 `compression: "brotli"`；`sourceFrameCount`、`pageFrameCount`、实际分页和嵌入资源彼此一致，输出目录不再残留 `*.pbgra.lz4`。
 - [ ] 使用上面的框架依赖单文件命令发布；目标机器已安装 x64 .NET 8 Desktop Runtime。
-- [ ] `LubanDesktopPet.exe` 小于 GitHub 普通 Git 对象的 100 MiB 硬限制，并记录最终字节数和 SHA-256；超过限制时不要强行提交，改用 GitHub Release 附件或 Git LFS。
+- [ ] 记录 `LubanDesktopPet.exe` 的最终字节数和 SHA-256；小于 `100,000,000` 字节时可作为普通 Git 对象提交，达到或超过时不要强行提交，改用 GitHub Release 附件或 Git LFS。
 - [ ] 实机连续触发七种点击动作并观察起身、循环、返回和随机待机；无自动绕屏、逐帧抖动、透明光纹、忽大忽小或冷页快速补播。
 - [ ] 快速往返拖动大小滑块，人物和滑块都连续；待办支持 `Ctrl+C`、长文本换行/提示、文字选择复制、浅蓝色行悬停、专用手柄拖拽排序、行内修改，以及微软/搜狗输入法。
-- [ ] 分别设置普通秒级提醒、同秒两条提醒和长文字提醒；到点后人物平滑放大、举喇叭、正文可复制，逐条点击“知道啦”后才删除，最后恢复原尺寸且 `settings.json` 未写成 140%。
+- [ ] 新建并修改普通秒级提醒，确认表单回填、取消、保存后的重新排序和重新调度正确；再设置同秒两条提醒和长文字提醒，确认到点后人物平滑放大、专用举喇叭动画无悬空/穿模/光纹、正文可复制，逐条点击“知道啦”后才删除，最后恢复原尺寸且 `settings.json` 未写成 140%。
 - [ ] 待办随人物跨屏拖动，点击其他位置自动收起；四边手动探头、负坐标副屏、100%/125%/150% DPI 和显示器变化恢复正常。
 - [ ] 等后台分页预热结束后复测动作，并检查内存进入稳定区间、没有持续增长；`log` 中没有未处理异常、Brotli 解码失败或分页预热失败。
 - [ ] Git 暂存仅包含计划交付文件，不包含 `.codex_tmp`、生成缓存、绿幕中间图或无关历史 QA 文件。
