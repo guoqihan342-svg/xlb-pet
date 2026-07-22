@@ -43,11 +43,12 @@ public partial class MainWindow : Window
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
     // Decoded atlas pages are byte-for-byte identical regardless of whether
-    // they are cached. Keep enough headroom for the complete largest action,
-    // the reminder/edge hot set, and the currently displayed page without
-    // retaining the entire 387 MiB decoded atlas for the lifetime of the app.
-    private const long SpritePageResidentBudgetBytes = 144L * 1024 * 1024;
-    private const long SpritePageIdleResidentTargetBytes = 96L * 1024 * 1024;
+    // they are cached. The largest complete action is about 102 MiB; 112 MiB
+    // keeps that whole clip resident while avoiding an unrelated permanent
+    // reminder/edge hot set. Idle retains the complete idle/wake chain so
+    // recurring reactions do not churn large LOH pages between every action.
+    private const long SpritePageResidentBudgetBytes = 112L * 1024 * 1024;
+    private const long SpritePageIdleResidentTargetBytes = 64L * 1024 * 1024;
     private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
@@ -73,10 +74,20 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FrameBlendDuration = TimeSpan.Zero;
     private static readonly TimeSpan EdgeFrameBlendDuration = TimeSpan.Zero;
+    private static readonly bool UsesFrameBlendBuffers =
+        FrameBlendDuration > TimeSpan.Zero ||
+        EdgeFrameBlendDuration > TimeSpan.Zero ||
+        ActionTransitionDuration > TimeSpan.Zero;
+    private static readonly ArrayPool<byte> SpriteDecodeScratchPool =
+        ArrayPool<byte>.Create(
+            DisplayPixelWidth * DisplayPixelHeight * 4,
+            maxArraysPerBucket: 1);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaximumReminderWakeInterval =
         TimeSpan.FromHours(12);
+    private static readonly TimeSpan ReminderSpritePreloadLeadTime =
+        TimeSpan.FromSeconds(2);
     private static readonly string[] ActionNames =
     [
         "yawn", "cry", "cute", "like", "eat", "wave", "think"
@@ -92,17 +103,18 @@ public partial class MainWindow : Window
     private readonly IReadOnlyDictionary<string, SpriteFrame[]> _actionSmoothFrames;
     private readonly IReadOnlyDictionary<string, SpriteFrame[]> _actionLoopFrames;
     private byte[] _spritePagePixels = Array.Empty<byte>();
-    private readonly byte[] _spritePageCompressedBytes;
-    private readonly byte[] _spritePagePayloadBytes;
     private readonly WriteableBitmap _displayFrameBuffer;
     private readonly byte[] _displayFramePixels =
         new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
-    private readonly byte[] _frameBlendFromPixels =
-        new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
-    private readonly byte[] _frameBlendTargetPixels =
-        new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
-    private readonly byte[] _frameBlendOutputPixels =
-        new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
+    private readonly byte[] _frameBlendFromPixels = UsesFrameBlendBuffers
+        ? new byte[DisplayPixelWidth * DisplayPixelHeight * 4]
+        : Array.Empty<byte>();
+    private readonly byte[] _frameBlendTargetPixels = UsesFrameBlendBuffers
+        ? new byte[DisplayPixelWidth * DisplayPixelHeight * 4]
+        : Array.Empty<byte>();
+    private readonly byte[] _frameBlendOutputPixels = UsesFrameBlendBuffers
+        ? new byte[DisplayPixelWidth * DisplayPixelHeight * 4]
+        : Array.Empty<byte>();
     private readonly byte[] _transformedDisplayFramePixels =
         new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
     private readonly SpriteFrame _idleFrame;
@@ -232,6 +244,7 @@ public partial class MainWindow : Window
     private string? _renderDeferredSpritePageFailureReason;
     private bool _residentSpritePageTrimPending;
     private bool _residentSpritePageIdleTrimPending;
+    private string? _upcomingReminderPreloadPageName;
     private bool _spritePageCollectionInProgress;
     private long _frameBlendStartedTimestamp;
     private TimeSpan _activeFrameBlendDuration;
@@ -259,14 +272,6 @@ public partial class MainWindow : Window
             GC.CollectionCount(GC.MaxGeneration);
 
         _spritePages = LoadSpritePages();
-        _spritePageCompressedBytes = new byte[_spritePages.Values.Max(page =>
-            page.CompressedByteCount)];
-        _spritePagePayloadBytes = new byte[_spritePages.Values
-            .Where(page => !string.Equals(
-                page.Encoding,
-                SpriteAtlasDirectEncoding,
-                StringComparison.Ordinal))
-            .Max(page => page.PayloadByteCount)];
         _displayFrameBuffer = new WriteableBitmap(
             DisplayPixelWidth,
             DisplayPixelHeight,
@@ -312,12 +317,11 @@ public partial class MainWindow : Window
             "action-reminder-hold",
             "Assets/luban-reminder-hold-",
             expectedFrameCount: 48);
+        // Pin the complete idle/wake chain by name, but load only the first idle
+        // page at startup. The remaining pages become resident on first use and
+        // then stay available between reactions, preventing large LOH reloads.
+        AddPinnedSpritePageNames(_wakeFrames);
         AddPinnedSpritePageNames([_idleFrame]);
-        AddPinnedSpritePageNames(_reminderEnterFrames);
-        AddPinnedSpritePageNames(_reminderHoldFrames);
-        AddPinnedSpritePageNames(_edgeLeftFrames);
-        AddPinnedSpritePageNames(_edgeTopFrames);
-        AddPinnedSpritePageNames(_edgeBottomFrames);
         _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
         _reactionClips =
         [
@@ -459,50 +463,11 @@ public partial class MainWindow : Window
 
     private string[] BuildSpritePageWarmupOrder()
     {
-        var warmupPages = new List<string>();
-        var seenPages = new HashSet<string>(StringComparer.Ordinal)
-        {
-            _idleFrame.PageName
-        };
-
-        void AddFramePages(IEnumerable<SpriteFrame> frames)
-        {
-            foreach (var frame in frames)
-            {
-                if (seenPages.Add(frame.PageName) &&
-                    _spritePages.ContainsKey(frame.PageName))
-                {
-                    warmupPages.Add(frame.PageName);
-                }
-            }
-        }
-
-        // Deadline reminders and edge-peek gestures must be instantly ready.
-        // They are the small fixed hot set and remain pinned after warm-up.
-        AddFramePages(_reminderEnterFrames);
-        AddFramePages(_reminderHoldFrames);
-        AddFramePages(_edgeLeftFrames);
-        AddFramePages(_edgeTopFrames);
-        AddFramePages(_edgeBottomFrames);
-
-        // Prime only the next two wake pages. The remaining action pages are
-        // decoded on demand and protected for the full lifetime of that clip.
-        var addedWakePages = 0;
-        foreach (var frame in _wakeFrames)
-        {
-            if (seenPages.Add(frame.PageName) &&
-                _spritePages.ContainsKey(frame.PageName))
-            {
-                warmupPages.Add(frame.PageName);
-                addedWakePages++;
-                if (addedWakePages == 2)
-                {
-                    break;
-                }
-            }
-        }
-
-        return warmupPages.ToArray();
+        // The startup idle page already contains enough wake poses to provide
+        // hundreds of milliseconds for the existing next-page prefetch. Keeping
+        // reminder, edge, or later wake pages resident before they are needed
+        // consumed 55+ MiB without improving presentation quality.
+        return [];
     }
 
     private SpriteFrame[] LoadNumberedFrameSequence(
@@ -3745,6 +3710,7 @@ public partial class MainWindow : Window
         _renderDeferredSpritePageFailureReason = null;
         _residentSpritePageTrimPending = false;
         _residentSpritePageIdleTrimPending = false;
+        _upcomingReminderPreloadPageName = null;
         _pendingSpriteFrame = null;
         _pendingSpriteFrameBlendDuration = TimeSpan.Zero;
         _spritePagePrefetchDispatchTimer.Stop();
@@ -3782,47 +3748,38 @@ public partial class MainWindow : Window
         var loadStopwatch = Stopwatch.StartNew();
         cancellationToken.ThrowIfCancellationRequested();
         var decodedPixels = new byte[page.UncompressedByteCount];
-        var payloadBytes = string.Equals(
-            page.Encoding,
-            SpriteAtlasDirectEncoding,
-            StringComparison.Ordinal)
-            ? decodedPixels
-            : _spritePagePayloadBytes;
-        var resource = Application.GetResourceStream(CreatePackUri(page.ResourcePath))
-            ?? throw new InvalidOperationException(
-                $"Missing sprite atlas page resource: {page.ResourcePath}");
         var stride = checked(page.Width * 4);
         var readStartedAt = Stopwatch.GetTimestamp();
-        TimeSpan readElapsed;
-        using (resource.Stream)
+        var validationResource = Application.GetResourceStream(
+            CreatePackUri(page.ResourcePath))
+            ?? throw new InvalidOperationException(
+                $"Missing sprite atlas page resource: {page.ResourcePath}");
+        using (validationResource.Stream)
         {
-            ReadExactly(
-                resource.Stream,
-                _spritePageCompressedBytes.AsSpan(0, page.CompressedByteCount),
-                cancellationToken);
-            if (resource.Stream.ReadByte() != -1)
-            {
-                throw new InvalidDataException(
-                    "Brotli sprite page compressed length does not match the manifest.");
-            }
-
-            readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
-            cancellationToken.ThrowIfCancellationRequested();
             ValidateSpriteAtlasPageContentHash(
-                page.ResourcePath,
-                _spritePageCompressedBytes,
+                validationResource.Stream,
                 page.CompressedByteCount,
-                page.ContentSha256);
-            cancellationToken.ThrowIfCancellationRequested();
-            DecodeBrotliPage(
-                _spritePageCompressedBytes.AsSpan(0, page.CompressedByteCount),
-                payloadBytes,
-                page.PayloadByteCount,
+                page.ResourcePath,
+                page.ContentSha256,
                 cancellationToken);
-            DecodeSpritePagePayload(
+        }
+
+        var readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
+        cancellationToken.ThrowIfCancellationRequested();
+        var decodeResource = Application.GetResourceStream(
+            CreatePackUri(page.ResourcePath))
+            ?? throw new InvalidOperationException(
+                $"Missing sprite atlas page resource: {page.ResourcePath}");
+        using (decodeResource.Stream)
+        using (var brotliStream = new BrotliStream(
+                   decodeResource.Stream,
+                   CompressionMode.Decompress,
+                   leaveOpen: false))
+        {
+            DecodeSpritePageStream(
                 page.ResourcePath,
                 page.Encoding,
-                payloadBytes,
+                brotliStream,
                 page.PayloadByteCount,
                 decodedPixels,
                 page.Width,
@@ -3843,28 +3800,65 @@ public partial class MainWindow : Window
     }
 
     private static void ValidateSpriteAtlasPageContentHash(
-        string resourcePath,
-        byte[] compressedBytes,
+        Stream compressedStream,
         int compressedByteCount,
-        string expectedSha256)
+        string resourcePath,
+        string expectedSha256,
+        CancellationToken cancellationToken)
     {
-        if (compressedByteCount <= 0 ||
-            compressedByteCount > compressedBytes.Length ||
+        if (!compressedStream.CanRead || compressedByteCount <= 0 ||
             !IsCanonicalSha256(expectedSha256))
         {
             throw new InvalidDataException(
                 $"Brotli sprite page hash declaration is invalid: {resourcePath}");
         }
 
-        Span<byte> actualHash = stackalloc byte[SHA256.HashSizeInBytes];
-        _ = SHA256.HashData(
-            compressedBytes.AsSpan(0, compressedByteCount),
-            actualHash);
-        var expectedHash = Convert.FromHexString(expectedSha256);
-        if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+        const int hashBufferSize = 64 * 1024;
+        var hashBuffer = ArrayPool<byte>.Shared.Rent(hashBufferSize);
+        try
         {
-            throw new InvalidDataException(
-                $"Brotli sprite page SHA-256 does not match the manifest: {resourcePath}");
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var remaining = compressedByteCount;
+            while (remaining > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var requested = Math.Min(remaining, hashBufferSize);
+                var read = compressedStream.Read(hashBuffer, 0, requested);
+                if (read <= 0)
+                {
+                    throw new EndOfStreamException(
+                        "Brotli sprite page compressed data ended early.");
+                }
+
+                hash.AppendData(hashBuffer, 0, read);
+                remaining -= read;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (compressedStream.ReadByte() != -1)
+            {
+                throw new InvalidDataException(
+                    "Brotli sprite page compressed length does not match the manifest.");
+            }
+
+            Span<byte> actualHash = stackalloc byte[SHA256.HashSizeInBytes];
+            if (!hash.TryGetHashAndReset(actualHash, out var written) ||
+                written != SHA256.HashSizeInBytes)
+            {
+                throw new CryptographicException(
+                    "Brotli sprite page SHA-256 could not be finalized.");
+            }
+
+            var expectedHash = Convert.FromHexString(expectedSha256);
+            if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+            {
+                throw new InvalidDataException(
+                    $"Brotli sprite page SHA-256 does not match the manifest: {resourcePath}");
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(hashBuffer, clearArray: false);
         }
     }
 
@@ -4061,7 +4055,8 @@ public partial class MainWindow : Window
         _renderDeferredSpritePageName is null &&
         _renderDeferredSpritePageFailureName is null &&
         !_renderDeferredSpritePageCancellation &&
-        !_residentSpritePageTrimPending;
+        !_residentSpritePageTrimPending &&
+        _upcomingReminderPreloadPageName is null;
 
     private void ObserveNaturalSpritePageCollection()
     {
@@ -4226,6 +4221,10 @@ public partial class MainWindow : Window
     {
         if (_pinnedSpritePageNames.Contains(pageName) ||
             string.Equals(pageName, preservePageName, StringComparison.Ordinal) ||
+            string.Equals(
+                pageName,
+                _upcomingReminderPreloadPageName,
+                StringComparison.Ordinal) ||
             string.Equals(pageName, _loadedSpritePageName, StringComparison.Ordinal) ||
             string.Equals(pageName, _desiredSpritePageName, StringComparison.Ordinal) ||
             string.Equals(pageName, _spritePagePrefetchPageName, StringComparison.Ordinal) ||
@@ -4236,6 +4235,13 @@ public partial class MainWindow : Window
              string.Equals(pageName, pendingFrame.PageName, StringComparison.Ordinal)) ||
             (_deferredActiveClipClockFrame is SpriteFrame deferredFrame &&
              string.Equals(pageName, deferredFrame.PageName, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        if (_isReminderActive &&
+            (FrameSequenceUsesSpritePage(_reminderEnterFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_reminderHoldFrames, pageName)))
         {
             return true;
         }
@@ -4251,6 +4257,21 @@ public partial class MainWindow : Window
                     pageName,
                     frame.Image.PageName,
                     StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool FrameSequenceUsesSpritePage(
+        SpriteFrame[] frames,
+        string pageName)
+    {
+        foreach (var frame in frames)
+        {
+            if (string.Equals(frame.PageName, pageName, StringComparison.Ordinal))
             {
                 return true;
             }
@@ -4349,37 +4370,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private static void DecodeBrotliPage(
-        ReadOnlySpan<byte> input,
-        byte[] output,
-        int expectedLength,
-        CancellationToken cancellationToken)
-    {
-        if (expectedLength < 0 || expectedLength > output.Length)
-        {
-            throw new InvalidDataException("Brotli分页输出尺寸超出解码缓冲区。");
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        using var decoder = new BrotliDecoder();
-        var status = decoder.Decompress(
-            input,
-            output.AsSpan(0, expectedLength),
-            out var bytesConsumed,
-            out var bytesWritten);
-        if (status != OperationStatus.Done ||
-            bytesConsumed != input.Length ||
-            bytesWritten != expectedLength)
-        {
-            throw new InvalidDataException(
-                "Brotli分页未完整解码：" +
-                $"状态 {status}，输入 {bytesConsumed}/{input.Length} 字节，" +
-                $"输出 {bytesWritten}/{expectedLength} 字节。");
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-    }
-
     private static void DecodeSpritePagePayload(
         string resourcePath,
         string encoding,
@@ -4392,12 +4382,49 @@ public partial class MainWindow : Window
         string expectedDecodedSha256,
         CancellationToken cancellationToken)
     {
-        if (!IsSupportedSpriteAtlasEncoding(encoding) ||
+        if (payload.Length < expectedPayloadByteCount)
+        {
+            throw new InvalidDataException(
+                $"Sprite page payload declaration is invalid: {resourcePath}");
+        }
+
+        using var payloadStream = new MemoryStream(
+            payload,
+            0,
+            expectedPayloadByteCount,
+            writable: false,
+            publiclyVisible: true);
+        DecodeSpritePageStream(
+            resourcePath,
+            encoding,
+            payloadStream,
+            expectedPayloadByteCount,
+            decodedPixels,
+            atlasWidth,
+            atlasHeight,
+            frameDescriptorValues,
+            expectedDecodedSha256,
+            cancellationToken);
+    }
+
+    private static void DecodeSpritePageStream(
+        string resourcePath,
+        string encoding,
+        Stream payloadStream,
+        int expectedPayloadByteCount,
+        byte[] decodedPixels,
+        int atlasWidth,
+        int atlasHeight,
+        int[] frameDescriptorValues,
+        string expectedDecodedSha256,
+        CancellationToken cancellationToken)
+    {
+        if (!payloadStream.CanRead ||
+            !IsSupportedSpriteAtlasEncoding(encoding) ||
             atlasWidth <= 0 || atlasHeight <= 0 ||
             (long)atlasWidth * atlasHeight > int.MaxValue / 4 ||
             expectedPayloadByteCount <= 0 ||
             expectedPayloadByteCount > MaximumSpritePagePayloadBytes ||
-            payload.Length < expectedPayloadByteCount ||
             !IsCanonicalSha256(expectedDecodedSha256))
         {
             throw new InvalidDataException(
@@ -4423,15 +4450,18 @@ public partial class MainWindow : Window
                     $"Direct sprite page payload length is invalid: {resourcePath}");
             }
 
-            if (!ReferenceEquals(payload, decodedPixels))
-            {
-                payload.AsSpan(0, expectedPayloadByteCount).CopyTo(decodedPixels);
-            }
+            var payloadOffset = 0;
+            ReadPayloadExactly(
+                payloadStream,
+                decodedPixels,
+                ref payloadOffset,
+                expectedPayloadByteCount,
+                cancellationToken);
         }
         else
         {
             ReconstructDeltaSubSpritePage(
-                payload,
+                payloadStream,
                 expectedPayloadByteCount,
                 decodedPixels,
                 atlasWidth,
@@ -4441,14 +4471,49 @@ public partial class MainWindow : Window
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        if (payloadStream.ReadByte() != -1)
+        {
+            throw new InvalidDataException(
+                $"Sprite page payload exceeds its declared length: {resourcePath}");
+        }
+
         ValidateSpriteAtlasDecodedHash(
             resourcePath,
             decodedPixels,
             expectedDecodedSha256);
     }
 
+    private static void ReadPayloadExactly(
+        Stream payloadStream,
+        Span<byte> destination,
+        ref int payloadOffset,
+        int expectedPayloadByteCount,
+        CancellationToken cancellationToken)
+    {
+        if (destination.Length > expectedPayloadByteCount - payloadOffset)
+        {
+            throw new EndOfStreamException(
+                "Sprite page payload ended before the declared frame data.");
+        }
+
+        var destinationOffset = 0;
+        while (destinationOffset < destination.Length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = payloadStream.Read(destination[destinationOffset..]);
+            if (read <= 0)
+            {
+                throw new EndOfStreamException(
+                    "Sprite page payload stream ended early.");
+            }
+
+            destinationOffset += read;
+            payloadOffset = checked(payloadOffset + read);
+        }
+    }
+
     private static void ReconstructDeltaSubSpritePage(
-        byte[] payload,
+        Stream payloadStream,
         int payloadByteCount,
         byte[] atlasPixels,
         int atlasWidth,
@@ -4474,7 +4539,6 @@ public partial class MainWindow : Window
         var frameCount = frameDescriptorValues.Length /
                          SpriteFrameDescriptorValueCount;
         if (payloadByteCount <= 0 ||
-            payloadByteCount > payload.Length ||
             payloadByteCount < checked(frameCount * DeltaSubFrameHeaderByteCount))
         {
             throw new InvalidDataException("Delta-sub sprite page payload ended before its headers.");
@@ -4483,7 +4547,7 @@ public partial class MainWindow : Window
         Array.Clear(atlasPixels);
         var previousDisplayFrameByteCount = checked(
             DisplayPixelWidth * DisplayPixelHeight * 4);
-        var previousDisplayFrame = ArrayPool<byte>.Shared.Rent(
+        var previousDisplayFrame = SpriteDecodeScratchPool.Rent(
             previousDisplayFrameByteCount);
         Array.Clear(previousDisplayFrame, 0, previousDisplayFrameByteCount);
         try
@@ -4494,6 +4558,8 @@ public partial class MainWindow : Window
         var payloadOffset = 0;
         var atlasStride = checked(atlasWidth * 4);
         var displayStride = checked(DisplayPixelWidth * 4);
+        Span<byte> header = stackalloc byte[DeltaSubFrameHeaderByteCount];
+        Span<byte> deltaRow = stackalloc byte[DisplayPixelWidth * 4];
         for (var frameIndex = 0; frameIndex < frameCount; frameIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -4503,14 +4569,16 @@ public partial class MainWindow : Window
                     $"Delta-sub frame header is truncated at frame {frameIndex}.");
             }
 
-            var header = payload.AsSpan(
-                payloadOffset,
-                DeltaSubFrameHeaderByteCount);
+            ReadPayloadExactly(
+                payloadStream,
+                header,
+                ref payloadOffset,
+                payloadByteCount,
+                cancellationToken);
             var deltaX = BinaryPrimitives.ReadUInt16LittleEndian(header);
             var deltaY = BinaryPrimitives.ReadUInt16LittleEndian(header[2..]);
             var deltaWidth = BinaryPrimitives.ReadUInt16LittleEndian(header[4..]);
             var deltaHeight = BinaryPrimitives.ReadUInt16LittleEndian(header[6..]);
-            payloadOffset = checked(payloadOffset + DeltaSubFrameHeaderByteCount);
 
             var emptyDelta = deltaX == 0 && deltaY == 0 &&
                              deltaWidth == 0 && deltaHeight == 0;
@@ -4537,13 +4605,20 @@ public partial class MainWindow : Window
                 {
                     var previousOffset = checked(
                         (deltaY + row) * displayStride + deltaX * 4);
+                    var rowPayload = deltaRow[..deltaRowByteCount];
+                    ReadPayloadExactly(
+                        payloadStream,
+                        rowPayload,
+                        ref payloadOffset,
+                        payloadByteCount,
+                        cancellationToken);
                     for (var byteIndex = 0;
                          byteIndex < deltaRowByteCount;
                          byteIndex++)
                     {
                         previousDisplayFrame[previousOffset + byteIndex] = unchecked(
                             (byte)(previousDisplayFrame[previousOffset + byteIndex] +
-                                   payload[payloadOffset++]));
+                                   rowPayload[byteIndex]));
                     }
                 }
             }
@@ -4640,7 +4715,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(
+            SpriteDecodeScratchPool.Return(
                 previousDisplayFrame,
                 clearArray: false);
         }
@@ -6043,7 +6118,9 @@ public partial class MainWindow : Window
     private void ScheduledTaskTimer_Tick(object? sender, EventArgs e)
     {
         _scheduledTaskTimer.Stop();
-        ProcessScheduledTasksAt(_nowProvider());
+        var now = _nowProvider();
+        PreloadUpcomingReminderAt(now);
+        ProcessScheduledTasksAt(now);
     }
 
     private void ProcessScheduledTasksAt(DateTimeOffset now)
@@ -6098,6 +6175,7 @@ public partial class MainWindow : Window
                 continue;
             }
 
+            _upcomingReminderPreloadPageName = null;
             _activeReminder = item;
             _isReminderActive = true;
             ReminderMessageText.Text = item.Text;
@@ -6179,11 +6257,72 @@ public partial class MainWindow : Window
 
         if (next is null)
         {
+            ClearUpcomingReminderPreload();
             return;
         }
 
+        PreloadUpcomingReminderAt(now);
         _scheduledTaskTimer.Interval = CalculateReminderWakeDelay(now, next.DueAt);
         _scheduledTaskTimer.Start();
+    }
+
+    private void PreloadUpcomingReminderAt(DateTimeOffset now)
+    {
+        if (_isClosing || _isReminderActive)
+        {
+            return;
+        }
+
+        ScheduledTaskItem? next = null;
+        foreach (var item in _scheduledTasks)
+        {
+            if (!_queuedReminderIds.Contains(item.Id))
+            {
+                next = item;
+                break;
+            }
+        }
+
+        if (next is null)
+        {
+            ClearUpcomingReminderPreload();
+            return;
+        }
+
+        var remaining = next.DueAt - now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        if (remaining > ReminderSpritePreloadLeadTime)
+        {
+            ClearUpcomingReminderPreload();
+            return;
+        }
+
+        var pageName = _reminderEnterClip.Frames[0].Image.PageName;
+        if (string.Equals(
+                _upcomingReminderPreloadPageName,
+                pageName,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _upcomingReminderPreloadPageName = pageName;
+        RequestSpritePagePrefetch(pageName, urgent: true);
+    }
+
+    private void ClearUpcomingReminderPreload()
+    {
+        if (_upcomingReminderPreloadPageName is null)
+        {
+            return;
+        }
+
+        _upcomingReminderPreloadPageName = null;
+        RequestIdleSpritePageTrim();
     }
 
     private static TimeSpan CalculateReminderWakeDelay(
@@ -6196,9 +6335,12 @@ public partial class MainWindow : Window
             return TimeSpan.FromMilliseconds(1);
         }
 
-        return remaining > MaximumReminderWakeInterval
-            ? MaximumReminderWakeInterval
+        var wakeDelay = remaining > ReminderSpritePreloadLeadTime
+            ? remaining - ReminderSpritePreloadLeadTime
             : remaining;
+        return wakeDelay > MaximumReminderWakeInterval
+            ? MaximumReminderWakeInterval
+            : wakeDelay;
     }
 
     private void TodoWindow_CloseRequested(object? sender, EventArgs e)

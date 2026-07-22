@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Reflection;
 using System.Resources;
 using System.Text.Json;
@@ -28,6 +29,8 @@ internal static class Program
     private const int RenderPixelHeight = 509;
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
+    private const long ExpectedResidentSpritePageBudgetBytes = 112L * 1024L * 1024L;
+    private const long ExpectedIdleSpritePageTargetBytes = 64L * 1024L * 1024L;
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
     private const BindingFlags StaticFlags =
@@ -718,7 +721,7 @@ internal static class Program
                (long)(typeof(MainWindow).GetField(
                    "SpritePageIdleResidentTargetBytes",
                    StaticFlags)!.GetValue(null) ?? 0L),
-            "保留下来的dispatcher tick必须消费idle trim信号并完成96MiB裁剪");
+            "保留下来的dispatcher tick必须消费idle trim信号并完成64MiB裁剪");
         ResetSpritePageCollectionTestState(window);
 
         // A1 -> cold C1: keep A1 visible while C starts decoding in the
@@ -813,8 +816,8 @@ internal static class Program
             window,
             "_residentSpritePageLru");
 
-        Assert(residentBudgetBytes == 144L * 1024L * 1024L,
-            $"解码分页常驻预算必须固定为144MiB，实际 " +
+        Assert(residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
+            $"解码分页常驻预算必须固定为112MiB，实际 " +
             $"{residentBudgetBytes / 1024d / 1024d:F2}MiB");
         Assert(residentPages.Count == 1 &&
                residentPages.Contains(idlePageName) &&
@@ -825,12 +828,42 @@ internal static class Program
                residentLru.SequenceEqual([idlePageName]),
             "首屏前只能同步常驻当前idle页，且字节账与LRU必须同时登记该页");
         Assert(pinnedPageNames.SetEquals(expectedPinnedPageNames),
-            "固定热页必须精确包含idle、四个提醒分页与三个边缘分页");
-        Assert(warmupOrder.SequenceEqual(expectedWarmupOrder),
-            "后台预热必须只包含提醒4页、边缘3页及idle-part-02/03，且顺序稳定");
+            "永久pinned集合必须只包含完整idle/wake链分页");
+        Assert(warmupOrder.Length == 0 && expectedWarmupOrder.Length == 0,
+            "启动warmup顺序必须为空，构造阶段只同步加载idle页");
         AssertResidentSpriteCacheAccounting(window, "首屏缓存");
 
-        var backgroundPageName = expectedWarmupOrder[0];
+        var reminderPageNames = GetField<Array>(window, "_reminderEnterFrames")
+            .Cast<object>()
+            .Concat(GetField<Array>(window, "_reminderHoldFrames").Cast<object>())
+            .Select(frame => GetSpriteFrameInfo(frame).PageName)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(reminderPageNames.Count > 0 &&
+               reminderPageNames.All(pageName =>
+                   !pinnedPageNames.Contains(pageName) &&
+                   !(bool)Invoke(
+                       window,
+                       "IsSpritePageProtected",
+                       pageName,
+                       null)!),
+            "提醒页在非提醒期间不得永久pinned或被其他静态条件保护");
+        SetField(window, "_isReminderActive", true);
+        Assert(reminderPageNames.All(pageName =>
+                (bool)Invoke(
+                    window,
+                    "IsSpritePageProtected",
+                    pageName,
+                    null)!),
+            "提醒页必须仅在_isReminderActive期间动态保护");
+        SetField(window, "_isReminderActive", false);
+        Assert(reminderPageNames.All(pageName =>
+                !(bool)Invoke(
+                    window,
+                    "IsSpritePageProtected",
+                    pageName,
+                    null)!),
+            "提醒结束后必须立即解除所有提醒页的动态保护");
+
         var urgentPageName = pageNames
             .Where(name => !expectedPinnedPageNames.Contains(name) &&
                            !expectedWarmupOrder.Contains(name, StringComparer.Ordinal))
@@ -839,28 +872,19 @@ internal static class Program
 
         SetField(window, "_spritePageWarmupEnabled", true);
         Invoke(window, "ResumeSpritePageWarmup");
-        Assert(string.Equals(
-                   GetRawField(window, "_desiredSpritePageName") as string,
-                   backgroundPageName,
-                   StringComparison.Ordinal) &&
-               GetRawField(window, "_spritePagePrefetchTask") is Task,
-            $"顺序预热必须先在后台启动 {backgroundPageName}");
+        Assert(GetRawField(window, "_desiredSpritePageName") is null &&
+               GetRawField(window, "_spritePagePrefetchTask") is null &&
+               GetField<int>(window, "_spritePageWarmupIndex") == 0,
+            "空warmup顺序不得启动任何后台解码任务");
 
-        var generationBeforeUrgent =
-            GetField<int>(window, "_spritePagePrefetchGeneration");
         Invoke(window, "RequestSpritePagePrefetch", urgentPageName, true);
-        var cancellation = GetRawField(
-            window,
-            "_spritePagePrefetchCancellation") as CancellationTokenSource;
         Assert(string.Equals(
                    GetRawField(window, "_desiredSpritePageName") as string,
                    urgentPageName,
                    StringComparison.Ordinal) &&
                GetField<bool>(window, "_desiredSpritePageUrgent") &&
-               GetField<int>(window, "_spritePagePrefetchGeneration") >
-               generationBeforeUrgent &&
-               cancellation?.IsCancellationRequested == true,
-            "紧急动作页必须换代并取消在途后台预热");
+               GetRawField(window, "_spritePagePrefetchTask") is Task,
+            "空warmup不得阻止紧急动作页启动单个后台解码任务");
 
         var deadline = Stopwatch.StartNew();
         while ((GetRawField(window, "_spritePagePrefetchTask") is not null ||
@@ -875,11 +899,14 @@ internal static class Program
         Assert(GetRawField(window, "_spritePagePrefetchTask") is null &&
                GetRawField(window, "_desiredSpritePageName") is null &&
                GetField<int>(window, "_spritePageWarmupIndex") == warmupOrder.Length,
-            "有限热页预热必须在20秒内完成并停止，不得继续遍历全部39页");
-        Assert(residentPages.Contains(urgentPageName) &&
-               expectedWarmupOrder.All(residentPages.Contains) &&
-               expectedPinnedPageNames.All(residentPages.Contains),
-            "紧急页必须优先进入缓存，随后恢复全部有限热页预热且不得驱逐固定页");
+            "紧急页预取必须在20秒内完成，空warmup不得追加其他页");
+        var expectedResidentPageNames = new HashSet<string>(
+            [idlePageName, urgentPageName],
+            StringComparer.Ordinal);
+        Assert(expectedResidentPageNames.SetEquals(
+                   GetDictionaryEntries(residentPages)
+                       .Select(entry => (string)entry.Key)),
+            "紧急页必须进入缓存，按名称固定但尚未使用的wake页不得被空warmup提前加载");
         Assert(string.Equals(
                    GetField<string>(window, "_loadedSpritePageName"),
                    idlePageName,
@@ -887,7 +914,7 @@ internal static class Program
                ReferenceEquals(GetField<byte[]>(window, "_spritePagePixels"), idlePixels),
             "后台预热只能发布常驻数组，不能擅自切换当前显示页");
 
-        AssertResidentSpriteCacheAccounting(window, "有限热页预热完成");
+        AssertResidentSpriteCacheAccounting(window, "空warmup与紧急页预取完成");
 
         SetField(window, "_spritePageWarmupEnabled", false);
         SetField(window, "_desiredSpritePageName", null);
@@ -946,7 +973,7 @@ internal static class Program
         }
 
         Assert(observedLruEviction,
-            "144MiB压力必须实际触发一次可观察的LRU驱逐");
+            "112MiB压力必须实际触发一次可观察的LRU驱逐");
 
         // Discover the largest real click clip from its distinct decoded page
         // footprint instead of depending on a clip index or current atlas
@@ -966,8 +993,8 @@ internal static class Program
         var pinnedAndMaximumClipBytes = pinnedAndMaximumClipPages.Sum(
             pageName => GetSpritePageByteCount(pageMap, pageName));
         Assert(pinnedAndMaximumClipBytes <= residentBudgetBytes,
-            "固定热页与按distinct分页字节动态选出的最大动作clip必须可同时容纳于" +
-            $"144MiB预算：{pinnedAndMaximumClipBytes / 1024d / 1024d:F2}MiB");
+            "永久idle页与按distinct分页字节动态选出的最大动作clip必须可同时容纳于" +
+            $"112MiB预算：{pinnedAndMaximumClipBytes / 1024d / 1024d:F2}MiB");
         var currentOrPendingPageName = pageNames
             .Where(name => !expectedPinnedPageNames.Contains(name) &&
                            !activeClipPages.Contains(name))
@@ -1035,12 +1062,20 @@ internal static class Program
         var residentBudgetBytes = (long)(typeof(MainWindow).GetField(
                 "SpritePageResidentBudgetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
-        Assert(idleTargetBytes == 96L * 1024L * 1024L &&
-               residentBudgetBytes == 144L * 1024L * 1024L,
-            "动作结束后的idle常驻目标必须是96MiB，活动软预算必须保持144MiB");
+        Assert(idleTargetBytes == ExpectedIdleSpritePageTargetBytes &&
+               residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
+            "动作结束后的idle常驻目标必须是64MiB，活动软预算必须保持112MiB");
 
         var idleFrame = GetField<object>(window, "_idleFrame");
         var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        foreach (var wakeFrame in GetField<Array>(window, "_wakeFrames")
+                     .Cast<object>())
+        {
+            PrimeSpritePageForFrame(window, wakeFrame);
+        }
+
         PrimeSpritePageForFrame(window, idleFrame);
         Invoke(window, "ShowStableFrame", idleFrame);
         var pinnedPageNames = GetExpectedPinnedSpritePageNames(window);
@@ -1092,14 +1127,14 @@ internal static class Program
             window,
             "_spritePageEvictedBytesSinceCollection");
         Assert(residentBytesBefore > idleTargetBytes,
-            "idle回收测试必须先建立超过96MiB的真实解码页缓存压力");
+            "idle回收测试必须先建立超过64MiB的真实解码页缓存压力");
         var protectedPageNames = pinnedPageNames
             .Append(idlePageName)
             .Append(protectedPageName)
             .ToHashSet(StringComparer.Ordinal);
         Assert(protectedPageNames.Sum(pageName =>
                    GetSpritePageByteCount(pageMap, pageName)) <= idleTargetBytes,
-            "固定热页、当前idle页和pending保护页必须可共同容纳在96MiB目标内");
+            "永久idle页、当前idle页和pending保护页必须可共同容纳在64MiB目标内");
 
         Invoke(window, "TrimResidentSpritePagesToIdleTarget");
         var residentBytesAfter = GetField<long>(
@@ -1107,11 +1142,11 @@ internal static class Program
             "_residentSpritePageBytes");
         Assert(residentBytesAfter <= idleTargetBytes &&
                protectedPageNames.All(residentPages.Contains),
-            "idle回收必须把缓存裁到96MiB以内，且不得丢失固定、当前或pending保护页");
+            "idle回收必须把缓存裁到64MiB以内，且不得丢失永久、当前或pending保护页");
         Assert(GetField<long>(window, "_spritePageEvictedBytesSinceCollection") ==
                collectionDebtBefore + residentBytesBefore - residentBytesAfter,
             "idle回收释放的每个resident字节必须精确累计为Gen2回收债务");
-        AssertResidentSpriteCacheAccounting(window, "96MiB idle回收与保护");
+        AssertResidentSpriteCacheAccounting(window, "64MiB idle回收与保护");
 
         SetField(window, "_pendingSpriteFrame", null);
         SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
@@ -1119,7 +1154,7 @@ internal static class Program
         Assert(GetField<long>(window, "_residentSpritePageBytes") <=
                idleTargetBytes &&
                pinnedPageNames.All(residentPages.Contains),
-            "pending保护释放后的idle重试必须保持96MiB目标与全部固定热页");
+            "pending保护释放后的idle重试必须保持64MiB目标与永久idle页");
         ResetSpritePageCollectionTestState(window);
     }
 
@@ -1167,7 +1202,8 @@ internal static class Program
             ("_renderDeferredSpritePageName", arbitraryPageName, "Rendering延迟请求"),
             ("_renderDeferredSpritePageFailureName", arbitraryPageName, "Rendering延迟失败"),
             ("_renderDeferredSpritePageCancellation", true, "Rendering延迟取消"),
-            ("_residentSpritePageTrimPending", true, "Rendering延迟trim")
+            ("_residentSpritePageTrimPending", true, "Rendering延迟trim"),
+            ("_upcomingReminderPreloadPageName", arbitraryPageName, "到期前提醒图集预取")
         };
 
         foreach (var blocker in blockers)
@@ -1295,6 +1331,7 @@ internal static class Program
         SetField(window, "_renderDeferredSpritePageCancellation", false);
         SetField(window, "_residentSpritePageTrimPending", false);
         SetField(window, "_residentSpritePageIdleTrimPending", false);
+        SetField(window, "_upcomingReminderPreloadPageName", null);
         SetField(window, "_spritePageWarmupEnabled", false);
     }
 
@@ -1316,71 +1353,17 @@ internal static class Program
     private static HashSet<string> GetExpectedPinnedSpritePageNames(
         MainWindow window)
     {
-        var pageNames = new HashSet<string>(StringComparer.Ordinal)
-        {
-            GetSpriteFrameInfo(GetField<object>(window, "_idleFrame")).PageName
-        };
-
-        foreach (var fieldName in new[]
-                 {
-                     "_reminderEnterFrames",
-                     "_reminderHoldFrames",
-                     "_edgeLeftFrames",
-                     "_edgeTopFrames",
-                     "_edgeBottomFrames"
-                 })
-        {
-            foreach (var frame in GetField<Array>(window, fieldName).Cast<object>())
-            {
-                pageNames.Add(GetSpriteFrameInfo(frame).PageName);
-            }
-        }
-
-        return pageNames;
+        return GetField<Array>(window, "_wakeFrames")
+            .Cast<object>()
+            .Append(GetField<object>(window, "_idleFrame"))
+            .Select(frame => GetSpriteFrameInfo(frame).PageName)
+            .ToHashSet(StringComparer.Ordinal);
     }
 
     private static string[] BuildExpectedSpritePageWarmupOrder(MainWindow window)
     {
-        var order = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal)
-        {
-            GetSpriteFrameInfo(GetField<object>(window, "_idleFrame")).PageName
-        };
-
-        void AddFramePages(Array frames)
-        {
-            foreach (var frame in frames.Cast<object>())
-            {
-                var pageName = GetSpriteFrameInfo(frame).PageName;
-                if (seen.Add(pageName))
-                {
-                    order.Add(pageName);
-                }
-            }
-        }
-
-        AddFramePages(GetField<Array>(window, "_reminderEnterFrames"));
-        AddFramePages(GetField<Array>(window, "_reminderHoldFrames"));
-        AddFramePages(GetField<Array>(window, "_edgeLeftFrames"));
-        AddFramePages(GetField<Array>(window, "_edgeTopFrames"));
-        AddFramePages(GetField<Array>(window, "_edgeBottomFrames"));
-
-        var addedWakePages = 0;
-        foreach (var frame in GetField<Array>(window, "_wakeFrames").Cast<object>())
-        {
-            var pageName = GetSpriteFrameInfo(frame).PageName;
-            if (seen.Add(pageName))
-            {
-                order.Add(pageName);
-                addedWakePages++;
-                if (addedWakePages == 2)
-                {
-                    break;
-                }
-            }
-        }
-
-        return order.ToArray();
+        _ = window;
+        return [];
     }
 
     private static long GetSpritePageByteCount(IDictionary pageMap, string pageName)
@@ -1441,7 +1424,7 @@ internal static class Program
             $"{stage} resident字节账必须等于实际Pixels总长：" +
             $"tracked={trackedBytes}, actual={calculatedBytes}");
         Assert(trackedBytes <= budgetBytes,
-            $"{stage} resident cache不得超过144MiB预算：" +
+            $"{stage} resident cache不得超过112MiB预算：" +
             $"{trackedBytes / 1024d / 1024d:F2}MiB");
         Assert(lruNames.Length == entries.Length &&
                lruNames.Distinct(StringComparer.Ordinal).Count() == lruNames.Length &&
@@ -1651,7 +1634,7 @@ internal static class Program
                    StringComparison.Ordinal) &&
                GetField<long>(window, "_residentSpritePageBytes") <=
                idleTargetBytes,
-            "Composition返回后的dispatcher tick必须消费idle trim/失败标志、裁到96MiB并执行终态更新");
+            "Composition返回后的dispatcher tick必须消费idle trim/失败标志、裁到64MiB并执行终态更新");
 
         SetField(window, "_failedSpritePageName", null);
         AssertResidentSpriteCacheAccounting(window, "Rendering延迟缓存变更");
@@ -2173,13 +2156,25 @@ internal static class Program
         var targetPixels = GetField<byte[]>(window, "_frameBlendTargetPixels");
         var outputPixels = GetField<byte[]>(window, "_frameBlendOutputPixels");
         var transformedPixels = GetField<byte[]>(window, "_transformedDisplayFramePixels");
+        var actionTransitionDuration = (TimeSpan)(typeof(MainWindow).GetField(
+                "ActionTransitionDuration",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
+        var frameBlendDuration = (TimeSpan)(typeof(MainWindow).GetField(
+                "FrameBlendDuration",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
+        var edgeFrameBlendDuration = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeFrameBlendDuration",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
         Assert(displayPixels.Length == expectedByteCount &&
-               fromPixels.Length == expectedByteCount &&
-               targetPixels.Length == expectedByteCount &&
-               outputPixels.Length == expectedByteCount &&
+               actionTransitionDuration == TimeSpan.Zero &&
+               frameBlendDuration == TimeSpan.Zero &&
+               edgeFrameBlendDuration == TimeSpan.Zero &&
+               fromPixels.Length == 0 &&
+               targetPixels.Length == 0 &&
+               outputPixels.Length == 0 &&
                transformedPixels.Length == expectedByteCount,
-            $"帧淡化只能复用{RenderPixelWidth}×{RenderPixelHeight}固定高密度像素数组，" +
-            "不能为每帧创建BitmapSource");
+            "全部blend duration为Zero时三个淡化缓冲必须为空数组；" +
+            "只保留完整显示帧与变换scratch");
 
         var from = new byte[] { 20, 40, 60, 80 };
         var to = new byte[] { 100, 80, 40, 160 };
@@ -2839,9 +2834,19 @@ internal static class Program
                 "找不到ValidateSpriteAtlasPageDecodedSize，无法验证分页解码尺寸fail-closed契约");
         var validateContentHash = typeof(MainWindow).GetMethod(
             "ValidateSpriteAtlasPageContentHash",
-            StaticFlags)
+            StaticFlags,
+            binder: null,
+            types:
+            [
+                typeof(Stream),
+                typeof(int),
+                typeof(string),
+                typeof(string),
+                typeof(CancellationToken)
+            ],
+            modifiers: null)
             ?? throw new InvalidOperationException(
-                "找不到ValidateSpriteAtlasPageContentHash，无法验证Brotli分页内容哈希契约");
+                "找不到流式ValidateSpriteAtlasPageContentHash，无法验证Brotli分页精确长度与内容哈希契约");
 
         AssertThrowsInvalidOperation(
             () => validateRootLimit.Invoke(null, new object[] { 0 }),
@@ -2982,15 +2987,21 @@ internal static class Program
         var expectedSha256 = Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(compressedBytes))
             .ToLowerInvariant();
+        using var validCompressedStream = new MemoryStream(
+            compressedBytes,
+            writable: false);
         _ = validateContentHash.Invoke(
             null,
             new object[]
             {
-                "synthetic-page.pbgra.br",
-                compressedBytes,
+                validCompressedStream,
                 compressedBytes.Length,
-                expectedSha256
+                "synthetic-page.pbgra.br",
+                expectedSha256,
+                CancellationToken.None
             });
+        Assert(validCompressedStream.Position == compressedBytes.Length,
+            "压缩SHA流校验必须精确消费manifest声明的全部字节");
 
         var tamperedBytes = compressedBytes.ToArray();
         tamperedBytes[tamperedBytes.Length / 2] ^= 0x40;
@@ -2999,10 +3010,11 @@ internal static class Program
                 null,
                 new object[]
                 {
-                    "tampered-page.pbgra.br",
-                    tamperedBytes,
+                    new MemoryStream(tamperedBytes, writable: false),
                     tamperedBytes.Length,
-                    expectedSha256
+                    "tampered-page.pbgra.br",
+                    expectedSha256,
+                    CancellationToken.None
                 }),
             "Brotli分页任一压缩字节被篡改时必须在解压前fail-closed");
         AssertThrowsInvalidData(
@@ -3010,12 +3022,41 @@ internal static class Program
                 null,
                 new object[]
                 {
-                    "noncanonical-hash-page.pbgra.br",
-                    compressedBytes,
+                    new MemoryStream(compressedBytes, writable: false),
                     compressedBytes.Length,
-                    expectedSha256.ToUpperInvariant()
+                    "noncanonical-hash-page.pbgra.br",
+                    expectedSha256.ToUpperInvariant(),
+                    CancellationToken.None
                 }),
             "Brotli分页contentSha256不是64位小写十六进制时必须fail-closed");
+
+        AssertThrowsInvalidData(
+            () => validateContentHash.Invoke(
+                null,
+                new object[]
+                {
+                    new MemoryStream(compressedBytes[..^1], writable: false),
+                    compressedBytes.Length,
+                    "truncated-page.pbgra.br",
+                    expectedSha256,
+                    CancellationToken.None
+                }),
+            "压缩资源流少于manifest compressedByteCount一字节时必须fail-closed");
+        var compressedWithTrailingByte = new byte[compressedBytes.Length + 1];
+        compressedBytes.CopyTo(compressedWithTrailingByte, 0);
+        compressedWithTrailingByte[^1] = 0x5a;
+        AssertThrowsInvalidData(
+            () => validateContentHash.Invoke(
+                null,
+                new object[]
+                {
+                    new MemoryStream(compressedWithTrailingByte, writable: false),
+                    compressedBytes.Length,
+                    "trailing-page.pbgra.br",
+                    expectedSha256,
+                    CancellationToken.None
+                }),
+            "压缩资源流超过manifest compressedByteCount时也必须fail-closed，不得忽略尾随字节");
     }
 
     private static void AssertSpritePagePayloadEncodingContract()
@@ -3025,10 +3066,51 @@ internal static class Program
             StaticFlags)
             ?? throw new InvalidOperationException(
                 "找不到DecodeSpritePagePayload，无法验证direct/delta重建契约");
+        var decodeStream = typeof(MainWindow).GetMethod(
+            "DecodeSpritePageStream",
+            StaticFlags,
+            binder: null,
+            types:
+            [
+                typeof(string),
+                typeof(string),
+                typeof(Stream),
+                typeof(int),
+                typeof(byte[]),
+                typeof(int),
+                typeof(int),
+                typeof(int[]),
+                typeof(string),
+                typeof(CancellationToken)
+            ],
+            modifiers: null)
+            ?? throw new InvalidOperationException(
+                "找不到DecodeSpritePageStream，无法验证无大scratch的流式direct/delta重建契约");
+        Assert(typeof(MainWindow).GetField(
+                   "_spritePageCompressedBytes",
+                   InstanceFlags) is null &&
+               typeof(MainWindow).GetField(
+                   "_spritePagePayloadBytes",
+                   InstanceFlags) is null,
+            "MainWindow不得再永久持有最大压缩页或最大payload的大byte[] scratch");
 
         static string Hash(byte[] bytes) => Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(bytes))
             .ToLowerInvariant();
+
+        static byte[] CompressBrotli(byte[] payload)
+        {
+            using var output = new MemoryStream();
+            using (var compressor = new BrotliStream(
+                       output,
+                       CompressionLevel.Optimal,
+                       leaveOpen: true))
+            {
+                compressor.Write(payload);
+            }
+
+            return output.ToArray();
+        }
 
         static void AppendHeader(
             List<byte> payload,
@@ -3067,6 +3149,28 @@ internal static class Program
             CancellationToken.None
         ];
 
+        static object[] StreamArguments(
+            string encoding,
+            Stream payloadStream,
+            int expectedPayloadByteCount,
+            byte[] output,
+            int atlasWidth,
+            int atlasHeight,
+            int[] descriptors,
+            string decodedSha256) =>
+        [
+            "synthetic-page.pbgra.br",
+            encoding,
+            payloadStream,
+            expectedPayloadByteCount,
+            output,
+            atlasWidth,
+            atlasHeight,
+            descriptors,
+            decodedSha256,
+            CancellationToken.None
+        ];
+
         var directPayload = new byte[]
         {
             1, 2, 3, 4,
@@ -3087,25 +3191,71 @@ internal static class Program
         Assert(directOutput.SequenceEqual(directPayload),
             "direct Pbgra payload必须逐字节还原并校验最终atlas SHA256");
 
-        var oversizedDirectContainer = Enumerable.Repeat(
-                (byte)0xa5,
-                directPayload.Length + 17)
-            .ToArray();
-        directPayload.CopyTo(oversizedDirectContainer, 0);
-        var oversizedDirectOutput = new byte[directPayload.Length];
-        _ = decodePayload.Invoke(
+        var streamedDirectOutput = new byte[directPayload.Length];
+        _ = decodeStream.Invoke(
             null,
-            Arguments(
+            StreamArguments(
                 "pbgra32",
-                oversizedDirectContainer,
+                new MemoryStream(directPayload, writable: false),
                 directPayload.Length,
-                oversizedDirectOutput,
+                streamedDirectOutput,
                 2,
                 1,
                 [],
                 Hash(directPayload)));
-        Assert(oversizedDirectOutput.SequenceEqual(directPayload),
-            "direct解码必须只读取expectedPayloadByteCount前缀，允许复用更大的共享payload容器");
+        Assert(streamedDirectOutput.SequenceEqual(directPayload),
+            "direct payload必须可从流直接精确读入最终decodedPixels，不依赖整页payload scratch");
+        var directBrotliBytes = CompressBrotli(directPayload);
+        using var directCompressedStream = new MemoryStream(
+            directBrotliBytes,
+            writable: false);
+        using var directBrotliStream = new BrotliStream(
+            directCompressedStream,
+            CompressionMode.Decompress,
+            leaveOpen: false);
+        var brotliDirectOutput = new byte[directPayload.Length];
+        _ = decodeStream.Invoke(
+            null,
+            StreamArguments(
+                "pbgra32",
+                directBrotliStream,
+                directPayload.Length,
+                brotliDirectOutput,
+                2,
+                1,
+                [],
+                Hash(directPayload)));
+        Assert(brotliDirectOutput.SequenceEqual(directPayload),
+            "BrotliStream必须可将direct payload直接流式解压到最终decodedPixels");
+        AssertThrowsInvalidData(
+            () => decodeStream.Invoke(
+                null,
+                StreamArguments(
+                    "pbgra32",
+                    new MemoryStream(directPayload[..^1], writable: false),
+                    directPayload.Length,
+                    new byte[directPayload.Length],
+                    2,
+                    1,
+                    [],
+                    Hash(directPayload))),
+            "direct payload流比expectedPayloadByteCount少一字节时必须fail-closed");
+        var directWithTrailingByte = new byte[directPayload.Length + 1];
+        directPayload.CopyTo(directWithTrailingByte, 0);
+        directWithTrailingByte[^1] = 0x7f;
+        AssertThrowsInvalidData(
+            () => decodeStream.Invoke(
+                null,
+                StreamArguments(
+                    "pbgra32",
+                    new MemoryStream(directWithTrailingByte, writable: false),
+                    directPayload.Length,
+                    new byte[directPayload.Length],
+                    2,
+                    1,
+                    [],
+                    Hash(directPayload))),
+            "direct payload流在expectedPayloadByteCount后仍有尾随字节时必须fail-closed");
 
         var deltaPayloadBuilder = new List<byte>();
         AppendHeader(deltaPayloadBuilder, 0, 0, 2, 2);
@@ -3146,25 +3296,71 @@ internal static class Program
         Assert(deltaOutput.SequenceEqual(expectedDeltaAtlas),
             "delta-sub必须按manifest frames顺序累加完整display帧，越界透明补0且重复sprite覆盖一致");
 
-        var oversizedDeltaContainer = Enumerable.Repeat(
-                (byte)0x5a,
-                deltaPayload.Length + 29)
-            .ToArray();
-        deltaPayload.CopyTo(oversizedDeltaContainer, 0);
-        var oversizedDeltaOutput = new byte[expectedDeltaAtlas.Length];
-        _ = decodePayload.Invoke(
+        var streamedDeltaOutput = new byte[expectedDeltaAtlas.Length];
+        _ = decodeStream.Invoke(
             null,
-            Arguments(
+            StreamArguments(
                 "pbgra32-delta-sub-v1",
-                oversizedDeltaContainer,
+                new MemoryStream(deltaPayload, writable: false),
                 deltaPayload.Length,
-                oversizedDeltaOutput,
+                streamedDeltaOutput,
                 4,
                 2,
                 deltaDescriptors,
                 Hash(expectedDeltaAtlas)));
-        Assert(oversizedDeltaOutput.SequenceEqual(expectedDeltaAtlas),
-            "delta-sub解码必须忽略expected前缀之外的共享容器残留字节并得到相同atlas");
+        Assert(streamedDeltaOutput.SequenceEqual(expectedDeltaAtlas),
+            "delta-sub必须逐头、逐行从流重建相同atlas，不得依赖完整payload byte[]");
+        var deltaBrotliBytes = CompressBrotli(deltaPayload);
+        using var deltaCompressedStream = new MemoryStream(
+            deltaBrotliBytes,
+            writable: false);
+        using var deltaBrotliStream = new BrotliStream(
+            deltaCompressedStream,
+            CompressionMode.Decompress,
+            leaveOpen: false);
+        var brotliDeltaOutput = new byte[expectedDeltaAtlas.Length];
+        _ = decodeStream.Invoke(
+            null,
+            StreamArguments(
+                "pbgra32-delta-sub-v1",
+                deltaBrotliStream,
+                deltaPayload.Length,
+                brotliDeltaOutput,
+                4,
+                2,
+                deltaDescriptors,
+                Hash(expectedDeltaAtlas)));
+        Assert(brotliDeltaOutput.SequenceEqual(expectedDeltaAtlas),
+            "BrotliStream必须边解压delta-sub payload边按帧重建atlas，不得先物化整页payload");
+        AssertThrowsInvalidData(
+            () => decodeStream.Invoke(
+                null,
+                StreamArguments(
+                    "pbgra32-delta-sub-v1",
+                    new MemoryStream(deltaPayload[..^1], writable: false),
+                    deltaPayload.Length,
+                    new byte[expectedDeltaAtlas.Length],
+                    4,
+                    2,
+                    deltaDescriptors,
+                    Hash(expectedDeltaAtlas))),
+            "delta-sub payload流任一尾部字节截断时必须fail-closed");
+        var deltaWithTrailingByte = new byte[deltaPayload.Length + 1];
+        deltaPayload.CopyTo(deltaWithTrailingByte, 0);
+        deltaWithTrailingByte[^1] = 0x7f;
+        AssertThrowsInvalidData(
+            () => decodeStream.Invoke(
+                null,
+                StreamArguments(
+                    "pbgra32-delta-sub-v1",
+                    new MemoryStream(deltaWithTrailingByte, writable: false),
+                    deltaPayload.Length,
+                    new byte[expectedDeltaAtlas.Length],
+                    4,
+                    2,
+                    deltaDescriptors,
+                    Hash(expectedDeltaAtlas))),
+            "delta-sub payload流在expectedPayloadByteCount后有尾随字节时必须fail-closed");
 
         var tamperedDirect = directPayload.ToArray();
         tamperedDirect[0] ^= 0x40;
@@ -3277,24 +3473,19 @@ internal static class Program
         AppendHeader(trailingByte, 0, 0, 0, 0);
         trailingByte.Add(0xff);
         var trailingByteWithinExpected = trailingByte.ToArray();
-        var oversizedTrailingContainer = Enumerable.Repeat(
-                (byte)0x33,
-                trailingByteWithinExpected.Length + 11)
-            .ToArray();
-        trailingByteWithinExpected.CopyTo(oversizedTrailingContainer, 0);
         AssertThrowsInvalidData(
             () => decodePayload.Invoke(
                 null,
                 Arguments(
                     "pbgra32-delta-sub-v1",
-                    oversizedTrailingContainer,
+                    trailingByteWithinExpected,
                     trailingByteWithinExpected.Length,
                     new byte[16],
                     2,
                     2,
                     oneFrameDescriptor,
                     ignoredHash)),
-            "共享容器虽可大于expected，但expected范围内的delta尾随字节仍必须fail-closed");
+            "delta流在所有帧后仍有尾随字节时必须fail-closed");
 
         var emptyHeader = new List<byte>();
         AppendHeader(emptyHeader, 0, 0, 0, 0);
@@ -3338,11 +3529,15 @@ internal static class Program
             action();
         }
         catch (TargetInvocationException exception)
-            when (exception.InnerException is InvalidDataException)
+            when (exception.InnerException is InvalidDataException or EndOfStreamException)
         {
             return;
         }
         catch (InvalidDataException)
+        {
+            return;
+        }
+        catch (EndOfStreamException)
         {
             return;
         }
@@ -6094,10 +6289,10 @@ internal static class Program
                    scheduledStore.Load().Select(item => item.Id)
                        .SequenceEqual([moving.Id, first.Id, middle.Id]) &&
                    scheduledTimer.IsEnabled &&
-                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(10))
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(8))
                        .TotalMilliseconds) < 1,
                 "编辑到更早时间必须保留 Id/CreatedAt、Trim并归一到整秒，" +
-                "同时重排内存/磁盘并重新对准最近触发点");
+                "同时重排内存/磁盘并重新对准到期前2秒预热点");
 
             Invoke(
                 window,
@@ -6112,9 +6307,9 @@ internal static class Program
                    scheduledStore.Load().Select(item => item.Id)
                        .SequenceEqual([first.Id, middle.Id, moving.Id]) &&
                    scheduledTimer.IsEnabled &&
-                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(20))
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(18))
                        .TotalMilliseconds) < 1,
-                "编辑到更晚时间必须移动到正确位置并把调度器切回新的最早任务");
+                "编辑到更晚时间必须移动到正确位置并把调度器切回最早任务的预热点");
 
             scheduledTimer.Stop();
             scheduledTasks.Clear();
@@ -6192,7 +6387,7 @@ internal static class Program
                    reminderQueue.SequenceEqual([queuedSecond]) &&
                    queuedReminderIds.SetEquals([active.Id, queuedSecond.Id]) &&
                    scheduledTimer.IsEnabled &&
-                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(30))
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(28))
                        .TotalMilliseconds) < 1 &&
                    scheduledStore.Load().Select(item => item.Id)
                        .SequenceEqual([active.Id, queuedSecond.Id, queuedFirst.Id]),
@@ -6262,6 +6457,9 @@ internal static class Program
         var originalAutomaticAnimationEnabled = GetField<bool>(
             window,
             "_automaticAnimationEnabled");
+        var reminderPreloadLeadTime = (TimeSpan)(typeof(MainWindow).GetField(
+                "ReminderSpritePreloadLeadTime",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var originalHitTestVisible = window.IsHitTestVisible;
         var currentNow = new DateTimeOffset(
             2026,
@@ -6281,6 +6479,7 @@ internal static class Program
         queuedReminderIds.Clear();
         SetField(window, "_activeReminder", null);
         SetField(window, "_isReminderActive", false);
+        SetField(window, "_upcomingReminderPreloadPageName", null);
         SetField(window, "_nowProvider", controlledNow);
         SetField(window, "_automaticAnimationEnabled", false);
         window.IsHitTestVisible = false;
@@ -6331,6 +6530,7 @@ internal static class Program
                     StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
             Assert(motionFrameInterval == TimeSpan.FromTicks(
                        TimeSpan.TicksPerSecond / 60) &&
+                   reminderPreloadLeadTime == TimeSpan.FromSeconds(2) &&
                    enterFrames.Cast<object>()
                         .All(frame =>
                             GetFrameDuration(frame) == motionFrameInterval) &&
@@ -6340,7 +6540,8 @@ internal static class Program
                    exitFrames.Cast<object>()
                         .All(frame =>
                             GetFrameDuration(frame) == motionFrameInterval),
-                "提醒入场、播报保持和退场必须统一使用60fps绝对时间帧时长");
+                "提醒入场、播报保持和退场必须统一使用60fps绝对时间帧时长，" +
+                "并只在到期前2秒按需预热");
 
             for (var frameIndex = 0; frameIndex < enterFrames.Length; frameIndex++)
             {
@@ -6447,9 +6648,27 @@ internal static class Program
                    !GetField<bool>(window, "_isReminderActive"),
                 "两条同秒定时任务在到点前必须只持久化，不得提前提醒");
             Assert(scheduledTimer.IsEnabled &&
-                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(10))
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(8))
                        .TotalMilliseconds) < 1,
-                "调度器应直接对准最近的秒级截止时间，不做高频轮询");
+                "距到期10秒时调度器必须先对准到期前2秒的预热点，不做高频轮询");
+            Assert(GetRawField(window, "_upcomingReminderPreloadPageName") is null &&
+                   (TimeSpan)InvokeStatic(
+                       typeof(MainWindow),
+                       "CalculateReminderWakeDelay",
+                       currentNow,
+                       dueAt)! == TimeSpan.FromSeconds(8) &&
+                   (TimeSpan)InvokeStatic(
+                       typeof(MainWindow),
+                       "CalculateReminderWakeDelay",
+                       dueAt.AddSeconds(-1.5),
+                       dueAt)! == TimeSpan.FromSeconds(1.5) &&
+                   (TimeSpan)InvokeStatic(
+                       typeof(MainWindow),
+                       "CalculateReminderWakeDelay",
+                       currentNow,
+                       currentNow.AddHours(13))! == TimeSpan.FromHours(12),
+                "提醒唤醒延迟必须在2秒窗口外减去预热提前量、窗口内直达截止秒，" +
+                "并保留12小时上限");
             var expectedSameSecondOrder = scheduledTasks.ToArray();
             Assert(expectedSameSecondOrder[0].CreatedAt <=
                    expectedSameSecondOrder[1].CreatedAt &&
@@ -6462,11 +6681,39 @@ internal static class Program
                     .SequenceEqual(expectedSameSecondOrder.Select(item => item.Id)),
                 "同秒任务的稳定顺序必须与磁盘持久化顺序一致");
 
-            Invoke(window, "ProcessScheduledTasksAt", dueAt.AddTicks(-1));
+            var reminderPreloadPageName = GetSpriteFrameInfo(
+                GetProperty<object>(enterFrames.GetValue(0)!, "Image")).PageName;
+            currentNow = dueAt - reminderPreloadLeadTime;
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
+            WaitForSpritePagePrefetchToSettle(window);
+            Assert(string.Equals(
+                       GetField<string>(window, "_upcomingReminderPreloadPageName"),
+                       reminderPreloadPageName,
+                       StringComparison.Ordinal) &&
+                   GetField<IDictionary>(window, "_residentSpritePages")
+                       .Contains(reminderPreloadPageName) &&
+                   (bool)Invoke(
+                       window,
+                       "IsSpritePageProtected",
+                       reminderPreloadPageName,
+                       null)! &&
+                   !(bool)Invoke(window, "CanRunIdleSpritePageCollection")! &&
+                   scheduledTimer.IsEnabled &&
+                   Math.Abs((scheduledTimer.Interval - reminderPreloadLeadTime)
+                       .TotalMilliseconds) < 1,
+                "到期前2秒必须只预取提醒首屏分页、动态保护该页，" +
+                "并阻止Gen2回收直至到期");
+
+            currentNow = dueAt.AddTicks(-1);
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
             Assert(GetRawField(window, "_activeReminder") is null &&
                    reminderQueue.Count == 0 &&
-                   queuedReminderIds.Count == 0,
-                "到点前 1 tick 仍不得触发定时任务");
+                   queuedReminderIds.Count == 0 &&
+                   string.Equals(
+                       GetField<string>(window, "_upcomingReminderPreloadPageName"),
+                       reminderPreloadPageName,
+                       StringComparison.Ordinal),
+                "到点前 1 tick 仍不得触发定时任务，预热页保护必须保持到截止边界");
 
             currentNow = dueAt;
             Invoke(window, "ProcessScheduledTasksAt", currentNow);
@@ -6476,7 +6723,18 @@ internal static class Program
             Assert(ReferenceEquals(firstActive, expectedSameSecondOrder[0]) &&
                    GetField<bool>(window, "_isReminderActive") &&
                    reminderQueue.Count == 1 &&
-                   queuedReminderIds.Count == 2,
+                   queuedReminderIds.Count == 2 &&
+                   GetRawField(window, "_upcomingReminderPreloadPageName") is null &&
+                   enterFrames.Cast<object>()
+                       .Concat(holdFrames.Cast<object>())
+                       .Select(frame => GetSpriteFrameInfo(
+                           GetProperty<object>(frame, "Image")).PageName)
+                       .Distinct(StringComparer.Ordinal)
+                       .All(pageName => (bool)Invoke(
+                           window,
+                           "IsSpritePageProtected",
+                           pageName,
+                           null)!),
                 "整秒边界必须立即显示稳定顺序的第一条，其余同秒任务只入队一次");
             Assert(GetRawField(window, "_activeClip") is { } activeReminderClip &&
                    ReferenceEquals(activeReminderClip, reminderEnterClip) &&
@@ -6515,6 +6773,33 @@ internal static class Program
                    reminderQueue.Count == 1 &&
                    queuedReminderIds.Count == 2,
                 "在同一整秒重复执行调度不得重复入队或覆盖正在显示的提醒");
+
+            // The production clock calls PrefetchNextClipPage at each displayed
+            // frame boundary. This focused test jumps directly to clip
+            // completion, so synchronously prime the same four entry/hold pages
+            // before asserting the 33 -> 48 transition. The earlier assertions
+            // still prove these pages were neither pinned nor resident by
+            // startup warm-up, while _isReminderActive dynamically protects
+            // them from eviction during the reminder.
+            PrimeAllClipPagesForTest(window, enterFrames);
+            PrimeAllClipPagesForTest(window, holdFrames);
+            var activeReminderPageNames = enterFrames.Cast<object>()
+                .Concat(holdFrames.Cast<object>())
+                .Select(frame => GetSpriteFrameInfo(
+                    GetProperty<object>(frame, "Image")).PageName)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            Assert(activeReminderPageNames.Length == 4 &&
+                   activeReminderPageNames.All(pageName =>
+                       GetField<IDictionary>(window, "_residentSpritePages")
+                           .Contains(pageName)) &&
+                   activeReminderPageNames.All(pageName => (bool)Invoke(
+                       window,
+                       "IsSpritePageProtected",
+                       pageName,
+                       null)!),
+                "模拟逐页PrefetchNextClipPage完成后，提醒33帧入场与48帧保持的四页" +
+                "必须全部resident，并在活动提醒期间动态保护");
 
             Invoke(window, "CompleteActiveClip", reminderEnterClip);
             Assert(ReferenceEquals(
@@ -6676,7 +6961,7 @@ internal static class Program
                    reminderQueue.Count == 0 &&
                    queuedReminderIds.Count == 0 &&
                    scheduledTimer.IsEnabled &&
-                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(5))
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(3))
                        .TotalMilliseconds) < 1,
                 "回拨后确认第一条时，第二条不得提前显示，必须重新调度到原截止秒");
 
@@ -6720,6 +7005,7 @@ internal static class Program
             scheduledStore.Save(scheduledTasks);
             SetField(window, "_activeReminder", null);
             SetField(window, "_isReminderActive", false);
+            SetField(window, "_upcomingReminderPreloadPageName", null);
             SetField(window, "_isTransientPetSizeOverride", false);
             SetField(window, "_isRestoringReminderSize", false);
             Invoke(window, "HideBubbleVisuals");
@@ -8609,12 +8895,21 @@ internal static class Program
         var decodeSpritePage = ExtractPrivateMethodSource(
             mainSource,
             "DecodeSpritePage");
+        var validateSpriteAtlasPageContentHash = ExtractPrivateMethodSource(
+            mainSource,
+            "ValidateSpriteAtlasPageContentHash");
         var decodeSpritePagePayload = ExtractPrivateMethodSource(
             mainSource,
             "DecodeSpritePagePayload");
+        var decodeSpritePageStream = ExtractPrivateMethodSource(
+            mainSource,
+            "DecodeSpritePageStream");
         var reconstructDeltaSubPage = ExtractPrivateMethodSource(
             mainSource,
             "ReconstructDeltaSubSpritePage");
+        var buildSpritePageWarmupOrder = ExtractPrivateMethodSource(
+            mainSource,
+            "BuildSpritePageWarmupOrder");
         var loadNumberedFrameSequence = ExtractPrivateMethodSource(
             mainSource,
             "LoadNumberedFrameSequence");
@@ -8645,6 +8940,15 @@ internal static class Program
         var canRunIdleSpritePageCollection = ExtractPrivateMethodSource(
             mainSource,
             "CanRunIdleSpritePageCollection");
+        var isSpritePageProtected = ExtractPrivateMethodSource(
+            mainSource,
+            "IsSpritePageProtected");
+        var preloadUpcomingReminder = ExtractPrivateMethodSource(
+            mainSource,
+            "PreloadUpcomingReminderAt");
+        var calculateReminderWakeDelay = ExtractPrivateMethodSource(
+            mainSource,
+            "CalculateReminderWakeDelay");
         var spritePageCollectionTimerTick = ExtractPrivateMethodSource(
             mainSource,
             "SpritePageCollectionTimer_Tick");
@@ -8693,7 +8997,7 @@ internal static class Program
                mainSource.Contains("CancellationTokenSource", StringComparison.Ordinal) &&
                mainSource.Contains("TryPromotePrefetchedSpritePage", StringComparison.Ordinal) &&
                mainSource.Contains("_spritePageWarmupOrder", StringComparison.Ordinal),
-            "运行时分页必须使用解码页常驻缓存、顺序后台预热、代际取消和UI线程引用切换");
+            "运行时分页必须使用解码页常驻缓存、按需后台预取、代际取消和UI线程引用切换");
         Assert(!rendering.Contains("LoadSpritePage", StringComparison.Ordinal) &&
                !rendering.Contains("DecodeBrotli", StringComparison.Ordinal) &&
                !rendering.Contains("GetResourceStream", StringComparison.Ordinal) &&
@@ -8706,30 +9010,61 @@ internal static class Program
             "ValidateSpriteAtlasPageContentHash(",
             StringComparison.Ordinal);
         var brotliDecode = decodeSpritePage.IndexOf(
-            "DecodeBrotliPage(",
+            "new BrotliStream(",
             StringComparison.Ordinal);
-        var payloadDecode = decodeSpritePage.IndexOf(
-            "DecodeSpritePagePayload(",
+        var streamDecode = decodeSpritePage.IndexOf(
+            "DecodeSpritePageStream(",
             StringComparison.Ordinal);
         Assert(contentHashValidation >= 0 &&
                brotliDecode > contentHashValidation &&
-               payloadDecode > brotliDecode &&
-               decodeSpritePagePayload.Contains(
+               streamDecode > brotliDecode &&
+               decodeSpritePage.Split(
+                   "Application.GetResourceStream(",
+                   StringSplitOptions.None).Length == 3 &&
+               validateSpriteAtlasPageContentHash.Contains(
+                   "IncrementalHash.CreateHash",
+                   StringComparison.Ordinal) &&
+               validateSpriteAtlasPageContentHash.Contains(
+                   "ArrayPool<byte>.Shared.Rent",
+                   StringComparison.Ordinal) &&
+               validateSpriteAtlasPageContentHash.Contains(
+                   "var remaining = compressedByteCount",
+                   StringComparison.Ordinal) &&
+               validateSpriteAtlasPageContentHash.Contains(
+                   "compressedStream.ReadByte() != -1",
+                   StringComparison.Ordinal) &&
+               decodeSpritePageStream.Contains(
                    "ValidateSpriteAtlasDecodedHash(",
+                   StringComparison.Ordinal) &&
+               decodeSpritePageStream.Contains(
+                   "payloadStream.ReadByte() != -1",
                    StringComparison.Ordinal),
-            "后台分页加载必须先严格核对manifest contentSha256，再执行Brotli解压");
+            "后台分页加载必须先用定长流式SHA严格核对压缩资源，再打开第二条资源流" +
+            "直接Brotli解码；压缩流与解码payload都必须拒绝截断或尾随字节");
         Assert(mainSource.Contains("pbgra32-delta-sub-v1", StringComparison.Ordinal) &&
                decodeSpritePagePayload.Contains(
-                   "payload.Length < expectedPayloadByteCount",
+                   "new MemoryStream(",
                    StringComparison.Ordinal) &&
-               mainSource.Contains(
-                   "private readonly byte[] _spritePagePayloadBytes;",
+               decodeSpritePagePayload.Contains(
+                   "expectedPayloadByteCount",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "_spritePageCompressedBytes",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "_spritePagePayloadBytes",
                    StringComparison.Ordinal) &&
                decodeSpritePage.Contains(
-                   ": _spritePagePayloadBytes;",
+                   "new byte[page.UncompressedByteCount]",
                    StringComparison.Ordinal) &&
                !decodeSpritePage.Contains(
                    "new byte[page.PayloadByteCount]",
+                   StringComparison.Ordinal) &&
+               reconstructDeltaSubPage.Contains(
+                   "Stream payloadStream",
+                   StringComparison.Ordinal) &&
+               reconstructDeltaSubPage.Contains(
+                   "ReadPayloadExactly(",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
                    "BinaryPrimitives.ReadUInt16LittleEndian",
@@ -8738,10 +9073,22 @@ internal static class Program
                    "previousDisplayFrame",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
-                   "ArrayPool<byte>.Shared.Rent(",
+                   "Span<byte> header = stackalloc byte[DeltaSubFrameHeaderByteCount]",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
-                   "ArrayPool<byte>.Shared.Return(",
+                   "Span<byte> deltaRow = stackalloc byte[DisplayPixelWidth * 4]",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "private static readonly ArrayPool<byte> SpriteDecodeScratchPool",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "maxArraysPerBucket: 1",
+                   StringComparison.Ordinal) &&
+               reconstructDeltaSubPage.Contains(
+                   "SpriteDecodeScratchPool.Rent(",
+                   StringComparison.Ordinal) &&
+               reconstructDeltaSubPage.Contains(
+                   "SpriteDecodeScratchPool.Return(",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
                    "payloadOffset != payloadByteCount",
@@ -8751,10 +9098,13 @@ internal static class Program
                    StringComparison.Ordinal) &&
                !rendering.Contains("DecodeSpritePagePayload", StringComparison.Ordinal) &&
                !rendering.Contains("ReconstructDeltaSub", StringComparison.Ordinal),
-            "delta-sub必须复用单份共享payload与ArrayPool前帧缓冲，只在后台按expected前缀" +
-            "顺序重建并严格消费，拒绝不一致的重复sprite且不能进入Rendering");
+            "delta-sub必须直接消费Brotli流，前帧暂存只使用容量1的私有池且Rent/Return成对，" +
+            "按expected长度严格重建并拒绝不一致的重复sprite；不得保留整页压缩或payload字段");
         Assert(mainSource.Contains(
-                   "SpritePageIdleResidentTargetBytes = 96L * 1024 * 1024",
+                   "SpritePageResidentBudgetBytes = 112L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageIdleResidentTargetBytes = 64L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
                    "SpritePageCollectionThresholdBytes = 48L * 1024 * 1024",
@@ -8777,7 +9127,8 @@ internal static class Program
                prefetchDispatchTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
                    StringComparison.Ordinal),
-            "动作终态idle回收必须以96MiB为目标；Rendering内只发布idle trim标志并在dispatcher tick执行");
+            "活动resident软预算必须是112MiB、动作终态idle回收目标必须是64MiB；" +
+            "Rendering内只发布idle trim标志并在dispatcher tick执行");
         Assert(removeResidentSpritePage.Contains(
                    "RecordDiscardedSpritePageBytes(residentPage.ByteCount)",
                    StringComparison.Ordinal) &&
@@ -8818,8 +9169,44 @@ internal static class Program
                canRunIdleSpritePageCollection.Contains("_renderDeferredSpritePageName is null", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("_renderDeferredSpritePageFailureName is null", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_renderDeferredSpritePageCancellation", StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("!_residentSpritePageTrimPending", StringComparison.Ordinal),
-            "Gen2回收只能在动作、提醒、拖动、缩放、预取、Todo、edge、pillow与帧过渡全部空闲时运行");
+               canRunIdleSpritePageCollection.Contains("!_residentSpritePageTrimPending", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_upcomingReminderPreloadPageName is null", StringComparison.Ordinal),
+            "Gen2回收只能在动作、提醒、提醒预热、拖动、缩放、预取、Todo、edge、pillow与帧过渡全部空闲时运行");
+        Assert(mainSource.Contains(
+                   "ReminderSpritePreloadLeadTime =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "TimeSpan.FromSeconds(2)",
+                   StringComparison.Ordinal) &&
+               preloadUpcomingReminder.Contains(
+                   "remaining > ReminderSpritePreloadLeadTime",
+                   StringComparison.Ordinal) &&
+               preloadUpcomingReminder.Contains(
+                   "_upcomingReminderPreloadPageName = pageName",
+                   StringComparison.Ordinal) &&
+               preloadUpcomingReminder.Contains(
+                   "RequestSpritePagePrefetch(pageName, urgent: true)",
+                   StringComparison.Ordinal) &&
+               calculateReminderWakeDelay.Contains(
+                   "remaining - ReminderSpritePreloadLeadTime",
+                   StringComparison.Ordinal) &&
+               calculateReminderWakeDelay.Contains(
+                   "MaximumReminderWakeInterval",
+                   StringComparison.Ordinal) &&
+               isSpritePageProtected.Contains(
+                   "_upcomingReminderPreloadPageName",
+                   StringComparison.Ordinal) &&
+               isSpritePageProtected.Contains(
+                   "if (_isReminderActive",
+                   StringComparison.Ordinal) &&
+               isSpritePageProtected.Contains(
+                   "FrameSequenceUsesSpritePage(_reminderEnterFrames, pageName)",
+                   StringComparison.Ordinal) &&
+               isSpritePageProtected.Contains(
+                   "FrameSequenceUsesSpritePage(_reminderHoldFrames, pageName)",
+                   StringComparison.Ordinal),
+            "定时提醒必须在到期前2秒JIT预取首屏页、在窗口内动态保护，" +
+            "活动期间保护完整入场/保持序列，并按12小时上限分段唤醒");
         var stopPillowBeforeDrag = petHostMouseLeftButtonDown.IndexOf(
             "StopPillowBreathing()",
             StringComparison.Ordinal);
@@ -8914,19 +9301,21 @@ internal static class Program
                currentFrameCommit > pillowStateCommit &&
                !showStableFrame.Contains("PillowImage.Visibility", StringComparison.Ordinal),
             "冷页pending不得提前切换枕头；枕头透明度必须只在目标像素成功提交后与current frame一并发布，且不得触发布局");
-        Assert(resumePageWarmup.Contains("_spritePageWarmupIndex", StringComparison.Ordinal) &&
+        Assert(buildSpritePageWarmupOrder.Contains("return [];", StringComparison.Ordinal) &&
+               resumePageWarmup.Contains("_spritePageWarmupIndex", StringComparison.Ordinal) &&
                resumePageWarmup.Contains("_residentSpritePages.ContainsKey", StringComparison.Ordinal) &&
                resumePageWarmup.Contains("urgent: false", StringComparison.Ordinal) &&
                completePagePrefetch.Contains("AddResidentSpritePage", StringComparison.Ordinal) &&
                completePagePrefetch.Contains("ResumeSpritePageWarmup", StringComparison.Ordinal) &&
                decodeSpritePage.Contains("new byte[page.UncompressedByteCount]", StringComparison.Ordinal),
-            "首屏后必须在后台按清单顺序把精确尺寸Pbgra32页加入常驻缓存，并在每页完成后继续预热");
+            "启动warmup顺序必须为空；按需预取完成后只把精确尺寸Pbgra32页加入常驻缓存，" +
+            "不得恢复全图集后台预热");
         Assert(mainSource.Split(
                    "LoadSpritePageIntoBuffer(",
                    StringSplitOptions.None).Length == 3 &&
                windowLoaded.Contains("_spritePageWarmupEnabled = true", StringComparison.Ordinal) &&
                windowLoaded.Contains("ResumeSpritePageWarmup()", StringComparison.Ordinal),
-            "构造期间只能同步解码一次idle页，完整分页预热必须等主窗口Loaded后再启动");
+            "构造期间只能同步解码一次idle页；Loaded后的空warmup调用不得启动后台解码");
         Assert(!mainSource.Contains("WakeFrameCount", StringComparison.Ordinal) &&
                loadNumberedFrameSequence.Contains(
                    "TryGetNumberedSequencePagePart(",
