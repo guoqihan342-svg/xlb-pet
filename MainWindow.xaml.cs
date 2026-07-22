@@ -42,6 +42,13 @@ public partial class MainWindow : Window
     private const int SpriteFrameDescriptorValueCount = 6;
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
+    // Decoded atlas pages are byte-for-byte identical regardless of whether
+    // they are cached. Keep enough headroom for the complete largest action,
+    // the reminder/edge hot set, and the currently displayed page without
+    // retaining the entire 387 MiB decoded atlas for the lifetime of the app.
+    private const long SpritePageResidentBudgetBytes = 144L * 1024 * 1024;
+    private const long SpritePageIdleResidentTargetBytes = 96L * 1024 * 1024;
+    private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
     private const double PetSizeSpringAngularFrequency = 28;
@@ -60,6 +67,10 @@ public partial class MainWindow : Window
     private static readonly TimeSpan ActionTransitionDuration = TimeSpan.Zero;
     private static readonly TimeSpan PetSizeTransitionDuration = TimeSpan.FromMilliseconds(350);
     private static readonly TimeSpan PetSizePersistDelay = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan SpritePageCollectionDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan SpritePageCollectionRetryDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MinimumSpritePageCollectionInterval =
+        TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FrameBlendDuration = TimeSpan.Zero;
     private static readonly TimeSpan EdgeFrameBlendDuration = TimeSpan.Zero;
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
@@ -73,12 +84,16 @@ public partial class MainWindow : Window
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
         new(StringComparer.Ordinal);
+    private readonly LinkedList<string> _residentSpritePageLru = new();
+    private readonly HashSet<string> _pinnedSpritePageNames =
+        new(StringComparer.Ordinal);
     private readonly string[] _spritePageWarmupOrder;
     private readonly SpriteFrame[] _wakeFrames;
     private readonly IReadOnlyDictionary<string, SpriteFrame[]> _actionSmoothFrames;
     private readonly IReadOnlyDictionary<string, SpriteFrame[]> _actionLoopFrames;
     private byte[] _spritePagePixels = Array.Empty<byte>();
     private readonly byte[] _spritePageCompressedBytes;
+    private readonly byte[] _spritePagePayloadBytes;
     private readonly WriteableBitmap _displayFrameBuffer;
     private readonly byte[] _displayFramePixels =
         new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
@@ -109,6 +124,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _scheduledTaskTimer;
     private readonly DispatcherTimer _reminderSizeCommitTimer;
     private readonly DispatcherTimer _spritePagePrefetchDispatchTimer;
+    private readonly DispatcherTimer _spritePageCollectionTimer;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
     private readonly ObservableCollection<TodoItem> _todos = new();
@@ -143,6 +159,13 @@ public partial class MainWindow : Window
     private int _outsideTodoCloseScheduledGeneration;
     private int _spritePagePrefetchGeneration;
     private int _spritePageWarmupIndex;
+    private long _residentSpritePageBytes;
+    private long _spritePageEvictedBytesSinceCollection;
+    private long _lastSpritePageCollectionTimestamp;
+    private long _spritePageCollectionDebtAtRequest;
+    private int _spritePageCollectionGenerationAtRequest;
+    private int _lastObservedSpritePageCollectionGeneration;
+    private int _spritePageCollectionPollCount;
     private int _edgePeekFrameIndex;
     private long _edgePeekFrameDeadlineTimestamp;
     private EdgeDock _edgeDock;
@@ -196,6 +219,7 @@ public partial class MainWindow : Window
     private string? _failedSpritePageName;
     private CancellationTokenSource? _spritePagePrefetchCancellation;
     private Task<SpritePageLoadResult>? _spritePagePrefetchTask;
+    private string? _spritePagePrefetchPageName;
     private bool _isFrameBlending;
     private bool _isVisualClockSubscribed;
     private bool _isInsideVisualRenderingCallback;
@@ -204,6 +228,11 @@ public partial class MainWindow : Window
     private string? _renderDeferredSpritePageName;
     private bool _renderDeferredSpritePageUrgent;
     private bool _renderDeferredSpritePageCancellation;
+    private string? _renderDeferredSpritePageFailureName;
+    private string? _renderDeferredSpritePageFailureReason;
+    private bool _residentSpritePageTrimPending;
+    private bool _residentSpritePageIdleTrimPending;
+    private bool _spritePageCollectionInProgress;
     private long _frameBlendStartedTimestamp;
     private TimeSpan _activeFrameBlendDuration;
     private TimeSpan? _nextFrameBlendDuration;
@@ -221,11 +250,23 @@ public partial class MainWindow : Window
         };
         _spritePagePrefetchDispatchTimer.Tick +=
             SpritePagePrefetchDispatchTimer_Tick;
+        _spritePageCollectionTimer = new DispatcherTimer
+        {
+            Interval = SpritePageCollectionDelay
+        };
+        _spritePageCollectionTimer.Tick += SpritePageCollectionTimer_Tick;
+        _lastObservedSpritePageCollectionGeneration =
+            GC.CollectionCount(GC.MaxGeneration);
 
         _spritePages = LoadSpritePages();
-        _spritePageWarmupOrder = _spritePages.Keys.ToArray();
         _spritePageCompressedBytes = new byte[_spritePages.Values.Max(page =>
             page.CompressedByteCount)];
+        _spritePagePayloadBytes = new byte[_spritePages.Values
+            .Where(page => !string.Equals(
+                page.Encoding,
+                SpriteAtlasDirectEncoding,
+                StringComparison.Ordinal))
+            .Max(page => page.PayloadByteCount)];
         _displayFrameBuffer = new WriteableBitmap(
             DisplayPixelWidth,
             DisplayPixelHeight,
@@ -271,6 +312,13 @@ public partial class MainWindow : Window
             "action-reminder-hold",
             "Assets/luban-reminder-hold-",
             expectedFrameCount: 48);
+        AddPinnedSpritePageNames([_idleFrame]);
+        AddPinnedSpritePageNames(_reminderEnterFrames);
+        AddPinnedSpritePageNames(_reminderHoldFrames);
+        AddPinnedSpritePageNames(_edgeLeftFrames);
+        AddPinnedSpritePageNames(_edgeTopFrames);
+        AddPinnedSpritePageNames(_edgeBottomFrames);
+        _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
         _reactionClips =
         [
             CreateMotionClip("刚睡醒，让我伸个懒腰～", "yawn"),
@@ -399,6 +447,62 @@ public partial class MainWindow : Window
         // transitions may allocate their one summary string, but the Rendering
         // call graph never creates a captured Func/Action or performs disk I/O.
         AppLogger.Info(message);
+    }
+
+    private void AddPinnedSpritePageNames(IEnumerable<SpriteFrame> frames)
+    {
+        foreach (var frame in frames)
+        {
+            _pinnedSpritePageNames.Add(frame.PageName);
+        }
+    }
+
+    private string[] BuildSpritePageWarmupOrder()
+    {
+        var warmupPages = new List<string>();
+        var seenPages = new HashSet<string>(StringComparer.Ordinal)
+        {
+            _idleFrame.PageName
+        };
+
+        void AddFramePages(IEnumerable<SpriteFrame> frames)
+        {
+            foreach (var frame in frames)
+            {
+                if (seenPages.Add(frame.PageName) &&
+                    _spritePages.ContainsKey(frame.PageName))
+                {
+                    warmupPages.Add(frame.PageName);
+                }
+            }
+        }
+
+        // Deadline reminders and edge-peek gestures must be instantly ready.
+        // They are the small fixed hot set and remain pinned after warm-up.
+        AddFramePages(_reminderEnterFrames);
+        AddFramePages(_reminderHoldFrames);
+        AddFramePages(_edgeLeftFrames);
+        AddFramePages(_edgeTopFrames);
+        AddFramePages(_edgeBottomFrames);
+
+        // Prime only the next two wake pages. The remaining action pages are
+        // decoded on demand and protected for the full lifetime of that clip.
+        var addedWakePages = 0;
+        foreach (var frame in _wakeFrames)
+        {
+            if (seenPages.Add(frame.PageName) &&
+                _spritePages.ContainsKey(frame.PageName))
+            {
+                warmupPages.Add(frame.PageName);
+                addedWakePages++;
+                if (addedWakePages == 2)
+                {
+                    break;
+                }
+            }
+        }
+
+        return warmupPages.ToArray();
     }
 
     private SpriteFrame[] LoadNumberedFrameSequence(
@@ -1370,6 +1474,8 @@ public partial class MainWindow : Window
         _spritePagePrefetchDispatchTimer.Stop();
         _spritePagePrefetchDispatchTimer.Tick -=
             SpritePagePrefetchDispatchTimer_Tick;
+        _spritePageCollectionTimer.Stop();
+        _spritePageCollectionTimer.Tick -= SpritePageCollectionTimer_Tick;
         _isPetSizeTransitioning = false;
         _isPetSizePreviewSessionActive = false;
         _petSizeEnvelopePrepared = false;
@@ -1396,6 +1502,7 @@ public partial class MainWindow : Window
         _todoWindow.CloseForApplication();
         SaveTodos();
         SaveScheduledTasks();
+        ClearResidentSpritePages();
         AppLogger.Flush(TimeSpan.FromSeconds(1));
     }
 
@@ -1417,6 +1524,7 @@ public partial class MainWindow : Window
             CommitPetSizePreviewSession(persist: true);
         }
 
+        StopPillowBreathing();
         _automaticTimer.Stop();
         _dragInteractionActive = true;
         _pointerDown = true;
@@ -1655,6 +1763,7 @@ public partial class MainWindow : Window
             }
         }
 
+        RequestIdleSpritePageTrim();
         _edgeDock = dock;
         _edgePeekFrameIndex = restFrameIndex;
         var targetFacingScaleX = dock == EdgeDock.Right ? -1 : 1;
@@ -2214,6 +2323,7 @@ public partial class MainWindow : Window
             _activeFrameDeadlineTimestamp = 0;
             ClearDeferredActiveClipClock();
             LogInfo("定时提醒播报动作完成，保持举喇叭姿势");
+            RequestIdleSpritePageTrim();
             UpdateVisualClockSubscription();
             return;
         }
@@ -2240,6 +2350,7 @@ public partial class MainWindow : Window
             ResetPetVisualTransforms();
             ShowStableFrame(_idleFrame);
         }
+        RequestIdleSpritePageTrim();
         RestartAutomaticCountdown();
         UpdateVisualClockSubscription();
     }
@@ -2456,7 +2567,7 @@ public partial class MainWindow : Window
         {
             _renderDeferredSpritePageName = null;
             _renderDeferredSpritePageUrgent = false;
-            if (!_renderDeferredSpritePageCancellation)
+            if (!HasDeferredSpritePageDispatchWork())
             {
                 _spritePagePrefetchDispatchTimer.Stop();
             }
@@ -2486,6 +2597,7 @@ public partial class MainWindow : Window
             return false;
         }
 
+        TouchResidentSpritePage(residentPage);
         // Decoded pages are published to the resident dictionary only on the UI
         // thread. Rendering therefore changes pages by swapping one byte[]
         // reference and its stride; it never reads a resource, decompresses a
@@ -3228,6 +3340,10 @@ public partial class MainWindow : Window
                 _renderDeferredSpritePageName = null;
                 _renderDeferredSpritePageUrgent = false;
                 _renderDeferredSpritePageCancellation = false;
+                _renderDeferredSpritePageFailureName = null;
+                _renderDeferredSpritePageFailureReason = null;
+                _residentSpritePageTrimPending = false;
+                _residentSpritePageIdleTrimPending = false;
                 return;
             }
 
@@ -3235,6 +3351,15 @@ public partial class MainWindow : Window
             {
                 _renderDeferredSpritePageCancellation = false;
                 _spritePagePrefetchCancellation?.Cancel();
+            }
+
+            var failurePageName = _renderDeferredSpritePageFailureName;
+            if (failurePageName is not null)
+            {
+                var failureReason = _renderDeferredSpritePageFailureReason;
+                _renderDeferredSpritePageFailureName = null;
+                _renderDeferredSpritePageFailureReason = null;
+                HandleSpritePagePrefetchFailure(failurePageName, failureReason);
             }
 
             var pageName = _renderDeferredSpritePageName;
@@ -3245,12 +3370,33 @@ public partial class MainWindow : Window
                 _renderDeferredSpritePageUrgent = false;
                 RequestSpritePagePrefetch(pageName, urgent);
             }
+
+            if (_residentSpritePageTrimPending)
+            {
+                var reduceToIdleTarget = _residentSpritePageIdleTrimPending;
+                _residentSpritePageTrimPending = false;
+                _residentSpritePageIdleTrimPending = false;
+                if (reduceToIdleTarget)
+                {
+                    TrimResidentSpritePagesToIdleTarget();
+                }
+                else
+                {
+                    TrimResidentSpritePagesToBudget();
+                }
+            }
         }
         finally
         {
             _spritePagePrefetchDispatchTimer.Stop();
         }
     }
+
+    private bool HasDeferredSpritePageDispatchWork() =>
+        _renderDeferredSpritePageName is not null ||
+        _renderDeferredSpritePageCancellation ||
+        _renderDeferredSpritePageFailureName is not null ||
+        _residentSpritePageTrimPending;
 
     private void RequestSpritePagePrefetch(string pageName, bool urgent)
     {
@@ -3370,6 +3516,7 @@ public partial class MainWindow : Window
             () => DecodeSpritePage(page, cancellation.Token),
             cancellation.Token);
         _spritePagePrefetchTask = task;
+        _spritePagePrefetchPageName = pageName;
 
         _ = task.ContinueWith(
             completedTask =>
@@ -3412,6 +3559,7 @@ public partial class MainWindow : Window
         {
             _spritePagePrefetchTask = null;
             _spritePagePrefetchCancellation = null;
+            _spritePagePrefetchPageName = null;
         }
 
         cancellation.Dispose();
@@ -3429,11 +3577,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (generation != _spritePagePrefetchGeneration && completedTask.IsFaulted)
+        if (generation != _spritePagePrefetchGeneration)
         {
-            // The failing task was already superseded by an urgent request. Its
-            // error must not clear or fail that newer demand.
+            // A warm-up decode may finish just after an urgent request has
+            // superseded it. Discard either a successful or failed stale result
+            // so old work cannot displace useful pages from the bounded cache.
             _ = completedTask.Exception;
+            if (completedTask.IsCompletedSuccessfully)
+            {
+                RecordDiscardedSpritePageBytes(
+                    completedTask.Result.Pixels.LongLength);
+            }
             StartSpritePagePrefetch();
             ResumeSpritePageWarmup();
             return;
@@ -3470,8 +3624,28 @@ public partial class MainWindow : Window
 
     private void HandleSpritePagePrefetchFailure(string pageName, string? errorMessage)
     {
+        if (_isInsideVisualRenderingCallback)
+        {
+            _renderDeferredSpritePageFailureName = pageName;
+            _renderDeferredSpritePageFailureReason = errorMessage;
+            if (!_spritePagePrefetchDispatchTimer.IsEnabled)
+            {
+                _spritePagePrefetchDispatchTimer.Start();
+            }
+
+            return;
+        }
+
         _desiredSpritePageName = null;
         _desiredSpritePageUrgent = false;
+        if (string.Equals(
+                _renderDeferredSpritePageName,
+                pageName,
+                StringComparison.Ordinal))
+        {
+            _renderDeferredSpritePageName = null;
+            _renderDeferredSpritePageUrgent = false;
+        }
         _failedSpritePageName = pageName;
         if (_pendingSpriteFrame is SpriteFrame pending &&
             string.Equals(pending.PageName, pageName, StringComparison.Ordinal))
@@ -3500,6 +3674,7 @@ public partial class MainWindow : Window
                 }
 
                 RestartAutomaticCountdown();
+                RequestIdleSpritePageTrim();
             }
         }
 
@@ -3566,16 +3741,22 @@ public partial class MainWindow : Window
         _renderDeferredSpritePageName = null;
         _renderDeferredSpritePageUrgent = false;
         _renderDeferredSpritePageCancellation = false;
+        _renderDeferredSpritePageFailureName = null;
+        _renderDeferredSpritePageFailureReason = null;
+        _residentSpritePageTrimPending = false;
+        _residentSpritePageIdleTrimPending = false;
         _pendingSpriteFrame = null;
         _pendingSpriteFrameBlendDuration = TimeSpan.Zero;
         _spritePagePrefetchDispatchTimer.Stop();
         _spritePagePrefetchCancellation?.Cancel();
+        _spritePagePrefetchPageName = null;
     }
 
     private void LoadSpritePageIntoBuffer(string pageName, SpriteAtlasPage page)
     {
         if (_residentSpritePages.TryGetValue(pageName, out var residentPage))
         {
+            TouchResidentSpritePage(residentPage);
             _spritePagePixels = residentPage.Pixels;
             _loadedSpritePageName = pageName;
             _loadedSpritePageStride = residentPage.Stride;
@@ -3606,7 +3787,7 @@ public partial class MainWindow : Window
             SpriteAtlasDirectEncoding,
             StringComparison.Ordinal)
             ? decodedPixels
-            : new byte[page.PayloadByteCount];
+            : _spritePagePayloadBytes;
         var resource = Application.GetResourceStream(CreatePackUri(page.ResourcePath))
             ?? throw new InvalidOperationException(
                 $"Missing sprite atlas page resource: {page.ResourcePath}");
@@ -3691,9 +3872,442 @@ public partial class MainWindow : Window
         string pageName,
         SpritePageLoadResult result)
     {
-        _residentSpritePages.TryAdd(
-            pageName,
-            new ResidentSpritePage(result.Pixels, result.Stride));
+        if (_residentSpritePages.TryGetValue(pageName, out var existingPage))
+        {
+            TouchResidentSpritePage(existingPage);
+            if (!ReferenceEquals(existingPage.Pixels, result.Pixels))
+            {
+                RecordDiscardedSpritePageBytes(result.Pixels.LongLength);
+            }
+            return;
+        }
+
+        var lruNode = new LinkedListNode<string>(pageName);
+        var residentPage = new ResidentSpritePage(
+            result.Pixels,
+            result.Stride,
+            lruNode);
+        _residentSpritePages.Add(pageName, residentPage);
+        _residentSpritePageLru.AddLast(lruNode);
+        _residentSpritePageBytes = checked(
+            _residentSpritePageBytes + residentPage.ByteCount);
+        TrimResidentSpritePagesToBudget(pageName);
+    }
+
+    private void TouchResidentSpritePage(ResidentSpritePage residentPage)
+    {
+        var node = residentPage.LruNode;
+        if (!ReferenceEquals(node.List, _residentSpritePageLru) ||
+            ReferenceEquals(_residentSpritePageLru.Last, node))
+        {
+            return;
+        }
+
+        _residentSpritePageLru.Remove(node);
+        _residentSpritePageLru.AddLast(node);
+    }
+
+    private void TrimResidentSpritePagesToBudget(string? preservePageName = null)
+    {
+        TrimResidentSpritePagesToTarget(
+            SpritePageResidentBudgetBytes,
+            preservePageName);
+    }
+
+    private void TrimResidentSpritePagesToIdleTarget()
+    {
+        TrimResidentSpritePagesToTarget(
+            SpritePageIdleResidentTargetBytes,
+            preservePageName: null);
+    }
+
+    private void TrimResidentSpritePagesToTarget(
+        long targetBytes,
+        string? preservePageName)
+    {
+        var removedPageCount = 0;
+        var candidate = _residentSpritePageLru.First;
+        while (_residentSpritePageBytes > targetBytes &&
+               candidate is not null)
+        {
+            var nextCandidate = candidate.Next;
+            var pageName = candidate.Value;
+            if (!IsSpritePageProtected(pageName, preservePageName) &&
+                RemoveResidentSpritePage(pageName))
+            {
+                removedPageCount++;
+            }
+
+            candidate = nextCandidate;
+        }
+
+        if (removedPageCount > 0)
+        {
+            AppLogger.Info(
+                $"Sprite cache trimmed: removed {removedPageCount}, " +
+                $"resident {_residentSpritePageBytes / (1024d * 1024d):F1}/" +
+                $"{targetBytes / (1024d * 1024d):F0} MiB target");
+        }
+
+        if (_residentSpritePageBytes > SpritePageResidentBudgetBytes)
+        {
+            // Protection wins over the soft budget: dropping the current,
+            // pending, or active-clip page would create a visible flash. The
+            // next protection release schedules another trim automatically.
+            AppLogger.Info(
+                $"Sprite cache temporarily over budget: " +
+                $"{_residentSpritePageBytes / (1024d * 1024d):F1}/" +
+                $"{SpritePageResidentBudgetBytes / (1024d * 1024d):F0} MiB, " +
+                "all remaining pages are protected");
+        }
+
+        ScheduleSpritePageCollectionIfNeeded();
+    }
+
+    private void RequestResidentSpritePageTrim()
+    {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        if (!_isInsideVisualRenderingCallback)
+        {
+            TrimResidentSpritePagesToBudget();
+            return;
+        }
+
+        // Clip completion can occur inside CompositionTarget.Rendering. Only
+        // publish a flag there; dictionary/LRU mutation and its summary log run
+        // on the already-created dispatcher timer after composition returns.
+        _residentSpritePageTrimPending = true;
+        if (!_spritePagePrefetchDispatchTimer.IsEnabled)
+        {
+            _spritePagePrefetchDispatchTimer.Start();
+        }
+    }
+
+    private void RequestIdleSpritePageTrim()
+    {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        if (!_isInsideVisualRenderingCallback)
+        {
+            TrimResidentSpritePagesToIdleTarget();
+            return;
+        }
+
+        _residentSpritePageTrimPending = true;
+        _residentSpritePageIdleTrimPending = true;
+        if (!_spritePagePrefetchDispatchTimer.IsEnabled)
+        {
+            _spritePagePrefetchDispatchTimer.Start();
+        }
+    }
+
+    private void ScheduleSpritePageCollectionIfNeeded()
+    {
+        ObserveNaturalSpritePageCollection();
+        if (_isClosing || _spritePageCollectionInProgress ||
+            _spritePageEvictedBytesSinceCollection <
+            SpritePageCollectionThresholdBytes ||
+            _spritePageCollectionTimer.IsEnabled ||
+            !CanRunIdleSpritePageCollection())
+        {
+            return;
+        }
+
+        var delay = SpritePageCollectionDelay;
+        if (_lastSpritePageCollectionTimestamp > 0)
+        {
+            var elapsed = Stopwatch.GetElapsedTime(
+                _lastSpritePageCollectionTimestamp,
+                Stopwatch.GetTimestamp());
+            var remaining = MinimumSpritePageCollectionInterval - elapsed;
+            if (remaining > delay)
+            {
+                delay = remaining;
+            }
+        }
+
+        _spritePageCollectionTimer.Interval = delay;
+        _spritePageCollectionTimer.Start();
+    }
+
+    private bool CanRunIdleSpritePageCollection() =>
+        !_isClosing &&
+        !_isInsideVisualRenderingCallback &&
+        _activeClip is null &&
+        !_isReminderActive &&
+        !_dragInteractionActive &&
+        !_pointerDown &&
+        !_isPetSizeTransitioning &&
+        !_isPetSizePreviewSessionActive &&
+        !_isPetSizeAdjustmentActive &&
+        !_petSizeTargetUpdatePending &&
+        !_petSizeCommitPending &&
+        !_isFrameBlending &&
+        !_isPillowBreathing &&
+        _bubbleMode == BubbleMode.None &&
+        !_todoWindow.IsVisible &&
+        !BubblePopup.IsOpen &&
+        _edgeDock == EdgeDock.None &&
+        _pendingSpriteFrame is null &&
+        _spritePagePrefetchTask is null &&
+        _desiredSpritePageName is null &&
+        _renderDeferredSpritePageName is null &&
+        _renderDeferredSpritePageFailureName is null &&
+        !_renderDeferredSpritePageCancellation &&
+        !_residentSpritePageTrimPending;
+
+    private void ObserveNaturalSpritePageCollection()
+    {
+        if (_spritePageCollectionInProgress)
+        {
+            return;
+        }
+
+        var generation = GC.CollectionCount(GC.MaxGeneration);
+        if (generation <= _lastObservedSpritePageCollectionGeneration)
+        {
+            return;
+        }
+
+        _lastObservedSpritePageCollectionGeneration = generation;
+        var clearedEvictionDebt =
+            _spritePageEvictedBytesSinceCollection > 0;
+        _spritePageEvictedBytesSinceCollection = 0;
+        if (clearedEvictionDebt)
+        {
+            _lastSpritePageCollectionTimestamp = Stopwatch.GetTimestamp();
+        }
+    }
+
+    private void SpritePageCollectionTimer_Tick(object? sender, EventArgs e)
+    {
+        _spritePageCollectionTimer.Stop();
+        if (_isClosing)
+        {
+            return;
+        }
+
+        if (_spritePageCollectionInProgress)
+        {
+            var collectionGeneration = GC.CollectionCount(GC.MaxGeneration);
+            if (collectionGeneration >
+                _spritePageCollectionGenerationAtRequest)
+            {
+                _spritePageEvictedBytesSinceCollection = Math.Max(
+                    0,
+                    _spritePageEvictedBytesSinceCollection -
+                    _spritePageCollectionDebtAtRequest);
+                _spritePageCollectionDebtAtRequest = 0;
+                _spritePageCollectionInProgress = false;
+                _spritePageCollectionPollCount = 0;
+                _lastObservedSpritePageCollectionGeneration =
+                    collectionGeneration;
+                AppLogger.Info(
+                    $"Sprite cache idle Gen2 completed: debt " +
+                    $"{_spritePageEvictedBytesSinceCollection / (1024d * 1024d):F1} MiB");
+                ScheduleSpritePageCollectionIfNeeded();
+                return;
+            }
+
+            _spritePageCollectionPollCount++;
+            if (_spritePageCollectionPollCount >= 10)
+            {
+                _spritePageCollectionInProgress = false;
+                _spritePageCollectionDebtAtRequest = 0;
+                _spritePageCollectionPollCount = 0;
+                AppLogger.Info(
+                    "Sprite cache idle Gen2 was not observed; eviction debt retained");
+                ScheduleSpritePageCollectionIfNeeded();
+                return;
+            }
+
+            _spritePageCollectionTimer.Interval = SpritePageCollectionDelay;
+            _spritePageCollectionTimer.Start();
+            return;
+        }
+
+        if (_spritePageEvictedBytesSinceCollection <
+            SpritePageCollectionThresholdBytes)
+        {
+            return;
+        }
+
+        if (!CanRunIdleSpritePageCollection())
+        {
+            _spritePageCollectionTimer.Interval =
+                SpritePageCollectionRetryDelay;
+            _spritePageCollectionTimer.Start();
+            return;
+        }
+
+        ObserveNaturalSpritePageCollection();
+        if (_spritePageEvictedBytesSinceCollection <
+            SpritePageCollectionThresholdBytes)
+        {
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        if (_lastSpritePageCollectionTimestamp > 0)
+        {
+            var elapsed = Stopwatch.GetElapsedTime(
+                _lastSpritePageCollectionTimestamp,
+                timestamp);
+            if (elapsed < MinimumSpritePageCollectionInterval)
+            {
+                _spritePageCollectionTimer.Interval =
+                    MinimumSpritePageCollectionInterval - elapsed;
+                _spritePageCollectionTimer.Start();
+                return;
+            }
+        }
+
+        _lastSpritePageCollectionTimestamp = timestamp;
+        _spritePageCollectionDebtAtRequest =
+            _spritePageEvictedBytesSinceCollection;
+        _spritePageCollectionGenerationAtRequest =
+            GC.CollectionCount(GC.MaxGeneration);
+        _spritePageCollectionPollCount = 0;
+        _spritePageCollectionInProgress = true;
+        AppLogger.Info(
+            $"Sprite cache idle Gen2 requested: evicted " +
+            $"{_spritePageCollectionDebtAtRequest / (1024d * 1024d):F1} MiB");
+
+        _ = Task.Run(static () =>
+                GC.Collect(
+                    GC.MaxGeneration,
+                    GCCollectionMode.Forced,
+                    blocking: false,
+                    compacting: false))
+            .ContinueWith(
+                completedTask =>
+                {
+                    _ = completedTask.Exception;
+                    try
+                    {
+                        if (!Dispatcher.HasShutdownStarted &&
+                            !Dispatcher.HasShutdownFinished)
+                        {
+                            Dispatcher.BeginInvoke(
+                                DispatcherPriority.Background,
+                                new Action(() =>
+                                {
+                                    if (_isClosing)
+                                    {
+                                        return;
+                                    }
+
+                                    _spritePageCollectionTimer.Interval =
+                                        SpritePageCollectionDelay;
+                                    _spritePageCollectionTimer.Start();
+                                }));
+                        }
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Dispatcher shutdown races are terminal and safe.
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+    }
+
+    private bool IsSpritePageProtected(
+        string pageName,
+        string? preservePageName = null)
+    {
+        if (_pinnedSpritePageNames.Contains(pageName) ||
+            string.Equals(pageName, preservePageName, StringComparison.Ordinal) ||
+            string.Equals(pageName, _loadedSpritePageName, StringComparison.Ordinal) ||
+            string.Equals(pageName, _desiredSpritePageName, StringComparison.Ordinal) ||
+            string.Equals(pageName, _spritePagePrefetchPageName, StringComparison.Ordinal) ||
+            string.Equals(pageName, _renderDeferredSpritePageName, StringComparison.Ordinal) ||
+            (_currentSpriteFrame is SpriteFrame currentFrame &&
+             string.Equals(pageName, currentFrame.PageName, StringComparison.Ordinal)) ||
+            (_pendingSpriteFrame is SpriteFrame pendingFrame &&
+             string.Equals(pageName, pendingFrame.PageName, StringComparison.Ordinal)) ||
+            (_deferredActiveClipClockFrame is SpriteFrame deferredFrame &&
+             string.Equals(pageName, deferredFrame.PageName, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        if (_activeClip is not { } activeClip)
+        {
+            return false;
+        }
+
+        foreach (var frame in activeClip.Frames)
+        {
+            if (string.Equals(
+                    pageName,
+                    frame.Image.PageName,
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool RemoveResidentSpritePage(string pageName)
+    {
+        if (!_residentSpritePages.Remove(pageName, out var residentPage))
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(residentPage.LruNode.List, _residentSpritePageLru))
+        {
+            _residentSpritePageLru.Remove(residentPage.LruNode);
+        }
+
+        if (_residentSpritePageBytes < residentPage.ByteCount)
+        {
+            throw new InvalidOperationException(
+                "Resident sprite page byte accounting underflowed.");
+        }
+
+        _residentSpritePageBytes -= residentPage.ByteCount;
+        RecordDiscardedSpritePageBytes(residentPage.ByteCount);
+        return true;
+    }
+
+    private void RecordDiscardedSpritePageBytes(long byteCount)
+    {
+        if (byteCount <= 0)
+        {
+            return;
+        }
+
+        ObserveNaturalSpritePageCollection();
+        _spritePageEvictedBytesSinceCollection = checked(
+            _spritePageEvictedBytesSinceCollection + byteCount);
+        ScheduleSpritePageCollectionIfNeeded();
+    }
+
+    private void ClearResidentSpritePages()
+    {
+        _residentSpritePages.Clear();
+        _residentSpritePageLru.Clear();
+        _residentSpritePageBytes = 0;
+        _spritePageEvictedBytesSinceCollection = 0;
+        _spritePageCollectionDebtAtRequest = 0;
+        _spritePageCollectionInProgress = false;
+        _spritePageCollectionPollCount = 0;
+        _spritePageCollectionTimer.Stop();
+        _spritePagePixels = Array.Empty<byte>();
+        _loadedSpritePageName = null;
+        _loadedSpritePageStride = 0;
     }
 
     private void PublishSpritePageLoad(
@@ -3711,7 +4325,9 @@ public partial class MainWindow : Window
             $"Sprite page {(prefetched ? "prefetched" : "loaded")}: {pageName}, " +
             $"{result.Width}x{result.Height}, {result.TotalElapsed.TotalMilliseconds:F1} ms " +
             $"(read {result.ReadElapsed.TotalMilliseconds:F1} ms, decode " +
-            $"{result.TotalElapsed.TotalMilliseconds - result.ReadElapsed.TotalMilliseconds:F1} ms)");
+            $"{result.TotalElapsed.TotalMilliseconds - result.ReadElapsed.TotalMilliseconds:F1} ms), " +
+            $"cache {_residentSpritePageBytes / (1024d * 1024d):F1}/" +
+            $"{SpritePageResidentBudgetBytes / (1024d * 1024d):F0} MiB");
     }
 
     private static void ReadExactly(
@@ -3781,7 +4397,7 @@ public partial class MainWindow : Window
             (long)atlasWidth * atlasHeight > int.MaxValue / 4 ||
             expectedPayloadByteCount <= 0 ||
             expectedPayloadByteCount > MaximumSpritePagePayloadBytes ||
-            payload.Length != expectedPayloadByteCount ||
+            payload.Length < expectedPayloadByteCount ||
             !IsCanonicalSha256(expectedDecodedSha256))
         {
             throw new InvalidDataException(
@@ -3809,13 +4425,14 @@ public partial class MainWindow : Window
 
             if (!ReferenceEquals(payload, decodedPixels))
             {
-                payload.CopyTo(decodedPixels, 0);
+                payload.AsSpan(0, expectedPayloadByteCount).CopyTo(decodedPixels);
             }
         }
         else
         {
             ReconstructDeltaSubSpritePage(
                 payload,
+                expectedPayloadByteCount,
                 decodedPixels,
                 atlasWidth,
                 atlasHeight,
@@ -3832,6 +4449,7 @@ public partial class MainWindow : Window
 
     private static void ReconstructDeltaSubSpritePage(
         byte[] payload,
+        int payloadByteCount,
         byte[] atlasPixels,
         int atlasWidth,
         int atlasHeight,
@@ -3855,14 +4473,21 @@ public partial class MainWindow : Window
 
         var frameCount = frameDescriptorValues.Length /
                          SpriteFrameDescriptorValueCount;
-        if (payload.Length < checked(frameCount * DeltaSubFrameHeaderByteCount))
+        if (payloadByteCount <= 0 ||
+            payloadByteCount > payload.Length ||
+            payloadByteCount < checked(frameCount * DeltaSubFrameHeaderByteCount))
         {
             throw new InvalidDataException("Delta-sub sprite page payload ended before its headers.");
         }
 
         Array.Clear(atlasPixels);
-        var previousDisplayFrame = new byte[checked(
-            DisplayPixelWidth * DisplayPixelHeight * 4)];
+        var previousDisplayFrameByteCount = checked(
+            DisplayPixelWidth * DisplayPixelHeight * 4);
+        var previousDisplayFrame = ArrayPool<byte>.Shared.Rent(
+            previousDisplayFrameByteCount);
+        Array.Clear(previousDisplayFrame, 0, previousDisplayFrameByteCount);
+        try
+        {
         var writtenRegionDestinations =
             new Dictionary<SpriteAtlasRegion, (int X, int Y)>();
         var validatedRegions = new List<SpriteAtlasRegion>();
@@ -3872,7 +4497,7 @@ public partial class MainWindow : Window
         for (var frameIndex = 0; frameIndex < frameCount; frameIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (payload.Length - payloadOffset < DeltaSubFrameHeaderByteCount)
+            if (payloadByteCount - payloadOffset < DeltaSubFrameHeaderByteCount)
             {
                 throw new InvalidDataException(
                     $"Delta-sub frame header is truncated at frame {frameIndex}.");
@@ -3901,7 +4526,7 @@ public partial class MainWindow : Window
             if (!emptyDelta)
             {
                 var deltaByteCount = checked((long)deltaWidth * deltaHeight * 4);
-                if (deltaByteCount > payload.Length - payloadOffset)
+                if (deltaByteCount > payloadByteCount - payloadOffset)
                 {
                     throw new InvalidDataException(
                         $"Delta-sub frame bytes are truncated at frame {frameIndex}.");
@@ -4007,10 +4632,17 @@ public partial class MainWindow : Window
             }
         }
 
-        if (payloadOffset != payload.Length)
+        if (payloadOffset != payloadByteCount)
         {
             throw new InvalidDataException(
-                $"Delta-sub sprite page has {payload.Length - payloadOffset} trailing bytes.");
+                $"Delta-sub sprite page has {payloadByteCount - payloadOffset} trailing bytes.");
+        }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(
+                previousDisplayFrame,
+                clearArray: false);
         }
     }
 
@@ -4125,6 +4757,7 @@ public partial class MainWindow : Window
         ResetPetVisualTransforms();
         _activeClip = _todoEnterClip;
         _activeFrameIndex = enterStartIndex - 1;
+        RequestResidentSpritePageTrim();
         // Todo owns the complete wake-to-think pose path, including approved
         // bridge poses. Publish adjacent poses
         // directly instead of cross-fading whole RGBA images, which creates
@@ -4202,6 +4835,7 @@ public partial class MainWindow : Window
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
         ShowStableFrame(_todoFrame);
+        RequestIdleSpritePageTrim();
         UpdateVisualClockSubscription();
     }
 
@@ -4230,6 +4864,7 @@ public partial class MainWindow : Window
         PetFacingScale.ScaleY = 1;
         _activeClip = _reminderEnterClip;
         _activeFrameIndex = -1;
+        RequestResidentSpritePageTrim();
         _nextFrameBlendDuration = TimeSpan.Zero;
         _nextFrameMinimumHold = TimeSpan.Zero;
         RequestSpritePagePrefetch(
@@ -5715,9 +6350,26 @@ public partial class MainWindow : Window
         int[] FrameDescriptorValues,
         IReadOnlyDictionary<string, SpriteFrame> Frames);
 
-    private sealed record ResidentSpritePage(
-        byte[] Pixels,
-        int Stride);
+    private sealed class ResidentSpritePage
+    {
+        public ResidentSpritePage(
+            byte[] pixels,
+            int stride,
+            LinkedListNode<string> lruNode)
+        {
+            Pixels = pixels;
+            Stride = stride;
+            LruNode = lruNode;
+        }
+
+        public byte[] Pixels { get; }
+
+        public int Stride { get; }
+
+        public long ByteCount => Pixels.LongLength;
+
+        public LinkedListNode<string> LruNode { get; }
+    }
 
     private readonly record struct SpritePageLoadResult(
         byte[] Pixels,

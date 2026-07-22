@@ -120,6 +120,20 @@ internal static class Program
                 {
                     RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                         () => AssertResidentSpritePageWarmupContract(window));
+                    RunCheck(nameof(AssertIdleSpritePageTrimContract),
+                        () => AssertIdleSpritePageTrimContract(window));
+                    RunCheck(nameof(AssertIdleSpritePageCollectionGateContract),
+                        () => AssertIdleSpritePageCollectionGateContract(window));
+                    RunCheck(nameof(AssertStaleSpritePageCompletionIsDiscarded),
+                        () => AssertStaleSpritePageCompletionIsDiscarded(window));
+                    RunCheck(nameof(AssertRenderDeferredSpriteCacheMutationContract),
+                        () => AssertRenderDeferredSpriteCacheMutationContract(window));
+                    RunCheck(nameof(AssertSpriteCacheShutdownAndLateCompletionContract),
+                        AssertSpriteCacheShutdownAndLateCompletionContract);
+                    RunCheck(nameof(AssertSupersededPendingSpriteFrameDoesNotFlashBack),
+                        () => AssertSupersededPendingSpriteFrameDoesNotFlashBack(window));
+                    RunCheck(nameof(AssertColdSpritePageClipClockContract),
+                        () => AssertColdSpritePageClipClockContract(window));
                     return 0;
                 }
 
@@ -167,6 +181,16 @@ internal static class Program
 
                 RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                     () => AssertResidentSpritePageWarmupContract(window));
+                RunCheck(nameof(AssertIdleSpritePageTrimContract),
+                    () => AssertIdleSpritePageTrimContract(window));
+                RunCheck(nameof(AssertIdleSpritePageCollectionGateContract),
+                    () => AssertIdleSpritePageCollectionGateContract(window));
+                RunCheck(nameof(AssertStaleSpritePageCompletionIsDiscarded),
+                    () => AssertStaleSpritePageCompletionIsDiscarded(window));
+                RunCheck(nameof(AssertRenderDeferredSpriteCacheMutationContract),
+                    () => AssertRenderDeferredSpriteCacheMutationContract(window));
+                RunCheck(nameof(AssertSpriteCacheShutdownAndLateCompletionContract),
+                    AssertSpriteCacheShutdownAndLateCompletionContract);
                 RunCheck(nameof(AssertDisplayFrameContract), () => AssertDisplayFrameContract(window));
                 RunCheck(nameof(AssertSupersededPendingSpriteFrameDoesNotFlashBack),
                     () => AssertSupersededPendingSpriteFrameDoesNotFlashBack(window));
@@ -250,11 +274,14 @@ internal static class Program
             .Max(page => checked(
                 (long)GetProperty<int>(page, "Width") *
                 GetProperty<int>(page, "Height") * 4));
+        var idlePageNameAtEntry = GetSpriteFrameInfo(
+            GetField<object>(window, "_idleFrame")).PageName;
         Assert(maximumDecodedPageBytes <= MaximumDecodedSpritePageBytes &&
-               residentPages.Count == 1,
-            $"启动必须只同步解码idle页，且单页不得超过24MiB；实际最大页 " +
+               residentPages.Contains(idlePageNameAtEntry),
+            $"单页不得超过24MiB且idle必须始终常驻；实际最大页 " +
             $"{maximumDecodedPageBytes / 1024d / 1024d:F2}MiB，" +
-            $"启动常驻页 {residentPages.Count}");
+            $"当前resident页 {residentPages.Count}");
+        AssertResidentSpriteCacheAccounting(window, "完整分页校验开始");
         var bitmapFields = typeof(MainWindow).GetFields(InstanceFlags)
                 .Select(field => field.GetValue(window))
                 .OfType<BitmapSource>()
@@ -365,13 +392,13 @@ internal static class Program
                 spriteBrush);
         }
 
-        var expectedResidentBytes = pages.Sum(page => checked((long)page.Width * page.Height * 4));
-        var actualResidentBytes = GetDictionaryEntries(residentPages).Sum(entry =>
-            GetProperty<byte[]>(entry.Value!, "Pixels").LongLength);
-        Assert(residentPages.Count == pages.Length &&
-               actualResidentBytes == expectedResidentBytes,
-            $"逐页预热后所有{pages.Length}页必须常驻且每页仅保留一份解码像素；" +
-            $"实际 {actualResidentBytes / 1024d / 1024d:F2}MiB");
+        var expectedPinnedPageNames = GetExpectedPinnedSpritePageNames(window);
+        Assert(residentPages.Count < pages.Length &&
+               expectedPinnedPageNames.All(residentPages.Contains) &&
+               residentPages.Contains(GetField<string>(window, "_loadedSpritePageName")),
+            $"逐页清单/像素校验后缓存必须保持有界，固定热页与当前页仍须常驻；" +
+            $"resident={residentPages.Count}/{pages.Length}");
+        AssertResidentSpriteCacheAccounting(window, "逐页清单与像素校验完成");
 
         using (var manifest = JsonDocument.Parse(File.ReadAllText(
                    FindWorkspaceFile("Assets", "luban-sprite-pages.json"))))
@@ -390,19 +417,8 @@ internal static class Program
             pages[0].Frames.Values.Cast<object>().First());
         AssertDirtyRectanglePixelContract(window);
         AssertSingleBufferPremultipliedBlendContract(window);
-        var residentPixelReferences = GetDictionaryEntries(residentPages)
-            .ToDictionary(
-                entry => (string)entry.Key,
-                entry => GetProperty<byte[]>(entry.Value!, "Pixels"),
-                StringComparer.Ordinal);
         AssertCompressedPageLoadPerformance(window, pages);
-        Assert(residentPages.Count == residentPixelReferences.Count &&
-               GetDictionaryEntries(residentPages).All(entry =>
-                   residentPixelReferences.TryGetValue((string)entry.Key, out var pixels) &&
-                   ReferenceEquals(
-                       pixels,
-                       GetProperty<byte[]>(entry.Value!, "Pixels"))),
-            "常驻缓存达到稳态后重复切换所有分页不得扩容或替换解码数组");
+        AssertResidentSpriteCacheAccounting(window, "逐页热命中性能校验完成");
         var idleFrame = GetField<object>(window, "_idleFrame");
         var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
         var idlePage = pages.Single(page => page.Name == idlePageName);
@@ -668,6 +684,43 @@ internal static class Program
             "已淘汰的 deferred 冷页即使触发空 Tick 也不得创建 Task/CTS");
         Invoke(window, "ShowStableFrame", hotFrameA1);
 
+        // Repeat the same supersession while an independent idle-trim signal
+        // shares the one-shot timer. Clearing the obsolete page request must
+        // not stop the timer and lose the remaining work.
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
+        {
+            Invoke(window, "ShowStableFrame", coldFrame);
+            Invoke(window, "RequestIdleSpritePageTrim");
+        }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+
+        Assert(Equals(GetRawField(window, "_pendingSpriteFrame"), coldFrame) &&
+               GetField<bool>(window, "_residentSpritePageTrimPending") &&
+               GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
+               deferredDispatchTimer.IsEnabled,
+            "deferred冷页与idle trim必须能共享同一个dispatcher timer信号");
+        Invoke(window, "ShowStableFrame", hotFrameA1);
+        Assert(GetRawField(window, "_pendingSpriteFrame") is null &&
+               GetRawField(window, "_renderDeferredSpritePageName") is null &&
+               GetField<bool>(window, "_residentSpritePageTrimPending") &&
+               GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
+               deferredDispatchTimer.IsEnabled,
+            "热页淘汰obsolete deferred请求时不得停止仍承载idle trim的timer信号");
+        Invoke(window, "SpritePagePrefetchDispatchTimer_Tick", null, EventArgs.Empty);
+        Assert(!GetField<bool>(window, "_residentSpritePageTrimPending") &&
+               !GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
+               !deferredDispatchTimer.IsEnabled &&
+               GetField<long>(window, "_residentSpritePageBytes") <=
+               (long)(typeof(MainWindow).GetField(
+                   "SpritePageIdleResidentTargetBytes",
+                   StaticFlags)!.GetValue(null) ?? 0L),
+            "保留下来的dispatcher tick必须消费idle trim信号并完成96MiB裁剪");
+        ResetSpritePageCollectionTestState(window);
+
         // A1 -> cold C1: keep A1 visible while C starts decoding in the
         // background and records C1 as the pending pose.
         Invoke(window, "ShowStableFrame", coldFrame);
@@ -742,19 +795,47 @@ internal static class Program
             .Select(entry => (string)entry.Key)
             .ToArray();
         Assert(pageNames.Length >= 3,
-            "常驻缓存抢占测试至少需要idle、一个预热页和一个紧急页");
+            "常驻缓存回归至少需要idle、固定热页和按需动作页");
 
         var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
         var idlePageName = GetField<string>(window, "_loadedSpritePageName");
         var idlePixels = GetField<byte[]>(window, "_spritePagePixels");
-        Assert(residentPages.Count == 1 && residentPages.Contains(idlePageName),
-            "首屏前只能同步常驻当前idle页");
+        var residentBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        var pinnedPageNames = GetField<HashSet<string>>(
+            window,
+            "_pinnedSpritePageNames");
+        var warmupOrder = GetField<string[]>(window, "_spritePageWarmupOrder");
+        var expectedPinnedPageNames = GetExpectedPinnedSpritePageNames(window);
+        var expectedWarmupOrder = BuildExpectedSpritePageWarmupOrder(window);
+        var residentLru = GetField<LinkedList<string>>(
+            window,
+            "_residentSpritePageLru");
 
-        var backgroundPageName = pageNames.First(name =>
-            !string.Equals(name, idlePageName, StringComparison.Ordinal));
-        var urgentPageName = pageNames.First(name =>
-            !string.Equals(name, idlePageName, StringComparison.Ordinal) &&
-            !string.Equals(name, backgroundPageName, StringComparison.Ordinal));
+        Assert(residentBudgetBytes == 144L * 1024L * 1024L,
+            $"解码分页常驻预算必须固定为144MiB，实际 " +
+            $"{residentBudgetBytes / 1024d / 1024d:F2}MiB");
+        Assert(residentPages.Count == 1 &&
+               residentPages.Contains(idlePageName) &&
+               ReferenceEquals(
+                   GetProperty<byte[]>(residentPages[idlePageName]!, "Pixels"),
+                   idlePixels) &&
+               GetField<long>(window, "_residentSpritePageBytes") == idlePixels.LongLength &&
+               residentLru.SequenceEqual([idlePageName]),
+            "首屏前只能同步常驻当前idle页，且字节账与LRU必须同时登记该页");
+        Assert(pinnedPageNames.SetEquals(expectedPinnedPageNames),
+            "固定热页必须精确包含idle、四个提醒分页与三个边缘分页");
+        Assert(warmupOrder.SequenceEqual(expectedWarmupOrder),
+            "后台预热必须只包含提醒4页、边缘3页及idle-part-02/03，且顺序稳定");
+        AssertResidentSpriteCacheAccounting(window, "首屏缓存");
+
+        var backgroundPageName = expectedWarmupOrder[0];
+        var urgentPageName = pageNames
+            .Where(name => !expectedPinnedPageNames.Contains(name) &&
+                           !expectedWarmupOrder.Contains(name, StringComparer.Ordinal))
+            .OrderBy(name => GetSpritePageByteCount(pageMap, name))
+            .First();
 
         SetField(window, "_spritePageWarmupEnabled", true);
         Invoke(window, "ResumeSpritePageWarmup");
@@ -782,18 +863,23 @@ internal static class Program
             "紧急动作页必须换代并取消在途后台预热");
 
         var deadline = Stopwatch.StartNew();
-        while ((!residentPages.Contains(urgentPageName) ||
-                !residentPages.Contains(backgroundPageName)) &&
-               deadline.Elapsed < TimeSpan.FromSeconds(10))
+        while ((GetRawField(window, "_spritePagePrefetchTask") is not null ||
+                GetRawField(window, "_desiredSpritePageName") is not null ||
+                GetField<int>(window, "_spritePageWarmupIndex") < warmupOrder.Length) &&
+               deadline.Elapsed < TimeSpan.FromSeconds(20))
         {
             PumpDispatcher(TimeSpan.FromMilliseconds(5));
             Thread.Yield();
         }
 
-        Assert(residentPages.Contains(urgentPageName),
-            $"紧急页 {urgentPageName} 必须优先进入常驻缓存");
-        Assert(residentPages.Contains(backgroundPageName),
-            $"紧急页完成后必须恢复并完成被抢占的预热页 {backgroundPageName}");
+        Assert(GetRawField(window, "_spritePagePrefetchTask") is null &&
+               GetRawField(window, "_desiredSpritePageName") is null &&
+               GetField<int>(window, "_spritePageWarmupIndex") == warmupOrder.Length,
+            "有限热页预热必须在20秒内完成并停止，不得继续遍历全部39页");
+        Assert(residentPages.Contains(urgentPageName) &&
+               expectedWarmupOrder.All(residentPages.Contains) &&
+               expectedPinnedPageNames.All(residentPages.Contains),
+            "紧急页必须优先进入缓存，随后恢复全部有限热页预热且不得驱逐固定页");
         Assert(string.Equals(
                    GetField<string>(window, "_loadedSpritePageName"),
                    idlePageName,
@@ -801,13 +887,7 @@ internal static class Program
                ReferenceEquals(GetField<byte[]>(window, "_spritePagePixels"), idlePixels),
             "后台预热只能发布常驻数组，不能擅自切换当前显示页");
 
-        foreach (var residentEntry in GetDictionaryEntries(residentPages))
-        {
-            var page = pageMap[residentEntry.Key]!;
-            var pixels = GetProperty<byte[]>(residentEntry.Value!, "Pixels");
-            Assert(pixels.Length == GetProperty<int>(page, "UncompressedByteCount"),
-                $"常驻页 {residentEntry.Key} 必须使用清单声明的精确长度数组");
-        }
+        AssertResidentSpriteCacheAccounting(window, "有限热页预热完成");
 
         SetField(window, "_spritePageWarmupEnabled", false);
         SetField(window, "_desiredSpritePageName", null);
@@ -827,21 +907,904 @@ internal static class Program
         Assert(GetRawField(window, "_spritePagePrefetchTask") is null,
             "聚焦测试结束时后台预热必须可取消并干净收敛");
 
-        foreach (var residentPageName in GetDictionaryEntries(residentPages)
-                     .Select(entry => (string)entry.Key)
-                     .Where(name => !string.Equals(
-                         name,
-                         idlePageName,
-                         StringComparison.Ordinal))
-                     .ToArray())
+        // Establish two large unprotected pages, touch A after B, then add
+        // further pages until pressure chooses a victim. B must be the first of
+        // the pair evicted; a dictionary-only FIFO or insertion-order policy
+        // would incorrectly remove A as well or keep B.
+        var lruCandidates = pageNames
+            .Where(name => !expectedPinnedPageNames.Contains(name) &&
+                           !expectedWarmupOrder.Contains(name, StringComparer.Ordinal) &&
+                           !string.Equals(name, urgentPageName, StringComparison.Ordinal))
+            .OrderByDescending(name => GetSpritePageByteCount(pageMap, name))
+            .ToArray();
+        Assert(lruCandidates.Length >= 5,
+            "LRU压力测试至少需要五个非固定、非预热动作页");
+        var recentlyTouchedPageName = lruCandidates[0];
+        var olderPageName = lruCandidates[1];
+        LoadSpritePageForTest(window, recentlyTouchedPageName);
+        LoadSpritePageForTest(window, olderPageName);
+        LoadSpritePageForTest(window, idlePageName);
+        LoadSpritePageForTest(window, recentlyTouchedPageName);
+        LoadSpritePageForTest(window, idlePageName);
+
+        var observedLruEviction = false;
+        foreach (var pageName in lruCandidates.Skip(2))
         {
-            residentPages.Remove(residentPageName);
+            LoadSpritePageForTest(window, pageName);
+            LoadSpritePageForTest(window, idlePageName);
+            AssertResidentSpriteCacheAccounting(window, $"LRU加入 {pageName}");
+            if (!residentPages.Contains(olderPageName) ||
+                !residentPages.Contains(recentlyTouchedPageName))
+            {
+                Assert(!residentPages.Contains(olderPageName) &&
+                       residentPages.Contains(recentlyTouchedPageName),
+                    $"LRU必须先驱逐较旧页 {olderPageName}，并保留重新触达页 " +
+                    recentlyTouchedPageName);
+                observedLruEviction = true;
+                break;
+            }
         }
 
-        SetField(window, "_spritePageWarmupIndex", 0);
+        Assert(observedLruEviction,
+            "144MiB压力必须实际触发一次可观察的LRU驱逐");
+
+        // Discover the largest real click clip from its distinct decoded page
+        // footprint instead of depending on a clip index or current atlas
+        // pagination. This keeps the protection proof valid as assets evolve.
+        // Use it to force the cache close to its
+        // budget. A small page outside that clip is first protected as the
+        // current frame and then as the pending frame; both states must survive
+        // trimming along with every page referenced by the active clip.
+        var activeClip = GetField<Array>(window, "_reactionClips")
+            .Cast<object>()
+            .MaxBy(clip => GetClipPageNames(clip)
+                .Sum(pageName => GetSpritePageByteCount(pageMap, pageName)))!;
+        var activeClipPages = GetClipPageNames(activeClip);
+        var pinnedAndMaximumClipPages = expectedPinnedPageNames
+            .Concat(activeClipPages)
+            .ToHashSet(StringComparer.Ordinal);
+        var pinnedAndMaximumClipBytes = pinnedAndMaximumClipPages.Sum(
+            pageName => GetSpritePageByteCount(pageMap, pageName));
+        Assert(pinnedAndMaximumClipBytes <= residentBudgetBytes,
+            "固定热页与按distinct分页字节动态选出的最大动作clip必须可同时容纳于" +
+            $"144MiB预算：{pinnedAndMaximumClipBytes / 1024d / 1024d:F2}MiB");
+        var currentOrPendingPageName = pageNames
+            .Where(name => !expectedPinnedPageNames.Contains(name) &&
+                           !activeClipPages.Contains(name))
+            .OrderBy(name => GetSpritePageByteCount(pageMap, name))
+            .First();
+        var currentOrPendingFrame = GetFirstSpriteFrameOnPage(
+            window,
+            currentOrPendingPageName);
+        LoadSpritePageForTest(window, currentOrPendingPageName);
+        Invoke(window, "ShowStableFrame", currentOrPendingFrame);
+        SetField(window, "_activeClip", activeClip);
+        PrimeAllClipPagesForTest(window, GetClipFrames(activeClip));
+        Invoke(window, "TrimResidentSpritePagesToBudget", (object?)null);
+        var protectedCurrentPages = expectedPinnedPageNames
+            .Concat(activeClipPages)
+            .Append(currentOrPendingPageName)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(protectedCurrentPages.All(residentPages.Contains),
+            "LRU压力不得驱逐固定热页、当前显示页或活动clip引用的任一分页");
+        AssertResidentSpriteCacheAccounting(window, "活动clip与当前页保护");
+
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        SetField(window, "_pendingSpriteFrame", currentOrPendingFrame);
+        var pressurePageName = pageNames
+            .Where(name => !protectedCurrentPages.Contains(name))
+            .OrderBy(name => GetSpritePageByteCount(pageMap, name))
+            .First();
+        LoadSpritePageForTest(window, pressurePageName);
+        LoadSpritePageForTest(window, idlePageName);
+        Invoke(window, "TrimResidentSpritePagesToBudget", (object?)null);
+        Assert(residentPages.Contains(currentOrPendingPageName) &&
+               activeClipPages.All(residentPages.Contains) &&
+               expectedPinnedPageNames.All(residentPages.Contains),
+            "LRU压力不得驱逐待显示页、活动clip页或固定热页");
+        AssertResidentSpriteCacheAccounting(window, "活动clip与pending页保护");
+
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_activeClip", null);
+        SetField(window, "_activeFrameIndex", -1);
+        SetField(window, "_activeClipStartedTimestamp", 0L);
+        SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+        Invoke(window, "ClearDeferredActiveClipClock");
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        Invoke(window, "TrimResidentSpritePagesToBudget", (object?)null);
         SetField(window, "_failedSpritePageName", null);
-        Assert(residentPages.Count == 1 && residentPages.Contains(idlePageName),
-            "常驻缓存聚焦测试必须恢复只含idle页的后续测试基线");
+        Assert(expectedPinnedPageNames.All(residentPages.Contains),
+            "压力测试清理后固定热页仍必须常驻");
+        AssertResidentSpriteCacheAccounting(window, "LRU压力测试清理");
+    }
+
+    private static void AssertIdleSpritePageTrimContract(MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        PrepareIdleSpriteCollectionBaseline(window);
+        ResetSpritePageCollectionTestState(window);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var idleTargetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageIdleResidentTargetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        var residentBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        Assert(idleTargetBytes == 96L * 1024L * 1024L &&
+               residentBudgetBytes == 144L * 1024L * 1024L,
+            "动作结束后的idle常驻目标必须是96MiB，活动软预算必须保持144MiB");
+
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        var pinnedPageNames = GetExpectedPinnedSpritePageNames(window);
+        var protectedPageName = GetDictionaryEntries(pageMap)
+            .Select(entry => (string)entry.Key)
+            .Where(pageName => !pinnedPageNames.Contains(pageName))
+            .OrderBy(pageName => GetSpritePageByteCount(pageMap, pageName))
+            .First(pageName => pinnedPageNames
+                .Append(pageName)
+                .Distinct(StringComparer.Ordinal)
+                .Sum(name => GetSpritePageByteCount(pageMap, name)) <=
+                idleTargetBytes);
+        var protectedFrame = GetFirstSpriteFrameOnPage(
+            window,
+            protectedPageName);
+
+        foreach (var pageName in GetDictionaryEntries(pageMap)
+                     .Select(entry => (string)entry.Key)
+                     .Where(pageName => !pinnedPageNames.Contains(pageName) &&
+                                        !string.Equals(
+                                            pageName,
+                                            protectedPageName,
+                                            StringComparison.Ordinal))
+                     .OrderByDescending(pageName =>
+                         GetSpritePageByteCount(pageMap, pageName)))
+        {
+            if (GetField<long>(window, "_residentSpritePageBytes") >
+                idleTargetBytes + 12L * 1024L * 1024L)
+            {
+                break;
+            }
+
+            LoadSpritePageForTest(window, pageName);
+        }
+
+        LoadSpritePageForTest(window, protectedPageName);
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        SetField(window, "_pendingSpriteFrame", protectedFrame);
+        SetField(
+            window,
+            "_pendingSpriteFrameBlendDuration",
+            TimeSpan.FromMilliseconds(120));
+
+        var residentBytesBefore = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var collectionDebtBefore = GetField<long>(
+            window,
+            "_spritePageEvictedBytesSinceCollection");
+        Assert(residentBytesBefore > idleTargetBytes,
+            "idle回收测试必须先建立超过96MiB的真实解码页缓存压力");
+        var protectedPageNames = pinnedPageNames
+            .Append(idlePageName)
+            .Append(protectedPageName)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(protectedPageNames.Sum(pageName =>
+                   GetSpritePageByteCount(pageMap, pageName)) <= idleTargetBytes,
+            "固定热页、当前idle页和pending保护页必须可共同容纳在96MiB目标内");
+
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        var residentBytesAfter = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        Assert(residentBytesAfter <= idleTargetBytes &&
+               protectedPageNames.All(residentPages.Contains),
+            "idle回收必须把缓存裁到96MiB以内，且不得丢失固定、当前或pending保护页");
+        Assert(GetField<long>(window, "_spritePageEvictedBytesSinceCollection") ==
+               collectionDebtBefore + residentBytesBefore - residentBytesAfter,
+            "idle回收释放的每个resident字节必须精确累计为Gen2回收债务");
+        AssertResidentSpriteCacheAccounting(window, "96MiB idle回收与保护");
+
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        Assert(GetField<long>(window, "_residentSpritePageBytes") <=
+               idleTargetBytes &&
+               pinnedPageNames.All(residentPages.Contains),
+            "pending保护释放后的idle重试必须保持96MiB目标与全部固定热页");
+        ResetSpritePageCollectionTestState(window);
+    }
+
+    private static void AssertIdleSpritePageCollectionGateContract(
+        MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        PrepareIdleSpriteCollectionBaseline(window);
+        ResetSpritePageCollectionTestState(window);
+        Assert((bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+            "完全空闲的桌宠必须允许进入证据驱动Gen2回收门禁");
+
+        var arbitraryPageName = GetDictionaryEntries(
+                GetField<IDictionary>(window, "_spritePages"))
+            .Select(entry => (string)entry.Key)
+            .First(pageName => !string.Equals(
+                pageName,
+                GetField<string>(window, "_loadedSpritePageName"),
+                StringComparison.Ordinal));
+        var arbitraryFrame = GetFirstSpriteFrameOnPage(window, arbitraryPageName);
+        var completedPageTask = CreateCompletedSpritePageLoadTask(
+            window,
+            arbitraryPageName);
+        var reactionClip = GetField<Array>(window, "_reactionClips").GetValue(0)!;
+        var blockers = new (string FieldName, object Value, string Scenario)[]
+        {
+            ("_isClosing", true, "关闭"),
+            ("_isInsideVisualRenderingCallback", true, "Rendering回调"),
+            ("_activeClip", reactionClip, "动作"),
+            ("_isReminderActive", true, "提醒"),
+            ("_dragInteractionActive", true, "拖动"),
+            ("_pointerDown", true, "按下拖动前态"),
+            ("_isPetSizeTransitioning", true, "缩放过渡"),
+            ("_isPetSizePreviewSessionActive", true, "缩放预览"),
+            ("_isPetSizeAdjustmentActive", true, "缩放输入"),
+            ("_petSizeTargetUpdatePending", true, "缩放目标待提交"),
+            ("_petSizeCommitPending", true, "缩放保存待提交"),
+            ("_isFrameBlending", true, "帧过渡"),
+            ("_isPillowBreathing", true, "枕头呼吸"),
+            ("_bubbleMode", GetNestedEnum("BubbleMode", "Todo"), "Todo窗口"),
+            ("_edgeDock", GetNestedEnum("EdgeDock", "Left"), "边缘探头"),
+            ("_pendingSpriteFrame", arbitraryFrame, "待显示冷页"),
+            ("_spritePagePrefetchTask", completedPageTask, "分页预取"),
+            ("_desiredSpritePageName", arbitraryPageName, "分页请求"),
+            ("_renderDeferredSpritePageName", arbitraryPageName, "Rendering延迟请求"),
+            ("_renderDeferredSpritePageFailureName", arbitraryPageName, "Rendering延迟失败"),
+            ("_renderDeferredSpritePageCancellation", true, "Rendering延迟取消"),
+            ("_residentSpritePageTrimPending", true, "Rendering延迟trim")
+        };
+
+        foreach (var blocker in blockers)
+        {
+            var originalValue = GetRawField(window, blocker.FieldName);
+            SetField(window, blocker.FieldName, blocker.Value);
+            Assert(!(bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+                $"{blocker.Scenario}期间必须禁止发起后台Gen2回收");
+            SetField(window, blocker.FieldName, originalValue);
+            Assert((bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+                $"清除{blocker.Scenario}阻塞后空闲门禁必须恢复");
+        }
+
+        var automaticTimer = GetField<DispatcherTimer>(window, "_automaticTimer");
+        Invoke(window, "StartPillowBreathing");
+        Assert(GetField<bool>(window, "_isPillowBreathing") &&
+               automaticTimer.IsEnabled &&
+               !(bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+            "真实枕头待机占位期间必须阻止Gen2回收");
+        Invoke(window, "StopPillowBreathing");
+        Assert(!GetField<bool>(window, "_isPillowBreathing") &&
+               !automaticTimer.IsEnabled &&
+               (bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+            "停止枕头待机必须清理timer并恢复空闲Gen2门禁");
+
+        var thresholdBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageCollectionThresholdBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        var collectionDelay = (TimeSpan)(typeof(MainWindow).GetField(
+                "SpritePageCollectionDelay",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var retryDelay = (TimeSpan)(typeof(MainWindow).GetField(
+                "SpritePageCollectionRetryDelay",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var minimumInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "MinimumSpritePageCollectionInterval",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var collectionTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageCollectionTimer");
+        Assert(thresholdBytes == 48L * 1024L * 1024L &&
+               collectionDelay == TimeSpan.FromSeconds(1) &&
+               retryDelay == TimeSpan.FromSeconds(5) &&
+               minimumInterval == TimeSpan.FromSeconds(30),
+            "idle Gen2门禁必须保持48MiB阈值、1秒延迟、5秒忙重试与30秒最短间隔");
+
+        SetField(
+            window,
+            "_spritePageEvictedBytesSinceCollection",
+            thresholdBytes - 1);
+        Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
+        Assert(!collectionTimer.IsEnabled,
+            "累计淘汰不足48MiB时不得启动Gen2 timer");
+
+        SetField(window, "_spritePageEvictedBytesSinceCollection", thresholdBytes);
+        SetField(window, "_lastSpritePageCollectionTimestamp", 0L);
+        Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
+        Assert(collectionTimer.IsEnabled && collectionTimer.Interval == collectionDelay,
+            "累计淘汰达到48MiB且完全空闲时必须先延迟1秒再评估Gen2");
+        collectionTimer.Stop();
+
+        SetField(
+            window,
+            "_lastSpritePageCollectionTimestamp",
+            Stopwatch.GetTimestamp());
+        Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
+        Assert(collectionTimer.IsEnabled &&
+               collectionTimer.Interval >= TimeSpan.FromSeconds(29) &&
+               collectionTimer.Interval <= minimumInterval,
+            "上次请求后30秒内必须按剩余时间节流，不得每个动作都请求Gen2");
+        collectionTimer.Stop();
+
+        SetField(window, "_lastSpritePageCollectionTimestamp", 0L);
+        SetField(window, "_spritePageCollectionInProgress", false);
+        SetField(window, "_activeClip", reactionClip);
+        Invoke(window, "SpritePageCollectionTimer_Tick", null, EventArgs.Empty);
+        Assert(collectionTimer.IsEnabled &&
+               collectionTimer.Interval == retryDelay &&
+               !GetField<bool>(window, "_spritePageCollectionInProgress") &&
+               GetField<long>(window, "_lastSpritePageCollectionTimestamp") == 0 &&
+               GetField<long>(window, "_spritePageEvictedBytesSinceCollection") ==
+               thresholdBytes,
+            "timer到点若动作仍忙，只能5秒后重试，不能发起GC或扣除债务");
+        SetField(window, "_activeClip", null);
+        collectionTimer.Stop();
+
+        SetField(
+            window,
+            "_spritePageEvictedBytesSinceCollection",
+            thresholdBytes - 1);
+        Invoke(window, "SpritePageCollectionTimer_Tick", null, EventArgs.Empty);
+        Assert(!collectionTimer.IsEnabled &&
+               !GetField<bool>(window, "_spritePageCollectionInProgress") &&
+               GetField<long>(window, "_lastSpritePageCollectionTimestamp") == 0,
+            "timer到点时债务低于48MiB必须直接退出，不能发起GC");
+
+        ResetSpritePageCollectionTestState(window);
+    }
+
+    private static void PrepareIdleSpriteCollectionBaseline(MainWindow window)
+    {
+        SetField(window, "_isClosing", false);
+        SetField(window, "_isInsideVisualRenderingCallback", false);
+        SetField(window, "_activeClip", null);
+        SetField(window, "_isReminderActive", false);
+        SetField(window, "_dragInteractionActive", false);
+        SetField(window, "_pointerDown", false);
+        SetField(window, "_isPetSizeTransitioning", false);
+        SetField(window, "_isPetSizePreviewSessionActive", false);
+        SetField(window, "_isPetSizeAdjustmentActive", false);
+        SetField(window, "_petSizeTargetUpdatePending", false);
+        SetField(window, "_petSizeCommitPending", false);
+        SetField(window, "_isFrameBlending", false);
+        SetField(window, "_isPillowBreathing", false);
+        SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+        SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        SetField(window, "_renderDeferredSpritePageName", null);
+        SetField(window, "_renderDeferredSpritePageUrgent", false);
+        SetField(window, "_renderDeferredSpritePageFailureName", null);
+        SetField(window, "_renderDeferredSpritePageFailureReason", null);
+        SetField(window, "_renderDeferredSpritePageCancellation", false);
+        SetField(window, "_residentSpritePageTrimPending", false);
+        SetField(window, "_residentSpritePageIdleTrimPending", false);
+        SetField(window, "_spritePageWarmupEnabled", false);
+    }
+
+    private static void ResetSpritePageCollectionTestState(MainWindow window)
+    {
+        GetField<DispatcherTimer>(window, "_spritePageCollectionTimer").Stop();
+        SetField(window, "_spritePageEvictedBytesSinceCollection", 0L);
+        SetField(window, "_lastSpritePageCollectionTimestamp", 0L);
+        SetField(window, "_spritePageCollectionDebtAtRequest", 0L);
+        SetField(window, "_spritePageCollectionGenerationAtRequest", 0);
+        SetField(window, "_spritePageCollectionPollCount", 0);
+        SetField(window, "_spritePageCollectionInProgress", false);
+        SetField(
+            window,
+            "_lastObservedSpritePageCollectionGeneration",
+            GC.CollectionCount(GC.MaxGeneration));
+    }
+
+    private static HashSet<string> GetExpectedPinnedSpritePageNames(
+        MainWindow window)
+    {
+        var pageNames = new HashSet<string>(StringComparer.Ordinal)
+        {
+            GetSpriteFrameInfo(GetField<object>(window, "_idleFrame")).PageName
+        };
+
+        foreach (var fieldName in new[]
+                 {
+                     "_reminderEnterFrames",
+                     "_reminderHoldFrames",
+                     "_edgeLeftFrames",
+                     "_edgeTopFrames",
+                     "_edgeBottomFrames"
+                 })
+        {
+            foreach (var frame in GetField<Array>(window, fieldName).Cast<object>())
+            {
+                pageNames.Add(GetSpriteFrameInfo(frame).PageName);
+            }
+        }
+
+        return pageNames;
+    }
+
+    private static string[] BuildExpectedSpritePageWarmupOrder(MainWindow window)
+    {
+        var order = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal)
+        {
+            GetSpriteFrameInfo(GetField<object>(window, "_idleFrame")).PageName
+        };
+
+        void AddFramePages(Array frames)
+        {
+            foreach (var frame in frames.Cast<object>())
+            {
+                var pageName = GetSpriteFrameInfo(frame).PageName;
+                if (seen.Add(pageName))
+                {
+                    order.Add(pageName);
+                }
+            }
+        }
+
+        AddFramePages(GetField<Array>(window, "_reminderEnterFrames"));
+        AddFramePages(GetField<Array>(window, "_reminderHoldFrames"));
+        AddFramePages(GetField<Array>(window, "_edgeLeftFrames"));
+        AddFramePages(GetField<Array>(window, "_edgeTopFrames"));
+        AddFramePages(GetField<Array>(window, "_edgeBottomFrames"));
+
+        var addedWakePages = 0;
+        foreach (var frame in GetField<Array>(window, "_wakeFrames").Cast<object>())
+        {
+            var pageName = GetSpriteFrameInfo(frame).PageName;
+            if (seen.Add(pageName))
+            {
+                order.Add(pageName);
+                addedWakePages++;
+                if (addedWakePages == 2)
+                {
+                    break;
+                }
+            }
+        }
+
+        return order.ToArray();
+    }
+
+    private static long GetSpritePageByteCount(IDictionary pageMap, string pageName)
+    {
+        return GetProperty<int>(pageMap[pageName]!, "UncompressedByteCount");
+    }
+
+    private static void LoadSpritePageForTest(MainWindow window, string pageName)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        Invoke(window, "LoadSpritePageIntoBuffer", pageName, pageMap[pageName]!);
+        Assert(GetField<IDictionary>(window, "_residentSpritePages").Contains(pageName),
+            $"测试装载后分页 {pageName} 必须进入resident cache");
+    }
+
+    private static object GetFirstSpriteFrameOnPage(
+        MainWindow window,
+        string pageName)
+    {
+        var page = GetField<IDictionary>(window, "_spritePages")[pageName]!;
+        return GetDictionaryEntries(GetProperty<IDictionary>(page, "Frames"))[0].Value!;
+    }
+
+    private static HashSet<string> GetClipPageNames(object clip)
+    {
+        return GetClipFrames(clip)
+            .Cast<object>()
+            .Select(frame => GetProperty<object>(frame, "Image"))
+            .Select(frame => GetSpriteFrameInfo(frame).PageName)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static void AssertResidentSpriteCacheAccounting(
+        MainWindow window,
+        string stage)
+    {
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var lru = GetField<LinkedList<string>>(window, "_residentSpritePageLru");
+        var entries = GetDictionaryEntries(residentPages);
+        var calculatedBytes = entries.Sum(entry =>
+            GetProperty<byte[]>(entry.Value!, "Pixels").LongLength);
+        var trackedBytes = GetField<long>(window, "_residentSpritePageBytes");
+        var budgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        var lruNames = lru.ToArray();
+        var lruNodes = new Dictionary<string, LinkedListNode<string>>(
+            StringComparer.Ordinal);
+        for (var node = lru.First; node is not null; node = node.Next)
+        {
+            Assert(lruNodes.TryAdd(node.Value, node),
+                $"{stage} LRU不得出现同名节点 {node.Value}");
+        }
+
+        Assert(trackedBytes == calculatedBytes,
+            $"{stage} resident字节账必须等于实际Pixels总长：" +
+            $"tracked={trackedBytes}, actual={calculatedBytes}");
+        Assert(trackedBytes <= budgetBytes,
+            $"{stage} resident cache不得超过144MiB预算：" +
+            $"{trackedBytes / 1024d / 1024d:F2}MiB");
+        Assert(lruNames.Length == entries.Length &&
+               lruNames.Distinct(StringComparer.Ordinal).Count() == lruNames.Length &&
+               lruNames.ToHashSet(StringComparer.Ordinal).SetEquals(
+                   entries.Select(entry => (string)entry.Key)),
+            $"{stage} LRU必须与resident字典一一对应且不得含重复或悬空节点");
+
+        foreach (var entry in entries)
+        {
+            var pageName = (string)entry.Key;
+            var pixels = GetProperty<byte[]>(entry.Value!, "Pixels");
+            var residentLruNode = GetProperty<LinkedListNode<string>>(
+                entry.Value!,
+                "LruNode");
+            Assert(pixels.LongLength == GetSpritePageByteCount(pageMap, pageName) &&
+                   GetProperty<long>(entry.Value!, "ByteCount") == pixels.LongLength,
+                $"{stage} 分页 {pageName} 必须只保留一份清单精确长度的解码数组");
+            Assert(string.Equals(
+                       residentLruNode.Value,
+                       pageName,
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(residentLruNode.List, lru) &&
+                   lruNodes.TryGetValue(pageName, out var linkedListNode) &&
+                   ReferenceEquals(residentLruNode, linkedListNode),
+                $"{stage} 分页 {pageName} 的LruNode必须与同名链表节点为同一对象");
+        }
+    }
+
+    private static void AssertStaleSpritePageCompletionIsDiscarded(
+        MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        ResetSpritePageCollectionTestState(window);
+        SetField(window, "_spritePageWarmupEnabled", false);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var residentLru = GetField<LinkedList<string>>(
+            window,
+            "_residentSpritePageLru");
+        var loadedPageName = GetField<string>(window, "_loadedSpritePageName");
+        var stalePageName = GetDictionaryEntries(pageMap)
+            .Select(entry => (string)entry.Key)
+            .Where(pageName => !string.Equals(
+                pageName,
+                loadedPageName,
+                StringComparison.Ordinal))
+            .First(pageName => !GetField<HashSet<string>>(
+                window,
+                "_pinnedSpritePageNames").Contains(pageName));
+        EvictResidentSpritePageForTest(window, stalePageName);
+
+        // Decode a real page into an already-successful Task, then make its
+        // captured generation stale before invoking the UI completion method
+        // directly. No worker continuation or dispatcher timing is involved.
+        var completedTask = CreateCompletedSpritePageLoadTask(window, stalePageName);
+        Assert(completedTask.IsCompletedSuccessfully,
+            "受控过期分页任务必须先成功完成，不能以取消或故障代替成功结果回归");
+        var cancellation = new CancellationTokenSource();
+        var staleGeneration = GetField<int>(
+            window,
+            "_spritePagePrefetchGeneration");
+        SetField(window, "_spritePagePrefetchTask", completedTask);
+        SetField(window, "_spritePagePrefetchCancellation", cancellation);
+        SetField(window, "_spritePagePrefetchPageName", stalePageName);
+
+        var residentNamesBefore = GetDictionaryEntries(residentPages)
+            .Select(entry => (string)entry.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        var lruBefore = residentLru.ToArray();
+        var residentBytesBefore = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        SetField(
+            window,
+            "_spritePagePrefetchGeneration",
+            staleGeneration + 1);
+
+        Invoke(
+            window,
+            "CompleteSpritePagePrefetch",
+            stalePageName,
+            staleGeneration,
+            cancellation,
+            completedTask);
+
+        Assert(!residentPages.Contains(stalePageName) &&
+               !residentLru.Contains(stalePageName) &&
+               GetField<long>(window, "_residentSpritePageBytes") ==
+               residentBytesBefore &&
+               residentNamesBefore.SetEquals(GetDictionaryEntries(residentPages)
+                   .Select(entry => (string)entry.Key)) &&
+               residentLru.SequenceEqual(lruBefore),
+            $"成功但过期的分页 {stalePageName} 不得写回字典、LRU或resident字节账");
+        Assert(GetRawField(window, "_spritePagePrefetchTask") is null &&
+               GetRawField(window, "_spritePagePrefetchCancellation") is null &&
+               GetRawField(window, "_spritePagePrefetchPageName") is null,
+            "过期成功任务完成回调必须只收敛在途槽位，不得留下已完成任务引用");
+        AssertResidentSpriteCacheAccounting(window, "成功过期任务丢弃");
+    }
+
+    private static void AssertRenderDeferredSpriteCacheMutationContract(
+        MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        SetField(window, "_spritePageWarmupEnabled", false);
+        SetField(window, "_failedSpritePageName", null);
+        SetField(window, "_renderDeferredSpritePageFailureName", null);
+        SetField(window, "_renderDeferredSpritePageFailureReason", null);
+        SetField(window, "_residentSpritePageTrimPending", false);
+        SetField(window, "_residentSpritePageIdleTrimPending", false);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var residentLru = GetField<LinkedList<string>>(
+            window,
+            "_residentSpritePageLru");
+        var loadedPageName = GetField<string>(window, "_loadedSpritePageName");
+        var failurePageName = GetDictionaryEntries(pageMap)
+            .Select(entry => (string)entry.Key)
+            .First(pageName => !string.Equals(
+                pageName,
+                loadedPageName,
+                StringComparison.Ordinal));
+        var pendingFrame = GetFirstSpriteFrameOnPage(window, failurePageName);
+        SetField(window, "_pendingSpriteFrame", pendingFrame);
+        SetField(
+            window,
+            "_pendingSpriteFrameBlendDuration",
+            TimeSpan.FromMilliseconds(120));
+        SetField(window, "_desiredSpritePageName", failurePageName);
+        SetField(window, "_desiredSpritePageUrgent", true);
+
+        var residentNamesBefore = GetDictionaryEntries(residentPages)
+            .Select(entry => (string)entry.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        var lruBefore = residentLru.ToArray();
+        var residentBytesBefore = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var dispatchTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePagePrefetchDispatchTimer");
+        dispatchTimer.Stop();
+
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
+        {
+            Invoke(window, "RequestResidentSpritePageTrim");
+            Invoke(window, "RequestIdleSpritePageTrim");
+            Invoke(
+                window,
+                "HandleSpritePagePrefetchFailure",
+                failurePageName,
+                "synthetic Rendering failure");
+        }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+
+        Assert(GetField<bool>(window, "_residentSpritePageTrimPending") &&
+               GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
+               string.Equals(
+                   GetRawField(window, "_renderDeferredSpritePageFailureName")
+                       as string,
+                   failurePageName,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_renderDeferredSpritePageFailureReason")
+                       as string,
+                   "synthetic Rendering failure",
+                   StringComparison.Ordinal) &&
+               dispatchTimer.IsEnabled,
+            "Rendering内普通/idle trim与失败处理只能发布延迟标志并启动既有dispatcher tick");
+        Assert(residentNamesBefore.SetEquals(GetDictionaryEntries(residentPages)
+                   .Select(entry => (string)entry.Key)) &&
+               residentLru.SequenceEqual(lruBefore) &&
+               GetField<long>(window, "_residentSpritePageBytes") ==
+               residentBytesBefore &&
+               Equals(GetRawField(window, "_pendingSpriteFrame"), pendingFrame) &&
+               string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   failurePageName,
+                   StringComparison.Ordinal) &&
+               GetField<bool>(window, "_desiredSpritePageUrgent") &&
+               GetRawField(window, "_failedSpritePageName") is null,
+            "Rendering回调内不得直接修改缓存、pending、desired或failed状态");
+
+        Invoke(window, "SpritePagePrefetchDispatchTimer_Tick", null, EventArgs.Empty);
+        var idleTargetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageIdleResidentTargetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        Assert(!GetField<bool>(window, "_residentSpritePageTrimPending") &&
+               !GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
+               GetRawField(window, "_renderDeferredSpritePageFailureName") is null &&
+               GetRawField(window, "_renderDeferredSpritePageFailureReason") is null &&
+               !dispatchTimer.IsEnabled &&
+               GetRawField(window, "_pendingSpriteFrame") is null &&
+               GetRawField(window, "_desiredSpritePageName") is null &&
+               !GetField<bool>(window, "_desiredSpritePageUrgent") &&
+               string.Equals(
+                   GetRawField(window, "_failedSpritePageName") as string,
+                   failurePageName,
+                   StringComparison.Ordinal) &&
+               GetField<long>(window, "_residentSpritePageBytes") <=
+               idleTargetBytes,
+            "Composition返回后的dispatcher tick必须消费idle trim/失败标志、裁到96MiB并执行终态更新");
+
+        SetField(window, "_failedSpritePageName", null);
+        AssertResidentSpriteCacheAccounting(window, "Rendering延迟缓存变更");
+        ResetSpritePageCollectionTestState(window);
+    }
+
+    private static void AssertSpriteCacheShutdownAndLateCompletionContract()
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-cache-shutdown-{Guid.NewGuid():N}");
+        MainWindow? shutdownWindow = null;
+        try
+        {
+            Directory.CreateDirectory(tempDirectory);
+            shutdownWindow = new MainWindow
+            {
+                ShowActivated = false
+            };
+            SetField(
+                shutdownWindow,
+                "_todoStore",
+                new TodoStore(Path.Combine(tempDirectory, "todos.json")));
+            SetField(
+                shutdownWindow,
+                "_settingsStore",
+                new AppSettingsStore(Path.Combine(tempDirectory, "settings.json")));
+            SetField(
+                shutdownWindow,
+                "_scheduledTaskStore",
+                new ScheduledTaskStore(
+                    Path.Combine(tempDirectory, "scheduled-tasks.json")));
+            GetField<ObservableCollection<TodoItem>>(
+                shutdownWindow,
+                "_todos").Clear();
+            GetField<ObservableCollection<ScheduledTaskItem>>(
+                shutdownWindow,
+                "_scheduledTasks").Clear();
+            GetField<DispatcherTimer>(
+                shutdownWindow,
+                "_scheduledTaskTimer").Stop();
+
+            var pageMap = GetField<IDictionary>(shutdownWindow, "_spritePages");
+            var loadedPageName = GetField<string>(
+                shutdownWindow,
+                "_loadedSpritePageName");
+            var latePageName = GetDictionaryEntries(pageMap)
+                .Select(entry => (string)entry.Key)
+                .First(pageName => !string.Equals(
+                    pageName,
+                    loadedPageName,
+                    StringComparison.Ordinal));
+            var lateTask = CreateCompletedSpritePageLoadTask(
+                shutdownWindow,
+                latePageName);
+            Assert(lateTask.IsCompletedSuccessfully,
+                "关闭回归必须持有一个真实解码且成功的迟到分页结果");
+            var lateCancellation = new CancellationTokenSource();
+            var lateGeneration = GetField<int>(
+                shutdownWindow,
+                "_spritePagePrefetchGeneration");
+            SetField(shutdownWindow, "_spritePagePrefetchTask", lateTask);
+            SetField(
+                shutdownWindow,
+                "_spritePagePrefetchCancellation",
+                lateCancellation);
+            SetField(
+                shutdownWindow,
+                "_spritePagePrefetchPageName",
+                latePageName);
+
+            // Exercise the real Closing handler: it cancels in-flight work and
+            // clears cache state before any late dispatcher completion arrives.
+            shutdownWindow.Close();
+            Assert(GetField<bool>(shutdownWindow, "_isClosing"),
+                "真实Window.Close必须进入关闭状态");
+            AssertSpriteCacheIsFullyReleased(shutdownWindow, "窗口关闭");
+
+            Invoke(
+                shutdownWindow,
+                "CompleteSpritePagePrefetch",
+                latePageName,
+                lateGeneration,
+                lateCancellation,
+                lateTask);
+            AssertSpriteCacheIsFullyReleased(shutdownWindow, "关闭后迟到成功结果");
+            Assert(GetRawField(shutdownWindow, "_spritePagePrefetchTask") is null &&
+                   GetRawField(shutdownWindow, "_spritePagePrefetchCancellation") is null &&
+                   GetRawField(shutdownWindow, "_spritePagePrefetchPageName") is null,
+                "关闭后的迟到成功结果只能释放在途引用，不能重新发布分页");
+        }
+        finally
+        {
+            if (shutdownWindow is not null &&
+                !GetField<bool>(shutdownWindow, "_isClosing"))
+            {
+                shutdownWindow.Close();
+            }
+
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // 临时目录清理不得掩盖关闭与迟到完成契约。
+            }
+        }
+    }
+
+    private static Task CreateCompletedSpritePageLoadTask(
+        MainWindow window,
+        string pageName)
+    {
+        var page = GetField<IDictionary>(window, "_spritePages")[pageName]!;
+        var result = Invoke(
+                         window,
+                         "DecodeSpritePage",
+                         page,
+                         CancellationToken.None)
+                     ?? throw new InvalidOperationException(
+                         $"分页 {pageName} 的受控解码未返回结果");
+        var fromResult = typeof(Task)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(method => method.Name == nameof(Task.FromResult) &&
+                              method.IsGenericMethodDefinition &&
+                              method.GetParameters().Length == 1)
+            .MakeGenericMethod(result.GetType());
+        return (Task)(fromResult.Invoke(null, [result])
+                      ?? throw new InvalidOperationException(
+                          $"分页 {pageName} 无法构造成功Task"));
+    }
+
+    private static void AssertSpriteCacheIsFullyReleased(
+        MainWindow window,
+        string stage)
+    {
+        Assert(GetField<IDictionary>(window, "_residentSpritePages").Count == 0 &&
+               GetField<LinkedList<string>>(
+                   window,
+                   "_residentSpritePageLru").Count == 0 &&
+               GetField<long>(window, "_residentSpritePageBytes") == 0 &&
+               GetField<byte[]>(window, "_spritePagePixels").Length == 0 &&
+               GetRawField(window, "_loadedSpritePageName") is null &&
+               GetField<int>(window, "_loadedSpritePageStride") == 0 &&
+               GetField<long>(window, "_spritePageEvictedBytesSinceCollection") == 0 &&
+               GetField<long>(window, "_spritePageCollectionDebtAtRequest") == 0 &&
+               !GetField<bool>(window, "_spritePageCollectionInProgress") &&
+               GetField<int>(window, "_spritePageCollectionPollCount") == 0 &&
+               !GetField<DispatcherTimer>(
+                   window,
+                   "_spritePageCollectionTimer").IsEnabled,
+            $"{stage}必须释放resident/LRU/像素/loaded状态，并停止Gen2 timer、清零回收债务");
     }
 
     private static void AssertColdSpritePageClipClockContract(MainWindow window)
@@ -1454,6 +2417,7 @@ internal static class Program
             // 先预热程序集资源流与JIT；门槛只约束热盘加载，避免把Windows CI的
             // 首次文件映射抖动误判成解压回归。
             _ = loadMethod.Invoke(window, new[] { (object)page.Name, page.RuntimeValue });
+            var hotPixels = GetField<byte[]>(window, "_spritePagePixels");
             var elapsed = new double[measuredRuns];
             for (var index = 0; index < measuredRuns; index++)
             {
@@ -1461,6 +2425,10 @@ internal static class Program
                 _ = loadMethod.Invoke(window, new[] { (object)page.Name, page.RuntimeValue });
                 stopwatch.Stop();
                 elapsed[index] = stopwatch.Elapsed.TotalMilliseconds;
+                Assert(ReferenceEquals(
+                           hotPixels,
+                           GetField<byte[]>(window, "_spritePagePixels")),
+                    $"{page.Name} 连续热命中必须复用同一解码数组，不得重复解压或分配");
             }
 
             Array.Sort(elapsed);
@@ -1471,6 +2439,7 @@ internal static class Program
                 $"{page.Name} 的热盘Brotli分页加载过慢：" +
                 $"中位数 {median:F2}ms（上限 {maximumMedianMilliseconds:F0}ms），" +
                 $"最大 {maximum:F2}ms（上限 {maximumSingleRunMilliseconds:F0}ms）");
+            AssertResidentSpriteCacheAccounting(window, $"{page.Name} 热命中");
         }
     }
 
@@ -2118,6 +3087,26 @@ internal static class Program
         Assert(directOutput.SequenceEqual(directPayload),
             "direct Pbgra payload必须逐字节还原并校验最终atlas SHA256");
 
+        var oversizedDirectContainer = Enumerable.Repeat(
+                (byte)0xa5,
+                directPayload.Length + 17)
+            .ToArray();
+        directPayload.CopyTo(oversizedDirectContainer, 0);
+        var oversizedDirectOutput = new byte[directPayload.Length];
+        _ = decodePayload.Invoke(
+            null,
+            Arguments(
+                "pbgra32",
+                oversizedDirectContainer,
+                directPayload.Length,
+                oversizedDirectOutput,
+                2,
+                1,
+                [],
+                Hash(directPayload)));
+        Assert(oversizedDirectOutput.SequenceEqual(directPayload),
+            "direct解码必须只读取expectedPayloadByteCount前缀，允许复用更大的共享payload容器");
+
         var deltaPayloadBuilder = new List<byte>();
         AppendHeader(deltaPayloadBuilder, 0, 0, 2, 2);
         deltaPayloadBuilder.AddRange(Enumerable.Range(1, 16).Select(value => (byte)value));
@@ -2157,6 +3146,26 @@ internal static class Program
         Assert(deltaOutput.SequenceEqual(expectedDeltaAtlas),
             "delta-sub必须按manifest frames顺序累加完整display帧，越界透明补0且重复sprite覆盖一致");
 
+        var oversizedDeltaContainer = Enumerable.Repeat(
+                (byte)0x5a,
+                deltaPayload.Length + 29)
+            .ToArray();
+        deltaPayload.CopyTo(oversizedDeltaContainer, 0);
+        var oversizedDeltaOutput = new byte[expectedDeltaAtlas.Length];
+        _ = decodePayload.Invoke(
+            null,
+            Arguments(
+                "pbgra32-delta-sub-v1",
+                oversizedDeltaContainer,
+                deltaPayload.Length,
+                oversizedDeltaOutput,
+                4,
+                2,
+                deltaDescriptors,
+                Hash(expectedDeltaAtlas)));
+        Assert(oversizedDeltaOutput.SequenceEqual(expectedDeltaAtlas),
+            "delta-sub解码必须忽略expected前缀之外的共享容器残留字节并得到相同atlas");
+
         var tamperedDirect = directPayload.ToArray();
         tamperedDirect[0] ^= 0x40;
         AssertThrowsInvalidData(
@@ -2191,13 +3200,13 @@ internal static class Program
                 Arguments(
                     "pbgra32",
                     directPayload,
-                    directPayload.Length - 1,
+                    directPayload.Length + 1,
                     new byte[directPayload.Length],
                     2,
                     1,
                     [],
                     Hash(directPayload))),
-            "payload实际长度与payloadByteCount不一致时必须fail-closed");
+            "payload容器短于expectedPayloadByteCount时必须fail-closed");
         AssertThrowsInvalidData(
             () => decodePayload.Invoke(
                 null,
@@ -2267,8 +3276,25 @@ internal static class Program
         var trailingByte = new List<byte>();
         AppendHeader(trailingByte, 0, 0, 0, 0);
         trailingByte.Add(0xff);
-        AssertBadDelta(trailingByte.ToArray(), oneFrameDescriptor,
-            "delta payload存在尾随字节时必须fail-closed");
+        var trailingByteWithinExpected = trailingByte.ToArray();
+        var oversizedTrailingContainer = Enumerable.Repeat(
+                (byte)0x33,
+                trailingByteWithinExpected.Length + 11)
+            .ToArray();
+        trailingByteWithinExpected.CopyTo(oversizedTrailingContainer, 0);
+        AssertThrowsInvalidData(
+            () => decodePayload.Invoke(
+                null,
+                Arguments(
+                    "pbgra32-delta-sub-v1",
+                    oversizedTrailingContainer,
+                    trailingByteWithinExpected.Length,
+                    new byte[16],
+                    2,
+                    2,
+                    oneFrameDescriptor,
+                    ignoredHash)),
+            "共享容器虽可大于expected，但expected范围内的delta尾随字节仍必须fail-closed");
 
         var emptyHeader = new List<byte>();
         AppendHeader(emptyHeader, 0, 0, 0, 0);
@@ -3652,6 +4678,7 @@ internal static class Program
         Invoke(window, "StopVisualClock");
         GetField<DispatcherTimer>(window, "_automaticTimer").Stop();
         Invoke(window, "StopFrameBlend", false);
+        SetField(window, "_activeClip", clip);
         PrimeAllClipPagesForTest(window, frames);
         var firstSpriteFrame = GetProperty<object>(frames.GetValue(0)!, "Image");
         PrimeSpritePageForFrame(window, firstSpriteFrame);
@@ -3661,7 +4688,6 @@ internal static class Program
         Invoke(window, "ShowStableFrame", firstSpriteFrame);
         Invoke(window, "ClearDeferredActiveClipClock");
         SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
-        SetField(window, "_activeClip", clip);
         SetField(window, "_activeFrameIndex", 0);
         SetField(window, "_activeClipStartedTimestamp", startedAt);
         SetField(window, "_activeFrameDeadlineTimestamp", checked(startedAt + firstHoldTicks));
@@ -3702,6 +4728,8 @@ internal static class Program
         SetField(window, "_lastVisualRenderingTime", TimeSpan.MinValue);
         Invoke(window, "ClearDeferredActiveClipClock");
         Invoke(window, "StopVisualClock");
+        Invoke(window, "TrimResidentSpritePagesToBudget", (object?)null);
+        AssertResidentSpriteCacheAccounting(window, "离散vsync片段清理");
     }
 
     private static void RestoreIdleAfterClipClockSimulation(MainWindow window)
@@ -7545,6 +8573,9 @@ internal static class Program
         var discardSupersededPending = ExtractPrivateMethodSource(
             mainSource,
             "DiscardSupersededPendingSpriteFrame");
+        var hasDeferredSpritePageDispatchWork = ExtractPrivateMethodSource(
+            mainSource,
+            "HasDeferredSpritePageDispatchWork");
         var requestPagePrefetch = ExtractPrivateMethodSource(
             mainSource,
             "RequestSpritePagePrefetch");
@@ -7602,6 +8633,42 @@ internal static class Program
         var windowLoaded = ExtractPrivateMethodSource(
             mainSource,
             "Window_Loaded");
+        var requestIdleSpritePageTrim = ExtractPrivateMethodSource(
+            mainSource,
+            "RequestIdleSpritePageTrim");
+        var trimResidentPagesToIdleTarget = ExtractPrivateMethodSource(
+            mainSource,
+            "TrimResidentSpritePagesToIdleTarget");
+        var scheduleSpritePageCollection = ExtractPrivateMethodSource(
+            mainSource,
+            "ScheduleSpritePageCollectionIfNeeded");
+        var canRunIdleSpritePageCollection = ExtractPrivateMethodSource(
+            mainSource,
+            "CanRunIdleSpritePageCollection");
+        var spritePageCollectionTimerTick = ExtractPrivateMethodSource(
+            mainSource,
+            "SpritePageCollectionTimer_Tick");
+        var removeResidentSpritePage = ExtractPrivateMethodSource(
+            mainSource,
+            "RemoveResidentSpritePage");
+        var recordDiscardedSpritePageBytes = ExtractPrivateMethodSource(
+            mainSource,
+            "RecordDiscardedSpritePageBytes");
+        var observeNaturalSpritePageCollection = ExtractPrivateMethodSource(
+            mainSource,
+            "ObserveNaturalSpritePageCollection");
+        var clearResidentSpritePages = ExtractPrivateMethodSource(
+            mainSource,
+            "ClearResidentSpritePages");
+        var windowClosing = ExtractPrivateMethodSource(
+            mainSource,
+            "Window_Closing");
+        var petHostMouseLeftButtonDown = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseLeftButtonDown");
+        var stopPillowBreathing = ExtractPrivateMethodSource(
+            mainSource,
+            "StopPillowBreathing");
         var renderingTerminalMethods = new[]
         {
             ExtractPrivateMethodSource(mainSource, "CompleteActiveClip"),
@@ -7653,7 +8720,16 @@ internal static class Program
             "后台分页加载必须先严格核对manifest contentSha256，再执行Brotli解压");
         Assert(mainSource.Contains("pbgra32-delta-sub-v1", StringComparison.Ordinal) &&
                decodeSpritePagePayload.Contains(
-                   "payload.Length != expectedPayloadByteCount",
+                   "payload.Length < expectedPayloadByteCount",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "private readonly byte[] _spritePagePayloadBytes;",
+                   StringComparison.Ordinal) &&
+               decodeSpritePage.Contains(
+                   ": _spritePagePayloadBytes;",
+                   StringComparison.Ordinal) &&
+               !decodeSpritePage.Contains(
+                   "new byte[page.PayloadByteCount]",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
                    "BinaryPrimitives.ReadUInt16LittleEndian",
@@ -7662,14 +8738,156 @@ internal static class Program
                    "previousDisplayFrame",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
-                   "payloadOffset != payload.Length",
+                   "ArrayPool<byte>.Shared.Rent(",
+                   StringComparison.Ordinal) &&
+               reconstructDeltaSubPage.Contains(
+                   "ArrayPool<byte>.Shared.Return(",
+                   StringComparison.Ordinal) &&
+               reconstructDeltaSubPage.Contains(
+                   "payloadOffset != payloadByteCount",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
                    "Repeated delta-sub sprite differs",
                    StringComparison.Ordinal) &&
                !rendering.Contains("DecodeSpritePagePayload", StringComparison.Ordinal) &&
                !rendering.Contains("ReconstructDeltaSub", StringComparison.Ordinal),
-            "delta-sub必须只在后台按帧顺序重建、严格消费payload并拒绝不一致的重复sprite，不能进入Rendering");
+            "delta-sub必须复用单份共享payload与ArrayPool前帧缓冲，只在后台按expected前缀" +
+            "顺序重建并严格消费，拒绝不一致的重复sprite且不能进入Rendering");
+        Assert(mainSource.Contains(
+                   "SpritePageIdleResidentTargetBytes = 96L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageCollectionThresholdBytes = 48L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "MinimumSpritePageCollectionInterval",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "TimeSpan.FromSeconds(30)",
+                   StringComparison.Ordinal) &&
+               trimResidentPagesToIdleTarget.Contains(
+                   "SpritePageIdleResidentTargetBytes",
+                   StringComparison.Ordinal) &&
+               requestIdleSpritePageTrim.Contains(
+                   "_residentSpritePageTrimPending = true",
+                   StringComparison.Ordinal) &&
+               requestIdleSpritePageTrim.Contains(
+                   "_residentSpritePageIdleTrimPending = true",
+                   StringComparison.Ordinal) &&
+               prefetchDispatchTick.Contains(
+                   "TrimResidentSpritePagesToIdleTarget()",
+                   StringComparison.Ordinal),
+            "动作终态idle回收必须以96MiB为目标；Rendering内只发布idle trim标志并在dispatcher tick执行");
+        Assert(removeResidentSpritePage.Contains(
+                   "RecordDiscardedSpritePageBytes(residentPage.ByteCount)",
+                   StringComparison.Ordinal) &&
+               recordDiscardedSpritePageBytes.Contains(
+                   "ObserveNaturalSpritePageCollection()",
+                   StringComparison.Ordinal) &&
+               recordDiscardedSpritePageBytes.Contains(
+                   "_spritePageEvictedBytesSinceCollection = checked(",
+                   StringComparison.Ordinal) &&
+               recordDiscardedSpritePageBytes.Contains(
+                   "ScheduleSpritePageCollectionIfNeeded()",
+                   StringComparison.Ordinal) &&
+               scheduleSpritePageCollection.Contains(
+                   "SpritePageCollectionThresholdBytes",
+                   StringComparison.Ordinal) &&
+               scheduleSpritePageCollection.Contains(
+                   "MinimumSpritePageCollectionInterval - elapsed",
+                   StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_activeClip is null", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isInsideVisualRenderingCallback", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isReminderActive", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_dragInteractionActive", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_pointerDown", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isPetSizeTransitioning", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isPetSizePreviewSessionActive", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isPetSizeAdjustmentActive", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_petSizeTargetUpdatePending", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_petSizeCommitPending", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isFrameBlending", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_isPillowBreathing", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_bubbleMode == BubbleMode.None", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_todoWindow.IsVisible", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!BubblePopup.IsOpen", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_edgeDock == EdgeDock.None", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_pendingSpriteFrame is null", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_spritePagePrefetchTask is null", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_desiredSpritePageName is null", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_renderDeferredSpritePageName is null", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("_renderDeferredSpritePageFailureName is null", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_renderDeferredSpritePageCancellation", StringComparison.Ordinal) &&
+               canRunIdleSpritePageCollection.Contains("!_residentSpritePageTrimPending", StringComparison.Ordinal),
+            "Gen2回收只能在动作、提醒、拖动、缩放、预取、Todo、edge、pillow与帧过渡全部空闲时运行");
+        var stopPillowBeforeDrag = petHostMouseLeftButtonDown.IndexOf(
+            "StopPillowBreathing()",
+            StringComparison.Ordinal);
+        var markDragActive = petHostMouseLeftButtonDown.IndexOf(
+            "_dragInteractionActive = true",
+            StringComparison.Ordinal);
+        Assert(stopPillowBeforeDrag >= 0 &&
+               markDragActive > stopPillowBeforeDrag &&
+               stopPillowBreathing.Contains("_isPillowBreathing = false", StringComparison.Ordinal) &&
+               stopPillowBreathing.Contains("_automaticTimer.Stop()", StringComparison.Ordinal) &&
+               stopPillowBreathing.Contains("PetScale.ScaleX = 1", StringComparison.Ordinal) &&
+               stopPillowBreathing.Contains("PetScale.ScaleY = 1", StringComparison.Ordinal),
+            "鼠标按下必须先停止枕头占位并清理timer/缩放，再进入拖动状态，避免GC门禁永久忙");
+        Assert(observeNaturalSpritePageCollection.Contains(
+                   "generation <= _lastObservedSpritePageCollectionGeneration",
+                   StringComparison.Ordinal) &&
+               observeNaturalSpritePageCollection.Contains(
+                   "_spritePageEvictedBytesSinceCollection = 0",
+                   StringComparison.Ordinal) &&
+               observeNaturalSpritePageCollection.Contains(
+                   "_lastSpritePageCollectionTimestamp = Stopwatch.GetTimestamp()",
+                   StringComparison.Ordinal),
+            "自然Gen2只有在collection count实际增长时才能清零淘汰债务，并刷新30秒节流时间戳");
+        var observedGen2Collection = spritePageCollectionTimerTick.IndexOf(
+            "if (collectionGeneration >",
+            StringComparison.Ordinal);
+        var collectionDebtReduction = spritePageCollectionTimerTick.IndexOf(
+            "_spritePageEvictedBytesSinceCollection = Math.Max(",
+            StringComparison.Ordinal);
+        Assert(observedGen2Collection >= 0 &&
+               collectionDebtReduction > observedGen2Collection &&
+               spritePageCollectionTimerTick.Contains(
+                   "var collectionGeneration = GC.CollectionCount(GC.MaxGeneration)",
+                   StringComparison.Ordinal) &&
+               spritePageCollectionTimerTick.Contains(
+                   "Task.Run(static () =>",
+                   StringComparison.Ordinal) &&
+               spritePageCollectionTimerTick.Contains(
+                   "GCCollectionMode.Forced",
+                   StringComparison.Ordinal) &&
+               spritePageCollectionTimerTick.Contains(
+                   "blocking: false",
+                   StringComparison.Ordinal) &&
+               spritePageCollectionTimerTick.Contains(
+                   "compacting: false",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains("blocking: true", StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "LargeObjectHeapCompactionMode",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "WaitForPendingFinalizers",
+                   StringComparison.Ordinal),
+            "只有观测到Gen2计数增长才能扣除债务；请求必须在Task.Run中nonblocking/noncompacting Forced执行，禁止LOH压缩与等待终结器");
+        Assert(windowClosing.Contains("_spritePageCollectionTimer.Stop()", StringComparison.Ordinal) &&
+               windowClosing.Contains(
+                   "_spritePageCollectionTimer.Tick -= SpritePageCollectionTimer_Tick",
+                   StringComparison.Ordinal) &&
+               clearResidentSpritePages.Contains(
+                   "_spritePageCollectionTimer.Stop()",
+                   StringComparison.Ordinal) &&
+               clearResidentSpritePages.Contains(
+                   "_spritePageEvictedBytesSinceCollection = 0",
+                   StringComparison.Ordinal) &&
+               clearResidentSpritePages.Contains(
+                   "_spritePageCollectionInProgress = false",
+                   StringComparison.Ordinal),
+            "窗口关闭必须停止并解绑Gen2 timer，清空缓存时必须同步清零债务与在途状态");
         var oversizedBrotliGuard = atlasBuilderSource.IndexOf(
             "if len(runtime_bytes) > len(runtime_payload):",
             StringComparison.Ordinal);
@@ -7783,12 +9001,14 @@ internal static class Program
         Assert(renderingTerminalMethods.All(method =>
                    !method.Contains("=>", StringComparison.Ordinal) &&
                    !method.Contains("new Action", StringComparison.Ordinal) &&
-                   !method.Contains("Func<", StringComparison.Ordinal)) &&
+                   !method.Contains("Func<", StringComparison.Ordinal) &&
+                   !method.Contains("GC.Collect", StringComparison.Ordinal) &&
+                   !method.Contains("Task.Run", StringComparison.Ordinal)) &&
                !mainSource.Contains(
                    "ScheduleUnusedSpritePageCollection",
-                   StringComparison.Ordinal) &&
-               !mainSource.Contains("GC.Collect", StringComparison.Ordinal),
-            "Rendering 的动作/边缘/Todo结束调用链不得创建捕获委托，也不得按动作调度手工GC");
+                   StringComparison.Ordinal),
+            "Rendering 的动作/边缘/Todo结束调用链不得创建捕获委托或直接发起GC；" +
+            "回收只能经过独立idle timer门禁");
         Assert(showStableFrame.Contains(
                    "DiscardSupersededPendingSpriteFrame(frame)",
                    StringComparison.Ordinal) &&
@@ -7811,9 +9031,21 @@ internal static class Program
                    "_renderDeferredSpritePageUrgent = false",
                    StringComparison.Ordinal) &&
                discardSupersededPending.Contains(
+                   "if (!HasDeferredSpritePageDispatchWork())",
+                   StringComparison.Ordinal) &&
+               discardSupersededPending.Contains(
                    "_spritePagePrefetchDispatchTimer.Stop()",
+                   StringComparison.Ordinal) &&
+               hasDeferredSpritePageDispatchWork.Contains(
+                   "_renderDeferredSpritePageCancellation",
+                   StringComparison.Ordinal) &&
+               hasDeferredSpritePageDispatchWork.Contains(
+                   "_renderDeferredSpritePageFailureName is not null",
+                   StringComparison.Ordinal) &&
+               hasDeferredSpritePageDispatchWork.Contains(
+                   "_residentSpritePageTrimPending",
                    StringComparison.Ordinal),
-            "较新的热页帧必须淘汰旧pending并换代取消旧冷页请求，禁止完成回调闪回过时姿态");
+            "较新的热页必须淘汰旧pending并取消旧冷页请求；只有没有取消/失败/trim等共享信号时才能停止dispatcher timer");
         var renderDeferralGuard = requestPagePrefetch.IndexOf(
             "if (_isInsideVisualRenderingCallback)",
             StringComparison.Ordinal);
@@ -8198,8 +9430,8 @@ internal static class Program
         MainWindow window,
         string pageName)
     {
-        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
-        residentPages.Remove(pageName);
+        _ = Invoke(window, "RemoveResidentSpritePage", pageName);
+        AssertResidentSpriteCacheAccounting(window, $"测试驱逐 {pageName}");
     }
 
     private static void WaitForSpritePagePrefetchToSettle(MainWindow window)
