@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -24,6 +25,7 @@ public partial class TodoWindow : Window
     private readonly Action _resetImeCompositionAfterFocusLossAction;
     private readonly Action _finishTodoEditAfterFocusLossAction;
     private readonly Action _focusInputAction;
+    private readonly Action _focusSelectedPageInputAfterTabAction;
     private readonly Action _retryClipboardCopyAction;
     private TextBox? _imeCompositionOwner;
     private TextBox? _editingTodoTextBox;
@@ -41,6 +43,7 @@ public partial class TodoWindow : Window
     private string? _pendingClipboardCopyText;
     private bool _clipboardCopyRetryQueued;
     private bool _tailOnRight = true;
+    private bool _isTransientPopupOpen;
     private bool _allowClose;
     private bool _hasClosed;
 
@@ -52,6 +55,8 @@ public partial class TodoWindow : Window
         _finishTodoEditAfterFocusLossAction =
             FinishTodoEditAfterFocusLoss;
         _focusInputAction = FocusInputCore;
+        _focusSelectedPageInputAfterTabAction =
+            FocusSelectedPageInputAfterTabChange;
         _retryClipboardCopyAction = RetryClipboardCopy;
 
         TextCompositionManager.AddPreviewTextInputStartHandler(
@@ -62,6 +67,14 @@ public partial class TodoWindow : Window
             TodoInput_PreviewTextInputUpdate);
         TodoInput.PreviewTextInput += TodoInput_PreviewTextInputCommitted;
         TodoInput.LostKeyboardFocus += TodoInput_LostKeyboardFocus;
+        TextCompositionManager.AddPreviewTextInputStartHandler(
+            ScheduledTaskInput,
+            TodoInput_PreviewTextInputStart);
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(
+            ScheduledTaskInput,
+            TodoInput_PreviewTextInputUpdate);
+        ScheduledTaskInput.PreviewTextInput += TodoInput_PreviewTextInputCommitted;
+        ScheduledTaskInput.LostKeyboardFocus += TodoInput_LostKeyboardFocus;
         PetSizeSlider.PreviewMouseLeftButtonDown += PetSizeSlider_PreviewMouseLeftButtonDown;
         PetSizeSlider.PreviewMouseLeftButtonUp += PetSizeSlider_PreviewMouseLeftButtonUp;
         PetSizeSlider.LostMouseCapture += PetSizeSlider_LostMouseCapture;
@@ -71,6 +84,7 @@ public partial class TodoWindow : Window
         PreviewKeyDown += TodoWindow_PreviewKeyDown;
         Closing += TodoWindow_Closing;
         Closed += TodoWindow_Closed;
+        ResetScheduledTaskDraftClock(DateTimeOffset.Now);
     }
 
     private static Brush CreateTodoDropIndicatorBrush()
@@ -86,9 +100,17 @@ public partial class TodoWindow : Window
         set => TodoItemsControl.ItemsSource = value;
     }
 
+    public IEnumerable? ScheduledTasks
+    {
+        get => ScheduledTaskItemsControl.ItemsSource;
+        set => ScheduledTaskItemsControl.ItemsSource = value;
+    }
+
     public bool IsImeComposing { get; private set; }
 
     public bool IsTodoDragInProgress => _todoDragInProgress;
+
+    public bool IsTransientPopupOpen => _isTransientPopupOpen;
 
     public event Action<string>? AddRequested;
 
@@ -102,6 +124,12 @@ public partial class TodoWindow : Window
 
     public event Action<TodoItem>? DeleteRequested;
 
+    public event Action<string, DateTimeOffset>? ScheduledTaskAddRequested;
+
+    public event Action<ScheduledTaskItem>? ScheduledTaskDeleteRequested;
+
+    public event Action? TransientInteractionCompleted;
+
     public event Action<double>? PetSizeScaleChanged;
 
     public event Action? PetSizeAdjustmentStarted;
@@ -113,6 +141,11 @@ public partial class TodoWindow : Window
     public event EventHandler? ExitRequested;
 
     public event Action<bool>? ImeCompositionChanged;
+
+    public void ShowDefaultTab()
+    {
+        SelectTaskPage(showScheduledTasks: false, focusInput: false);
+    }
 
     public void FocusInput()
     {
@@ -141,9 +174,27 @@ public partial class TodoWindow : Window
             return;
         }
 
-        TodoInput.Focus();
-        Keyboard.Focus(TodoInput);
-        TodoInput.Select(TodoInput.Text.Length, 0);
+        FocusSelectedPageInput();
+    }
+
+    private void FocusSelectedPageInputAfterTabChange()
+    {
+        if (!IsVisible || _hasClosed)
+        {
+            return;
+        }
+
+        FocusSelectedPageInput();
+    }
+
+    private void FocusSelectedPageInput()
+    {
+        var input = ScheduledTaskTabButton.IsChecked == true
+            ? ScheduledTaskInput
+            : TodoInput;
+        input.Focus();
+        Keyboard.Focus(input);
+        input.Select(input.Text.Length, 0);
     }
 
     private void CopyCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
@@ -207,21 +258,23 @@ public partial class TodoWindow : Window
 
     private bool IsCopySource(TextBox textBox) =>
         ReferenceEquals(textBox, TodoInput) ||
-        textBox.DataContext is TodoItem;
+        ReferenceEquals(textBox, ScheduledTaskInput) ||
+        (textBox.DataContext is TodoItem or ScheduledTaskItem);
 
     private bool CanCopyFromTextBox(TextBox textBox) =>
         !string.IsNullOrEmpty(GetCopyText(textBox));
 
     private string? GetCopyText(TextBox textBox)
     {
-        if (ReferenceEquals(textBox, TodoInput))
+        if (ReferenceEquals(textBox, TodoInput) ||
+            ReferenceEquals(textBox, ScheduledTaskInput))
         {
             return textBox.SelectionLength > 0
                 ? textBox.SelectedText
                 : textBox.Text;
         }
 
-        return textBox.DataContext is TodoItem &&
+        return (textBox.DataContext is TodoItem or ScheduledTaskItem) &&
                textBox.SelectionLength > 0
             ? textBox.SelectedText
             : null;
@@ -339,6 +392,7 @@ public partial class TodoWindow : Window
     private void TodoWindow_Closed(object? sender, EventArgs e)
     {
         _hasClosed = true;
+        _isTransientPopupOpen = false;
         if (_petSizeAdjustmentActive)
         {
             EndPetSizeAdjustment();
@@ -403,7 +457,8 @@ public partial class TodoWindow : Window
             return;
         }
 
-        if (!TodoInput.IsKeyboardFocusWithin)
+        if (!TodoInput.IsKeyboardFocusWithin &&
+            !ScheduledTaskInput.IsKeyboardFocusWithin)
         {
             SetImeComposing(false);
         }
@@ -423,6 +478,193 @@ public partial class TodoWindow : Window
 
         IsImeComposing = value;
         ImeCompositionChanged?.Invoke(value);
+    }
+
+    private void TodoTabButton_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTaskPage(showScheduledTasks: false, focusInput: true);
+    }
+
+    private void ScheduledTaskTabButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitTodoEdit();
+        SelectTaskPage(showScheduledTasks: true, focusInput: true);
+    }
+
+    private void SelectTaskPage(bool showScheduledTasks, bool focusInput)
+    {
+        TodoTabButton.IsChecked = !showScheduledTasks;
+        ScheduledTaskTabButton.IsChecked = showScheduledTasks;
+        TodoPage.Visibility = showScheduledTasks
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        ScheduledTaskPage.Visibility = showScheduledTasks
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (focusInput && IsVisible && !_hasClosed)
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Input,
+                _focusSelectedPageInputAfterTabAction);
+        }
+    }
+
+    private void ScheduledTaskAddButton_Click(object sender, RoutedEventArgs e)
+    {
+        RequestScheduledTaskAdd();
+    }
+
+    private void ScheduledTaskInput_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || IsImeComposing)
+        {
+            return;
+        }
+
+        RequestScheduledTaskAdd();
+        e.Handled = true;
+    }
+
+    private void ScheduledTimeInput_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || IsImeComposing)
+        {
+            return;
+        }
+
+        RequestScheduledTaskAdd();
+        e.Handled = true;
+    }
+
+    private void RequestScheduledTaskAdd()
+    {
+        var text = ScheduledTaskInput.Text.Trim();
+        if (text.Length == 0)
+        {
+            SetScheduledTaskValidation("先写下要提醒的事情哦");
+            ScheduledTaskInput.Focus();
+            return;
+        }
+
+        if (ScheduledDatePicker.SelectedDate is not { } selectedDate)
+        {
+            SetScheduledTaskValidation("请选择提醒日期");
+            ScheduledDatePicker.Focus();
+            return;
+        }
+
+        if (!DateTime.TryParseExact(
+                ScheduledTimeInput.Text.Trim(),
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedTime))
+        {
+            SetScheduledTaskValidation("时间格式要写成 HH:mm:ss");
+            ScheduledTimeInput.Focus();
+            ScheduledTimeInput.SelectAll();
+            return;
+        }
+
+        var localDateTime = DateTime.SpecifyKind(
+            selectedDate.Date.Add(parsedTime.TimeOfDay),
+            DateTimeKind.Unspecified);
+        if (TimeZoneInfo.Local.IsInvalidTime(localDateTime))
+        {
+            SetScheduledTaskValidation("这个本地时间不存在，请换一个时间");
+            ScheduledTimeInput.Focus();
+            return;
+        }
+
+        var dueAt = new DateTimeOffset(
+            localDateTime,
+            TimeZoneInfo.Local.GetUtcOffset(localDateTime));
+        if (dueAt <= DateTimeOffset.Now)
+        {
+            SetScheduledTaskValidation("提醒时间要晚于现在哦");
+            ScheduledTimeInput.Focus();
+            ScheduledTimeInput.SelectAll();
+            return;
+        }
+
+        ScheduledTaskAddRequested?.Invoke(text, dueAt);
+        ScheduledTaskInput.Clear();
+        ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+        SetScheduledTaskValidation(string.Empty);
+        ScheduledTaskInput.Focus();
+    }
+
+    private void ScheduledTaskDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ScheduledTaskItem item })
+        {
+            ScheduledTaskDeleteRequested?.Invoke(item);
+        }
+    }
+
+    private void ScheduledTaskInput_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ClearScheduledTaskValidation();
+    }
+
+    private void ScheduledTimeInput_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ClearScheduledTaskValidation();
+    }
+
+    private void ScheduledDatePicker_SelectedDateChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        ClearScheduledTaskValidation();
+    }
+
+    private void ScheduledDatePicker_CalendarOpened(object sender, RoutedEventArgs e)
+    {
+        _isTransientPopupOpen = true;
+    }
+
+    private void ScheduledDatePicker_CalendarClosed(object sender, RoutedEventArgs e)
+    {
+        if (!_isTransientPopupOpen)
+        {
+            return;
+        }
+
+        _isTransientPopupOpen = false;
+        TransientInteractionCompleted?.Invoke();
+    }
+
+    private void ResetScheduledTaskDraftClock(DateTimeOffset now)
+    {
+        var suggested = now.LocalDateTime.AddMinutes(5);
+        suggested = new DateTime(
+            suggested.Year,
+            suggested.Month,
+            suggested.Day,
+            suggested.Hour,
+            suggested.Minute,
+            suggested.Second,
+            DateTimeKind.Unspecified);
+        ScheduledDatePicker.SelectedDate = suggested.Date;
+        ScheduledTimeInput.Text = suggested.ToString(
+            "HH:mm:ss",
+            CultureInfo.InvariantCulture);
+    }
+
+    private void ClearScheduledTaskValidation()
+    {
+        if (ScheduledTaskValidationText is not null &&
+            ScheduledTaskValidationText.Text.Length > 0)
+        {
+            ScheduledTaskValidationText.Text = string.Empty;
+        }
+    }
+
+    private void SetScheduledTaskValidation(string message)
+    {
+        ScheduledTaskValidationText.Text = message;
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

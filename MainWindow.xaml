@@ -33,45 +33,163 @@
                StaysOpen="True">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition x:Name="BubbleBodyColumn" Width="Auto" />
+                    <ColumnDefinition x:Name="BubbleTailColumn" Width="12" />
                 </Grid.ColumnDefinitions>
 
                 <Grid x:Name="BubbleHost"
                       Grid.Column="0"
                       Visibility="Collapsed">
-            <Border x:Name="CuteBubble"
-                    Width="215"
-                    Height="76"
-                    Padding="16,12"
-                    VerticalAlignment="Bottom"
-                    Background="White"
-                    BorderBrush="#D8DEE8"
-                    BorderThickness="1"
-                    CornerRadius="16"
-                    Visibility="Collapsed">
-                <TextBlock x:Name="CuteMessageText"
-                           VerticalAlignment="Center"
-                           FontFamily="Microsoft YaHei"
-                           FontSize="14"
-                           Foreground="#303744"
-                           TextAlignment="Center"
-                           TextWrapping="Wrap" />
-            </Border>
+                    <Border x:Name="CuteBubble"
+                            Width="215"
+                            Height="76"
+                            Padding="16,12"
+                            VerticalAlignment="Bottom"
+                            Background="White"
+                            BorderBrush="#D8DEE8"
+                            BorderThickness="1"
+                            CornerRadius="16"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="CuteMessageText"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="14"
+                                   Foreground="#303744"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap" />
+                    </Border>
 
+                    <Border x:Name="ReminderBubble"
+                            Width="270"
+                            Height="148"
+                            Padding="15,11,15,10"
+                            VerticalAlignment="Bottom"
+                            BorderBrush="#E9AD3C"
+                            BorderThickness="1.5"
+                            CornerRadius="20"
+                            Visibility="Collapsed">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Offset="0" Color="#FFFFFEF7" />
+                                <GradientStop Offset="1" Color="#FFFFF2C9" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="30" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="32" />
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Grid.Row="0"
+                                        HorizontalAlignment="Center"
+                                        Orientation="Horizontal">
+                                <Border Width="24"
+                                        Height="24"
+                                        Margin="0,0,7,0"
+                                        Background="#FFFFD866"
+                                        BorderBrush="#E7A83B"
+                                        BorderThickness="1"
+                                        CornerRadius="12">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontFamily="Microsoft YaHei"
+                                               FontSize="16"
+                                               FontWeight="Bold"
+                                               Foreground="#8B4B24"
+                                               Text="!" />
+                                </Border>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontFamily="Microsoft YaHei"
+                                           FontSize="15"
+                                           FontWeight="Bold"
+                                           Foreground="#77421F"
+                                           Text="定时任务到点啦" />
+                            </StackPanel>
+
+                            <Border Grid.Row="1"
+                                    Margin="0,3,0,5"
+                                    Padding="8,4"
+                                    Background="#FFFFFCF2"
+                                    BorderBrush="#F3D99C"
+                                    BorderThickness="1"
+                                    CornerRadius="10">
+                                <TextBox x:Name="ReminderMessageText"
+                                         Padding="0"
+                                         VerticalContentAlignment="Center"
+                                         AcceptsReturn="True"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Cursor="IBeam"
+                                         FontFamily="Microsoft YaHei"
+                                         FontSize="13"
+                                         Foreground="#543C2F"
+                                         IsReadOnly="True"
+                                         SelectionBrush="#9ED2FF"
+                                         TextAlignment="Center"
+                                         TextWrapping="Wrap"
+                                         HorizontalScrollBarVisibility="Disabled"
+                                         VerticalScrollBarVisibility="Auto" />
+                            </Border>
+
+                            <Button x:Name="ReminderAcknowledgeButton"
+                                    Grid.Row="2"
+                                    Width="82"
+                                    Height="28"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Bottom"
+                                    Background="#FF7F6A"
+                                    BorderBrush="#D85848"
+                                    BorderThickness="1"
+                                    Click="ReminderAcknowledgeButton_Click"
+                                    Cursor="Hand"
+                                    FontFamily="Microsoft YaHei"
+                                    FontSize="13"
+                                    FontWeight="Bold"
+                                    Foreground="White"
+                                    Content="知道啦">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="ButtonBorder"
+                                                Padding="{TemplateBinding Padding}"
+                                                Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="14">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="ButtonBorder"
+                                                        Property="Background"
+                                                        Value="#FF917F" />
+                                            </Trigger>
+                                            <Trigger Property="IsPressed" Value="True">
+                                                <Setter TargetName="ButtonBorder"
+                                                        Property="Background"
+                                                        Value="#EA6654" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </Grid>
+                    </Border>
                 </Grid>
 
-        <Grid x:Name="BubbleTailHost"
-               Grid.Column="1"
-              Margin="-1,0,0,0"
-              HorizontalAlignment="Left"
-              VerticalAlignment="Center"
-              Visibility="Collapsed">
-            <Polygon Points="0,0 12,9 0,18"
-                     Fill="White"
-                      Stroke="#D8DEE8"
-                      StrokeThickness="1" />
-        </Grid>
+                <Grid x:Name="BubbleTailHost"
+                      Grid.Column="1"
+                      Margin="-1,0,0,0"
+                      HorizontalAlignment="Left"
+                      VerticalAlignment="Center"
+                      Visibility="Collapsed">
+                    <Polygon x:Name="BubbleTailPolygon"
+                             Points="0,0 12,9 0,18"
+                             Fill="White"
+                             Stroke="#D8DEE8"
+                             StrokeThickness="1" />
+                </Grid>
             </Grid>
         </Popup>
 
@@ -140,6 +258,79 @@
                                         AlignmentY="Top" />
                         </Rectangle.Fill>
                     </Rectangle>
+                </Canvas>
+
+                <Canvas Width="190"
+                        Height="242"
+                        IsHitTestVisible="False"
+                        Panel.ZIndex="10">
+                    <Canvas x:Name="ReminderMegaphone"
+                            Canvas.Left="1"
+                            Canvas.Top="94"
+                            Width="64"
+                            Height="56"
+                            IsHitTestVisible="False"
+                            RenderTransformOrigin="0.77,0.61"
+                            Visibility="Collapsed">
+                        <Canvas.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="MegaphonePulseScale"
+                                                ScaleX="1"
+                                                ScaleY="1" />
+                                <RotateTransform x:Name="MegaphoneRotate"
+                                                 Angle="-7" />
+                            </TransformGroup>
+                        </Canvas.RenderTransform>
+
+                        <Path x:Name="MegaphoneSoundWave2"
+                              Data="M 8,13 C 0,20 0,36 8,43"
+                              Fill="Transparent"
+                              Stroke="#FF9A62"
+                              StrokeThickness="2.5"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Opacity="0.55" />
+                        <Path x:Name="MegaphoneSoundWave1"
+                              Data="M 11,20 C 6,24 6,32 11,36"
+                              Fill="Transparent"
+                              Stroke="#FF715E"
+                              StrokeThickness="3"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Opacity="0.9" />
+
+                        <Path Data="M 14,15 L 43,23 L 43,34 L 14,42 Z"
+                              Fill="#FFFFD45E"
+                              Stroke="#743F2A"
+                              StrokeLineJoin="Round"
+                              StrokeThickness="2" />
+                        <Path Data="M 14,14 Q 10,14 10,19 L 10,38 Q 10,43 14,43 Z"
+                              Fill="#FF7867"
+                              Stroke="#743F2A"
+                              StrokeLineJoin="Round"
+                              StrokeThickness="2" />
+                        <Path Data="M 43,23 L 52,20 Q 56,20 57,24 L 57,33 Q 56,37 52,37 L 43,34 Z"
+                              Fill="#FFFFF7D6"
+                              Stroke="#743F2A"
+                              StrokeLineJoin="Round"
+                              StrokeThickness="2" />
+                        <Path Data="M 43,34 L 52,36 L 48,51 Q 47,54 43,53 L 38,51 Z"
+                              Fill="#FFFFC94D"
+                              Stroke="#743F2A"
+                              StrokeLineJoin="Round"
+                              StrokeThickness="2" />
+                        <Ellipse Canvas.Left="50"
+                                 Canvas.Top="23"
+                                 Width="5"
+                                 Height="5"
+                                 Fill="#FF7867" />
+                        <Path Data="M 18,19 L 36,24"
+                              Fill="Transparent"
+                              Stroke="#FFFFF5C7"
+                              StrokeThickness="2"
+                              StrokeStartLineCap="Round"
+                              Opacity="0.85" />
+                    </Canvas>
                 </Canvas>
             </Grid>
             </Viewbox>

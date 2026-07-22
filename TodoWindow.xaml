@@ -1,7 +1,7 @@
 <Window x:Class="LubanDesktopPet.TodoWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="小鲁班待办事项"
+        Title="小鲁班任务小屋"
         Width="292"
         Height="350"
         AllowsTransparency="True"
@@ -37,48 +37,161 @@
                 CornerRadius="16">
             <Grid>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="30" />
+                    <RowDefinition Height="34" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="44" />
-                    <RowDefinition Height="38" />
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0">
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock VerticalAlignment="Center"
-                               FontFamily="Microsoft YaHei"
-                               FontSize="16"
-                               FontWeight="SemiBold"
-                               Foreground="#202631"
-                               Text="待办事项" />
-                    <Button Grid.Column="1"
-                            Margin="6,0,0,0"
-                            Padding="8,3"
+                    <RadioButton x:Name="TodoTabButton"
+                                 Grid.Column="0"
+                                 MinWidth="66"
+                                 Height="30"
+                                 VerticalAlignment="Center"
+                                 AutomationProperties.Name="待办事项选项卡"
+                                 Content="待办事项"
+                                 Cursor="Hand"
+                                 FontFamily="Microsoft YaHei"
+                                 FontSize="12"
+                                 FontWeight="SemiBold"
+                                 Foreground="#687181"
+                                 GroupName="TaskTabs"
+                                 IsChecked="True"
+                                 Click="TodoTabButton_Click">
+                        <RadioButton.Template>
+                            <ControlTemplate TargetType="RadioButton">
+                                <Border x:Name="TabBorder"
+                                        Padding="9,5"
+                                        Background="Transparent"
+                                        CornerRadius="10">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontFamily="Microsoft YaHei"
+                                               FontSize="{TemplateBinding FontSize}"
+                                               FontWeight="{TemplateBinding FontWeight}"
+                                               Foreground="{TemplateBinding Foreground}"
+                                               Text="{TemplateBinding Content}" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="TabBorder"
+                                                Property="Background"
+                                                Value="#F3F7FD" />
+                                    </Trigger>
+                                    <Trigger Property="IsChecked" Value="True">
+                                        <Setter Property="Foreground" Value="#3E70C6" />
+                                        <Setter TargetName="TabBorder"
+                                                Property="Background"
+                                                Value="#EAF3FF" />
+                                    </Trigger>
+                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                        <Setter TargetName="TabBorder"
+                                                Property="BorderBrush"
+                                                Value="#8CB4F4" />
+                                        <Setter TargetName="TabBorder"
+                                                Property="BorderThickness"
+                                                Value="1" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </RadioButton.Template>
+                    </RadioButton>
+                    <RadioButton x:Name="ScheduledTaskTabButton"
+                                 Grid.Column="1"
+                                 MinWidth="66"
+                                 Height="30"
+                                 Margin="2,0,0,0"
+                                 VerticalAlignment="Center"
+                                 AutomationProperties.Name="定时任务选项卡"
+                                 Content="定时任务"
+                                 Cursor="Hand"
+                                 FontFamily="Microsoft YaHei"
+                                 FontSize="12"
+                                 FontWeight="SemiBold"
+                                 Foreground="#687181"
+                                 GroupName="TaskTabs"
+                                 Click="ScheduledTaskTabButton_Click">
+                        <RadioButton.Template>
+                            <ControlTemplate TargetType="RadioButton">
+                                <Border x:Name="TabBorder"
+                                        Padding="9,5"
+                                        Background="Transparent"
+                                        CornerRadius="10">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontFamily="Microsoft YaHei"
+                                               FontSize="{TemplateBinding FontSize}"
+                                               FontWeight="{TemplateBinding FontWeight}"
+                                               Foreground="{TemplateBinding Foreground}"
+                                               Text="{TemplateBinding Content}" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="TabBorder"
+                                                Property="Background"
+                                                Value="#FFF5EB" />
+                                    </Trigger>
+                                    <Trigger Property="IsChecked" Value="True">
+                                        <Setter Property="Foreground" Value="#C87534" />
+                                        <Setter TargetName="TabBorder"
+                                                Property="Background"
+                                                Value="#FFF0DF" />
+                                    </Trigger>
+                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                        <Setter TargetName="TabBorder"
+                                                Property="BorderBrush"
+                                                Value="#EDB77C" />
+                                        <Setter TargetName="TabBorder"
+                                                Property="BorderThickness"
+                                                Value="1" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </RadioButton.Template>
+                    </RadioButton>
+                    <Button Grid.Column="3"
+                            Width="38"
+                            Margin="3,0,0,0"
+                            Padding="4,3"
                             Background="#F1F3F6"
                             BorderThickness="0"
                             Cursor="Hand"
                             FontFamily="Microsoft YaHei"
+                            FontSize="11"
                             Foreground="#515966"
                             Content="收起"
                             Click="CloseButton_Click" />
-                    <Button Grid.Column="2"
-                            Margin="6,0,0,0"
-                            Padding="8,3"
+                    <Button Grid.Column="4"
+                            Width="38"
+                            Margin="3,0,0,0"
+                            Padding="4,3"
                             Background="#FFF0F0"
                             BorderThickness="0"
                             Cursor="Hand"
                             FontFamily="Microsoft YaHei"
+                            FontSize="11"
                             Foreground="#C04444"
                             Content="退出"
                             Click="ExitButton_Click" />
                 </Grid>
 
-                <Grid Grid.Row="1" Margin="0,8">
-                    <ListBox x:Name="TodoItemsControl"
+                <Grid x:Name="TodoPage"
+                      Grid.Row="1"
+                      Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="38" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <ListBox x:Name="TodoItemsControl"
                              AllowDrop="True"
                              Background="Transparent"
                              BorderThickness="0"
@@ -260,9 +373,9 @@
                                     </Border>
                                 </DataTemplate>
                         </ListBox.ItemTemplate>
-                    </ListBox>
+                        </ListBox>
 
-                    <TextBlock HorizontalAlignment="Center"
+                        <TextBlock HorizontalAlignment="Center"
                                VerticalAlignment="Center"
                                FontFamily="Microsoft YaHei"
                                FontSize="13"
@@ -278,7 +391,262 @@
                                 </Style.Triggers>
                             </Style>
                         </TextBlock.Style>
-                    </TextBlock>
+                        </TextBlock>
+                    </Grid>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="54" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="TodoInput"
+                                 Grid.Column="0"
+                                 Margin="0,0,7,0"
+                                 Padding="8,5"
+                                 VerticalContentAlignment="Center"
+                                 BorderBrush="#D8DEE8"
+                                 FontFamily="Microsoft YaHei"
+                                 FontSize="13"
+                                 InputMethod.IsInputMethodEnabled="True"
+                                 MaxLength="80"
+                                 ToolTip="输入待办事项，按回车添加"
+                                 PreviewKeyDown="TodoInput_PreviewKeyDown" />
+                        <Button Grid.Column="1"
+                                Background="#5B8DEF"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                FontFamily="Microsoft YaHei"
+                                Foreground="White"
+                                Content="新增"
+                                Click="AddButton_Click" />
+                    </Grid>
+                </Grid>
+
+                <Grid x:Name="ScheduledTaskPage"
+                      Grid.Row="1"
+                      Margin="0,8,0,0"
+                      Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="38" />
+                        <RowDefinition Height="36" />
+                        <RowDefinition Height="18" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,5">
+                        <ListBox x:Name="ScheduledTaskItemsControl"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 ScrollViewer.CanContentScroll="True"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Margin" Value="0" />
+                                    <Setter Property="MinHeight" Value="0" />
+                                    <Setter Property="Focusable" Value="False" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <VirtualizingStackPanel />
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,0,2"
+                                            Padding="7,4"
+                                            MaxHeight="54"
+                                            CornerRadius="9">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="#FFF8EF" />
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#EAF3FF" />
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="26" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid Grid.Column="0">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+                                                <TextBlock Grid.Row="0"
+                                                           FontFamily="Microsoft YaHei"
+                                                           FontSize="10.5"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#C87534"
+                                                           Text="{Binding DueAtDisplayText}" />
+                                                <TextBox Grid.Row="1"
+                                                         MinWidth="0"
+                                                         Padding="0"
+                                                         Background="Transparent"
+                                                         BorderThickness="0"
+                                                         Cursor="IBeam"
+                                                         FontFamily="Microsoft YaHei"
+                                                         FontSize="12"
+                                                         Foreground="#303744"
+                                                         IsReadOnly="True"
+                                                         IsReadOnlyCaretVisible="False"
+                                                         MaxHeight="30"
+                                                         MaxLines="2"
+                                                         Text="{Binding Text}"
+                                                         TextWrapping="Wrap"
+                                                         ToolTipService.InitialShowDelay="300"
+                                                         ToolTipService.ShowDuration="30000">
+                                                    <TextBox.ToolTip>
+                                                        <ToolTip MaxWidth="360" Padding="8">
+                                                            <TextBlock MaxWidth="344"
+                                                                       FontFamily="Microsoft YaHei"
+                                                                       Text="{Binding Text}"
+                                                                       TextWrapping="Wrap" />
+                                                        </ToolTip>
+                                                    </TextBox.ToolTip>
+                                                </TextBox>
+                                            </Grid>
+                                            <Button Grid.Column="1"
+                                                    Width="24"
+                                                    Height="24"
+                                                    Padding="0"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Center"
+                                                    AutomationProperties.Name="删除定时任务"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Content="×"
+                                                    Cursor="Hand"
+                                                    FontFamily="Microsoft YaHei"
+                                                    FontSize="16"
+                                                    Foreground="#B69275"
+                                                    Tag="{Binding}"
+                                                    ToolTip="删除定时任务"
+                                                    Click="ScheduledTaskDeleteButton_Click" />
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <TextBlock HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="12"
+                                   Foreground="#A69B91"
+                                   IsHitTestVisible="False"
+                                   Text="还没有定时任务，设一个可爱提醒吧">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasItems, ElementName=ScheduledTaskItemsControl}"
+                                                     Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+
+                    <Grid Grid.Row="1">
+                        <TextBox x:Name="ScheduledTaskInput"
+                                 Padding="8,5"
+                                 VerticalContentAlignment="Center"
+                                 BorderBrush="#E4C8AA"
+                                 FontFamily="Microsoft YaHei"
+                                 FontSize="13"
+                                 InputMethod.IsInputMethodEnabled="True"
+                                 MaxLength="80"
+                                 ToolTip="输入提醒内容，按回车设定"
+                                 TextChanged="ScheduledTaskInput_TextChanged"
+                                 PreviewKeyDown="ScheduledTaskInput_PreviewKeyDown" />
+                        <TextBlock Margin="9,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="12"
+                                   Foreground="#A8A1A0"
+                                   IsHitTestVisible="False"
+                                   Text="写下要提醒的事情…">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=ScheduledTaskInput}"
+                                                     Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+
+                    <Grid Grid.Row="2" Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="108" />
+                            <ColumnDefinition Width="6" />
+                            <ColumnDefinition Width="80" />
+                            <ColumnDefinition Width="6" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <DatePicker x:Name="ScheduledDatePicker"
+                                    Grid.Column="0"
+                                    Height="30"
+                                    Padding="3,0"
+                                    VerticalContentAlignment="Center"
+                                    BorderBrush="#E4C8AA"
+                                    FontFamily="Microsoft YaHei"
+                                    FontSize="11"
+                                    ToolTip="选择提醒日期"
+                                    CalendarOpened="ScheduledDatePicker_CalendarOpened"
+                                    CalendarClosed="ScheduledDatePicker_CalendarClosed"
+                                    SelectedDateChanged="ScheduledDatePicker_SelectedDateChanged" />
+                        <TextBox x:Name="ScheduledTimeInput"
+                                 Grid.Column="2"
+                                 Height="30"
+                                 Padding="6,4"
+                                 VerticalContentAlignment="Center"
+                                 AutomationProperties.Name="提醒时间，时分秒"
+                                 BorderBrush="#E4C8AA"
+                                 FontFamily="Microsoft YaHei"
+                                 FontSize="12"
+                                 MaxLength="8"
+                                 TextAlignment="Center"
+                                 ToolTip="按 HH:mm:ss 输入，精确到秒"
+                                 TextChanged="ScheduledTimeInput_TextChanged"
+                                 PreviewKeyDown="ScheduledTimeInput_PreviewKeyDown" />
+                        <Button Grid.Column="4"
+                                Height="30"
+                                Background="#F2A65A"
+                                BorderThickness="0"
+                                Content="设定"
+                                Cursor="Hand"
+                                FontFamily="Microsoft YaHei"
+                                FontSize="12"
+                                FontWeight="SemiBold"
+                                Foreground="White"
+                                ToolTip="添加定时任务"
+                                Click="ScheduledTaskAddButton_Click" />
+                    </Grid>
+
+                    <TextBlock x:Name="ScheduledTaskValidationText"
+                               Grid.Row="3"
+                               Height="18"
+                               VerticalAlignment="Bottom"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="10.5"
+                               Foreground="#C65353"
+                               TextTrimming="CharacterEllipsis" />
                 </Grid>
 
                 <Grid Grid.Row="2" Margin="0,2,0,4">
@@ -319,32 +687,6 @@
                                Text="100%" />
                 </Grid>
 
-                <Grid Grid.Row="3">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="54" />
-                    </Grid.ColumnDefinitions>
-                    <TextBox x:Name="TodoInput"
-                             Grid.Column="0"
-                             Margin="0,0,7,0"
-                             Padding="8,5"
-                             VerticalContentAlignment="Center"
-                             BorderBrush="#D8DEE8"
-                             FontFamily="Microsoft YaHei"
-                             FontSize="13"
-                             InputMethod.IsInputMethodEnabled="True"
-                             MaxLength="80"
-                             ToolTip="输入待办事项，按回车添加"
-                             PreviewKeyDown="TodoInput_PreviewKeyDown" />
-                    <Button Grid.Column="1"
-                            Background="#5B8DEF"
-                            BorderThickness="0"
-                            Cursor="Hand"
-                            FontFamily="Microsoft YaHei"
-                            Foreground="White"
-                            Content="新增"
-                            Click="AddButton_Click" />
-                </Grid>
             </Grid>
         </Border>
 

@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Resources;
@@ -92,6 +93,21 @@ internal static class Program
                     window,
                     "_settingsStore",
                     new AppSettingsStore(Path.Combine(settingsDirectory, "settings.json")));
+                SetField(
+                    window,
+                    "_scheduledTaskStore",
+                    new ScheduledTaskStore(
+                        Path.Combine(settingsDirectory, "scheduled-tasks.json")));
+                GetField<ObservableCollection<ScheduledTaskItem>>(
+                    window,
+                    "_scheduledTasks").Clear();
+                GetField<Queue<ScheduledTaskItem>>(
+                    window,
+                    "_reminderQueue").Clear();
+                GetField<HashSet<Guid>>(
+                    window,
+                    "_queuedReminderIds").Clear();
+                GetField<DispatcherTimer>(window, "_scheduledTaskTimer").Stop();
 
                 if (args.Contains("--resident-cache-only", StringComparer.OrdinalIgnoreCase))
                 {
@@ -118,12 +134,23 @@ internal static class Program
                     return 0;
                 }
 
+                if (args.Contains("--reminder-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertScheduledTaskTabContract),
+                        AssertScheduledTaskTabContract);
+                    RunCheck(nameof(AssertScheduledReminderContract),
+                        () => AssertScheduledReminderContract(window));
+                    return 0;
+                }
+
                 if (args.Contains("--todo-only", StringComparer.OrdinalIgnoreCase))
                 {
                     Invoke(window, "ApplyPetSizeScale", 1d, false, false);
                     RunCheck(nameof(AssertOwnedTodoWindowContract),
                         () => AssertOwnedTodoWindowContract(window));
                     RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                    RunCheck(nameof(AssertScheduledTaskTabContract),
+                        AssertScheduledTaskTabContract);
                     RunCheck(nameof(AssertTodoReorderPersistenceContract),
                         () => AssertTodoReorderPersistenceContract(window));
                     return 0;
@@ -151,8 +178,12 @@ internal static class Program
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
                 RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
                 RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                RunCheck(nameof(AssertScheduledTaskTabContract),
+                    AssertScheduledTaskTabContract);
                 RunCheck(nameof(AssertTodoReorderPersistenceContract),
                     () => AssertTodoReorderPersistenceContract(window));
+                RunCheck(nameof(AssertScheduledReminderContract),
+                    () => AssertScheduledReminderContract(window));
                 RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
             }
             finally
@@ -4445,6 +4476,644 @@ internal static class Program
                 // 临时持久化文件的清理失败不应掩盖待办顺序契约结果。
             }
         }
+    }
+
+    private static void AssertScheduledTaskTabContract()
+    {
+        var type = typeof(TodoWindow);
+        foreach (var propertyName in new[]
+                 {
+                     "ScheduledTasks",
+                     "IsTransientPopupOpen"
+                 })
+        {
+            Assert(type.GetProperty(
+                       propertyName,
+                       BindingFlags.Instance | BindingFlags.Public) is not null,
+                $"TodoWindow 应公开 {propertyName} 属性");
+        }
+
+        Assert(type.GetMethod(
+                   "ShowDefaultTab",
+                   BindingFlags.Instance | BindingFlags.Public) is not null,
+            "TodoWindow 应公开 ShowDefaultTab 以便每次右键打开时回到待办页");
+        foreach (var eventName in new[]
+                 {
+                     "ScheduledTaskAddRequested",
+                     "ScheduledTaskDeleteRequested",
+                     "TransientInteractionCompleted"
+                 })
+        {
+            Assert(type.GetEvent(
+                       eventName,
+                       BindingFlags.Instance | BindingFlags.Public) is not null,
+                $"TodoWindow 应公开 {eventName} 事件");
+        }
+
+        var scheduledTasks = new ObservableCollection<ScheduledTaskItem>();
+        var todoWindow = new TodoWindow
+        {
+            Left = -10000,
+            Top = -10000,
+            ShowActivated = false,
+            ScheduledTasks = scheduledTasks
+        };
+        try
+        {
+            var todoTab = GetField<RadioButton>(todoWindow, "TodoTabButton");
+            var scheduledTab = GetField<RadioButton>(todoWindow, "ScheduledTaskTabButton");
+            var todoPage = GetField<Grid>(todoWindow, "TodoPage");
+            var scheduledPage = GetField<Grid>(todoWindow, "ScheduledTaskPage");
+            var scheduledList = GetField<ListBox>(todoWindow, "ScheduledTaskItemsControl");
+            var scheduledInput = GetField<TextBox>(todoWindow, "ScheduledTaskInput");
+            var scheduledDate = GetField<DatePicker>(todoWindow, "ScheduledDatePicker");
+            var scheduledTime = GetField<TextBox>(todoWindow, "ScheduledTimeInput");
+            var validationText = GetField<TextBlock>(
+                todoWindow,
+                "ScheduledTaskValidationText");
+
+            Assert(todoTab.IsChecked == true &&
+                   scheduledTab.IsChecked != true &&
+                   todoPage.Visibility == Visibility.Visible &&
+                   scheduledPage.Visibility == Visibility.Collapsed,
+                "TodoWindow 创建后必须默认显示左侧“待办事项”选项卡");
+            Assert(ReferenceEquals(scheduledList.ItemsSource, scheduledTasks),
+                "定时任务列表必须直接绑定传入的 ObservableCollection");
+            Assert(scheduledInput.MaxLength == 80 &&
+                   scheduledTime.MaxLength == 8 &&
+                   scheduledDate.SelectedDate is not null &&
+                   DateTime.TryParseExact(
+                       scheduledTime.Text,
+                       "HH:mm:ss",
+                       CultureInfo.InvariantCulture,
+                       DateTimeStyles.None,
+                       out _),
+                "定时页必须同时提供内容、日期和 HH:mm:ss 秒级时间控件");
+            Assert(string.IsNullOrEmpty(validationText.Text),
+                "定时任务初始状态不应显示错误提示");
+
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            Assert(todoTab.IsChecked != true &&
+                   scheduledTab.IsChecked == true &&
+                   todoPage.Visibility == Visibility.Collapsed &&
+                   scheduledPage.Visibility == Visibility.Visible,
+                "点击右侧“定时任务”后必须只显示定时页");
+            todoWindow.ShowDefaultTab();
+            Assert(todoTab.IsChecked == true &&
+                   scheduledTab.IsChecked != true &&
+                   todoPage.Visibility == Visibility.Visible &&
+                   scheduledPage.Visibility == Visibility.Collapsed,
+                "ShowDefaultTab 必须可重用地恢复默认待办页");
+
+            var transientCompletionCount = 0;
+            todoWindow.TransientInteractionCompleted += () =>
+                transientCompletionCount++;
+            Invoke(
+                todoWindow,
+                "ScheduledDatePicker_CalendarOpened",
+                scheduledDate,
+                new RoutedEventArgs());
+            Assert(todoWindow.IsTransientPopupOpen,
+                "DatePicker 日历展开时必须标记 transient popup，防止外部失焦误收起窗口");
+            Invoke(
+                todoWindow,
+                "ScheduledDatePicker_CalendarClosed",
+                scheduledDate,
+                new RoutedEventArgs());
+            Assert(!todoWindow.IsTransientPopupOpen &&
+                   transientCompletionCount == 1,
+                "DatePicker 日历关闭后必须清理 transient 状态并通知主窗口重新判定收起");
+            Invoke(
+                todoWindow,
+                "ScheduledDatePicker_CalendarClosed",
+                scheduledDate,
+                new RoutedEventArgs());
+            Assert(transientCompletionCount == 1,
+                "DatePicker 重复 CalendarClosed 不得重复发出 transient 完成事件");
+
+            var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+            var outsideCloseSource = ExtractPrivateMethodSource(
+                mainSource,
+                "ProcessOutsideTodoClose");
+            Assert(outsideCloseSource.Contains(
+                       "_todoWindow.IsTransientPopupOpen",
+                       StringComparison.Ordinal),
+                "MainWindow 的外部点击收起判定必须显式保护 DatePicker transient popup");
+
+            var requestedCount = 0;
+            string? requestedText = null;
+            DateTimeOffset requestedDueAt = default;
+            todoWindow.ScheduledTaskAddRequested += (text, dueAt) =>
+            {
+                requestedCount++;
+                requestedText = text;
+                requestedDueAt = dueAt;
+            };
+
+            var futureLocal = DateTime.Now.AddHours(2);
+            futureLocal = new DateTime(
+                futureLocal.Year,
+                futureLocal.Month,
+                futureLocal.Day,
+                futureLocal.Hour,
+                futureLocal.Minute,
+                futureLocal.Second,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(futureLocal))
+            {
+                futureLocal = futureLocal.AddHours(1);
+            }
+
+            scheduledInput.Text = "  明天带好小喇叭  ";
+            scheduledDate.SelectedDate = futureLocal.Date;
+            scheduledTime.Text = futureLocal.ToString(
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture);
+            Invoke(todoWindow, "RequestScheduledTaskAdd");
+            var expectedDueAt = new DateTimeOffset(
+                futureLocal,
+                TimeZoneInfo.Local.GetUtcOffset(futureLocal));
+            Assert(requestedCount == 1 &&
+                   requestedText == "明天带好小喇叭" &&
+                   requestedDueAt == expectedDueAt &&
+                   requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0,
+                "定时页应发出去除首尾空白的内容和精确到整秒的本地 DateTimeOffset");
+            Assert(scheduledInput.Text.Length == 0 &&
+                   scheduledDate.SelectedDate is not null &&
+                   DateTime.TryParseExact(
+                       scheduledTime.Text,
+                       "HH:mm:ss",
+                       CultureInfo.InvariantCulture,
+                       DateTimeStyles.None,
+                       out _),
+                "成功设定后应清空内容并重置为新的秒级默认时间");
+
+            var deleteItem = new ScheduledTaskItem
+            {
+                Text = "可删除的定时任务",
+                DueAt = requestedDueAt,
+                CreatedAt = DateTimeOffset.Now
+            };
+            ScheduledTaskItem? requestedDelete = null;
+            todoWindow.ScheduledTaskDeleteRequested += item =>
+                requestedDelete = item;
+            Invoke(
+                todoWindow,
+                "ScheduledTaskDeleteButton_Click",
+                new Button { Tag = deleteItem },
+                new RoutedEventArgs());
+            Assert(ReferenceEquals(requestedDelete, deleteItem),
+                "定时任务删除按钮必须传回当前绑定实例");
+        }
+        finally
+        {
+            todoWindow.CloseForApplication();
+        }
+    }
+
+    private static void AssertScheduledReminderContract(MainWindow window)
+    {
+        const double baselineScale = 1.13;
+        const double maximumScale = 1.40;
+        var scheduledTasks = GetField<ObservableCollection<ScheduledTaskItem>>(
+            window,
+            "_scheduledTasks");
+        var reminderQueue = GetField<Queue<ScheduledTaskItem>>(
+            window,
+            "_reminderQueue");
+        var queuedReminderIds = GetField<HashSet<Guid>>(
+            window,
+            "_queuedReminderIds");
+        var scheduledStore = GetField<ScheduledTaskStore>(
+            window,
+            "_scheduledTaskStore");
+        var settingsStore = GetField<AppSettingsStore>(window, "_settingsStore");
+        var scheduledTimer = GetField<DispatcherTimer>(
+            window,
+            "_scheduledTaskTimer");
+        var reminderSizeTimer = GetField<DispatcherTimer>(
+            window,
+            "_reminderSizeCommitTimer");
+        var automaticTimer = GetField<DispatcherTimer>(window, "_automaticTimer");
+        var originalNowProvider = GetField<Func<DateTimeOffset>>(
+            window,
+            "_nowProvider");
+        var originalAutomaticAnimationEnabled = GetField<bool>(
+            window,
+            "_automaticAnimationEnabled");
+        var originalHitTestVisible = window.IsHitTestVisible;
+        var currentNow = new DateTimeOffset(
+            2026,
+            7,
+            22,
+            12,
+            0,
+            0,
+            TimeSpan.FromHours(8));
+        Func<DateTimeOffset> controlledNow = () => currentNow;
+
+        scheduledTimer.Stop();
+        reminderSizeTimer.Stop();
+        automaticTimer.Stop();
+        scheduledTasks.Clear();
+        reminderQueue.Clear();
+        queuedReminderIds.Clear();
+        SetField(window, "_activeReminder", null);
+        SetField(window, "_isReminderActive", false);
+        SetField(window, "_nowProvider", controlledNow);
+        SetField(window, "_automaticAnimationEnabled", false);
+        window.IsHitTestVisible = false;
+        Assert(scheduledStore.Save(scheduledTasks),
+            "提醒回归必须使用临时 ScheduledTaskStore");
+
+        try
+        {
+            if (!window.IsVisible)
+            {
+                window.Show();
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            }
+
+            automaticTimer.Stop();
+            SetField(window, "_automaticAnimationEnabled", false);
+            Invoke(window, "ApplyPetSizeScale", baselineScale, true, false);
+            AssertClose(
+                settingsStore.Load().PetSizeScale,
+                baselineScale,
+                "定时提醒前的用户尺寸设置");
+
+            var reminderEnterClip = GetField<object>(window, "_reminderEnterClip");
+            var reminderExitClip = GetField<object>(window, "_reminderExitClip");
+            var enterFrames = GetClipFrames(reminderEnterClip);
+            var exitFrames = GetClipFrames(reminderExitClip);
+            var enterActionIndex = GetProperty<int>(
+                reminderEnterClip,
+                "ActionFrameIndex");
+            Assert(GetProperty<string>(reminderEnterClip, "ActionName") ==
+                   "reminder-open" &&
+                   GetProperty<string>(reminderExitClip, "ActionName") ==
+                   "reminder-close" &&
+                   !ReferenceEquals(reminderEnterClip, reminderExitClip) &&
+                   enterFrames.Length > 8 &&
+                   exitFrames.Length > 8 &&
+                   enterActionIndex >= 0 &&
+                   enterActionIndex < enterFrames.Length,
+                "定时提醒必须拥有独立的 reminder-open / reminder-close 入退场 clip");
+            var reminderMotionFrameInterval = (TimeSpan)(
+                typeof(MainWindow).GetField(
+                    "ReminderMotionFrameInterval",
+                    StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+            var actionLoopFrameCount = Convert.ToInt32(
+                typeof(MainWindow).GetField(
+                    "ActionLoopFrameCount",
+                    StaticFlags)!.GetRawConstantValue(),
+                CultureInfo.InvariantCulture);
+            var reminderTransitionFrameCount =
+                enterFrames.Length - actionLoopFrameCount;
+            Assert(reminderMotionFrameInterval == TimeSpan.FromTicks(
+                       TimeSpan.TicksPerSecond / 180) &&
+                   reminderTransitionFrameCount > 0 &&
+                   enterFrames.Cast<object>()
+                       .Take(reminderTransitionFrameCount)
+                       .All(frame =>
+                           GetFrameDuration(frame) == reminderMotionFrameInterval) &&
+                   enterFrames.Cast<object>()
+                       .Skip(reminderTransitionFrameCount)
+                       .All(frame =>
+                           GetFrameDuration(frame) == TimeSpan.FromTicks(
+                               TimeSpan.TicksPerSecond / 60)),
+                "reminder-open 必须用180fps authored进入举手姿态，" +
+                "再以原始60fps循环保持姿态");
+            AssertProductionDiscreteVsyncTimeline(
+                window,
+                reminderEnterClip,
+                "reminder-open-180fps");
+
+            var dueAt = currentNow.AddSeconds(10);
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskAddRequested",
+                "同秒提醒甲",
+                dueAt);
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskAddRequested",
+                "同秒提醒乙",
+                dueAt);
+            Assert(scheduledTasks.Count == 2 &&
+                   scheduledTasks.All(item => item.DueAt == dueAt) &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   !GetField<bool>(window, "_isReminderActive"),
+                "两条同秒定时任务在到点前必须只持久化，不得提前提醒");
+            Assert(scheduledTimer.IsEnabled &&
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(10))
+                       .TotalMilliseconds) < 1,
+                "调度器应直接对准最近的秒级截止时间，不做高频轮询");
+            var expectedSameSecondOrder = scheduledTasks.ToArray();
+            Assert(expectedSameSecondOrder[0].CreatedAt <=
+                   expectedSameSecondOrder[1].CreatedAt &&
+                   (expectedSameSecondOrder[0].CreatedAt <
+                        expectedSameSecondOrder[1].CreatedAt ||
+                    expectedSameSecondOrder[0].Id.CompareTo(
+                        expectedSameSecondOrder[1].Id) < 0),
+                "同秒任务必须按 CreatedAt / Id 稳定排序");
+            Assert(scheduledStore.Load().Select(item => item.Id)
+                    .SequenceEqual(expectedSameSecondOrder.Select(item => item.Id)),
+                "同秒任务的稳定顺序必须与磁盘持久化顺序一致");
+
+            Invoke(window, "ProcessScheduledTasksAt", dueAt.AddTicks(-1));
+            Assert(GetRawField(window, "_activeReminder") is null &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0,
+                "到点前 1 tick 仍不得触发定时任务");
+
+            currentNow = dueAt;
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
+            var firstActive = GetField<ScheduledTaskItem>(
+                window,
+                "_activeReminder");
+            Assert(ReferenceEquals(firstActive, expectedSameSecondOrder[0]) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   reminderQueue.Count == 1 &&
+                   queuedReminderIds.Count == 2,
+                "整秒边界必须立即显示稳定顺序的第一条，其余同秒任务只入队一次");
+            Assert(GetRawField(window, "_activeClip") is { } activeReminderClip &&
+                   ReferenceEquals(activeReminderClip, reminderEnterClip) &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "Reminder",
+                "到点后必须切换 BubbleMode.Reminder 并启动 reminder-open clip");
+
+            var reminderBubble = GetField<Border>(window, "ReminderBubble");
+            var reminderMessage = GetField<TextBox>(window, "ReminderMessageText");
+            var reminderMegaphone = GetField<Canvas>(window, "ReminderMegaphone");
+            var reminderButton = GetField<Button>(
+                window,
+                "ReminderAcknowledgeButton");
+            Assert(reminderBubble.Visibility == Visibility.Visible &&
+                   GetField<Popup>(window, "BubblePopup").IsOpen &&
+                   reminderMessage.Text == firstActive.Text &&
+                   reminderMessage.IsReadOnly &&
+                   Equals(reminderButton.Content, "知道啦"),
+                "Reminder 模式必须显示可选中内容、可爱气泡和“知道啦”确认按钮");
+            reminderMessage.SelectAll();
+            Assert(reminderMessage.SelectedText == firstActive.Text,
+                "提醒对话框内容必须可选中复制");
+            reminderMessage.Select(0, 0);
+            Assert(reminderMegaphone.Children
+                       .OfType<System.Windows.Shapes.Path>()
+                       .Count() >= 5 &&
+                   GetField<RotateTransform>(window, "MegaphoneRotate") is not null &&
+                   GetField<ScaleTransform>(window, "MegaphonePulseScale") is not null,
+                "举喇叭提醒必须使用轻量矢量组件和可动画变换，不得增加大位图");
+            Invoke(
+                window,
+                "ShowReminderMegaphoneAt",
+                Stopwatch.GetTimestamp(),
+                true);
+            Assert(reminderMegaphone.Visibility == Visibility.Visible &&
+                   GetField<bool>(window, "_isReminderMegaphoneAnimating"),
+                "提醒动作进入举手姿态后必须显示并启动喇叭脉冲动画");
+
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       firstActive) &&
+                   reminderQueue.Count == 1 &&
+                   queuedReminderIds.Count == 2,
+                "在同一整秒重复执行调度不得重复入队或覆盖正在显示的提醒");
+
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            AssertClose(GetField<double>(window, "_petSizeScale"), maximumScale,
+                "提醒触发后的临时最大显示尺寸");
+            Assert(GetField<bool>(window, "_isTransientPetSizeOverride") &&
+                   !GetField<DispatcherTimer>(window, "_petSizePersistTimer").IsEnabled,
+                "定时提醒放大必须使用 transient override，不得启动用户设置落盘计时器");
+            AssertClose(
+                settingsStore.Load().PetSizeScale,
+                baselineScale,
+                "临时放大到 140% 时不得覆盖用户尺寸设置");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            var secondActive = GetField<ScheduledTaskItem>(
+                window,
+                "_activeReminder");
+            var persistedAfterFirstAcknowledge = scheduledStore.Load();
+            Assert(ReferenceEquals(secondActive, expectedSameSecondOrder[1]) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "Reminder" &&
+                   scheduledTasks.Count == 1 &&
+                   persistedAfterFirstAcknowledge.Count == 1 &&
+                   persistedAfterFirstAcknowledge[0].Id == secondActive.Id,
+                "确认第一条后必须只删除已确认任务并持久化，随即显示队列中第二条");
+            AssertClose(GetField<double>(window, "_petSizeScale"), maximumScale,
+                "同秒提醒队列未清空前应继续保持最大尺寸");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            Assert(GetRawField(window, "_activeReminder") is null &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   scheduledTasks.Count == 0 &&
+                   scheduledStore.Load().Count == 0 &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "None" &&
+                   ReferenceEquals(GetRawField(window, "_activeClip"), reminderExitClip),
+                "最后一条确认后必须清空并持久化队列、关闭气泡并启动 reminder-close clip");
+            Assert(GetField<bool>(window, "_isTransientPetSizeOverride") &&
+                   GetField<bool>(window, "_isRestoringReminderSize") &&
+                   Math.Abs(GetField<double>(window, "_pendingPetSizeTargetScale") -
+                            baselineScale) < 0.0001,
+                "最后一条确认后必须平滑返回提醒前的尺寸目标");
+            Assert(reminderMegaphone.Visibility == Visibility.Collapsed,
+                "reminder-close 开始时必须立即收起矢量喇叭图层");
+
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            AssertClose(GetField<double>(window, "_petSizeScale"), baselineScale,
+                "提醒队列清空后的最终显示尺寸");
+            AssertClose(GetField<double>(window, "_petSizeTargetScale"), baselineScale,
+                "提醒队列清空后的最终尺寸目标");
+            Assert(!GetField<bool>(window, "_isTransientPetSizeOverride") &&
+                   !GetField<bool>(window, "_isRestoringReminderSize"),
+                "尺寸恢复完成后必须清理 transient override 状态");
+            AssertClose(
+                settingsStore.Load().PetSizeScale,
+                baselineScale,
+                "提醒完整结束后用户设置仍应保持原值");
+
+            Invoke(window, "CompleteActiveClip", reminderExitClip);
+            currentNow = dueAt.AddSeconds(30);
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskAddRequested",
+                "应用恢复后的逾期提醒",
+                currentNow.AddSeconds(-5));
+            var overdueActive = GetField<ScheduledTaskItem>(
+                window,
+                "_activeReminder");
+            Assert(overdueActive.Text == "应用恢复后的逾期提醒" &&
+                   overdueActive.DueAt < currentNow &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "Reminder",
+                "新增或应用恢复时发现的逾期任务必须立即触发，不等下一个轮询周期");
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       overdueActive) &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 1,
+                "逾期任务立即触发后重复校时也不得重复入队");
+            Invoke(window, "AcknowledgeActiveReminder");
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Assert(scheduledTasks.Count == 0 && scheduledStore.Load().Count == 0,
+                "逾期提醒确认后也必须立即从内存和磁盘删除");
+            AssertClose(GetField<double>(window, "_petSizeScale"), baselineScale,
+                "逾期提醒结束后的恢复尺寸");
+
+            Invoke(window, "CompleteActiveClip", reminderExitClip);
+            currentNow = dueAt.AddMinutes(2);
+            var rewindDueAt = currentNow.AddSeconds(10);
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskAddRequested",
+                "回拨提醒甲",
+                rewindDueAt);
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskAddRequested",
+                "回拨提醒乙",
+                rewindDueAt);
+            var rewindOrder = scheduledTasks.ToArray();
+            Assert(rewindOrder.Length == 2,
+                "系统时间回拨回归必须准备两条同秒任务");
+
+            currentNow = rewindDueAt;
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       rewindOrder[0]) &&
+                   reminderQueue.Count == 1 &&
+                   queuedReminderIds.Count == 2,
+                "回拨前应由第一条提醒占用气泡，第二条只进入待显示队列");
+
+            currentNow = rewindDueAt.AddSeconds(-5);
+            Invoke(window, "ProcessSystemTimeChanged");
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       rewindOrder[0]),
+                "系统时间回拨不得撤销已经显示的第一条提醒");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            var persistedAfterRewindAcknowledge = scheduledStore.Load();
+            Assert(GetRawField(window, "_activeReminder") is null &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   scheduledTasks.Count == 1 &&
+                   scheduledTasks[0].Id == rewindOrder[1].Id &&
+                   persistedAfterRewindAcknowledge.Count == 1 &&
+                   persistedAfterRewindAcknowledge[0].Id == rewindOrder[1].Id &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   scheduledTimer.IsEnabled &&
+                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(5))
+                       .TotalMilliseconds) < 1,
+                "回拨后确认第一条时，第二条不得提前显示，必须重新调度到原截止秒");
+
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Invoke(window, "CompleteActiveClip", reminderExitClip);
+
+            currentNow = rewindDueAt;
+            Invoke(window, "ProcessScheduledTasksAt", currentNow);
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(window, "_activeReminder"),
+                       rewindOrder[1]) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.SetEquals([rewindOrder[1].Id]),
+                "系统时间再次到达原截止秒后，第二条提醒必须正常显示且只触发一次");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Assert(scheduledTasks.Count == 0 && scheduledStore.Load().Count == 0,
+                "回拨回归中的第二条提醒确认后必须正常清理内存和持久化数据");
+        }
+        finally
+        {
+            scheduledTimer.Stop();
+            reminderSizeTimer.Stop();
+            automaticTimer.Stop();
+            GetField<DispatcherTimer>(window, "_petSizePersistTimer").Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            scheduledStore.Save(scheduledTasks);
+            SetField(window, "_activeReminder", null);
+            SetField(window, "_isReminderActive", false);
+            SetField(window, "_isTransientPetSizeOverride", false);
+            SetField(window, "_isRestoringReminderSize", false);
+            SetField(window, "_isReminderMegaphoneAnimating", false);
+            Invoke(window, "HideBubbleVisuals");
+            SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "HideReminderMegaphone");
+            Invoke(window, "StopVisualClock");
+            SetField(window, "_activeClip", null);
+            SetField(window, "_activeFrameIndex", -1);
+            SetField(window, "_activeClipStartedTimestamp", 0L);
+            SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+            Invoke(window, "ClearDeferredActiveClipClock");
+            Invoke(window, "ApplyPetSizeScale", baselineScale, false, false);
+            SetField(window, "_nowProvider", originalNowProvider);
+            SetField(
+                window,
+                "_automaticAnimationEnabled",
+                originalAutomaticAnimationEnabled);
+            if (originalAutomaticAnimationEnabled && window.IsVisible)
+            {
+                Invoke(window, "RestartAutomaticCountdown");
+            }
+
+            window.IsHitTestVisible = originalHitTestVisible;
+        }
+    }
+
+    private static void CompleteCurrentPetSizeTransitionForReminderTest(
+        MainWindow window)
+    {
+        var timestamp = Stopwatch.GetTimestamp();
+        Invoke(window, "ConsumePendingPetSizeTargetAt", timestamp);
+        if (!GetField<bool>(window, "_isPetSizeTransitioning"))
+        {
+            return;
+        }
+
+        var transitionStartedAt = GetField<long>(
+            window,
+            "_petSizeTransitionStartedTimestamp");
+        var transitionDuration = (TimeSpan)(typeof(MainWindow).GetField(
+                "PetSizeTransitionDuration",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var durationTicks = Math.Max(
+            1L,
+            (long)Math.Ceiling(
+                transitionDuration.TotalSeconds * Stopwatch.Frequency));
+        Invoke(
+            window,
+            "AdvancePetSizeTransition",
+            checked(transitionStartedAt + durationTicks + 1));
     }
 
     private static void AssertTodoWindowLayoutApiAndIme()

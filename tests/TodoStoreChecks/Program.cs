@@ -1,5 +1,7 @@
 using LubanDesktopPet;
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text.Json;
 
 var tempDirectory = Path.Combine(Path.GetTempPath(), "LubanDesktopPetChecks", Guid.NewGuid().ToString("N"));
 
@@ -7,7 +9,8 @@ try
 {
     CheckTodoStore(tempDirectory);
     CheckAppSettingsStore(tempDirectory);
-    Console.WriteLine("TodoStore and AppSettingsStore checks passed.");
+    CheckScheduledTaskStore(tempDirectory);
+    Console.WriteLine("TodoStore, AppSettingsStore, and ScheduledTaskStore checks passed.");
 }
 finally
 {
@@ -108,6 +111,258 @@ static void CheckAppSettingsStore(string tempDirectory)
     var saveResult = blockedStore.Save(new AppSettings { PetSizeScale = 1.2 });
     Assert(!saveResult, "保存失败时应返回 false 而不是抛异常");
     Assert(!File.Exists(blockedPath + ".tmp"), "保存失败后应尽量清理临时文件");
+}
+
+static void CheckScheduledTaskStore(string tempDirectory)
+{
+    var expectedDefaultPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "LubanDesktopPet",
+        "scheduled-tasks.json");
+    Assert(
+        string.Equals(
+            ScheduledTaskStore.CreateDefault().FilePath,
+            expectedDefaultPath,
+            StringComparison.OrdinalIgnoreCase),
+        "默认定时任务路径应位于 LocalAppData\\LubanDesktopPet\\scheduled-tasks.json");
+
+    var filePath = Path.Combine(tempDirectory, "scheduled", "scheduled-tasks.json");
+    var store = new ScheduledTaskStore(filePath);
+    Assert(store.Load().Count == 0, "定时任务文件不存在时应返回空列表");
+    Assert(store.TryLoad(out var missingItems) && missingItems.Count == 0,
+        "TryLoad 遇到不存在的定时任务文件时应返回 true 和空集合");
+
+    var earlyId = Guid.Parse("00000000-0000-0000-0000-000000000010");
+    var sameCreatedFirstId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    var sameCreatedSecondId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+    var laterId = Guid.Parse("00000000-0000-0000-0000-000000000020");
+    var dueAt = new DateTimeOffset(
+            2026,
+            7,
+            22,
+            18,
+            30,
+            45,
+            TimeSpan.FromHours(8))
+        .AddMilliseconds(987);
+    var createdAt = new DateTimeOffset(
+            2026,
+            7,
+            20,
+            9,
+            10,
+            11,
+            TimeSpan.FromHours(8))
+        .AddMilliseconds(654);
+    var original = new ScheduledTaskItem[]
+    {
+        new()
+        {
+            Id = laterId,
+            Text = "稍后提醒",
+            DueAt = dueAt.AddSeconds(1),
+            CreatedAt = createdAt
+        },
+        new()
+        {
+            Id = sameCreatedSecondId,
+            Text = "同秒第二条",
+            DueAt = dueAt,
+            CreatedAt = createdAt
+        },
+        new()
+        {
+            Id = earlyId,
+            Text = "  提前提醒  ",
+            DueAt = dueAt.AddSeconds(-1),
+            CreatedAt = createdAt.AddSeconds(2)
+        },
+        new()
+        {
+            Id = sameCreatedFirstId,
+            Text = "同秒第一条",
+            DueAt = dueAt,
+            CreatedAt = createdAt
+        },
+        new()
+        {
+            Id = sameCreatedFirstId,
+            Text = "重复 ID 应被忽略",
+            DueAt = dueAt.AddMinutes(2),
+            CreatedAt = createdAt
+        },
+        new()
+        {
+            Id = Guid.Empty,
+            Text = "空 ID 应被忽略",
+            DueAt = dueAt,
+            CreatedAt = createdAt
+        },
+        new()
+        {
+            Id = Guid.NewGuid(),
+            Text = "   ",
+            DueAt = dueAt,
+            CreatedAt = createdAt
+        },
+        null!
+    };
+
+    Assert(store.Save(original), "定时任务首次保存应成功");
+    Assert(Directory.Exists(Path.GetDirectoryName(filePath)), "保存定时任务时应创建数据目录");
+    Assert(!File.Exists(filePath + ".tmp"), "保存定时任务后不应残留临时文件");
+
+    var bytes = File.ReadAllBytes(filePath);
+    Assert(
+        bytes.Length < 3 || bytes[0] != 0xEF || bytes[1] != 0xBB || bytes[2] != 0xBF,
+        "定时任务 JSON 应使用无 BOM 的 UTF-8 编码");
+    var savedJson = File.ReadAllText(filePath);
+    Assert(savedJson.Contains("\"dueAt\"", StringComparison.Ordinal) &&
+           savedJson.Contains("\"createdAt\"", StringComparison.Ordinal),
+        "定时任务 JSON 应使用 camelCase 时间字段");
+
+    var loaded = store.Load();
+    Assert(loaded.Count == 4, "保存时应清理空文字、空 ID、重复 ID 和空项");
+    Assert(store.TryLoad(out var tryLoaded) &&
+           tryLoaded.Select(item => item.Id)
+               .SequenceEqual(loaded.Select(item => item.Id)),
+        "TryLoad 遇到有效 JSON 时应返回 true 并产生与 Load 一致的稳定顺序");
+    Assert(loaded[0].Id == earlyId && loaded[0].Text == "提前提醒",
+        "定时任务应按 UTC 到期时间排序并去除文字首尾空白");
+    Assert(loaded[1].Id == sameCreatedFirstId &&
+           loaded[2].Id == sameCreatedSecondId &&
+           loaded[3].Id == laterId,
+        "同秒任务应再按创建时间和 ID 稳定排序");
+    Assert(loaded.All(item =>
+            item.DueAt.Ticks % TimeSpan.TicksPerSecond == 0),
+        "加载后的到期时间必须精确到整秒");
+    Assert(loaded[1].CreatedAt == createdAt,
+        "创建时间必须保留亚秒精度，保证同秒新增任务仍按真实创建顺序排序");
+    Assert(loaded[1].DueAt.Offset == TimeSpan.FromHours(8),
+        "DateTimeOffset 往返保存必须保留时区偏移");
+
+    var chineseCulture = CultureInfo.GetCultureInfo("zh-CN");
+    var localDueAt = loaded[1].DueAt.ToLocalTime();
+    Assert(
+        loaded[1].DueAtDisplayText ==
+            localDueAt.ToString("yyyy年M月d日 ddd HH:mm:ss", chineseCulture) &&
+        loaded[1].DueDateDisplayText ==
+            localDueAt.ToString("M月d日 ddd", chineseCulture) &&
+        loaded[1].DueTimeDisplayText ==
+            localDueAt.ToString("HH:mm:ss", chineseCulture),
+        "定时任务应提供可直接用于 UI 绑定的中文本地日期和秒级时间");
+    Assert(store.Save(loaded.Reverse()), "定时任务应能原子覆盖旧文件");
+    var overwritten = store.Load();
+    Assert(overwritten.Count == 4 &&
+           overwritten.Select(item => item.Id).SequenceEqual(loaded.Select(item => item.Id)),
+        "覆盖保存后仍应按统一的时间顺序加载");
+    Assert(!File.Exists(filePath + ".tmp"), "原子覆盖后不应残留临时文件");
+
+    var duplicateId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+    var validAfterInvalidDuplicateId =
+        Guid.Parse("10000000-0000-0000-0000-000000000002");
+    var rawRecords = new object[]
+    {
+        new
+        {
+            Id = duplicateId,
+            Text = "保留的重复项",
+            DueAt = dueAt.AddHours(2),
+            CreatedAt = createdAt
+        },
+        new
+        {
+            Id = duplicateId,
+            Text = "后续重复项",
+            DueAt = dueAt.AddHours(-2),
+            CreatedAt = createdAt
+        },
+        new
+        {
+            Id = Guid.Empty,
+            Text = "空 ID",
+            DueAt = dueAt,
+            CreatedAt = createdAt
+        },
+        new
+        {
+            Id = validAfterInvalidDuplicateId,
+            Text = "   ",
+            DueAt = dueAt,
+            CreatedAt = createdAt
+        },
+        new
+        {
+            Id = validAfterInvalidDuplicateId,
+            Text = "无效项不应占用 ID",
+            DueAt = dueAt.AddHours(1),
+            CreatedAt = createdAt
+        },
+        new
+        {
+            Id = Guid.Parse("10000000-0000-0000-0000-000000000003"),
+            Text = "缺失到期时间",
+            DueAt = default(DateTimeOffset),
+            CreatedAt = createdAt
+        }
+    };
+    File.WriteAllText(filePath, JsonSerializer.Serialize(rawRecords));
+    var cleaned = store.Load();
+    Assert(cleaned.Count == 2,
+        "加载时应过滤空文字、空 ID、重复 ID 和缺失到期时间的记录");
+    Assert(cleaned.Any(item =>
+               item.Id == duplicateId && item.Text == "保留的重复项") &&
+           cleaned.Any(item =>
+               item.Id == validAfterInvalidDuplicateId &&
+               item.Text == "无效项不应占用 ID"),
+        "重复 ID 应保留第一条有效记录，无效记录不应抢占 ID");
+    Assert(cleaned.All(item =>
+            item.DueAt.Ticks % TimeSpan.TicksPerSecond == 0),
+        "直接加载带毫秒的 JSON 时也必须把到期时间统一截断到整秒");
+    Assert(cleaned.All(item => item.CreatedAt.Millisecond == createdAt.Millisecond),
+        "直接加载 JSON 时必须保留创建时间的亚秒精度");
+
+    const string invalidJson = "这不是有效 JSON";
+    File.WriteAllText(filePath, invalidJson);
+    var invalidBytesBeforeTryLoad = File.ReadAllBytes(filePath);
+    Assert(!store.TryLoad(out var invalidItems) && invalidItems.Count == 0,
+        "TryLoad 遇到损坏 JSON 时应返回 false 和空集合");
+    Assert(File.ReadAllBytes(filePath).SequenceEqual(invalidBytesBeforeTryLoad),
+        "TryLoad 解析失败不得清空、覆盖或重写原始损坏 JSON");
+    Assert(store.Load().Count == 0, "损坏的定时任务 JSON 应安全回退为空列表");
+
+    var lockedPath = Path.Combine(tempDirectory, "locked-scheduled-tasks.json");
+    File.WriteAllText(lockedPath, savedJson);
+    var lockedBytesBeforeTryLoad = File.ReadAllBytes(lockedPath);
+    var lockedStore = new ScheduledTaskStore(lockedPath);
+    using (var exclusiveLock = new FileStream(
+               lockedPath,
+               FileMode.Open,
+               FileAccess.ReadWrite,
+               FileShare.None))
+    {
+        Assert(!lockedStore.TryLoad(out var lockedItems) && lockedItems.Count == 0,
+            "TryLoad 遇到被独占锁定的不可读文件时应返回 false 和空集合");
+        Assert(exclusiveLock.Length == lockedBytesBeforeTryLoad.Length,
+            "TryLoad 读取锁定文件失败时不得改变原始文件长度");
+    }
+    Assert(File.ReadAllBytes(lockedPath).SequenceEqual(lockedBytesBeforeTryLoad),
+        "TryLoad 读取锁定文件失败后不得改写原始内容");
+
+    var blockedPath = Path.Combine(tempDirectory, "blocked-scheduled-tasks.json");
+    Directory.CreateDirectory(blockedPath);
+    var blockedStore = new ScheduledTaskStore(blockedPath);
+    var directorySentinelPath = Path.Combine(blockedPath, "keep-me.txt");
+    const string directorySentinel = "scheduled task directory sentinel";
+    File.WriteAllText(directorySentinelPath, directorySentinel);
+    Assert(!blockedStore.TryLoad(out var directoryItems) && directoryItems.Count == 0,
+        "TryLoad 遇到目录路径时应返回 false，不能将目录误判为文件缺失");
+    Assert(Directory.Exists(blockedPath) &&
+           File.ReadAllText(directorySentinelPath) == directorySentinel,
+        "TryLoad 目录路径失败时不得覆盖目标、删除目录或改写其中内容");
+    Assert(!blockedStore.Save(original), "定时任务保存失败时应返回 false 而不是抛异常");
+    Assert(!File.Exists(blockedPath + ".tmp"),
+        "定时任务保存失败后应尽量清理临时文件");
 }
 
 static void Assert(bool condition, string message)

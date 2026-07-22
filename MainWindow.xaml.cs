@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -28,6 +29,7 @@ public partial class MainWindow : Window
     // above 1.0 play character poses faster. Rebuild after changing it.
     private const double AnimationPlaybackSpeed = 1.25;
     private const double CuteBubbleHeight = 76;
+    private const double ReminderBubbleHeight = 148;
     private const double ScreenEdgeMargin = 12;
     private const double EdgeContactTolerance = 1;
     private const int DisplayPixelWidth = 399;
@@ -48,6 +50,8 @@ public partial class MainWindow : Window
         TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
+    private static readonly TimeSpan ReminderMotionFrameInterval =
+        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 180);
     private static readonly long VisualFrameDeadlineToleranceTicks =
         ToCharacterAnimationTicks(TimeSpan.FromMilliseconds(2));
     private static readonly TimeSpan MinimumNearSixtyHzPresentationInterval =
@@ -62,6 +66,10 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgeFrameBlendDuration = TimeSpan.Zero;
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ReminderMegaphoneAnimationDuration =
+        TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan MaximumReminderWakeInterval =
+        TimeSpan.FromHours(12);
     private static readonly string[] ActionNames =
     [
         "yawn", "cry", "cute", "like", "eat", "wave", "think"
@@ -94,19 +102,28 @@ public partial class MainWindow : Window
     private readonly AnimationClip[] _reactionClips;
     private readonly AnimationClip _todoEnterClip;
     private readonly AnimationClip _todoExitClip;
+    private readonly AnimationClip _reminderEnterClip;
+    private readonly AnimationClip _reminderExitClip;
     private readonly AnimationClip?[] _automaticActivities;
     private readonly DispatcherTimer _automaticTimer;
     private readonly DispatcherTimer _petSizePersistTimer;
+    private readonly DispatcherTimer _scheduledTaskTimer;
+    private readonly DispatcherTimer _reminderSizeCommitTimer;
     private readonly DispatcherTimer _spritePagePrefetchDispatchTimer;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
     private readonly ObservableCollection<TodoItem> _todos = new();
     private readonly TodoStore _todoStore = TodoStore.CreateDefault();
+    private readonly ObservableCollection<ScheduledTaskItem> _scheduledTasks = new();
+    private ScheduledTaskStore _scheduledTaskStore = ScheduledTaskStore.CreateDefault();
+    private readonly Queue<ScheduledTaskItem> _reminderQueue = new();
+    private readonly HashSet<Guid> _queuedReminderIds = new();
     private readonly AppSettingsStore _settingsStore = AppSettingsStore.CreateDefault();
     private readonly TodoWindow _todoWindow;
     private readonly OwnedWindowPositioner.PositionCache _todoWindowPositionCache;
     private readonly Action _processOutsideTodoCloseAction;
     private readonly Action _processTodoWindowPositionUpdateAction;
+    private readonly Action _processSystemTimeChangedAction;
 
     private BubbleMode _bubbleMode;
     private Point _pointerDownPosition;
@@ -160,6 +177,17 @@ public partial class MainWindow : Window
     private bool _isClosing;
     private bool _suppressTodoWindowDeactivate;
     private bool _displaySettingsSubscribed;
+    private bool _systemTimeChangedSubscribed;
+    private bool _isReminderActive;
+    private bool _isTransientPetSizeOverride;
+    private bool _isRestoringReminderSize;
+    private bool _isReminderMegaphoneAnimating;
+    private double _reminderRestoreScale = 1;
+    private double _reminderFacingScaleX = 1;
+    private long _reminderMegaphoneAnimationStartedTimestamp;
+    private long _reminderMegaphoneAnimationEndsTimestamp;
+    private ScheduledTaskItem? _activeReminder;
+    private Func<DateTimeOffset> _nowProvider = static () => DateTimeOffset.Now;
     private SpriteFrame? _currentSpriteFrame;
     private Int32Rect? _directDisplayFrameBounds;
     private SpriteFrame? _pendingSpriteFrame;
@@ -190,6 +218,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _processOutsideTodoCloseAction = ProcessOutsideTodoClose;
         _processTodoWindowPositionUpdateAction = ProcessTodoWindowPositionUpdate;
+        _processSystemTimeChangedAction = ProcessSystemTimeChanged;
         _spritePagePrefetchDispatchTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -250,6 +279,8 @@ public partial class MainWindow : Window
         ];
         _todoExitClip = CreateTodoExitClip();
         _todoEnterClip = CreateTodoEnterClip();
+        _reminderEnterClip = CreateReminderEnterClip();
+        _reminderExitClip = CreateReminderExitClip();
         _automaticActivities =
         [
             _reactionClips[0],
@@ -277,9 +308,23 @@ public partial class MainWindow : Window
             _todos.Add(item);
         }
 
+        if (_scheduledTaskStore.TryLoad(out var scheduledTasks))
+        {
+            foreach (var item in scheduledTasks)
+            {
+                _scheduledTasks.Add(item);
+            }
+        }
+        else
+        {
+            AppLogger.Info(
+                "定时任务读取失败，本次运行将保护原文件且拒绝覆盖保存");
+        }
+
         _todoWindow = new TodoWindow
         {
-            Todos = _todos
+            Todos = _todos,
+            ScheduledTasks = _scheduledTasks
         };
         _todoWindowPositionCache = new OwnedWindowPositioner.PositionCache(_todoWindow);
         _todoWindow.AddRequested += TodoWindow_AddRequested;
@@ -288,6 +333,12 @@ public partial class MainWindow : Window
         _todoWindow.TodoMoveRequested += TodoWindow_TodoMoveRequested;
         _todoWindow.TodoDragCompleted += TodoWindow_TodoDragCompleted;
         _todoWindow.DeleteRequested += TodoWindow_DeleteRequested;
+        _todoWindow.ScheduledTaskAddRequested +=
+            TodoWindow_ScheduledTaskAddRequested;
+        _todoWindow.ScheduledTaskDeleteRequested +=
+            TodoWindow_ScheduledTaskDeleteRequested;
+        _todoWindow.TransientInteractionCompleted +=
+            TodoWindow_TransientInteractionCompleted;
         _todoWindow.PetSizeScaleChanged += TodoWindow_PetSizeScaleChanged;
         _todoWindow.PetSizeAdjustmentStarted += TodoWindow_PetSizeAdjustmentStarted;
         _todoWindow.PetSizeAdjustmentCompleted += TodoWindow_PetSizeAdjustmentCompleted;
@@ -303,6 +354,18 @@ public partial class MainWindow : Window
         };
         _petSizePersistTimer.Tick += PetSizePersistTimer_Tick;
 
+        _reminderSizeCommitTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _reminderSizeCommitTimer.Tick += ReminderSizeCommitTimer_Tick;
+
+        _scheduledTaskTimer = new DispatcherTimer
+        {
+            Interval = MaximumReminderWakeInterval
+        };
+        _scheduledTaskTimer.Tick += ScheduledTaskTimer_Tick;
+
         var settings = _settingsStore.Load();
         _petSizeScale = NormalizePetSizeScale(settings.PetSizeScale);
         _persistedPetSizeScale = _petSizeScale;
@@ -316,7 +379,8 @@ public partial class MainWindow : Window
         };
         _automaticTimer.Tick += AutomaticTimer_Tick;
         AppLogger.Info(
-            $"主窗口初始化完成，已加载 {_reactionClips.Length} 组动作补帧");
+            $"主窗口初始化完成，已加载 {_reactionClips.Length} 组动作补帧，" +
+            $"{_scheduledTasks.Count} 条定时任务");
         AppLogger.Info(
             $"渲染管线：{DisplayPixelWidth}×{DisplayPixelHeight} 固定完整帧，" +
             "单缓冲预乘 Alpha 淡化，活动过渡跟随屏幕刷新率");
@@ -542,6 +606,58 @@ public partial class MainWindow : Window
             "todo-open",
             _todoExitClip.Frames.Reverse().ToArray(),
             ActionFrameIndex: _todoExitClip.Frames.Length - 1);
+    }
+
+    private AnimationClip CreateReminderEnterClip()
+    {
+        var timeline = BuildActionTimeline("wave");
+        var loopFrames = _actionLoopFrames["wave"];
+        var frames = new List<AnimationFrame>(
+            timeline.Frames.Length - 1 + loopFrames.Length);
+        for (var timelineIndex = 1;
+             timelineIndex < timeline.Frames.Length;
+             timelineIndex++)
+        {
+            frames.Add(new AnimationFrame(
+                timeline.Frames[timelineIndex],
+                ReminderMotionFrameInterval,
+                timeline.Names[timelineIndex]));
+        }
+
+        foreach (var loopFrame in loopFrames)
+        {
+            frames.Add(new AnimationFrame(
+                loopFrame,
+                ActionLoopFrameInterval,
+                Path.GetFileName(loopFrame.Name)));
+        }
+
+        return new AnimationClip(
+            string.Empty,
+            "reminder-open",
+            frames.ToArray(),
+            ActionFrameIndex: timeline.ActionStartIndex - 1);
+    }
+
+    private AnimationClip CreateReminderExitClip()
+    {
+        var timeline = BuildActionTimeline("wave");
+        var frames = new List<AnimationFrame>(timeline.Frames.Length);
+        for (var timelineIndex = timeline.Frames.Length - 1;
+             timelineIndex >= 0;
+             timelineIndex--)
+        {
+            frames.Add(new AnimationFrame(
+                timeline.Frames[timelineIndex],
+                ReminderMotionFrameInterval,
+                timeline.Names[timelineIndex]));
+        }
+
+        return new AnimationClip(
+            string.Empty,
+            "reminder-close",
+            frames.ToArray(),
+            ActionFrameIndex: 0);
     }
 
     private ActionTimeline BuildActionTimeline(string actionName)
@@ -890,10 +1006,17 @@ public partial class MainWindow : Window
             _displaySettingsSubscribed = true;
         }
 
+        if (!_systemTimeChangedSubscribed)
+        {
+            SystemEvents.TimeChanged += SystemEvents_TimeChanged;
+            _systemTimeChangedSubscribed = true;
+        }
+
         var workArea = MonitorWorkArea.GetForWindow(this);
         Left = Math.Max(workArea.Left, workArea.Right - ActualWidth - ScreenEdgeMargin);
         Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight - ScreenEdgeMargin);
         _automaticAnimationEnabled = true;
+        ProcessScheduledTasksAt(_nowProvider());
         RestartAutomaticCountdown();
         _spritePageWarmupEnabled = true;
         ResumeSpritePageWarmup();
@@ -966,11 +1089,12 @@ public partial class MainWindow : Window
                     ConsumeLatestPetSizeInputAt(Stopwatch.GetTimestamp());
                     if (_isPetSizePreviewSessionActive)
                     {
-                        var deferSettingsSave = _isPetSizeAdjustmentActive;
+                        var deferSettingsSave = _isPetSizeAdjustmentActive ||
+                                                _isTransientPetSizeOverride;
                         CommitPetSizePreviewSession(persist: !deferSettingsSave);
                         if (deferSettingsSave)
                         {
-                            _petSizeCommitPending = true;
+                            _petSizeCommitPending = !_isTransientPetSizeOverride;
                         }
                     }
 
@@ -998,6 +1122,36 @@ public partial class MainWindow : Window
         {
             // Dispatcher 正在关闭；在途的系统显示事件可以安全忽略。
         }
+    }
+
+    private void SystemEvents_TimeChanged(object? sender, EventArgs e)
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Send,
+                _processSystemTimeChangedAction);
+        }
+        catch (InvalidOperationException)
+        {
+            // The application is already shutting down.
+        }
+    }
+
+    private void ProcessSystemTimeChanged()
+    {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        ProcessScheduledTasksAt(_nowProvider());
+        AppLogger.Info("系统时间已变化，定时任务触发点已重新校准");
     }
 
     private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -1067,9 +1221,10 @@ public partial class MainWindow : Window
         _outsideTodoCloseQueued = false;
         if (_isClosing ||
             _outsideTodoCloseScheduledGeneration != _outsideTodoCloseGeneration ||
-            _bubbleMode != BubbleMode.Todo ||
-            _todoWindow.IsImeComposing ||
-            _todoWindow.IsTodoDragInProgress ||
+             _bubbleMode != BubbleMode.Todo ||
+             _todoWindow.IsImeComposing ||
+             _todoWindow.IsTransientPopupOpen ||
+             _todoWindow.IsTodoDragInProgress ||
             _todoWindow.IsKeyboardFocusWithin ||
             _todoWindow.IsActive || IsActive ||
             _dragInteractionActive || _pointerDown)
@@ -1184,7 +1339,10 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
-        PersistLatestPetSizeForShutdownAt(Stopwatch.GetTimestamp());
+        if (!_isTransientPetSizeOverride)
+        {
+            PersistLatestPetSizeForShutdownAt(Stopwatch.GetTimestamp());
+        }
         _isClosing = true;
         CancelSpritePagePrefetchForShutdown();
         if (_displaySettingsSubscribed)
@@ -1192,10 +1350,19 @@ public partial class MainWindow : Window
             SystemEvents.DisplaySettingsChanged -= SystemEvents_DisplaySettingsChanged;
             _displaySettingsSubscribed = false;
         }
+        if (_systemTimeChangedSubscribed)
+        {
+            SystemEvents.TimeChanged -= SystemEvents_TimeChanged;
+            _systemTimeChangedSubscribed = false;
+        }
         AppLogger.Info("主窗口正在关闭");
         _automaticAnimationEnabled = false;
         _petSizePersistTimer.Stop();
         _petSizePersistTimer.Tick -= PetSizePersistTimer_Tick;
+        _reminderSizeCommitTimer.Stop();
+        _reminderSizeCommitTimer.Tick -= ReminderSizeCommitTimer_Tick;
+        _scheduledTaskTimer.Stop();
+        _scheduledTaskTimer.Tick -= ScheduledTaskTimer_Tick;
         _spritePagePrefetchDispatchTimer.Stop();
         _spritePagePrefetchDispatchTimer.Tick -=
             SpritePagePrefetchDispatchTimer_Tick;
@@ -1212,6 +1379,10 @@ public partial class MainWindow : Window
         _activeClipStartedTimestamp = 0;
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
+        _isReminderActive = false;
+        _activeReminder = null;
+        _reminderQueue.Clear();
+        _queuedReminderIds.Clear();
         _edgeDock = EdgeDock.None;
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
@@ -1220,6 +1391,7 @@ public partial class MainWindow : Window
         _todoWindow.Deactivated -= TodoWindow_Deactivated;
         _todoWindow.CloseForApplication();
         SaveTodos();
+        SaveScheduledTasks();
         AppLogger.Flush(TimeSpan.FromSeconds(1));
     }
 
@@ -1227,6 +1399,12 @@ public partial class MainWindow : Window
     {
         if (e.ChangedButton != MouseButton.Left)
         {
+            return;
+        }
+
+        if (_isReminderActive || _isTransientPetSizeOverride)
+        {
+            e.Handled = true;
             return;
         }
 
@@ -1330,10 +1508,17 @@ public partial class MainWindow : Window
 
     private void PetHost_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (_isReminderActive || _isTransientPetSizeOverride)
+        {
+            e.Handled = true;
+            return;
+        }
+
         SetBubbleMode(_bubbleMode == BubbleMode.Todo ? BubbleMode.None : BubbleMode.Todo);
 
         if (_bubbleMode == BubbleMode.Todo)
         {
+            _todoWindow.ShowDefaultTab();
             _todoWindow.FocusInput();
         }
 
@@ -1342,7 +1527,7 @@ public partial class MainWindow : Window
 
     private void UpdateEdgeDockAfterDrag()
     {
-        if (_isClosing)
+        if (_isClosing || _isReminderActive)
         {
             return;
         }
@@ -1417,7 +1602,7 @@ public partial class MainWindow : Window
 
     private void EnterEdgePeek(EdgeDock dock)
     {
-        if (_isClosing || dock == EdgeDock.None)
+        if (_isClosing || _isReminderActive || dock == EdgeDock.None)
         {
             return;
         }
@@ -1538,6 +1723,14 @@ public partial class MainWindow : Window
 
     private void AdvanceEdgePeek(long timestamp)
     {
+        if (_isReminderActive)
+        {
+            ExitEdgePeek(
+                restartAutomaticCountdown: false,
+                restoreIdleFrame: false);
+            return;
+        }
+
         if (_bubbleMode == BubbleMode.Todo)
         {
             ExitEdgePeek(
@@ -1717,6 +1910,7 @@ public partial class MainWindow : Window
     private bool TryStartReaction(AnimationClip clip, bool showCuteBubble)
     {
         if (_isClosing || _activeClip is not null || _dragInteractionActive ||
+            _isReminderActive ||
             _bubbleMode == BubbleMode.Todo ||
             _edgeDock != EdgeDock.None)
         {
@@ -1747,7 +1941,7 @@ public partial class MainWindow : Window
 
     private void AutomaticTimer_Tick(object? sender, EventArgs e)
     {
-        if (_isClosing || !_automaticAnimationEnabled)
+        if (_isClosing || _isReminderActive || !_automaticAnimationEnabled)
         {
             return;
         }
@@ -1783,6 +1977,7 @@ public partial class MainWindow : Window
     {
         _automaticTimer.Stop();
         if (_isClosing || !_automaticAnimationEnabled ||
+            _isReminderActive ||
             _activeClip is not null || _isPillowBreathing || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None)
         {
@@ -1935,6 +2130,7 @@ public partial class MainWindow : Window
 
             _activeFrameIndex = resolvedFrameIndex;
             ShowStableFrame(clip.Frames[resolvedFrameIndex].Image);
+            UpdateReminderMegaphoneVisibilityAt(timestamp);
             PrefetchNextClipPage(clip, resolvedFrameIndex);
         }
     }
@@ -1981,6 +2177,20 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (ReferenceEquals(clip, _reminderEnterClip) && _isReminderActive)
+        {
+            var timestamp = Stopwatch.GetTimestamp();
+            _activeClip = null;
+            _activeFrameIndex = -1;
+            _activeClipStartedTimestamp = 0;
+            _activeFrameDeadlineTimestamp = 0;
+            ClearDeferredActiveClipClock();
+            ShowReminderMegaphoneAt(timestamp, restartPulse: false);
+            LogInfo("定时提醒举喇叭入场完成，保持提醒姿势");
+            UpdateVisualClockSubscription();
+            return;
+        }
+
         var elapsedMilliseconds = _activeClipStartedTimestamp > 0
             ? Math.Max(
                 0,
@@ -1997,6 +2207,11 @@ public partial class MainWindow : Window
         if (_bubbleMode == BubbleMode.Cute)
         {
             SetBubbleMode(BubbleMode.None);
+        }
+        if (ReferenceEquals(clip, _reminderExitClip))
+        {
+            ResetPetVisualTransforms();
+            ShowStableFrame(_idleFrame);
         }
         RestartAutomaticCountdown();
         UpdateVisualClockSubscription();
@@ -2019,6 +2234,8 @@ public partial class MainWindow : Window
         var frame = clip.Frames[frameIndex];
         ClearDeferredActiveClipClock();
         ShowStableFrame(frame.Image);
+        UpdateReminderMegaphoneVisibilityAt(
+            timestamp > 0 ? timestamp : Stopwatch.GetTimestamp());
         PrefetchNextClipPage(clip, frameIndex);
         if (_isClosing || !ReferenceEquals(_activeClip, clip) || _activeFrameIndex != frameIndex)
         {
@@ -2279,6 +2496,7 @@ public partial class MainWindow : Window
 
         TryStartDeferredEdgePeekClockAt(timestamp);
         TryStartDeferredActiveClipClockAt(timestamp);
+        UpdateReminderMegaphoneVisibilityAt(timestamp);
     }
 
     private void TryStartDeferredActiveClipClockAt(long timestamp)
@@ -2462,6 +2680,11 @@ public partial class MainWindow : Window
                 AdvanceEdgePeek(timestamp);
             }
 
+            if (_isReminderMegaphoneAnimating)
+            {
+                AdvanceReminderMegaphoneAnimation(timestamp);
+            }
+
             UpdateFrameBlend(timestamp, force: false);
             UpdateVisualClockSubscription();
         }
@@ -2486,9 +2709,10 @@ public partial class MainWindow : Window
         var shouldRun = !_isClosing &&
                          (_isPetSizeAdjustmentActive ||
                           _petSizeTargetUpdatePending ||
-                          _isPetSizeTransitioning ||
-                          _activeClip is not null ||
-                           _edgeDock != EdgeDock.None ||
+                           _isPetSizeTransitioning ||
+                           _activeClip is not null ||
+                           _isReminderMegaphoneAnimating ||
+                            _edgeDock != EdgeDock.None ||
                            _isFrameBlending ||
                            _pendingSpriteFrame is not null ||
                             (_petSizeTodoPositionNeedsUpdate &&
@@ -3801,7 +4025,7 @@ public partial class MainWindow : Window
         }
 
         var previousMode = _bubbleMode;
-        if (mode == BubbleMode.Todo)
+        if (mode is BubbleMode.Todo or BubbleMode.Reminder)
         {
             // Showing an owned WPF window can synchronously pump layout/render work.
             // Unsubscribe before Show() so a re-entrant composition callback cannot
@@ -3819,12 +4043,24 @@ public partial class MainWindow : Window
         {
             EnterTodoVisualState();
         }
+        else if (mode == BubbleMode.Reminder)
+        {
+            EnterReminderVisualState();
+        }
 
         LogInfo($"气泡状态：{previousMode} -> {mode}");
 
-        if (mode != BubbleMode.Todo && previousMode == BubbleMode.Todo)
+        if (mode != BubbleMode.Todo &&
+            mode != BubbleMode.Reminder &&
+            previousMode == BubbleMode.Todo)
         {
             StartTodoExitTransition();
+        }
+        else if (mode != BubbleMode.Reminder &&
+                 mode != BubbleMode.Todo &&
+                 previousMode == BubbleMode.Reminder)
+        {
+            StartReminderExitTransition();
         }
     }
 
@@ -3951,6 +4187,247 @@ public partial class MainWindow : Window
         UpdateVisualClockSubscription();
     }
 
+    private void EnterReminderVisualState()
+    {
+        _automaticTimer.Stop();
+        BakeCurrentPetVisualTransformIntoDisplayFrame();
+        StopPillowBreathing();
+
+        var enterStartIndex = GetReminderEnterStartIndex(_currentSpriteFrame);
+        if (_activeClip is { } activeClip)
+        {
+            AppLogger.Info(
+                $"动作中止：{activeClip.ActionName}，原因：定时任务到点");
+        }
+
+        _activeClip = null;
+        _activeFrameIndex = -1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        ClearDeferredActiveClipClock();
+        ExitEdgePeek(
+            restartAutomaticCountdown: false,
+            restoreIdleFrame: false);
+        ResetPetVisualTransforms();
+        PetFacingScale.ScaleX = _reminderFacingScaleX;
+        PetFacingScale.ScaleY = 1;
+        _activeClip = _reminderEnterClip;
+        _activeFrameIndex = enterStartIndex - 1;
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        _nextFrameMinimumHold = TimeSpan.Zero;
+        RequestSpritePagePrefetch(
+            _reminderEnterClip.Frames[_reminderEnterClip.ActionFrameIndex].Image.PageName,
+            urgent: true);
+        AppLogger.Info("定时提醒举喇叭入场开始");
+        ShowActiveClipFrame(enterStartIndex);
+    }
+
+    private int GetReminderEnterStartIndex(SpriteFrame? frame)
+    {
+        if (frame is not { } currentFrame || currentFrame == _idleFrame)
+        {
+            return 0;
+        }
+
+        var exactIndex = Array.FindIndex(
+            _reminderEnterClip.Frames,
+            animationFrame => string.Equals(
+                animationFrame.Image.Name,
+                currentFrame.Name,
+                StringComparison.OrdinalIgnoreCase));
+        if (exactIndex >= 0)
+        {
+            return exactIndex;
+        }
+
+        var wakeEndpointIndex = Array.FindIndex(
+            _reminderEnterClip.Frames,
+            animationFrame => string.Equals(
+                animationFrame.Image.Name,
+                _wakeFrames[^1].Name,
+                StringComparison.Ordinal));
+        return Math.Max(0, wakeEndpointIndex);
+    }
+
+    private void StartReminderExitTransition()
+    {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        StopPillowBreathing();
+        _automaticTimer.Stop();
+        HideReminderMegaphone();
+        var exitStartIndex = GetReminderExitStartIndex(_currentSpriteFrame);
+        ExitEdgePeek(
+            restartAutomaticCountdown: false,
+            restoreIdleFrame: false);
+        _activeClip = _reminderExitClip;
+        _activeFrameIndex = exitStartIndex - 1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        ClearDeferredActiveClipClock();
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        _nextFrameMinimumHold = TimeSpan.Zero;
+        AppLogger.Info("定时提醒收起过渡开始");
+        ShowActiveClipFrame(exitStartIndex);
+    }
+
+    private int GetReminderExitStartIndex(SpriteFrame? frame)
+    {
+        if (frame is not { } currentFrame)
+        {
+            return 0;
+        }
+
+        var exactIndex = Array.FindIndex(
+            _reminderExitClip.Frames,
+            animationFrame => string.Equals(
+                animationFrame.Image.Name,
+                currentFrame.Name,
+                StringComparison.OrdinalIgnoreCase));
+        return Math.Max(0, exactIndex);
+    }
+
+    private void UpdateReminderMegaphoneVisibilityAt(long timestamp)
+    {
+        var shouldShow = _isReminderActive &&
+                         _bubbleMode == BubbleMode.Reminder &&
+                         ((ReferenceEquals(_activeClip, _reminderEnterClip) &&
+                           _activeFrameIndex >= _reminderEnterClip.ActionFrameIndex &&
+                           _currentSpriteFrame is SpriteFrame displayedFrame &&
+                           displayedFrame ==
+                               _reminderEnterClip.Frames[_activeFrameIndex].Image) ||
+                          _activeClip is null);
+        if (shouldShow)
+        {
+            ShowReminderMegaphoneAt(timestamp, restartPulse: false);
+        }
+        else if (ReminderMegaphone.Visibility == Visibility.Visible)
+        {
+            HideReminderMegaphone();
+        }
+    }
+
+    private void ShowReminderMegaphoneAt(long timestamp, bool restartPulse)
+    {
+        var wasVisible = ReminderMegaphone.Visibility == Visibility.Visible;
+        ReminderMegaphone.Visibility = Visibility.Visible;
+        if (wasVisible && !restartPulse)
+        {
+            return;
+        }
+
+        var startedAt = timestamp > 0 ? timestamp : Stopwatch.GetTimestamp();
+        _reminderMegaphoneAnimationStartedTimestamp = startedAt;
+        _reminderMegaphoneAnimationEndsTimestamp = checked(
+            startedAt + ToStopwatchTicks(ReminderMegaphoneAnimationDuration));
+        _isReminderMegaphoneAnimating = true;
+        AdvanceReminderMegaphoneAnimation(startedAt);
+        UpdateVisualClockSubscription();
+    }
+
+    private void AdvanceReminderMegaphoneAnimation(long timestamp)
+    {
+        if (!_isReminderMegaphoneAnimating ||
+            ReminderMegaphone.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        if (timestamp >= _reminderMegaphoneAnimationEndsTimestamp)
+        {
+            _isReminderMegaphoneAnimating = false;
+            MegaphoneRotate.Angle = -7;
+            MegaphonePulseScale.ScaleX = 1;
+            MegaphonePulseScale.ScaleY = 1;
+            MegaphoneSoundWave1.Opacity = 0.72;
+            MegaphoneSoundWave2.Opacity = 0.38;
+            return;
+        }
+
+        var elapsedSeconds = Math.Max(
+            0,
+            timestamp - _reminderMegaphoneAnimationStartedTimestamp) /
+            (double)Stopwatch.Frequency;
+        var bob = Math.Sin(elapsedSeconds * Math.PI * 4.4);
+        var pulse = 1 + 0.035 * Math.Sin(elapsedSeconds * Math.PI * 3.4);
+        var wavePhase = elapsedSeconds * 1.8 % 1;
+        MegaphoneRotate.Angle = -7 + bob * 3;
+        MegaphonePulseScale.ScaleX = pulse;
+        MegaphonePulseScale.ScaleY = pulse;
+        MegaphoneSoundWave1.Opacity = 0.25 + 0.70 * (1 - wavePhase);
+        MegaphoneSoundWave2.Opacity = 0.12 + 0.58 * wavePhase;
+    }
+
+    private void HideReminderMegaphone()
+    {
+        ReminderMegaphone.Visibility = Visibility.Collapsed;
+        _isReminderMegaphoneAnimating = false;
+        _reminderMegaphoneAnimationStartedTimestamp = 0;
+        _reminderMegaphoneAnimationEndsTimestamp = 0;
+        MegaphoneRotate.Angle = -7;
+        MegaphonePulseScale.ScaleX = 1;
+        MegaphonePulseScale.ScaleY = 1;
+        MegaphoneSoundWave1.Opacity = 0.9;
+        MegaphoneSoundWave2.Opacity = 0.55;
+    }
+
+    private void ConfigureReminderBubblePlacement()
+    {
+        var workArea = MonitorWorkArea.GetForWindow(this);
+        var petLeft = Left;
+        var petRight = Left + (ActualWidth > 0 ? ActualWidth : Width);
+        var requiredWidth = ReminderBubble.Width + 12;
+        var availableOnLeft = petLeft - workArea.Left;
+        var availableOnRight = workArea.Right - petRight;
+        var placeOnLeft = availableOnLeft >= requiredWidth ||
+                          availableOnLeft >= availableOnRight;
+
+        BubblePopup.Placement = placeOnLeft
+            ? PlacementMode.Left
+            : PlacementMode.Right;
+        BubbleBodyColumn.Width = placeOnLeft
+            ? GridLength.Auto
+            : new GridLength(12);
+        BubbleTailColumn.Width = placeOnLeft
+            ? new GridLength(12)
+            : GridLength.Auto;
+        Grid.SetColumn(BubbleHost, placeOnLeft ? 0 : 1);
+        Grid.SetColumn(BubbleTailHost, placeOnLeft ? 1 : 0);
+        BubbleTailHost.Margin = placeOnLeft
+            ? new Thickness(-1, 0, 0, 0)
+            : new Thickness(0, 0, -1, 0);
+        BubbleTailHost.HorizontalAlignment = placeOnLeft
+            ? HorizontalAlignment.Left
+            : HorizontalAlignment.Right;
+        BubbleTailPolygon.Points = placeOnLeft
+            ? PointCollection.Parse("0,0 12,9 0,18")
+            : PointCollection.Parse("12,0 0,9 12,18");
+        BubbleTailPolygon.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xF2, 0xC9));
+        BubbleTailPolygon.Stroke = new SolidColorBrush(Color.FromRgb(0xE9, 0xAD, 0x3C));
+        _reminderFacingScaleX = placeOnLeft ? 1 : -1;
+    }
+
+    private void RefreshReminderBubbleOffset()
+    {
+        if (_bubbleMode != BubbleMode.Reminder || !BubblePopup.IsOpen)
+        {
+            return;
+        }
+
+        var targetHeight = double.IsFinite(Height) && Height > 0
+            ? Height
+            : PetHost.ActualHeight;
+        BubblePopup.VerticalOffset = targetHeight - ReminderBubbleHeight;
+        // Popup owns a separate HWND. Touch the horizontal offset once so WPF
+        // recomputes placement after the pet's one-time maximum-size envelope.
+        var horizontalOffset = BubblePopup.HorizontalOffset;
+        BubblePopup.HorizontalOffset = horizontalOffset + 0.01;
+        BubblePopup.HorizontalOffset = horizontalOffset;
+    }
+
     private void ResetPetVisualTransforms()
     {
         PetFacingScale.ScaleX = 1;
@@ -3968,6 +4445,8 @@ public partial class MainWindow : Window
         BubbleHost.Visibility = Visibility.Collapsed;
         BubbleTailHost.Visibility = Visibility.Collapsed;
         CuteBubble.Visibility = Visibility.Collapsed;
+        ReminderBubble.Visibility = Visibility.Collapsed;
+        HideReminderMegaphone();
         if (_todoWindow.IsVisible)
         {
             _todoWindow.CommitPendingTodoEdit();
@@ -3993,6 +4472,7 @@ public partial class MainWindow : Window
 
         if (mode == BubbleMode.Todo)
         {
+            _todoWindow.ShowDefaultTab();
             _todoWindow.SetPetSizeScale(_petSizeScale);
             _todoWindow.Opacity = 0;
             if (!_todoWindow.IsVisible)
@@ -4006,9 +4486,33 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (mode == BubbleMode.Reminder)
+        {
+            ConfigureReminderBubblePlacement();
+            var reminderPetHeight = PetHost.ActualHeight > 0
+                ? PetHost.ActualHeight
+                : PetHost.Height;
+            BubblePopup.VerticalOffset = reminderPetHeight - ReminderBubbleHeight;
+            BubbleHost.Visibility = Visibility.Visible;
+            BubbleTailHost.Visibility = Visibility.Visible;
+            ReminderBubble.Visibility = Visibility.Visible;
+            BubblePopup.IsOpen = true;
+            return;
+        }
+
         var displayedPetHeight = PetHost.ActualHeight > 0
             ? PetHost.ActualHeight
             : PetHost.Height;
+        BubblePopup.Placement = PlacementMode.Left;
+        BubbleBodyColumn.Width = GridLength.Auto;
+        BubbleTailColumn.Width = new GridLength(12);
+        Grid.SetColumn(BubbleHost, 0);
+        Grid.SetColumn(BubbleTailHost, 1);
+        BubbleTailHost.Margin = new Thickness(-1, 0, 0, 0);
+        BubbleTailHost.HorizontalAlignment = HorizontalAlignment.Left;
+        BubbleTailPolygon.Points = PointCollection.Parse("0,0 12,9 0,18");
+        BubbleTailPolygon.Fill = Brushes.White;
+        BubbleTailPolygon.Stroke = new SolidColorBrush(Color.FromRgb(0xD8, 0xDE, 0xE8));
         BubblePopup.VerticalOffset = displayedPetHeight - CuteBubbleHeight;
         BubbleHost.Visibility = Visibility.Visible;
         BubbleTailHost.Visibility = Visibility.Visible;
@@ -4018,11 +4522,21 @@ public partial class MainWindow : Window
 
     private void TodoWindow_PetSizeScaleChanged(double scale)
     {
+        if (_isTransientPetSizeOverride)
+        {
+            return;
+        }
+
         QueuePetSizeScaleTargetAt(scale, Stopwatch.GetTimestamp());
     }
 
     private void TodoWindow_PetSizeAdjustmentStarted()
     {
+        if (_isTransientPetSizeOverride)
+        {
+            return;
+        }
+
         _isPetSizeAdjustmentActive = true;
         _petSizeAdjustmentValueChanged = false;
         _petSizeCommitPending = false;
@@ -4154,6 +4668,11 @@ public partial class MainWindow : Window
 
     private void PersistLatestPetSizeForShutdownAt(long timestamp)
     {
+        if (_isTransientPetSizeOverride)
+        {
+            return;
+        }
+
         ConsumeLatestPetSizeInputAt(timestamp);
         if (!_petSizeSettingsDirty)
         {
@@ -4223,11 +4742,11 @@ public partial class MainWindow : Window
         _isPetSizeTransitioning =
             Math.Abs(distanceToTarget) >= 0.0005 ||
             Math.Abs(_petSizeTransitionStartVelocity) >= 0.005;
-        _petSizeSettingsDirty =
+        _petSizeSettingsDirty = !_isTransientPetSizeOverride &&
             Math.Abs(_petSizeTargetScale - _persistedPetSizeScale) >= 0.0005;
 
         _petSizePersistTimer.Stop();
-        if (!_isPetSizeAdjustmentActive)
+        if (!_isPetSizeAdjustmentActive && !_isTransientPetSizeOverride)
         {
             _petSizePersistTimer.Start();
         }
@@ -4579,9 +5098,96 @@ public partial class MainWindow : Window
             ? Math.Round(value * dpiScale) / dpiScale
             : Math.Round(value);
 
+    private void BeginReminderPetSizeOverrideAt(long timestamp)
+    {
+        if (_isClosing || _isTransientPetSizeOverride)
+        {
+            return;
+        }
+
+        ConsumeLatestPetSizeInputAt(timestamp);
+        if (_isPetSizeAdjustmentActive)
+        {
+            _isPetSizeAdjustmentActive = false;
+            _petSizeAdjustmentValueChanged = false;
+            _petSizeCommitPending = false;
+        }
+
+        if (_isPetSizePreviewSessionActive)
+        {
+            CommitPetSizePreviewSession(persist: true);
+        }
+        else if (_petSizeSettingsDirty)
+        {
+            SaveSettings();
+        }
+
+        _reminderRestoreScale = NormalizePetSizeScale(_petSizeScale);
+        _isTransientPetSizeOverride = true;
+        _isRestoringReminderSize = false;
+        _petSizeSettingsDirty = false;
+        _petSizeCommitPending = false;
+        _petSizePersistTimer.Stop();
+        QueuePetSizeScaleTargetAt(MaximumPetSizeScale, timestamp);
+        RefreshReminderBubbleOffset();
+        AppLogger.Info(
+            $"定时提醒临时放大：{_reminderRestoreScale:P1} -> {MaximumPetSizeScale:P1}");
+    }
+
+    private void RestoreReminderPetSizeAt(long timestamp)
+    {
+        if (!_isTransientPetSizeOverride || _isRestoringReminderSize)
+        {
+            return;
+        }
+
+        _isRestoringReminderSize = true;
+        QueuePetSizeScaleTargetAt(_reminderRestoreScale, timestamp);
+        _reminderSizeCommitTimer.Stop();
+        _reminderSizeCommitTimer.Interval = PetSizeTransitionDuration +
+                                             TimeSpan.FromMilliseconds(20);
+        _reminderSizeCommitTimer.Start();
+    }
+
+    private void ReminderSizeCommitTimer_Tick(object? sender, EventArgs e)
+    {
+        _reminderSizeCommitTimer.Stop();
+        if (_isClosing || !_isTransientPetSizeOverride ||
+            !_isRestoringReminderSize)
+        {
+            return;
+        }
+
+        ConsumePendingPetSizeTargetAt(Stopwatch.GetTimestamp());
+        if (_isPetSizeTransitioning || _petSizeTargetUpdatePending)
+        {
+            _reminderSizeCommitTimer.Interval = TimeSpan.FromMilliseconds(16);
+            _reminderSizeCommitTimer.Start();
+            return;
+        }
+
+        if (_isPetSizePreviewSessionActive)
+        {
+            CommitPetSizePreviewSession(persist: false);
+        }
+
+        _isTransientPetSizeOverride = false;
+        _isRestoringReminderSize = false;
+        _petSizeSettingsDirty = false;
+        _petSizeCommitPending = false;
+        _petSizePersistTimer.Stop();
+        AppLogger.Info($"定时提醒结束，桌宠大小恢复为 {_reminderRestoreScale:P1}");
+        UpdateVisualClockSubscription();
+    }
+
     private void PetSizePersistTimer_Tick(object? sender, EventArgs e)
     {
         _petSizePersistTimer.Stop();
+        if (_isTransientPetSizeOverride)
+        {
+            return;
+        }
+
         if (_isPetSizeAdjustmentActive)
         {
             _petSizeCommitPending = true;
@@ -4644,7 +5250,7 @@ public partial class MainWindow : Window
         UpdateVisualClockSubscription();
 
         var saved = true;
-        if (persist && _petSizeSettingsDirty)
+        if (persist && !_isTransientPetSizeOverride && _petSizeSettingsDirty)
         {
             saved = SaveSettings();
             if (saved)
@@ -4783,6 +5389,247 @@ public partial class MainWindow : Window
         }
     }
 
+    private void TodoWindow_ScheduledTaskAddRequested(
+        string text,
+        DateTimeOffset dueAt)
+    {
+        var normalizedText = text.Trim();
+        if (normalizedText.Length == 0)
+        {
+            return;
+        }
+
+        var now = _nowProvider();
+        var item = new ScheduledTaskItem
+        {
+            Id = Guid.NewGuid(),
+            Text = normalizedText,
+            DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt),
+            CreatedAt = now
+        };
+        InsertScheduledTaskSorted(item);
+        SaveScheduledTasks();
+        ProcessScheduledTasksAt(now);
+        AppLogger.Info(
+            $"新增定时任务：{item.Id}，触发时间 {item.DueAt:O}，" +
+            $"当前数量：{_scheduledTasks.Count}");
+    }
+
+    private void TodoWindow_ScheduledTaskDeleteRequested(ScheduledTaskItem item)
+    {
+        if (ReferenceEquals(item, _activeReminder))
+        {
+            return;
+        }
+
+        if (_scheduledTasks.Remove(item))
+        {
+            _queuedReminderIds.Remove(item.Id);
+            SaveScheduledTasks();
+            ScheduleNextReminderAt(_nowProvider());
+            AppLogger.Info(
+                $"删除定时任务：{item.Id}，当前数量：{_scheduledTasks.Count}");
+        }
+    }
+
+    private void TodoWindow_TransientInteractionCompleted()
+    {
+        ScheduleOutsideTodoClose();
+    }
+
+    private void InsertScheduledTaskSorted(ScheduledTaskItem item)
+    {
+        var insertIndex = 0;
+        while (insertIndex < _scheduledTasks.Count &&
+               CompareScheduledTasks(_scheduledTasks[insertIndex], item) <= 0)
+        {
+            insertIndex++;
+        }
+
+        _scheduledTasks.Insert(insertIndex, item);
+    }
+
+    private static int CompareScheduledTasks(
+        ScheduledTaskItem left,
+        ScheduledTaskItem right)
+    {
+        var dueComparison = left.DueAt.UtcDateTime.Ticks.CompareTo(
+            right.DueAt.UtcDateTime.Ticks);
+        if (dueComparison != 0)
+        {
+            return dueComparison;
+        }
+
+        var createdComparison = left.CreatedAt.UtcDateTime.Ticks.CompareTo(
+            right.CreatedAt.UtcDateTime.Ticks);
+        return createdComparison != 0
+            ? createdComparison
+            : left.Id.CompareTo(right.Id);
+    }
+
+    private void ScheduledTaskTimer_Tick(object? sender, EventArgs e)
+    {
+        _scheduledTaskTimer.Stop();
+        ProcessScheduledTasksAt(_nowProvider());
+    }
+
+    private void ProcessScheduledTasksAt(DateTimeOffset now)
+    {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        _scheduledTaskTimer.Stop();
+        RebuildReminderQueueAt(now);
+        if (_activeReminder is null)
+        {
+            ShowNextQueuedReminderAt(now);
+        }
+
+        ScheduleNextReminderAt(now);
+    }
+
+    private void RebuildReminderQueueAt(DateTimeOffset now)
+    {
+        _reminderQueue.Clear();
+        _queuedReminderIds.Clear();
+        if (_activeReminder is { } activeReminder &&
+            _scheduledTasks.Contains(activeReminder))
+        {
+            _queuedReminderIds.Add(activeReminder.Id);
+        }
+
+        foreach (var item in _scheduledTasks)
+        {
+            if (item.DueAt > now)
+            {
+                break;
+            }
+
+            if (_queuedReminderIds.Add(item.Id))
+            {
+                _reminderQueue.Enqueue(item);
+            }
+        }
+    }
+
+    private bool ShowNextQueuedReminderAt(DateTimeOffset now)
+    {
+        while (_reminderQueue.Count > 0)
+        {
+            var item = _reminderQueue.Dequeue();
+            if (!_scheduledTasks.Contains(item))
+            {
+                _queuedReminderIds.Remove(item.Id);
+                continue;
+            }
+
+            _activeReminder = item;
+            _isReminderActive = true;
+            ReminderMessageText.Text = item.Text;
+            ReminderMessageText.Select(0, 0);
+            if (_bubbleMode != BubbleMode.Reminder)
+            {
+                SetBubbleMode(BubbleMode.Reminder);
+                BeginReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
+            }
+            else
+            {
+                ShowReminderMegaphoneAt(
+                    Stopwatch.GetTimestamp(),
+                    restartPulse: true);
+            }
+
+            AppLogger.Info(
+                $"定时任务触发：{item.Id}，计划时间 {item.DueAt:O}，" +
+                $"延迟 {Math.Max(0, (now - item.DueAt).TotalSeconds):F1} 秒");
+            return true;
+        }
+
+        return false;
+    }
+
+    private void ReminderAcknowledgeButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        AcknowledgeActiveReminder();
+        e.Handled = true;
+    }
+
+    private void AcknowledgeActiveReminder()
+    {
+        var acknowledged = _activeReminder;
+        if (acknowledged is null)
+        {
+            return;
+        }
+
+        _activeReminder = null;
+        _queuedReminderIds.Remove(acknowledged.Id);
+        _scheduledTasks.Remove(acknowledged);
+        SaveScheduledTasks();
+
+        var now = _nowProvider();
+        RebuildReminderQueueAt(now);
+        if (ShowNextQueuedReminderAt(now))
+        {
+            ScheduleNextReminderAt(now);
+            return;
+        }
+
+        _isReminderActive = false;
+        SetBubbleMode(BubbleMode.None);
+        RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
+        ScheduleNextReminderAt(now);
+        AppLogger.Info($"定时任务已确认：{acknowledged.Id}");
+    }
+
+    private void ScheduleNextReminderAt(DateTimeOffset now)
+    {
+        _scheduledTaskTimer.Stop();
+        if (_isClosing)
+        {
+            return;
+        }
+
+        ScheduledTaskItem? next = null;
+        foreach (var item in _scheduledTasks)
+        {
+            if (_queuedReminderIds.Contains(item.Id))
+            {
+                continue;
+            }
+
+            next = item;
+            break;
+        }
+
+        if (next is null)
+        {
+            return;
+        }
+
+        _scheduledTaskTimer.Interval = CalculateReminderWakeDelay(now, next.DueAt);
+        _scheduledTaskTimer.Start();
+    }
+
+    private static TimeSpan CalculateReminderWakeDelay(
+        DateTimeOffset now,
+        DateTimeOffset nextDueAt)
+    {
+        var remaining = nextDueAt - now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return TimeSpan.FromMilliseconds(1);
+        }
+
+        return remaining > MaximumReminderWakeInterval
+            ? MaximumReminderWakeInterval
+            : remaining;
+    }
+
     private void TodoWindow_CloseRequested(object? sender, EventArgs e)
     {
         SetBubbleMode(BubbleMode.None);
@@ -4811,11 +5658,20 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SaveScheduledTasks()
+    {
+        if (!_scheduledTaskStore.Save(_scheduledTasks))
+        {
+            AppLogger.Info("定时任务保存失败，请检查本地应用数据目录权限");
+        }
+    }
+
     private enum BubbleMode
     {
         None,
         Cute,
-        Todo
+        Todo,
+        Reminder
     }
 
     private enum EdgeDock
