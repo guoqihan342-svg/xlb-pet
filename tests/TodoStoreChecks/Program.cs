@@ -52,6 +52,13 @@ static void CheckTodoStore(string tempDirectory)
 
     File.WriteAllText(filePath, "这不是有效 JSON");
     Assert(store.Load().Count == 0, "损坏的数据不应让桌宠崩溃");
+
+    var blockedPath = Path.Combine(tempDirectory, "blocked-todos.json");
+    Directory.CreateDirectory(blockedPath);
+    var blockedStore = new TodoStore(blockedPath);
+    Assert(!blockedStore.Save(original), "目标路径为目录时待办保存必须安全失败");
+    Assert(!File.Exists(blockedPath + ".tmp"),
+        "待办保存失败后不得留下可无限积累的临时文件");
 }
 
 static void CheckAppSettingsStore(string tempDirectory)

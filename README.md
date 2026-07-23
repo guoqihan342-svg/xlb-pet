@@ -45,7 +45,7 @@
 - 最终起身、动作和循环序列采用可变长度编号帧。构建器根据磁盘上的连续编号资源自动分配分页；最终逻辑帧数、页内帧数和分页数以 `Assets\luban-sprite-pages.json` 的 `sourceFrameCount`、`pageFrameCount` 和 `pages` 为准。生成尚未完成时不要沿用旧清单中的数字。
 - 精灵以 `399×509` 高密度像素渲染，对应 `190×242` 逻辑显示基准。即使 Windows 使用 150% DPI 且桌宠大小调到 140%，仍有足够的源像素，不需要把低清小图放大；所有姿势使用统一逻辑边界和基线，避免动画中的缩放抖动。
 - 枕头使用独立的静态透明层，人物待机和起身帧只更新人物本身。这样枕头不会随每一帧反复淡入淡出，也不会把枕头边缘的 Alpha 波动表现成光纹。
-- 图集清单使用 `version: 4`、`compression: "brotli"` 契约。运行时资源是无损 Brotli 压缩的 Pbgra32 分页（`*.pbgra.br`），PNG 只用于构建和目视检查；每一页解码后不超过清单声明的 24 MiB 上限。
+- 图集清单使用 `version: 4`、`compression: "brotli"` 契约。运行时资源是无损 Brotli 压缩的 Pbgra32 分页（`*.pbgra.br`）；默认构建不保存约 `115.6 MiB` 的派生分页预览 PNG，每一页解码后不超过清单声明的 24 MiB 上限。
 - 启动时只同步解码首个待机页，不再常驻预热提醒、三边探头或后续起身页；动作现有的分页前瞻会在播放到边界前后台载入下一页，定时提醒首分页则在到期前 `2 秒`预取。解码页使用代码内固定的 `112 MiB` LRU 软预算；完整待机/起身链按名称固定，但后续分页仍等第一次动作才按需载入，提醒显示期间、当前页、待显示页和当前完整动作涉及的分页也不会被驱逐。动作结束后缓存会裁到 `64 MiB` 待机目标，保留约 `54 MiB` 的完整待机/起身链，避免不同动作间反复解码大对象；累计释放至少 `48 MiB` 大页时，只在无动作、提醒、拖动、缩放、待办或分页解码的空闲窗口延迟请求一次非压缩 Gen2，且两次至少间隔 30 秒。它不在 Rendering 回调或动作中执行，也不压缩 LOH，不降低像素、帧数或采样质量；总进程内存仍会随 Windows、DPI、CLR 和显卡驱动变化。
 - 人物动作和手动边缘探头由单一 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴驱动。人物姿势目标为 60fps，窗口呈现跟随显示器合成刷新；回调稍晚时直接定位正确姿势，不快速补播积压帧。相邻姿势直接发布清晰单帧，较大变化由专用桥接姿势连接，不做整图交叉淡化。
 - 定时提醒素材库保留 8 张核心姿势和 8 张桥接候选，运行时选用其中闭眼举喇叭的完整姿势生成 33 帧阻尼回正和 48 帧轻柔播报摇摆；收起过程反向复用入场帧，不保存第二套退场 PNG。生成时始终对人物、双手、喇叭和声效线这一整块预乘 Alpha 轮廓做确定性刚体变换，不在不同人物姿势之间做光流变形或整图淡化，因此不会生成双手、双喇叭、光纹和忽大忽小的插值中间态。
@@ -71,6 +71,8 @@
 - 程序优先在 EXE 同级的 `log` 文件夹写入按天滚动的 UTF-8 日志，例如 `log\xlb-pet-2026-07-17.log`。
 - 日志记录应用启动/退出、动作开始/结束、边缘探头、待办状态、定时任务标识与触发时间以及未处理异常，不会记录待办或提醒正文。
 - EXE 同级目录不可写时，会回退到 `%LocalAppData%\LubanDesktopPet\log`；日志写入失败不会阻止桌宠运行。
+- 日志在后台按 `2 MiB` 单文件滚动，最多保留 `8` 个受管日志、总计 `8 MiB` 且不超过 `14` 天；单条异常信息最多 `32 KiB`。清理严格不触碰待办、设置、定时任务或其他文件。
+- 程序使用当前 Windows 会话内的单实例锁；重复双击不会再启动第二个高内存进程，也不会让两个进程同时覆盖本地 JSON 或日志。
 
 ## 运行环境
 
@@ -108,6 +110,12 @@ python .\tools\qa_dense_motion_assets.py --contacts
 
 # 确定性重建Brotli v4分页图集及清单；分页数由最终资源动态决定
 python .\tools\build_sprite_atlas.py
+
+# 只有人工验图时才临时输出派生预览PNG（已被Git忽略，可随时删除）
+$env:XLB_ATLAS_WRITE_PREVIEWS = '1'
+python .\tools\build_sprite_atlas.py
+Remove-Item .\Assets\sprite-pages\*.png
+Remove-Item Env:XLB_ATLAS_WRITE_PREVIEWS
 
 # 解码最终Pbgra分页并检查清单、像素和连续性
 python .\tools\qa_sprite_atlas_motion.py --contacts
@@ -149,7 +157,7 @@ if ($manifest.version -ne 4 -or $manifest.compression -ne 'brotli') {
 
 $exe = Get-Item .\dist\LubanDesktopPet.exe
 if ($exe.Length -ge 100000000) {
-    throw 'EXE达到GitHub普通Git对象100,000,000字节硬限制，请改用Release附件或Git LFS'
+    Write-Warning 'EXE达到GitHub普通Git对象100,000,000字节硬限制；请上传GitHub Release附件，不要提交到Git历史'
 }
 if ($exe.Length -ge 95000000) {
     Write-Warning 'EXE已接近100,000,000字节硬限制；发布前应减少边缘序列或改用Release附件'

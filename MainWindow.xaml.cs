@@ -846,14 +846,9 @@ public partial class MainWindow : Window
                 manifest.MaxDecodedPageBytes);
             if (string.IsNullOrWhiteSpace(pageName) ||
                 string.IsNullOrWhiteSpace(pageDescriptor.Resource) ||
-                string.IsNullOrWhiteSpace(pageDescriptor.PreviewResource) ||
                 !string.Equals(
                     pageDescriptor.Resource,
                     $"Assets/sprite-pages/luban-{pageName}.pbgra.br",
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    pageDescriptor.PreviewResource,
-                    $"Assets/sprite-pages/luban-{pageName}.png",
                     StringComparison.Ordinal) ||
                 !IsCanonicalSha256(pageDescriptor.ContentSha256) ||
                 !IsCanonicalSha256(pageDescriptor.DecodedSha256) ||
@@ -948,7 +943,6 @@ public partial class MainWindow : Window
                 pageName,
                 new SpriteAtlasPage(
                     pageDescriptor.Resource,
-                    pageDescriptor.PreviewResource,
                     pageDescriptor.Width,
                     pageDescriptor.Height,
                     pageDescriptor.UncompressedByteCount,
@@ -6432,7 +6426,6 @@ public partial class MainWindow : Window
 
     private sealed record SpriteAtlasPageManifest(
         string Resource,
-        string PreviewResource,
         int Width,
         int Height,
         int UncompressedByteCount,
@@ -6480,7 +6473,6 @@ public partial class MainWindow : Window
 
     private sealed record SpriteAtlasPage(
         string ResourcePath,
-        string PreviewResourcePath,
         int Width,
         int Height,
         int UncompressedByteCount,

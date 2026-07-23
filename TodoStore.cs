@@ -17,6 +17,7 @@ public sealed class TodoStore
     };
 
     private readonly string _filePath;
+    private readonly object _saveSyncRoot = new();
 
     public TodoStore(string filePath)
     {
@@ -65,6 +66,14 @@ public sealed class TodoStore
 
     public bool Save(IEnumerable<TodoItem> items)
     {
+        lock (_saveSyncRoot)
+        {
+            return SaveCore(items);
+        }
+    }
+
+    private bool SaveCore(IEnumerable<TodoItem> items)
+    {
         var tempPath = _filePath + ".tmp";
 
         try
@@ -92,6 +101,29 @@ public sealed class TodoStore
         catch (UnauthorizedAccessException)
         {
             return false;
+        }
+        finally
+        {
+            TryDeleteTemporaryFile(tempPath);
+        }
+    }
+
+    private static void TryDeleteTemporaryFile(string tempPath)
+    {
+        try
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+        catch (IOException)
+        {
+            // A later save can replace the same temporary file.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Persistence failures must not crash the desktop pet.
         }
     }
 

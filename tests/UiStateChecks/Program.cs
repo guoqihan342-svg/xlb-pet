@@ -323,7 +323,6 @@ internal static class Program
             .Select(entry => new RuntimePage(
                 (string)entry.Key,
                 GetProperty<string>(entry.Value!, "ResourcePath"),
-                GetProperty<string>(entry.Value!, "PreviewResourcePath"),
                 GetProperty<int>(entry.Value!, "Width"),
                 GetProperty<int>(entry.Value!, "Height"),
                 GetProperty<int>(entry.Value!, "UncompressedByteCount"),
@@ -2359,39 +2358,14 @@ internal static class Program
         byte[] spritePagePixels,
         RuntimePage page)
     {
-        var previewPath = FindWorkspaceFile(page.PreviewResourcePath.Split('/'));
-        BitmapSource pageBitmap;
-        using (var stream = File.OpenRead(previewPath))
-        {
-            var decoder = BitmapDecoder.Create(
-                stream,
-                BitmapCreateOptions.PreservePixelFormat,
-                BitmapCacheOption.OnLoad);
-            Assert(decoder.Frames.Count == 1,
-                $"分页预览PNG必须只有一个图像帧：{page.Name}");
-            pageBitmap = decoder.Frames[0];
-        }
-
-        Assert(pageBitmap.PixelWidth == page.Width &&
-               pageBitmap.PixelHeight == page.Height,
-            $"分页预览PNG尺寸必须匹配运行时元数据：{page.Name}");
-        BitmapSource premultipliedPage = pageBitmap;
-        if (pageBitmap.Format != PixelFormats.Pbgra32)
-        {
-            premultipliedPage = new FormatConvertedBitmap(
-                pageBitmap,
-                PixelFormats.Pbgra32,
-                null,
-                0);
-        }
-
         var stride = checked(page.Width * 4);
         var byteCount = checked(stride * page.Height);
-        var expectedPixels = new byte[byteCount];
-        var pageBounds = new Int32Rect(0, 0, page.Width, page.Height);
-        premultipliedPage.CopyPixels(pageBounds, expectedPixels, stride, 0);
-        Assert(spritePagePixels.AsSpan(0, byteCount).SequenceEqual(expectedPixels),
-            $"{page.Name} 的Brotli分页解压结果必须逐像素等于预览PNG的Pbgra32内容");
+        var actualHash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    spritePagePixels.AsSpan(0, byteCount)))
+            .ToLowerInvariant();
+        Assert(string.Equals(actualHash, page.DecodedSha256, StringComparison.Ordinal),
+            $"{page.Name} 的Brotli分页解压结果必须匹配清单decodedSha256");
     }
 
     private static void AssertCompressedPageLoadPerformance(
@@ -2656,7 +2630,6 @@ internal static class Program
 
         var runtimeByName = pages.ToDictionary(page => page.Name, StringComparer.Ordinal);
         var pageResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var previewResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var sourceFrames = new HashSet<string>(StringComparer.Ordinal);
         var totalPageFrames = 0;
         foreach (var manifestPageEntry in manifestPages.EnumerateObject())
@@ -2664,10 +2637,11 @@ internal static class Program
             Assert(runtimeByName.TryGetValue(manifestPageEntry.Name, out var runtimePage),
                 $"运行时缺少分页：{manifestPageEntry.Name}");
             var descriptor = manifestPageEntry.Value;
+            Assert(!descriptor.TryGetProperty("previewResource", out _) &&
+                   !descriptor.TryGetProperty("previewSha256", out _),
+                $"{manifestPageEntry.Name} 清单不得保留可重新生成的分页预览PNG字段");
             var resource = descriptor.GetProperty("resource").GetString()
                 ?? throw new InvalidOperationException("分页resource不能为空");
-            var previewResource = descriptor.GetProperty("previewResource").GetString()
-                ?? throw new InvalidOperationException("分页previewResource不能为空");
             var width = descriptor.GetProperty("width").GetInt32();
             var height = descriptor.GetProperty("height").GetInt32();
             var uncompressedByteCount =
@@ -2689,19 +2663,11 @@ internal static class Program
             var decodedSha256 = descriptor.GetProperty("decodedSha256").GetString()
                 ?? throw new InvalidOperationException(
                     $"Page decodedSha256 cannot be empty: {manifestPageEntry.Name}");
-            var previewSha256 = descriptor.GetProperty("previewSha256").GetString()
-                ?? throw new InvalidOperationException(
-                    $"分页previewSha256不能为空：{manifestPageEntry.Name}");
-
             var expectedResource =
                 $"Assets/sprite-pages/luban-{manifestPageEntry.Name}.pbgra.br";
-            var expectedPreviewResource =
-                $"Assets/sprite-pages/luban-{manifestPageEntry.Name}.png";
-            Assert(string.Equals(resource, expectedResource, StringComparison.Ordinal) &&
-                   string.Equals(previewResource, expectedPreviewResource, StringComparison.Ordinal),
-                $"{manifestPageEntry.Name} 必须使用约定的.br运行时资源和同名PNG预览资源");
+            Assert(string.Equals(resource, expectedResource, StringComparison.Ordinal),
+                $"{manifestPageEntry.Name} 必须使用约定的.br运行时资源");
             Assert(runtimePage!.ResourcePath == resource &&
-                   runtimePage.PreviewResourcePath == previewResource &&
                    runtimePage.UncompressedByteCount == uncompressedByteCount &&
                    runtimePage.PayloadByteCount == payloadByteCount &&
                    runtimePage.Encoding == encoding &&
@@ -2727,7 +2693,6 @@ internal static class Program
                 $"分页帧数必须与清单一致：{manifestPageEntry.Name}");
             totalPageFrames += logicalCount;
             _ = pageResources.Add(resource);
-            _ = previewResources.Add(previewResource);
 
             var compressedPath = FindWorkspaceFile(resource.Split('/'));
             Assert(new FileInfo(compressedPath).Length == compressedByteCount &&
@@ -2736,27 +2701,12 @@ internal static class Program
                 $"分页Brotli资源实际字节数必须匹配compressedByteCount、不得为空，且不得超过" +
                 $"Brotli解压payload长度 {payloadByteCount} bytes：" +
                 $"{manifestPageEntry.Name}");
-            var pngPath = FindWorkspaceFile(previewResource.Split('/'));
-            using (var stream = File.OpenRead(pngPath))
-            {
-                var decoder = BitmapDecoder.Create(
-                    stream,
-                    BitmapCreateOptions.PreservePixelFormat,
-                    BitmapCacheOption.OnLoad);
-                Assert(decoder.Frames.Count == 1 &&
-                       decoder.Frames[0].PixelWidth == width &&
-                       decoder.Frames[0].PixelHeight == height,
-                    $"分页预览PNG尺寸必须匹配清单：{manifestPageEntry.Name}");
-            }
-
             AssertCanonicalSha256(sourceFingerprint,
                 $"{manifestPageEntry.Name}/sourceFingerprint");
             AssertCanonicalSha256(contentSha256,
                 $"{manifestPageEntry.Name}/contentSha256");
             AssertCanonicalSha256(decodedSha256,
                 $"{manifestPageEntry.Name}/decodedSha256");
-            AssertCanonicalSha256(previewSha256,
-                $"{manifestPageEntry.Name}/previewSha256");
             var pageSourcePaths = manifestFrames.EnumerateObject()
                 .Select(frame => frame.Name)
                 .ToArray();
@@ -2770,17 +2720,6 @@ internal static class Program
                     ComputeFileSha256(compressedPath),
                     StringComparison.Ordinal),
                 $"{manifestPageEntry.Name} 的contentSha256必须匹配实际Brotli内容");
-            Assert(string.Equals(
-                    decodedSha256,
-                    ComputePreviewPbgraSha256(pngPath, width, height),
-                    StringComparison.Ordinal),
-                $"{manifestPageEntry.Name} decodedSha256 must match final atlas Pbgra32 pixels");
-            Assert(string.Equals(
-                    previewSha256,
-                    ComputeFileSha256(pngPath),
-                    StringComparison.Ordinal),
-                $"{manifestPageEntry.Name} 的previewSha256必须匹配实际预览PNG内容");
-
             var uniqueRegions = new HashSet<(int X, int Y, int Width, int Height)>();
             foreach (var manifestFrameEntry in manifestFrames.EnumerateObject())
             {
@@ -2812,11 +2751,10 @@ internal static class Program
 
         Assert(totalPageFrames == manifestPageFrameCount &&
                sourceFrames.SetEquals(expectedSourcePaths) &&
-               pageResources.Count == manifestPageCount &&
-               previewResources.Count == manifestPageCount,
+               pageResources.Count == manifestPageCount,
             $"{manifestPageCount}页必须动态覆盖清单声明的{manifestPageFrameCount}个PageFrame和" +
             $"运行时声明的{expectedSourcePaths.Length}个源逻辑帧");
-        AssertProjectAndAssemblyResourceContract(pageResources, previewResources);
+        AssertProjectAndAssemblyResourceContract(pageResources);
         AssertRuntimeDoesNotUseWpfBitmapDecoders();
     }
 
@@ -3645,53 +3583,6 @@ internal static class Program
             .ToLowerInvariant();
     }
 
-    private static string ComputePreviewPbgraSha256(
-        string path,
-        int expectedWidth,
-        int expectedHeight)
-    {
-        BitmapSource bitmap;
-        using (var stream = File.OpenRead(path))
-        {
-            var decoder = BitmapDecoder.Create(
-                stream,
-                BitmapCreateOptions.PreservePixelFormat,
-                BitmapCacheOption.OnLoad);
-            if (decoder.Frames.Count != 1)
-            {
-                throw new InvalidDataException($"Preview must have one frame: {path}");
-            }
-
-            bitmap = decoder.Frames[0];
-        }
-
-        if (bitmap.PixelWidth != expectedWidth ||
-            bitmap.PixelHeight != expectedHeight)
-        {
-            throw new InvalidDataException($"Preview dimensions are invalid: {path}");
-        }
-
-        if (bitmap.Format != PixelFormats.Pbgra32)
-        {
-            bitmap = new FormatConvertedBitmap(
-                bitmap,
-                PixelFormats.Pbgra32,
-                null,
-                0);
-        }
-
-        var stride = checked(expectedWidth * 4);
-        var pixels = new byte[checked(stride * expectedHeight)];
-        bitmap.CopyPixels(
-            new Int32Rect(0, 0, expectedWidth, expectedHeight),
-            pixels,
-            stride,
-            0);
-        return Convert.ToHexString(
-                System.Security.Cryptography.SHA256.HashData(pixels))
-            .ToLowerInvariant();
-    }
-
     private static string ComputeSourceSetFingerprint(IEnumerable<string> resourcePaths)
     {
         using var fingerprint = System.Security.Cryptography.IncrementalHash.CreateHash(
@@ -3708,8 +3599,7 @@ internal static class Program
     }
 
     private static void AssertProjectAndAssemblyResourceContract(
-        HashSet<string> expectedPageResources,
-        HashSet<string> previewResources)
+        HashSet<string> expectedPageResources)
     {
         var projectPath = FindWorkspaceFile("DesktopPet.csproj");
         var project = XDocument.Load(projectPath);
@@ -3759,8 +3649,6 @@ internal static class Program
                 (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
                  !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
             "主程序集不得包含分页预览PNG、旧单atlas或源PNG");
-        Assert(!previewResources.Overlaps(assetKeys),
-            "previewResource只用于仓库内验图，不得作为WPF Resource嵌入主程序集");
     }
 
     private static void AssertRuntimeDoesNotUseWpfBitmapDecoders()
@@ -3851,11 +3739,6 @@ internal static class Program
                    Path.GetFileName(
                        committedPage.Value.GetProperty("resource").GetString()),
                 $"分页 {committedPage.Name} 的资源文件名不一致");
-            Assert(Path.GetFileName(
-                       generatedPage.GetProperty("previewResource").GetString()) ==
-                   Path.GetFileName(
-                       committedPage.Value.GetProperty("previewResource").GetString()),
-                $"分页 {committedPage.Name} 的预览资源文件名不一致");
             foreach (var property in new[]
                      {
                           "width",
@@ -3877,8 +3760,7 @@ internal static class Program
                          "sourceFingerprint",
                          "encoding",
                          "contentSha256",
-                         "decodedSha256",
-                         "previewSha256"
+                         "decodedSha256"
                      })
             {
                 Assert(generatedPage.GetProperty(property).GetString() ==
@@ -8847,6 +8729,157 @@ internal static class Program
         Assert(File.Exists(logPath) &&
                File.ReadAllText(logPath).Contains(probe, StringComparison.Ordinal),
             "当天日志文件应包含本次唯一探针");
+
+        var appSource = File.ReadAllText(FindWorkspaceFile("App.xaml.cs"));
+        Assert(loggerSource.Contains("MaxLogFileBytes = 2L * 1024 * 1024", StringComparison.Ordinal) &&
+               loggerSource.Contains("MaxRetainedLogFiles = 8", StringComparison.Ordinal) &&
+               loggerSource.Contains("MaxTotalLogBytes = 8L * 1024 * 1024", StringComparison.Ordinal) &&
+               loggerSource.Contains("TimeSpan.FromDays(14)", StringComparison.Ordinal) &&
+               loggerSource.Contains("MaxLogEntryBytes = 32 * 1024", StringComparison.Ordinal),
+            "日志必须同时限制单文件、文件数、目录总字节、保留天数和单条大小");
+        Assert(appSource.Contains("SingleInstanceMutexName", StringComparison.Ordinal) &&
+               appSource.Contains("new Mutex(", StringComparison.Ordinal) &&
+               appSource.Contains("WaitOne(0)", StringComparison.Ordinal) &&
+               appSource.Contains("AbandonedMutexException", StringComparison.Ordinal) &&
+               appSource.Contains("AppLogger.Shutdown", StringComparison.Ordinal) &&
+               appSource.Contains("Shutdown();", StringComparison.Ordinal),
+            "应用必须取得会话内命名Mutex、接管废弃锁并在释放锁前排空日志，避免重复占用内存和并发写盘");
+
+        var maintenanceDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-log-retention-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(maintenanceDirectory);
+            var now = DateTimeOffset.Now;
+            var activePath = Path.Combine(
+                maintenanceDirectory,
+                $"xlb-pet-{now:yyyy-MM-dd}.log");
+            var block = new byte[900 * 1024];
+            File.WriteAllBytes(activePath, block.AsSpan(0, 512 * 1024).ToArray());
+            for (var day = 1; day <= 10; day++)
+            {
+                var timestamp = now.AddDays(-day);
+                var path = Path.Combine(
+                    maintenanceDirectory,
+                    $"xlb-pet-{timestamp:yyyy-MM-dd}.log");
+                File.WriteAllBytes(path, block);
+                File.SetLastWriteTimeUtc(path, timestamp.UtcDateTime);
+            }
+
+            var expiredTimestamp = now.AddDays(-20);
+            var expiredPath = Path.Combine(
+                maintenanceDirectory,
+                $"xlb-pet-{expiredTimestamp:yyyy-MM-dd}.001.log");
+            File.WriteAllBytes(expiredPath, block);
+            File.SetLastWriteTimeUtc(expiredPath, expiredTimestamp.UtcDateTime);
+            var unrelatedLogPath = Path.Combine(
+                maintenanceDirectory,
+                $"xlb-pet-{now:yyyy-MM-dd}.extra.log");
+            var todoSentinelPath = Path.Combine(maintenanceDirectory, "todos.json");
+            File.WriteAllText(unrelatedLogPath, "unrelated");
+            File.WriteAllText(todoSentinelPath, "todo-sentinel");
+
+            InvokeStatic(
+                loggerType,
+                "MaintainLogDirectory",
+                maintenanceDirectory,
+                activePath,
+                now);
+            var managedFiles = Directory.EnumerateFiles(
+                    maintenanceDirectory,
+                    "*.log",
+                    SearchOption.TopDirectoryOnly)
+                .Where(path => (bool)(InvokeStatic(
+                    loggerType,
+                    "IsManagedLogFile",
+                    path) ?? false))
+                .Select(path => new FileInfo(path))
+                .ToArray();
+            Assert(managedFiles.Length <= 8 &&
+                   managedFiles.Sum(file => file.Length) <= 8L * 1024 * 1024 &&
+                   File.Exists(activePath) &&
+                   !File.Exists(expiredPath),
+                "日志维护必须保留当前文件并收敛到8个文件/8MiB/14天范围内");
+            Assert(File.Exists(unrelatedLogPath) &&
+                   File.ReadAllText(todoSentinelPath) == "todo-sentinel",
+                "日志维护只能删除严格命名的桌宠日志，不能触碰其他日志或用户JSON");
+
+            var lockedDirectory = Path.Combine(maintenanceDirectory, "locked-candidate");
+            Directory.CreateDirectory(lockedDirectory);
+            var lockedActivePath = Path.Combine(
+                lockedDirectory,
+                $"xlb-pet-{now:yyyy-MM-dd}.log");
+            File.WriteAllBytes(lockedActivePath, block.AsSpan(0, 512 * 1024).ToArray());
+            var lockedPath = Path.Combine(
+                lockedDirectory,
+                $"xlb-pet-{now.AddDays(-13):yyyy-MM-dd}.log");
+            File.WriteAllBytes(lockedPath, block);
+            File.SetLastWriteTimeUtc(lockedPath, now.AddDays(-13).UtcDateTime);
+            for (var day = 1; day <= 10; day++)
+            {
+                var timestamp = now.AddDays(-day);
+                var path = Path.Combine(
+                    lockedDirectory,
+                    $"xlb-pet-{timestamp:yyyy-MM-dd}.log");
+                File.WriteAllBytes(path, block);
+                File.SetLastWriteTimeUtc(path, timestamp.UtcDateTime);
+            }
+
+            using (var lockedStream = new FileStream(
+                       lockedPath,
+                       FileMode.Open,
+                       FileAccess.ReadWrite,
+                       FileShare.Read))
+            {
+                InvokeStatic(
+                    loggerType,
+                    "MaintainLogDirectory",
+                    lockedDirectory,
+                    lockedActivePath,
+                    now);
+                var remainingWithLockedCandidate = Directory.EnumerateFiles(
+                        lockedDirectory,
+                        "*.log",
+                        SearchOption.TopDirectoryOnly)
+                    .Select(path => new FileInfo(path))
+                    .ToArray();
+                Assert(File.Exists(lockedPath) &&
+                       remainingWithLockedCandidate.Length <= 8 &&
+                       remainingWithLockedCandidate.Sum(file => file.Length) <= 8L * 1024 * 1024,
+                    "单个被占用旧日志不得阻塞其余候选清理，目录仍应尽量收敛到8个文件/8MiB");
+            }
+
+            File.WriteAllBytes(activePath, new byte[2 * 1024 * 1024]);
+            var preparedPath = (string)(InvokeStatic(
+                loggerType,
+                "PrepareLogPathForAppend",
+                maintenanceDirectory,
+                now,
+                128) ?? string.Empty);
+            var archivePath = Path.Combine(
+                maintenanceDirectory,
+                $"xlb-pet-{now:yyyy-MM-dd}.001.log");
+            Assert(string.Equals(preparedPath, activePath, StringComparison.OrdinalIgnoreCase) &&
+                   !File.Exists(activePath) &&
+                   File.Exists(archivePath),
+                "2MiB日志必须原子轮转为三位编号文件，并继续写入当天主文件");
+
+            var truncated = (string)(InvokeStatic(
+                loggerType,
+                "TruncateMessageToUtf8Limit",
+                new string('界', 40_000)) ?? string.Empty);
+            Assert(System.Text.Encoding.UTF8.GetByteCount(truncated) <= 32 * 1024 &&
+                   truncated.Contains("truncated", StringComparison.Ordinal),
+                "超长异常日志必须在UTF-8字符边界内截断到32KiB");
+        }
+        finally
+        {
+            if (Directory.Exists(maintenanceDirectory))
+            {
+                Directory.Delete(maintenanceDirectory, recursive: true);
+            }
+        }
     }
 
     private static void AssertRuntimeJankSourceContract()
@@ -10024,7 +10057,6 @@ internal static class Program
     private sealed record RuntimePage(
         string Name,
         string ResourcePath,
-        string PreviewResourcePath,
         int Width,
         int Height,
         int UncompressedByteCount,

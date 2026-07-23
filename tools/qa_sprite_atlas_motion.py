@@ -45,6 +45,7 @@ FRAME_DESCRIPTOR_KEYS = (
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
 ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
 USER_SCALES = (0.75, 1.0, 1.4)
 DPI_SCALES = (1.0, 1.25, 1.5)
 MAX_USER_DPI_SCALE = max(USER_SCALES) * max(DPI_SCALES)
@@ -90,6 +91,12 @@ SEQUENCE_EXPRESSIONS = {
             rf"^Assets/luban-{re.escape(action)}-loop-(\d{{3}})\.png$"
         )
         for action in ACTIONS
+    },
+    **{
+        f"reminder.{phase}": re.compile(
+            rf"^Assets/luban-reminder-{re.escape(phase)}-(\d{{3}})\.png$"
+        )
+        for phase in REMINDER_PHASE_FRAME_COUNTS
     },
 }
 
@@ -862,6 +869,18 @@ def validate_resource_contract(
                 sequence=name,
                 actual=len(resources),
             )
+        if name.startswith("reminder."):
+            phase = name.removeprefix("reminder.")
+            expected_count = REMINDER_PHASE_FRAME_COUNTS[phase]
+            if len(resources) != expected_count:
+                add_failure(
+                    failures,
+                    "sequence.reminder_count",
+                    "reminder sequence frame count must match its runtime contract",
+                    sequence=name,
+                    expected=expected_count,
+                    actual=len(resources),
+                )
 
         page_ranks = [reader.page_order[reader.locations[path].page_name] for path in resources]
         if page_ranks != sorted(page_ranks):
@@ -1553,7 +1572,11 @@ def analyze_sequence(
     surface_results: dict[str, Any] = {}
     contact_candidates: list[dict[str, Any]] = []
     applied_waivers: list[dict[str, Any]] = []
-    is_loop = name.endswith(".loop") or name.startswith("edge.")
+    is_loop = (
+        name.endswith(".loop") or
+        name.startswith("edge.") or
+        name == "reminder.hold"
+    )
     for surface in surface_matrix():
         frames = (
             native_frames
@@ -1680,7 +1703,11 @@ def write_worst_contacts(
     for candidate in selected:
         name = str(candidate["sequence"])
         resources = sequences[name]
-        is_loop = name.endswith(".loop") or name.startswith("edge.")
+        is_loop = (
+            name.endswith(".loop") or
+            name.startswith("edge.") or
+            name == "reminder.hold"
+        )
         center = int(candidate.get("center", candidate.get("from", 1)))
         indexes: list[int] = []
         for offset in (-2, -1, 0, 1, 2):

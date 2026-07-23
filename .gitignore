@@ -13,3 +13,4 @@ tests/**/obj/
 Assets/luban.png
 runtime/**/*.exe
 dist/*.exe
+Assets/sprite-pages/*.png

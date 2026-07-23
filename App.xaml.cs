@@ -1,12 +1,39 @@
 using System.Windows;
 using System.Windows.Threading;
+using System.Threading;
 
 namespace LubanDesktopPet;
 
 public partial class App : Application
 {
+    private const string SingleInstanceMutexName =
+        @"Local\LubanDesktopPet.SingleInstance.v1";
+
+    private Mutex? _singleInstanceMutex;
+    private bool _ownsSingleInstanceMutex;
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        _singleInstanceMutex = new Mutex(
+            initiallyOwned: false,
+            SingleInstanceMutexName,
+            out _);
+        try
+        {
+            _ownsSingleInstanceMutex = _singleInstanceMutex.WaitOne(0);
+        }
+        catch (AbandonedMutexException)
+        {
+            _ownsSingleInstanceMutex = true;
+        }
+
+        if (!_ownsSingleInstanceMutex)
+        {
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+            Shutdown();
+            return;
+        }
         AppLogger.Initialize();
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
@@ -17,11 +44,42 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        AppLogger.Info($"应用退出，代码 {e.ApplicationExitCode}");
-        DispatcherUnhandledException -= App_DispatcherUnhandledException;
-        AppDomain.CurrentDomain.UnhandledException -= CurrentDomain_UnhandledException;
-        TaskScheduler.UnobservedTaskException -= TaskScheduler_UnobservedTaskException;
-        base.OnExit(e);
+        var loggerStopped = !_ownsSingleInstanceMutex;
+        try
+        {
+            if (_ownsSingleInstanceMutex)
+            {
+                AppLogger.Info($"应用退出，代码 {e.ApplicationExitCode}");
+                DispatcherUnhandledException -= App_DispatcherUnhandledException;
+                AppDomain.CurrentDomain.UnhandledException -= CurrentDomain_UnhandledException;
+                TaskScheduler.UnobservedTaskException -= TaskScheduler_UnobservedTaskException;
+                loggerStopped = AppLogger.Shutdown(TimeSpan.FromSeconds(2));
+            }
+
+            base.OnExit(e);
+        }
+        finally
+        {
+            if (_ownsSingleInstanceMutex && loggerStopped)
+            {
+                try
+                {
+                    _singleInstanceMutex?.ReleaseMutex();
+                }
+                catch (ApplicationException)
+                {
+                    // The process is already exiting; never mask the original exit path.
+                }
+
+                _ownsSingleInstanceMutex = false;
+            }
+
+            if (loggerStopped)
+            {
+                _singleInstanceMutex?.Dispose();
+                _singleInstanceMutex = null;
+            }
+        }
     }
 
     private static void App_DispatcherUnhandledException(

@@ -1,4 +1,7 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -7,6 +10,12 @@ namespace LubanDesktopPet;
 internal static class AppLogger
 {
     private const int QueueCapacity = 256;
+    private const int MaxLogEntryBytes = 32 * 1024;
+    private const long MaxLogFileBytes = 2L * 1024 * 1024;
+    private const int MaxRetainedLogFiles = 8;
+    private const long MaxTotalLogBytes = 8L * 1024 * 1024;
+    private static readonly TimeSpan MaxLogAge = TimeSpan.FromDays(14);
+    private const string TruncatedMessageSuffix = "\n[log entry truncated]";
     private static readonly object StateSyncRoot = new();
     private static readonly object QueueSyncRoot = new();
     private static readonly Encoding Utf8WithoutBom = new UTF8Encoding(false);
@@ -132,6 +141,52 @@ internal static class AppLogger
         }
     }
 
+    public static bool Shutdown(TimeSpan timeout)
+    {
+        try
+        {
+            if (!_initialized)
+            {
+                return true;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            Thread? writerThread;
+            lock (QueueSyncRoot)
+            {
+                _closing = true;
+                if (!PendingEntries.IsAddingCompleted)
+                {
+                    PendingEntries.CompleteAdding();
+                }
+
+                writerThread = _writerThread;
+            }
+
+            var remaining = timeout - stopwatch.Elapsed;
+            if (remaining > TimeSpan.Zero)
+            {
+                _ = QueueDrained.Wait(remaining);
+            }
+
+            remaining = timeout - stopwatch.Elapsed;
+            if (writerThread is not null && writerThread.IsAlive)
+            {
+                if (remaining > TimeSpan.Zero)
+                {
+                    _ = writerThread.Join(remaining);
+                }
+            }
+
+            return writerThread is null || !writerThread.IsAlive;
+        }
+        catch
+        {
+            // Logging shutdown must never prevent the application from exiting.
+            return false;
+        }
+    }
+
     private static void Enqueue(string level, string message)
     {
         try
@@ -141,7 +196,10 @@ internal static class AppLogger
                 Initialize();
             }
 
-            var entry = new LogEntry(DateTimeOffset.Now, level, message);
+            var entry = new LogEntry(
+                DateTimeOffset.Now,
+                level,
+                TruncateMessageToUtf8Limit(message));
             lock (QueueSyncRoot)
             {
                 if (_closing || PendingEntries.IsAddingCompleted)
@@ -240,27 +298,7 @@ internal static class AppLogger
 
     private static void CurrentDomain_ProcessExit(object? sender, EventArgs e)
     {
-        try
-        {
-            Thread? writerThread;
-            lock (QueueSyncRoot)
-            {
-                _closing = true;
-                if (!PendingEntries.IsAddingCompleted)
-                {
-                    PendingEntries.CompleteAdding();
-                }
-
-                writerThread = _writerThread;
-            }
-
-            QueueDrained.Wait(TimeSpan.FromSeconds(2));
-            writerThread?.Join(millisecondsTimeout: 500);
-        }
-        catch
-        {
-            // 进程退出时不再抛出日志异常。
-        }
+        _ = Shutdown(TimeSpan.FromSeconds(2));
     }
 
     private static string FormatLine(
@@ -270,6 +308,35 @@ internal static class AppLogger
     {
         return $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{level}] " +
                $"{message}{Environment.NewLine}";
+    }
+
+    private static string TruncateMessageToUtf8Limit(string message)
+    {
+        if (Utf8WithoutBom.GetByteCount(message) <= MaxLogEntryBytes)
+        {
+            return message;
+        }
+
+        var suffixByteCount = Utf8WithoutBom.GetByteCount(TruncatedMessageSuffix);
+        var maximumPrefixBytes = MaxLogEntryBytes - suffixByteCount;
+        var buffer = ArrayPool<byte>.Shared.Rent(maximumPrefixBytes);
+        try
+        {
+            var encoder = Utf8WithoutBom.GetEncoder();
+            encoder.Convert(
+                message.AsSpan(),
+                buffer.AsSpan(0, maximumPrefixBytes),
+                flush: false,
+                out _,
+                out var bytesUsed,
+                out _);
+            return Utf8WithoutBom.GetString(buffer, 0, bytesUsed) +
+                   TruncatedMessageSuffix;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+        }
     }
 
     private static string FormatExceptionMetadata(Exception exception)
@@ -309,10 +376,192 @@ internal static class AppLogger
         try
         {
             Directory.CreateDirectory(directory);
-            var logPath = Path.Combine(
+            var lineByteCount = Utf8WithoutBom.GetByteCount(line);
+            var logPath = PrepareLogPathForAppend(
                 directory,
-                $"xlb-pet-{timestamp:yyyy-MM-dd}.log");
+                timestamp,
+                lineByteCount);
             File.AppendAllText(logPath, line, Utf8WithoutBom);
+            MaintainLogDirectory(directory, logPath, timestamp);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static string PrepareLogPathForAppend(
+        string directory,
+        DateTimeOffset timestamp,
+        int incomingByteCount)
+    {
+        var logPath = Path.Combine(
+            directory,
+            $"xlb-pet-{timestamp:yyyy-MM-dd}.log");
+        if (!File.Exists(logPath) ||
+            new FileInfo(logPath).Length + incomingByteCount <= MaxLogFileBytes)
+        {
+            return logPath;
+        }
+
+        for (var sequence = 1; sequence <= 999; sequence++)
+        {
+            var archivePath = Path.Combine(
+                directory,
+                $"xlb-pet-{timestamp:yyyy-MM-dd}.{sequence:000}.log");
+            if (File.Exists(archivePath))
+            {
+                continue;
+            }
+
+            File.Move(logPath, archivePath);
+            return logPath;
+        }
+
+        throw new IOException("The daily log rotation sequence is exhausted.");
+    }
+
+    private static void MaintainLogDirectory(
+        string directory,
+        string activeLogPath,
+        DateTimeOffset now)
+    {
+        try
+        {
+            var activeFullPath = Path.GetFullPath(activeLogPath);
+            var files = Directory.EnumerateFiles(
+                    directory,
+                    "xlb-pet-*.log",
+                    SearchOption.TopDirectoryOnly)
+                .Where(IsManagedLogFile)
+                .Select(path => new FileInfo(path))
+                .OrderBy(file => file.LastWriteTimeUtc)
+                .ThenBy(file => file.Name, StringComparer.Ordinal)
+                .ToList();
+            var cutoff = now.UtcDateTime - MaxLogAge;
+
+            foreach (var file in files.ToArray())
+            {
+                if (file.LastWriteTimeUtc >= cutoff ||
+                    PathsEqual(file.FullName, activeFullPath) ||
+                    !TryDeleteLogFile(file))
+                {
+                    continue;
+                }
+
+                files.Remove(file);
+            }
+
+            while (files.Count > MaxRetainedLogFiles)
+            {
+                var removed = false;
+                foreach (var candidate in files
+                             .Where(file => !PathsEqual(file.FullName, activeFullPath))
+                             .ToArray())
+                {
+                    if (!TryDeleteLogFile(candidate))
+                    {
+                        continue;
+                    }
+
+                    files.Remove(candidate);
+                    removed = true;
+                    break;
+                }
+
+                if (!removed)
+                {
+                    break;
+                }
+            }
+
+            var totalBytes = files.Sum(file => file.Exists ? file.Length : 0L);
+            while (totalBytes > MaxTotalLogBytes)
+            {
+                var removed = false;
+                foreach (var candidate in files
+                             .Where(file => !PathsEqual(file.FullName, activeFullPath))
+                             .ToArray())
+                {
+                    var candidateBytes = candidate.Exists ? candidate.Length : 0L;
+                    if (!TryDeleteLogFile(candidate))
+                    {
+                        continue;
+                    }
+
+                    files.Remove(candidate);
+                    totalBytes -= candidateBytes;
+                    removed = true;
+                    break;
+                }
+
+                if (!removed)
+                {
+                    break;
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // A later background write retries maintenance.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Logging remains best-effort and must not affect the pet.
+        }
+    }
+
+    private static bool IsManagedLogFile(string path)
+    {
+        var name = Path.GetFileName(path);
+        const string prefix = "xlb-pet-";
+        if (!name.StartsWith(prefix, StringComparison.Ordinal) ||
+            name.Length < prefix.Length + 10 + 4)
+        {
+            return false;
+        }
+
+        var dateText = name.AsSpan(prefix.Length, 10);
+        if (!DateOnly.TryParseExact(
+                dateText,
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out _))
+        {
+            return false;
+        }
+
+        var suffix = name.AsSpan(prefix.Length + 10);
+        if (suffix.SequenceEqual(".log"))
+        {
+            return true;
+        }
+
+        return suffix.Length == 8 &&
+               suffix[0] == '.' &&
+               char.IsAsciiDigit(suffix[1]) &&
+               char.IsAsciiDigit(suffix[2]) &&
+               char.IsAsciiDigit(suffix[3]) &&
+               suffix[4..].SequenceEqual(".log");
+    }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryDeleteLogFile(FileInfo file)
+    {
+        try
+        {
+            file.Delete();
             return true;
         }
         catch (IOException)

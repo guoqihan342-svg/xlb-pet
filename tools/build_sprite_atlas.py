@@ -35,6 +35,7 @@ ACTION_PAGE_MIN_PREFETCH_FRAMES = 8
 DELTA_SUB_HEADER = struct.Struct("<4H")
 DELTA_SUB_ENCODING = "pbgra32-delta-sub-v1"
 DIRECT_ENCODING = "pbgra32"
+WRITE_ATLAS_PREVIEWS = os.environ.get("XLB_ATLAS_WRITE_PREVIEWS", "0") == "1"
 DELTA_MIN_SAVING_BYTES = 256 * 1024
 DELTA_MIN_SAVING_PERCENT = 10
 MAX_DELTA_PAYLOAD_BYTES = 32 * 1024 * 1024
@@ -829,7 +830,8 @@ def build_page(
 
     ordered_frames = {path: frames[path] for path in paths}
     atlas_path.parent.mkdir(parents=True, exist_ok=True)
-    save_png_atomically(atlas, atlas_path)
+    if WRITE_ATLAS_PREVIEWS:
+        save_png_atomically(atlas, atlas_path)
     runtime_path = atlas_path.with_suffix(".pbgra.br")
     decoded_atlas = image_to_pbgra32(atlas).tobytes()
     if len(decoded_atlas) != uncompressed_byte_count:
@@ -876,11 +878,9 @@ def build_page(
     source_fingerprint = source_set_fingerprint(root, paths)
     content_sha256 = hashlib.sha256(runtime_bytes).hexdigest()
     decoded_sha256 = hashlib.sha256(decoded_atlas).hexdigest()
-    preview_sha256 = file_sha256(atlas_path)
     return BuiltPage(
         manifest={
             "resource": runtime_path.relative_to(root).as_posix(),
-            "previewResource": atlas_path.relative_to(root).as_posix(),
             "width": atlas_width,
             "height": atlas_height,
             "encoding": encoding,
@@ -890,7 +890,6 @@ def build_page(
             "sourceFingerprint": source_fingerprint,
             "contentSha256": content_sha256,
             "decodedSha256": decoded_sha256,
-            "previewSha256": preview_sha256,
             "logicalFrameCount": len(ordered_frames),
             "uniqueSpriteCount": len(sprites),
             "frames": ordered_frames,
@@ -909,13 +908,14 @@ def write_outputs(
     pages = page_resource_paths(root)
     output_directory.mkdir(parents=True, exist_ok=True)
     expected_page_files = {
-        name
+        f"luban-{page_name}.pbgra.br"
         for page_name in pages
-        for name in (
-            f"luban-{page_name}.png",
-            f"luban-{page_name}.pbgra.br",
-        )
     }
+    if WRITE_ATLAS_PREVIEWS:
+        expected_page_files.update(
+            f"luban-{page_name}.png"
+            for page_name in pages
+        )
     for pattern in (
         "luban-*.png",
         "luban-*.pbgra.br",
@@ -929,6 +929,11 @@ def write_outputs(
     requested_workers = int(os.environ.get("XLB_ATLAS_WORKERS", "3"))
     worker_count = max(1, min(requested_workers, 4, len(pages)))
     print(f"Building {len(pages)} sprite pages with {worker_count} workers:")
+    print(
+        "Atlas PNG previews: " +
+        ("enabled" if WRITE_ATLAS_PREVIEWS else
+         "disabled (set XLB_ATLAS_WRITE_PREVIEWS=1 for QA)")
+    )
     # Each job owns distinct output paths and writes both files atomically.
     # Brotli's native encoder releases the GIL, so bounded page parallelism
     # shortens the offline quality-11 build without changing any page bytes.
