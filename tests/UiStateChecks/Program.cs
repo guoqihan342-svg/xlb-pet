@@ -2009,16 +2009,16 @@ internal static class Program
             Invoke(window, "TryShowPendingSpriteFrameAt", edgeDisplayedAt);
             var edgeRestDeadline = edgeDisplayedAt +
                                    ToProductionStopwatchTicks(
-                                       TimeSpan.FromMilliseconds(500));
+                                       TimeSpan.FromMilliseconds(800));
             Assert(Equals(GetRawField(window, "_currentSpriteFrame"), edgeRestFrame) &&
                     GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex &&
                     GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == edgeRestDeadline &&
                     GetField<Image>(window, "PillowImage").Visibility == Visibility.Visible &&
                     GetField<Image>(window, "PillowImage").Opacity == 0d,
-                $"冷{edgeContract.Dock}休息帧必须从实际显示时刻完整停留500ms，不能解码期间偷跑");
+                $"冷{edgeContract.Dock}休息帧必须从实际显示时刻完整停留800ms，不能解码期间偷跑");
             Invoke(window, "AdvanceEdgePeek", edgeRestDeadline - 1);
             Assert(GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex,
-                "边缘休息姿势的500ms运行hold结束前不得提前换帧");
+                "边缘休息姿势的800ms运行hold结束前不得提前换帧");
 
             Invoke(window, "AdvanceEdgePeek", edgeRestDeadline);
             var firstEdgeDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
@@ -4032,7 +4032,7 @@ internal static class Program
                         $"Assets/luban-edge-{contract.Direction}-smooth-{frameNumber:000}.png")),
                 $"{contract.PageName} 四阶段关键姿势必须动态落在每个1/4末帧；" +
                 $"当前为{string.Join('/', keyPhaseNumbers.Select(number => $"{number:000}"))}，" +
-                "其中3/4完全探头、末帧收回休息");
+                "其中1/2完全探头、末帧收回休息");
         }
 
         var leftFrames = GetField<Array>(window, "_edgeLeftFrames");
@@ -4045,7 +4045,7 @@ internal static class Program
 
         foreach (var supportedFrameCount in new[] { 16, 24, ExpectedEdgePeekFrameCount })
         {
-            var fullyPeekedIndex = supportedFrameCount * 3 / 4 - 1;
+            var fullyPeekedIndex = supportedFrameCount / 2 - 1;
             var restIndex = supportedFrameCount - 1;
             var normalHold = (TimeSpan)InvokeStatic(
                 typeof(MainWindow),
@@ -4063,9 +4063,9 @@ internal static class Program
                 restIndex,
                 supportedFrameCount)!;
             Assert(normalHold == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
-                   fullyPeekedHold == TimeSpan.FromMilliseconds(500) &&
-                   restHold == TimeSpan.FromMilliseconds(500),
-                $"{supportedFrameCount}帧边缘序列必须动态计算3/4完全探头和末帧休息hold，" +
+                   fullyPeekedHold == TimeSpan.FromMilliseconds(650) &&
+                   restHold == TimeSpan.FromMilliseconds(800),
+                $"{supportedFrameCount}帧边缘序列必须动态计算1/2完全探头和末帧休息hold，" +
                 "其余帧保持60fps");
         }
     }
@@ -4202,16 +4202,22 @@ internal static class Program
             TimeSpan.TicksPerSecond / 60);
         var effectiveMotionFrameTicks =
             ToProductionCharacterAnimationTicks(authoredSixtyFpsInterval);
-        var effectiveEdgeEndpointTicks =
-            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(500));
+        var effectiveEdgeFullyPeekedTicks =
+            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(650));
+        var effectiveEdgeRestTicks =
+            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(800));
         AssertClose(
             StopwatchTicksToMilliseconds(effectiveMotionFrameTicks),
             1000d / 60d / playbackSpeed,
             "1.25倍代码速度必须把基础60fps运行hold缩放到约13.333ms");
         AssertClose(
-            StopwatchTicksToMilliseconds(effectiveEdgeEndpointTicks),
-            500d,
-            "边缘探头必须独立保持500ms卖萌端点，不受全局1.25倍点击动作速度影响");
+            StopwatchTicksToMilliseconds(effectiveEdgeFullyPeekedTicks),
+            650d,
+            "边缘开心探头必须独立保持650ms，不受全局1.25倍点击动作速度影响");
+        AssertClose(
+            StopwatchTicksToMilliseconds(effectiveEdgeRestTicks),
+            800d,
+            "边缘害羞缩回休息必须独立保持800ms，不受全局1.25倍点击动作速度影响");
         Assert(source.Contains("CompositionTarget.Rendering", StringComparison.Ordinal) &&
                source.Contains("Stopwatch.GetTimestamp", StringComparison.Ordinal),
             "动作、探头与淡化必须由 CompositionTarget.Rendering 和绝对 Stopwatch 时钟驱动");
@@ -4571,9 +4577,7 @@ internal static class Program
             holdTicks[^1]);
         try
         {
-            var endpointHoldTicks =
-                ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(500));
-            var fullyPeekedFrameIndex = frames.Length * 3 / 4 - 1;
+            var fullyPeekedFrameIndex = frames.Length / 2 - 1;
             var restingFrameIndex = frames.Length - 1;
             var maximumVsyncTicks = (long)Math.Ceiling(
                 Stopwatch.Frequency / refreshRate);
@@ -4647,13 +4651,16 @@ internal static class Program
                     if (previousFrameIndex == fullyPeekedFrameIndex ||
                         previousFrameIndex == restingFrameIndex)
                     {
+                        var expectedEndpointHoldTicks =
+                            holdTicks[previousFrameIndex];
                         var actualEndpointHoldTicks =
                             timestamp - endpointDisplayedAt;
-                        Assert(actualEndpointHoldTicks >= endpointHoldTicks &&
+                        Assert(actualEndpointHoldTicks >= expectedEndpointHoldTicks &&
                                actualEndpointHoldTicks <
-                               endpointHoldTicks + maximumVsyncTicks,
+                               expectedEndpointHoldTicks + maximumVsyncTicks,
                             $"{refreshRate:F2}Hz frame{previousFrameIndex}端点实际hold必须" +
-                            $"落在[500ms, 500ms+1vsync)；实际" +
+                            $"落在[{StopwatchTicksToMilliseconds(expectedEndpointHoldTicks):F0}ms, " +
+                            $"目标+1vsync)；实际" +
                             $"{StopwatchTicksToMilliseconds(actualEndpointHoldTicks):F3}ms");
                         endpointHoldCounts[previousFrameIndex]++;
                     }
@@ -5789,18 +5796,22 @@ internal static class Program
         var edgeMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgePeekMotionFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
-        var edgeEndpointHold = (TimeSpan)(typeof(MainWindow).GetField(
-                "EdgePeekEndpointHold",
+        var edgeFullyPeekedHold = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgePeekFullyPeekedHold",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var edgeRestHold = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgePeekRestHold",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var edgeBlendDuration = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeFrameBlendDuration",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
         Assert(edgeMotionFrameInterval == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
-               edgeEndpointHold == TimeSpan.FromMilliseconds(500) &&
+               edgeFullyPeekedHold == TimeSpan.FromMilliseconds(650) &&
+               edgeRestHold == TimeSpan.FromMilliseconds(800) &&
                edgeBlendDuration == TimeSpan.Zero &&
                typeof(MainWindow).GetField("EdgePeekFrameInterval", StaticFlags) is null &&
                typeof(MainWindow).GetField("_edgePeekFrameDirection", InstanceFlags) is null,
-            "边缘探头必须使用不受全局倍速影响的精确60fps间隔、500ms关键姿势停留、禁用整图淡化，" +
+            "边缘探头必须使用不受全局倍速影响的精确60fps间隔、650ms开心探头、800ms缩回休息、禁用整图淡化，" +
             "并彻底删除70ms及ping-pong方向状态");
 
         if (!window.IsVisible)
@@ -5826,7 +5837,7 @@ internal static class Program
                     ? GetField<Array>(window, "_edgeTopFrames")
                     : GetField<Array>(window, "_edgeBottomFrames");
             var restFrameIndex = edgeFrames.Length - 1;
-            var fullyPeekedFrameIndex = edgeFrames.Length * 3 / 4 - 1;
+            var fullyPeekedFrameIndex = edgeFrames.Length / 2 - 1;
             PrimeSpritePageForFrame(window, edgeFrames.GetValue(restFrameIndex)!);
             window.Left = edge switch
             {
@@ -5871,7 +5882,7 @@ internal static class Program
                 nextDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
                 var frameIndex = GetField<int>(window, "_edgePeekFrameIndex");
                 var expectedHold = frameIndex == fullyPeekedFrameIndex
-                    ? edgeEndpointHold
+                    ? edgeFullyPeekedHold
                     : edgeMotionFrameInterval;
                 AssertClose(
                     StopwatchTicksToMilliseconds(nextDeadline - deadline),
@@ -5883,7 +5894,7 @@ internal static class Program
             Assert(Equals(
                        GetRawField(window, "_currentSpriteFrame"),
                        edgeFrames.GetValue(fullyPeekedFrameIndex)),
-                $"{edge} 探头必须在3/4阶段显示完全探头姿势并停留500ms");
+                $"{edge} 探头必须在1/2阶段显示开心完全探头姿势并停留650ms");
             while (GetField<int>(window, "_edgePeekFrameIndex") != restFrameIndex)
             {
                 deadline = nextDeadline;
@@ -5894,8 +5905,8 @@ internal static class Program
             AssertClose(
                 StopwatchTicksToMilliseconds(nextDeadline - deadline),
                 StopwatchTicksToMilliseconds(
-                    ToProductionStopwatchTicks(edgeEndpointHold)),
-                $"{edge} 探头回到末尾收回休息姿势后必须独立停留500ms");
+                    ToProductionStopwatchTicks(edgeRestHold)),
+                $"{edge} 探头回到末尾害羞缩回休息姿势后必须独立停留800ms");
             deadline = nextDeadline;
             Invoke(window, "AdvanceEdgePeek", deadline);
             nextDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");

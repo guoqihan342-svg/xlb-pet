@@ -28,7 +28,7 @@ V10_WAKE_BRIDGE_SOURCE_NAMES = {
     20: "wake-v10-bridge-20-21-composite-runtime-alpha.png",
 }
 V10_PRE_REGISTERED_WAKE_BRIDGES = frozenset({20})
-EDGE_PEEK_SOURCE_NAME = "edge-v3-12-sheet-alpha.png"
+EDGE_PEEK_SOURCE_NAME = "edge-v4-12-sheet-alpha.png"
 REMINDER_SOURCE_NAME = "reminder-megaphone-v1-8-key-sheet-alpha.png"
 REMINDER_BRIDGE_SOURCE_NAME = "reminder-megaphone-v2-8-bridge-sheet-alpha.png"
 V6_SCALE_REGISTERED_ACTIONS = ACTIONS
@@ -58,13 +58,13 @@ V6_WAKE_TARGET_BRIM_WIDTH = 180
 V9_PILLOW_SIZE = (430, 150)
 V7_EDGE_TARGET_BRIM_WIDTH = 180
 EDGE_PEEK_REVEAL_OFFSETS = {
-    # Keep both hands visible at the Windows boundary in the resting pose.  The
-    # source poses have slightly different silhouettes, so one shared offset
-    # profile would crop the hands and can even make the left sequence briefly
-    # move backwards.
-    "left": (25, 17, 3, 0),
-    "top": (16, 12, 8, 0),
-    "bottom": (22, 12, 8, 0),
+    # K1 rests at the boundary, K2 leans out curiously, K3 is the full cute
+    # reveal, and K4 makes a shy partial retreat before returning to K1.
+    # Direction-specific offsets preserve both gripping hands at the contact
+    # line while making the K1 -> K3 reveal visibly deeper.
+    "left": (25, 15, 0, 15),
+    "top": (18, 10, 0, 10),
+    "bottom": (24, 12, 0, 12),
 }
 # The older action sheets use several different head/body proportions. A
 # single brim target either enlarges the head or makes the standing body pop

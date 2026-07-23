@@ -1190,7 +1190,7 @@ def main() -> None:
                     )
                 ),
             }
-            fully_peeked_frame = quarter * 3
+            fully_peeked_frame = quarter * 2
             resting_frame = quarter * 4
             fully_peeked_box = sequence["frames"][
                 fully_peeked_frame - 1
@@ -1216,32 +1216,60 @@ def main() -> None:
                 "normal_axis_dip": reveal_depth_dip,
                 "minimum_dip": EDGE_REVEAL_DEPTH_DIP_MIN,
             }
-            reveal_boxes = [
+            outward_reveal_boxes = [
                 sequence["frames"][resting_frame - 1]["atlas_bbox_alpha24"],
                 *[
                     frame["atlas_bbox_alpha24"]
                     for frame in sequence["frames"][:fully_peeked_frame]
                 ],
             ]
+            retreat_reveal_boxes = [
+                frame["atlas_bbox_alpha24"]
+                for frame in sequence["frames"][
+                    fully_peeked_frame - 1:resting_frame
+                ]
+            ]
             if direction == "left":
-                reveal_positions_dip = [
-                    box[2] * ATLAS_X_TO_DIP for box in reveal_boxes
+                outward_positions_dip = [
+                    box[2] * ATLAS_X_TO_DIP for box in outward_reveal_boxes
+                ]
+                retreat_positions_dip = [
+                    box[2] * ATLAS_X_TO_DIP for box in retreat_reveal_boxes
                 ]
             elif direction == "top":
-                reveal_positions_dip = [
-                    box[3] * ATLAS_Y_TO_DIP for box in reveal_boxes
+                outward_positions_dip = [
+                    box[3] * ATLAS_Y_TO_DIP for box in outward_reveal_boxes
+                ]
+                retreat_positions_dip = [
+                    box[3] * ATLAS_Y_TO_DIP for box in retreat_reveal_boxes
                 ]
             else:
-                reveal_positions_dip = [
-                    -box[1] * ATLAS_Y_TO_DIP for box in reveal_boxes
+                outward_positions_dip = [
+                    -box[1] * ATLAS_Y_TO_DIP for box in outward_reveal_boxes
                 ]
+                retreat_positions_dip = [
+                    -box[1] * ATLAS_Y_TO_DIP for box in retreat_reveal_boxes
+                ]
+            max_outward_backtrack_dip = max(
+                max(0.0, first - second)
+                for first, second in zip(
+                    outward_positions_dip, outward_positions_dip[1:]
+                )
+            )
+            max_retreat_backtrack_dip = max(
+                max(0.0, second - first)
+                for first, second in zip(
+                    retreat_positions_dip, retreat_positions_dip[1:]
+                )
+            )
             edge_result["reveal_monotonicity"] = {
-                "positions_dip": reveal_positions_dip,
+                "outward_positions_dip": outward_positions_dip,
+                "retreat_positions_dip": retreat_positions_dip,
+                "max_outward_backtrack_dip": max_outward_backtrack_dip,
+                "max_retreat_backtrack_dip": max_retreat_backtrack_dip,
                 "max_backtrack_dip": max(
-                    max(0.0, first - second)
-                    for first, second in zip(
-                        reveal_positions_dip, reveal_positions_dip[1:]
-                    )
+                    max_outward_backtrack_dip,
+                    max_retreat_backtrack_dip,
                 ),
                 "maximum_backtrack_dip": EDGE_REVEAL_BACKTRACK_DIP_MAX,
             }

@@ -67,7 +67,9 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(1d / 62d);
     private static readonly TimeSpan MaximumNearSixtyHzPresentationInterval =
         TimeSpan.FromSeconds(1d / 58d);
-    private static readonly TimeSpan EdgePeekEndpointHold = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan EdgePeekFullyPeekedHold =
+        TimeSpan.FromMilliseconds(650);
+    private static readonly TimeSpan EdgePeekRestHold = TimeSpan.FromMilliseconds(800);
     private static readonly TimeSpan ActionTransitionDuration = TimeSpan.Zero;
     private static readonly TimeSpan PetSizeTransitionDuration = TimeSpan.FromMilliseconds(350);
     private static readonly TimeSpan PetSizePersistDelay = TimeSpan.FromMilliseconds(400);
@@ -1837,9 +1839,10 @@ public partial class MainWindow : Window
         }
 
         var frameChanged = false;
+        var fullyPeekedFrameIndex = frames.Length / 2 - 1;
         var currentFrameIsEndpoint =
-            GetEdgePeekFrameHoldDuration(_edgePeekFrameIndex, frames.Length) ==
-            EdgePeekEndpointHold;
+            _edgePeekFrameIndex == fullyPeekedFrameIndex ||
+            _edgePeekFrameIndex == frames.Length - 1;
         var deadlineToleranceTicks =
             _synchronizeEdgePeekToRenderingCadence && !currentFrameIsEndpoint
                 ? EdgeVisualFrameDeadlineToleranceTicks
@@ -1908,10 +1911,14 @@ public partial class MainWindow : Window
                 $"Invalid edge frame phase: {frameIndex}/{frameCount}");
         }
 
-        var fullyPeekedFrameIndex = frameCount * 3 / 4 - 1;
-        return frameIndex == fullyPeekedFrameIndex ||
-               frameIndex == frameCount - 1
-            ? EdgePeekEndpointHold
+        var fullyPeekedFrameIndex = frameCount / 2 - 1;
+        if (frameIndex == fullyPeekedFrameIndex)
+        {
+            return EdgePeekFullyPeekedHold;
+        }
+
+        return frameIndex == frameCount - 1
+            ? EdgePeekRestHold
             : EdgePeekMotionFrameInterval;
     }
 
@@ -1926,7 +1933,8 @@ public partial class MainWindow : Window
 
         return checked(
             (frameCount - 2L) * ToStopwatchTicks(EdgePeekMotionFrameInterval) +
-            2L * ToStopwatchTicks(EdgePeekEndpointHold));
+            ToStopwatchTicks(EdgePeekFullyPeekedHold) +
+            ToStopwatchTicks(EdgePeekRestHold));
     }
 
     private void StartEdgePeekFrameClockAt(long timestamp)

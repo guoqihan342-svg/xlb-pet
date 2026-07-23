@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -327,6 +327,17 @@ def clean_existing_motion_assets() -> dict[str, int]:
         cleaned_counts[f"{action}-loop"] = sum(
             clean_motion_path(path)
             for number, path in enumerate(loops, start=1)
+            if number not in (12, 24, 36, 48)
+        )
+
+    for direction in EDGE_DIRECTIONS:
+        smooth = sorted(
+            ASSETS.glob(f"luban-edge-{direction}-smooth-*.png"),
+            key=lambda path: path.name,
+        )
+        cleaned_counts[f"edge-{direction}"] = sum(
+            clean_motion_path(path)
+            for number, path in enumerate(smooth, start=1)
             if number not in (12, 24, 36, 48)
         )
 
@@ -1496,10 +1507,199 @@ def edge_reveal_offset_for_sample(direction: str, sample: int) -> int:
     ) // EDGE_PEEK_PHASE_FRAME_COUNT
 
 
+BOTTOM_BLINK_CENTERS = {
+    7: ((185, 524), (265, 523)),
+    8: ((185, 522), (265, 521)),
+    9: ((185, 520), (265, 518)),
+    10: ((185, 517), (265, 515)),
+}
+BOTTOM_BLINK_SOURCE_CENTERS = {
+    6: ((185, 527), (265, 526)),
+    11: ((186, 515), (265, 513)),
+}
+BOTTOM_BLINK_CLOSURE = {7: 0.50, 8: 0.90, 9: 1.00, 10: 0.55}
+
+
+def antialiased_polyline_mask(
+    width: int,
+    height: int,
+    points: list[tuple[float, float]],
+) -> np.ndarray:
+    """Render one crisp eyelid curve without resampling the underlying eye."""
+
+    scale = 4
+    canvas = Image.new("L", (width * scale, height * scale), 0)
+    draw = ImageDraw.Draw(canvas)
+    draw.line(
+        [(round(x * scale), round(y * scale)) for x, y in points],
+        fill=255,
+        width=10,
+        joint="curve",
+    )
+    resized = canvas.resize((width, height), Image.Resampling.LANCZOS)
+    return np.asarray(resized, dtype=np.float32) / 255.0
+
+
+def bottom_blink_line_color(source_frames: list[np.ndarray]) -> np.ndarray:
+    """Sample the character's existing dark-brown ink instead of inventing a color."""
+
+    samples: list[np.ndarray] = []
+    yy, xx = np.mgrid[: RUNTIME_SIZE[1], : RUNTIME_SIZE[0]]
+    for source_number, source in zip((6, 11), source_frames):
+        for center_x, center_y in BOTTOM_BLINK_SOURCE_CENTERS[source_number]:
+            ellipse = (
+                ((xx - center_x) / 30.0) ** 2
+                + ((yy - center_y) / 25.0) ** 2
+                <= 1.0
+            )
+            red = source[..., 0]
+            green = source[..., 1]
+            blue = source[..., 2]
+            ink = (
+                ellipse
+                & (source[..., 3] >= 254)
+                & (red < 165)
+                & (green < 95)
+                & (blue < 90)
+            )
+            if ink.any():
+                samples.append(source[..., :3][ink])
+    if not samples:
+        raise AssertionError("bottom blink could not sample the existing eye-line color")
+    return np.rint(np.median(np.concatenate(samples), axis=0)).astype(np.uint8)
+
+
+def repair_bottom_blink_eye(
+    target: np.ndarray,
+    source: np.ndarray,
+    destination_center: tuple[int, int],
+    source_center: tuple[int, int],
+    closure: float,
+    line_color: np.ndarray,
+    *,
+    is_left_eye: bool,
+) -> np.ndarray:
+    """Replace a melted RIFE eye with one rigid eye and a real eyelid mask."""
+
+    result = target.copy()
+    original_alpha = result[..., 3].copy()
+    height, width = original_alpha.shape
+    yy, xx = np.mgrid[:height, :width]
+    center_x, center_y = destination_center
+    erase = (
+        ((xx - center_x) / 31.0) ** 2
+        + ((yy - center_y) / 26.0) ** 2
+        <= 1.0
+    ) & (original_alpha >= 254)
+    hand = (
+        (xx < center_x - 14)
+        if is_left_eye
+        else (xx > center_x + 14)
+    ) & (yy > center_y + 10)
+    erase &= ~hand
+
+    rgb = cv2.inpaint(
+        np.ascontiguousarray(result[..., :3]),
+        erase.astype(np.uint8) * 255,
+        5,
+        cv2.INPAINT_TELEA,
+    )
+    relative_x = (xx - center_x) / 29.0
+    inside = np.abs(relative_x) <= 1.0
+    arc = np.sqrt(np.clip(1.0 - relative_x * relative_x, 0.0, 1.0))
+    closed_line = center_y + 4.0 - 3.0 * (1.0 - relative_x * relative_x)
+    top = (
+        (1.0 - closure) * (center_y - 24.0 * arc)
+        + closure * closed_line
+    )
+    bottom = (
+        (1.0 - closure) * (center_y + 24.0 * arc)
+        + closure * closed_line
+    )
+
+    if closure < 1.0:
+        delta_x = center_x - source_center[0]
+        delta_y = center_y - source_center[1]
+        aligned = np.asarray(
+            installer.translate_rgba_without_wrap(
+                Image.fromarray(source, "RGBA"),
+                x=delta_x,
+                y=delta_y,
+            ),
+            dtype=np.uint8,
+        )
+        visible = (
+            inside
+            & (yy >= top)
+            & (yy <= bottom)
+            & erase
+            & (aligned[..., 3] >= 254)
+        )
+        rgb[visible] = aligned[..., :3][visible]
+
+    curve_y = top if closure < 1.0 else closed_line
+    points = [
+        (float(x), float(curve_y[center_y, x]))
+        for x in range(max(0, center_x - 29), min(width, center_x + 30))
+    ]
+    lid = antialiased_polyline_mask(width, height, points)
+    lid *= erase.astype(np.float32)
+    rgb_float = rgb.astype(np.float32)
+    rgb = np.clip(
+        np.rint(
+            rgb_float * (1.0 - lid[..., None])
+            + line_color.astype(np.float32) * lid[..., None]
+        ),
+        0,
+        255,
+    ).astype(np.uint8)
+    result[..., :3] = rgb
+    result[..., 3] = original_alpha
+    if not np.array_equal(result[..., 3], original_alpha):
+        raise AssertionError("bottom blink repair changed alpha")
+    return result
+
+
+def repair_bottom_blink_frames(paths: list[Path]) -> None:
+    """Turn the soft RIFE eye collapse at frames 7..10 into one clean blink."""
+
+    source_frames: dict[int, np.ndarray] = {}
+    for source_number in (6, 11):
+        source_frames[source_number] = load_rgba(paths[source_number - 1])
+    line_color = bottom_blink_line_color(
+        [source_frames[6], source_frames[11]]
+    )
+
+    for frame_number in range(7, 11):
+        before = load_rgba(paths[frame_number - 1])
+        original_alpha = before[..., 3].copy()
+        source_number = 6 if frame_number in (7, 8) else 11
+        repaired = before
+        for eye_index in (0, 1):
+            repaired = repair_bottom_blink_eye(
+                repaired,
+                source_frames[source_number],
+                BOTTOM_BLINK_CENTERS[frame_number][eye_index],
+                BOTTOM_BLINK_SOURCE_CENTERS[source_number][eye_index],
+                BOTTOM_BLINK_CLOSURE[frame_number],
+                line_color,
+                is_left_eye=eye_index == 0,
+            )
+        if not np.array_equal(repaired[..., 3], original_alpha):
+            raise AssertionError(
+                f"bottom blink frame {frame_number:03d} changed alpha"
+            )
+        installer.save_png_atomically(
+            Image.fromarray(repaired, "RGBA"),
+            paths[frame_number - 1],
+        )
+
+
 def build_edge_peek_sequences() -> dict[str, list[Path]]:
     """Create a 48-frame closed peek loop for each supported screen edge.
 
-    The four registered poses remain exact keys at frames 48, 12, 24, and 36.
+    The four registered poses are K1 rest, K2 curious, K3 full-cute, and K4
+    shy-retreat. They remain exact keys at frames 48, 12, 24, and 36.
     RIFE first produces eight substeps per authored edge while the complete
     silhouettes are still on-canvas. A premultiplied transparent resample
     expands that dense path to twelve display substeps, then the interpolated
@@ -1534,14 +1734,31 @@ def build_edge_peek_sequences() -> dict[str, list[Path]]:
                 sampled = premultiplied_resample(
                     dense33[lower], dense33[lower + 1], remainder, 3
                 )
+            if (
+                direction == "bottom"
+                and sample == EDGE_PEEK_PHASE_FRAME_COUNT * 2 - 1
+            ):
+                # RIFE briefly produced two hat/face outlines immediately
+                # before the full-cute key. Use that one clean authored pose
+                # with the still-interpolated reveal offset instead.
+                with Image.open(registered[direction][2]) as opened:
+                    sampled = opened.convert("RGBA")
             sampled = installer.translate_edge_peek_frame(
                 sampled,
                 direction,
                 edge_reveal_offset_for_sample(direction, sample),
             )
+            # Clipping at the Windows boundary can separate a formerly valid
+            # antialiased edge from its opaque core. Clean once more after the
+            # translation so the cropped fragment cannot become a detached
+            # low-alpha light trail in WPF's transparent compositor.
+            if sample % EDGE_PEEK_PHASE_FRAME_COUNT != 0:
+                sampled = suppress_motion_trails(sampled)
             installer.save_png_atomically(sampled, destination)
             outputs.append(destination)
         remove_stale(prefix, len(outputs))
+        if direction == "bottom":
+            repair_bottom_blink_frames(outputs)
 
         quarter = EDGE_PEEK_PHASE_FRAME_COUNT
         expected_keys = {
