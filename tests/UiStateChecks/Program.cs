@@ -8731,6 +8731,7 @@ internal static class Program
             "当天日志文件应包含本次唯一探针");
 
         var appSource = File.ReadAllText(FindWorkspaceFile("App.xaml.cs"));
+        var appXaml = File.ReadAllText(FindWorkspaceFile("App.xaml"));
         Assert(loggerSource.Contains("MaxLogFileBytes = 2L * 1024 * 1024", StringComparison.Ordinal) &&
                loggerSource.Contains("MaxRetainedLogFiles = 8", StringComparison.Ordinal) &&
                loggerSource.Contains("MaxTotalLogBytes = 8L * 1024 * 1024", StringComparison.Ordinal) &&
@@ -8744,6 +8745,11 @@ internal static class Program
                appSource.Contains("AppLogger.Shutdown", StringComparison.Ordinal) &&
                appSource.Contains("Shutdown();", StringComparison.Ordinal),
             "应用必须取得会话内命名Mutex、接管废弃锁并在释放锁前排空日志，避免重复占用内存和并发写盘");
+        Assert(!appXaml.Contains("StartupUri", StringComparison.Ordinal) &&
+               appSource.Contains("var mainWindow = new MainWindow();", StringComparison.Ordinal) &&
+               appSource.Contains("MainWindow = mainWindow;", StringComparison.Ordinal) &&
+               appSource.Contains("mainWindow.Show();", StringComparison.Ordinal),
+            "主窗口必须在取得单实例锁后显式创建，第二实例不得短暂解码图集或闪出窗口");
 
         var maintenanceDirectory = Path.Combine(
             Path.GetTempPath(),

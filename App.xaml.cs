@@ -40,6 +40,10 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         AppLogger.Info($"应用启动，版本 {typeof(App).Assembly.GetName().Version}");
         base.OnStartup(e);
+
+        var mainWindow = new MainWindow();
+        MainWindow = mainWindow;
+        mainWindow.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
