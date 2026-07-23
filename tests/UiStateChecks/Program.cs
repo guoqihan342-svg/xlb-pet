@@ -209,7 +209,7 @@ internal static class Program
                 RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
                 RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
-                RunCheck(nameof(AssertManualTopDockIntegration), () => AssertManualTopDockIntegration(window));
+                RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
                 RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
@@ -1956,7 +1956,6 @@ internal static class Program
         {
             (Dock: "Left", FieldName: "_edgeLeftFrames", PageName: "edge-left"),
             (Dock: "Right", FieldName: "_edgeLeftFrames", PageName: "edge-left"),
-            (Dock: "Top", FieldName: "_edgeTopFrames", PageName: "edge-top"),
             (Dock: "Bottom", FieldName: "_edgeBottomFrames", PageName: "edge-bottom")
         };
         for (var edgeContractIndex = 0;
@@ -2526,7 +2525,7 @@ internal static class Program
         var manifestPageCount = manifestPages.EnumerateObject().Count();
         Assert(pages.Length == manifestPageCount,
             $"清单与运行时分页数必须动态一致，清单 {manifestPageCount}，运行时 {pages.Length}");
-        var requiredPageNames = new[] { "idle", "edge-left", "edge-top", "edge-bottom" }
+        var requiredPageNames = new[] { "idle", "edge-left", "edge-bottom" }
             .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" }
                 .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
             .Concat(new[] { "action-reminder-enter", "action-reminder-hold" })
@@ -2539,10 +2538,12 @@ internal static class Program
         Assert(requiredPageNames.IsSubsetOf(actualPageNames) &&
                manifestSourceFrameCount == expectedSourcePaths.Length &&
                manifestPageFrameCount >= manifestSourceFrameCount &&
-               orderedPageNames.Take(4).SequenceEqual(
-                   new[] { "idle", "edge-left", "edge-top", "edge-bottom" }) &&
+               orderedPageNames.Take(3).SequenceEqual(
+                   new[] { "idle", "edge-left", "edge-bottom" }) &&
+               !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
-            $"清单必须先包含idle与三组独立边缘页，再包含七个动作页、七个循环页和两组专用提醒页，" +
+            $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
+            "随后再包含七个动作页、七个循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -2559,7 +2560,7 @@ internal static class Program
             .ToHashSet(StringComparer.Ordinal);
         Assert(actualIdlePageFrames.SetEquals(expectedIdlePageFrames),
             $"idle连续分页必须且只能包含 idle 与{expectedWakeFrameNames.Length}帧60fps wake");
-        foreach (var edgeName in new[] { "left", "top", "bottom" })
+        foreach (var edgeName in new[] { "left", "bottom" })
         {
             var edgePageName = $"edge-{edgeName}";
             var edgePage = manifestPages.GetProperty(edgePageName);
@@ -3525,7 +3526,7 @@ internal static class Program
         var paths = new List<string> { "Assets/luban-idle.png" };
         paths.AddRange(GetExpectedWakeFrameNames()
             .Select(name => $"Assets/{name}"));
-        foreach (var direction in new[] { "left", "top", "bottom" })
+        foreach (var direction in new[] { "left", "bottom" })
         {
             paths.AddRange(Enumerable.Range(1, ExpectedEdgePeekFrameCount).Select(frameNumber =>
                 $"Assets/luban-edge-{direction}-smooth-{frameNumber:000}.png"));
@@ -3977,7 +3978,6 @@ internal static class Program
         var sequenceContracts = new[]
         {
             (FieldName: "_edgeLeftFrames", PageName: "edge-left", Direction: "left"),
-            (FieldName: "_edgeTopFrames", PageName: "edge-top", Direction: "top"),
             (FieldName: "_edgeBottomFrames", PageName: "edge-bottom", Direction: "bottom")
         };
 
@@ -5747,8 +5747,6 @@ internal static class Program
                 new Rect(1.0, safeY, width, height)),
             new EdgeCase("Right", new Rect(workArea.Right - width - 1.1, safeY, width, height),
                 new Rect(workArea.Right - width - 1.0, safeY, width, height)),
-            new EdgeCase("Top", new Rect(safeX, 1.1, width, height),
-                new Rect(safeX, 1.0, width, height)),
             new EdgeCase("Bottom", new Rect(safeX, workArea.Bottom - height - 1.1, width, height),
                 new Rect(safeX, workArea.Bottom - height - 1.0, width, height))
         };
@@ -5774,6 +5772,15 @@ internal static class Program
                 $"{edgeCase.Edge} 距边界 1.0 DIP 时必须吸附");
         }
 
+        var topCenter = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(safeX, 0, width, height),
+            1d)!;
+        Assert(topCenter.ToString() == "None",
+            "顶部中心即使完全接触屏幕边缘也不得吸附或进入探头状态");
+
         var topLeftCorner = InvokeStatic(
             typeof(MainWindow),
             "FindTouchedEdge",
@@ -5791,7 +5798,7 @@ internal static class Program
             "顶部左右角仍应分别保留左、右吸附");
     }
 
-    private static void AssertManualTopDockIntegration(MainWindow window)
+    private static void AssertSupportedEdgeDockIntegration(MainWindow window)
     {
         var edgeMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgePeekMotionFrameInterval",
@@ -5829,13 +5836,11 @@ internal static class Program
         var safeLeft = workArea.Left + Math.Max(20, (workArea.Width - width) / 2);
         var safeTop = workArea.Top + Math.Max(20, (workArea.Height - height) / 2);
 
-        foreach (var edge in new[] { "Left", "Right", "Top", "Bottom" })
+        foreach (var edge in new[] { "Left", "Right", "Bottom" })
         {
             var edgeFrames = edge is "Left" or "Right"
                 ? GetField<Array>(window, "_edgeLeftFrames")
-                : edge == "Top"
-                    ? GetField<Array>(window, "_edgeTopFrames")
-                    : GetField<Array>(window, "_edgeBottomFrames");
+                : GetField<Array>(window, "_edgeBottomFrames");
             var restFrameIndex = edgeFrames.Length - 1;
             var fullyPeekedFrameIndex = edgeFrames.Length / 2 - 1;
             PrimeSpritePageForFrame(window, edgeFrames.GetValue(restFrameIndex)!);
@@ -5847,7 +5852,6 @@ internal static class Program
             };
             window.Top = edge switch
             {
-                "Top" => workArea.Top,
                 "Bottom" => workArea.Bottom - height,
                 _ => safeTop
             };
@@ -5923,6 +5927,17 @@ internal static class Program
         }
 
         window.Left = safeLeft;
+        window.Top = workArea.Top;
+        var frameBeforeTopContact = GetRawField(window, "_currentSpriteFrame");
+        Invoke(window, "UpdateEdgeDockAfterDrag");
+        Assert(GetField<object>(window, "_edgeDock").ToString() == "None" &&
+               GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == 0 &&
+               Equals(GetRawField(window, "_currentSpriteFrame"), frameBeforeTopContact) &&
+               !string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   "edge-top",
+                   StringComparison.Ordinal),
+            "拖到顶部中心松手后必须保持普通状态，不得吸附、换帧或请求edge-top分页");
         window.Top = safeTop;
     }
 
@@ -7333,12 +7348,28 @@ internal static class Program
             var firstReminderSprite = GetProperty<object>(
                 enterFrames.GetValue(0)!,
                 "Image");
-            Assert(GetField<int>(window, "_activeFrameIndex") == 0 &&
-                   Equals(GetRawField(window, "_currentSpriteFrame"), firstReminderSprite) &&
-                   !GetField<bool>(window, "_isFrameBlending") &&
-                   GetRawField(window, "_pendingSpriteFrame") is null,
+            var activeReminderFrameIndex = GetField<int>(window, "_activeFrameIndex");
+            var currentReminderSprite = GetRawField(window, "_currentSpriteFrame");
+            var isReminderFrameBlending = GetField<bool>(window, "_isFrameBlending");
+            var pendingReminderSprite = GetRawField(window, "_pendingSpriteFrame");
+            var expectedVisibleReminderSprite =
+                activeReminderFrameIndex is >= 0 and <= 1
+                    ? GetProperty<object>(
+                        enterFrames.GetValue(activeReminderFrameIndex)!,
+                        "Image")
+                    : null;
+            Assert(activeReminderFrameIndex is >= 0 and <= 1 &&
+                   Equals(currentReminderSprite, expectedVisibleReminderSprite) &&
+                   !isReminderFrameBlending &&
+                   pendingReminderSprite is null,
                 "提醒到点后的首个可见姿势必须直接来自专用烘焙喇叭序列，" +
-                "不得整图淡化、叠加旧贴层或留下待补播帧");
+                "允许断言前合成器自然前进一帧，但不得跳过更多姿势、整图淡化、" +
+                "叠加旧贴层或留下待补播帧；" +
+                $"index={activeReminderFrameIndex}, " +
+                $"firstMatches={Equals(currentReminderSprite, firstReminderSprite)}, " +
+                $"currentMatches={Equals(currentReminderSprite, expectedVisibleReminderSprite)}, " +
+                $"blending={isReminderFrameBlending}, " +
+                $"pending={pendingReminderSprite is not null}");
 
             Invoke(window, "ProcessScheduledTasksAt", currentNow);
             Assert(ReferenceEquals(
@@ -10317,10 +10348,9 @@ internal static class Program
                mainSource.Contains(
                    "\"Assets/luban-edge-left-smooth-\"",
                    StringComparison.Ordinal) &&
-               mainSource.Contains("\"edge-top\"", StringComparison.Ordinal) &&
-               mainSource.Contains(
-                   "\"Assets/luban-edge-top-smooth-\"",
-                   StringComparison.Ordinal) &&
+               !mainSource.Contains("_edgeTopFrames", StringComparison.Ordinal) &&
+               !mainSource.Contains("\"edge-top\"", StringComparison.Ordinal) &&
+               !mainSource.Contains("EdgeDock.Top", StringComparison.Ordinal) &&
                mainSource.Contains("\"edge-bottom\"", StringComparison.Ordinal) &&
                mainSource.Contains(
                    "\"Assets/luban-edge-bottom-smooth-\"",
@@ -10330,7 +10360,8 @@ internal static class Program
                    StringComparison.Ordinal) &&
                loadEdgeFrameSequence.Contains("frames.Length < 8", StringComparison.Ordinal) &&
                loadEdgeFrameSequence.Contains("frames.Length % 4 != 0", StringComparison.Ordinal),
-            "边缘序列必须从独立smooth分页动态加载，允许16/24/48等四阶段长度，并删除固定4帧、70ms与ping-pong状态");
+            "边缘序列必须只从左/下独立smooth分页动态加载，右侧镜像复用左侧；" +
+            "顶部状态、分页与枚举分支必须彻底移除，同时允许16/24/48等四阶段长度");
         Assert(enterEdgePeek.Contains("frames.Length - 1", StringComparison.Ordinal) &&
                enterEdgePeek.Contains(
                    "_edgePeekFrameDeadlineTimestamp = long.MaxValue",

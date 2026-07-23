@@ -25,6 +25,7 @@ REUSABLE_PAGE_MAX_WIDTH = 1540
 MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
 ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 REMINDER_PHASES = ("enter", "hold")
+RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 ACTION_LOOP_FRAME_COUNT = 48
 EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PAGE_FRAME_LIMIT = 32
@@ -543,7 +544,7 @@ def resource_paths(root: Path) -> list[str]:
         for _, partition_paths in partition_wake_resource_paths(wake, [])
         for path in partition_paths
     ]
-    for direction in ("left", "top", "bottom"):
+    for direction in RUNTIME_EDGE_DIRECTIONS:
         paths.extend(edge_peek_resource_paths(root, direction))
     for phase in REMINDER_PHASES:
         paths.extend(reminder_resource_paths(root, phase))
@@ -568,11 +569,7 @@ def make_display_frame(path: Path, resource_path: str) -> Image.Image:
 
     frame = Image.new("RGBA", (DISPLAY_WIDTH, DISPLAY_HEIGHT), (0, 0, 0, 0))
     destination_x = max(0, (DISPLAY_WIDTH - resized.width) // 2)
-    destination_y = (
-        0
-        if "luban-edge-top-" in resource_path.lower()
-        else DISPLAY_HEIGHT - resized.height
-    )
+    destination_y = DISPLAY_HEIGHT - resized.height
     frame.alpha_composite(resized, (destination_x, destination_y))
     return frame
 
@@ -725,17 +722,17 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
     wake = wake_resource_paths(root)
     # Wake, dense actions, and natural loops use bounded sequential pages so
     # every decoded page can remain below the fixed 24 MiB runtime limit.
-    # Dense edge-peek loops live on three small direction pages. Keeping all
-    # 144 frames on the idle page would violate the fixed 24 MiB decoded-page
+    # Dense edge-peek loops live on two small direction pages. Keeping all
+    # 96 frames on the idle page would violate the fixed 24 MiB decoded-page
     # budget; the runtime can prefetch the one direction selected by dragging.
     pages: dict[str, list[str]] = {}
     wake_partitions = partition_wake_resource_paths(wake, [])
     first_page_name, first_page_paths = wake_partitions[0]
     pages[first_page_name] = first_page_paths
-    # Manifest order is also the background warm-up priority. Put all three
+    # Manifest order is also the background warm-up priority. Put both runtime
     # edge directions immediately after the primary idle page, before trailing
     # wake/action pages, so entering edge mode does not flash a cold fallback.
-    for direction in ("left", "top", "bottom"):
+    for direction in RUNTIME_EDGE_DIRECTIONS:
         pages[f"edge-{direction}"] = edge_peek_resource_paths(root, direction)
     for page_name, partition_paths in wake_partitions[1:]:
         if page_name in pages:

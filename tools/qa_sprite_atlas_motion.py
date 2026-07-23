@@ -45,6 +45,7 @@ FRAME_DESCRIPTOR_KEYS = (
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
 ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
 USER_SCALES = (0.75, 1.0, 1.4)
@@ -79,7 +80,7 @@ SEQUENCE_EXPRESSIONS = {
         f"edge.{direction}": re.compile(
             rf"^Assets/luban-edge-{re.escape(direction)}-smooth-(\d{{3}})\.png$"
         )
-        for direction in ("left", "top", "bottom")
+        for direction in RUNTIME_EDGE_DIRECTIONS
     },
     **{
         f"{action}.smooth": re.compile(

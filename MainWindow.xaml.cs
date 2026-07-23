@@ -125,7 +125,6 @@ public partial class MainWindow : Window
     private readonly SpriteFrame _idleFrame;
     private readonly SpriteFrame _todoFrame;
     private readonly SpriteFrame[] _edgeLeftFrames;
-    private readonly SpriteFrame[] _edgeTopFrames;
     private readonly SpriteFrame[] _edgeBottomFrames;
     private readonly SpriteFrame[] _reminderEnterFrames;
     private readonly SpriteFrame[] _reminderHoldFrames;
@@ -309,9 +308,6 @@ public partial class MainWindow : Window
         _edgeLeftFrames = LoadEdgeFrameSequence(
             "edge-left",
             "Assets/luban-edge-left-smooth-");
-        _edgeTopFrames = LoadEdgeFrameSequence(
-            "edge-top",
-            "Assets/luban-edge-top-smooth-");
         _edgeBottomFrames = LoadEdgeFrameSequence(
             "edge-bottom",
             "Assets/luban-edge-bottom-smooth-");
@@ -1632,10 +1628,6 @@ public partial class MainWindow : Window
                 Left = workArea.Right - ActualWidth;
                 Top = Math.Clamp(Top, workArea.Top, workArea.Bottom - ActualHeight);
                 break;
-            case EdgeDock.Top:
-                Left = Math.Clamp(Left, workArea.Left, workArea.Right - ActualWidth);
-                Top = workArea.Top;
-                break;
             case EdgeDock.Bottom:
                 Left = Math.Clamp(Left, workArea.Left, workArea.Right - ActualWidth);
                 Top = workArea.Bottom - ActualHeight;
@@ -1664,7 +1656,6 @@ public partial class MainWindow : Window
         {
             (EdgeDock.Left, windowBounds.Left - workArea.Left),
             (EdgeDock.Right, workArea.Right - windowBounds.Right),
-            (EdgeDock.Top, windowBounds.Top - workArea.Top),
             (EdgeDock.Bottom, workArea.Bottom - windowBounds.Bottom)
         };
 
@@ -1977,7 +1968,6 @@ public partial class MainWindow : Window
         return dock switch
         {
             EdgeDock.Left or EdgeDock.Right => _edgeLeftFrames,
-            EdgeDock.Top => _edgeTopFrames,
             EdgeDock.Bottom => _edgeBottomFrames,
             _ => throw new ArgumentOutOfRangeException(nameof(dock), dock, null)
         };
@@ -1989,7 +1979,6 @@ public partial class MainWindow : Window
         {
             EdgeDock.Left => "左边缘",
             EdgeDock.Right => "右边缘",
-            EdgeDock.Top => "上边缘",
             EdgeDock.Bottom => "下边缘",
             _ => "无"
         };
@@ -6428,7 +6417,6 @@ public partial class MainWindow : Window
         None,
         Left,
         Right,
-        Top,
         Bottom
     }
 
