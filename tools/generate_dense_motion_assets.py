@@ -47,6 +47,8 @@ BASELINE_STEP_MAX_PHYSICAL_PX_LIMIT = 1.0
 BRIM_STEP_DIP_LIMIT = 2.0
 ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 EDGE_DIRECTIONS = ("left", "top", "bottom")
+EDGE_PEEK_FRAME_COUNT = 48
+EDGE_PEEK_PHASE_FRAME_COUNT = EDGE_PEEK_FRAME_COUNT // 4
 REMINDER_KEY_COUNT = 8
 REMINDER_ENTER_FRAME_COUNT = 33
 REMINDER_HOLD_FRAME_COUNT = 48
@@ -1352,49 +1354,43 @@ def pixel_equal(first: Path, second: Path) -> bool:
 
 
 def registered_edge_sources() -> dict[str, list[Path]]:
-    """Prepare non-destructive edge keys for the runtime dense sequences.
-
-    The authored left-02 bitmap is about 2.7% narrower than the neighbouring
-    poses even though its blue brim width is already consistent.  Preserve the
-    user asset and correct only its horizontal outer-envelope in a temporary
-    registered copy; vertical placement and the screen-edge contact stay fixed.
-    """
+    """Rebuild full edge keys before their final boundary clipping."""
 
     destination_root = WORK_ROOT / "edge-registered"
     registered: dict[str, list[Path]] = {}
     metrics: list[dict[str, object]] = []
+    unshifted_by_direction = installer.build_edge_peek_unshifted_frames(
+        ROOT / "tools" / "generated_sources"
+    )
     for direction in EDGE_DIRECTIONS:
         originals = [
             ASSETS / f"luban-edge-{direction}-{number:02d}.png"
             for number in range(1, 5)
         ]
-        reference_widths: list[int] = []
-        for index, path in enumerate(originals):
-            if direction == "left" and index == 1:
-                continue
-            with Image.open(path) as opened:
-                box = alpha_bbox(opened.convert("RGBA"))
-            reference_widths.append(box[2] - box[0])
-        target_left_width = round(float(np.median(reference_widths)))
         direction_outputs: list[Path] = []
-        for number, original_path in enumerate(originals, start=1):
+        for number, (original_path, unshifted) in enumerate(
+            zip(originals, unshifted_by_direction[direction]),
+            start=1,
+        ):
             destination = destination_root / direction / f"{number:02d}.png"
             destination.parent.mkdir(parents=True, exist_ok=True)
             with Image.open(original_path) as opened:
                 original = opened.convert("RGBA")
             before_box = alpha_bbox(original)
-            if direction == "left" and number == 2:
-                visible = original.crop(before_box)
-                corrected = installer.resize_rgba_premultiplied(
-                    visible, (target_left_width, visible.height)
+            reconstructed_runtime = installer.translate_edge_peek_frame(
+                unshifted,
+                direction,
+                installer.EDGE_PEEK_REVEAL_OFFSETS[direction][number - 1],
+            )
+            if not np.array_equal(
+                np.asarray(reconstructed_runtime, dtype=np.uint8),
+                np.asarray(original, dtype=np.uint8),
+            ):
+                raise AssertionError(
+                    f"edge {direction} key {number:02d} does not match "
+                    "the tracked source and reveal-offset contract"
                 )
-                canvas = Image.new("RGBA", RUNTIME_SIZE, (0, 0, 0, 0))
-                # Keep both the Windows-edge contact and vertical pose anchor.
-                canvas.alpha_composite(corrected, (0, before_box[1]))
-                canvas = installer.neutralize_green_fringe(canvas)
-                installer.save_png_atomically(canvas, destination)
-            else:
-                atomic_copy_png(original_path, destination)
+            installer.save_png_atomically(unshifted, destination)
             with Image.open(destination) as opened:
                 after = opened.convert("RGBA")
             after_box = alpha_bbox(after)
@@ -1404,9 +1400,9 @@ def registered_edge_sources() -> dict[str, list[Path]]:
                     "frame": number,
                     "source": original_path.name,
                     "registered": str(destination.relative_to(ROOT)),
-                    "bbox_before": list(before_box),
-                    "bbox_after": list(after_box),
-                    "horizontal_scale": (
+                    "runtime_clipped_bbox": list(before_box),
+                    "rife_input_unshifted_bbox": list(after_box),
+                    "unshifted_to_clipped_visible_width_ratio": (
                         (after_box[2] - after_box[0])
                         / max(before_box[2] - before_box[0], 1)
                     ),
@@ -1479,13 +1475,37 @@ def build_loops() -> dict[str, list[Path]]:
     return outputs_by_action
 
 
-def build_edge_peek_sequences() -> dict[str, list[Path]]:
-    """Create a 24-frame closed peek loop for each supported screen edge.
+def edge_reveal_offset_for_sample(direction: str, sample: int) -> int:
+    """Interpolate one crisp source-pixel reveal offset around the edge loop."""
 
-    The four registered poses remain exact keys at frames 24, 6, 12, and 18.
-    RIFE first produces eight substeps per authored edge; a premultiplied
-    resample then converts that dense path to six substeps per edge (24 unique
-    poses presented on the runtime's 60 Hz clock) without a 4->1 seam.
+    if direction not in installer.EDGE_PEEK_REVEAL_OFFSETS:
+        raise ValueError(f"Unsupported edge direction: {direction}")
+    if sample < 1 or sample > EDGE_PEEK_FRAME_COUNT:
+        raise ValueError(f"Invalid edge sample: {sample}")
+    offsets = installer.EDGE_PEEK_REVEAL_OFFSETS[direction]
+    segment, zero_based_step = divmod(
+        sample - 1,
+        EDGE_PEEK_PHASE_FRAME_COUNT,
+    )
+    step = zero_based_step + 1
+    start = offsets[segment]
+    end = offsets[(segment + 1) % len(offsets)]
+    return (
+        start * (EDGE_PEEK_PHASE_FRAME_COUNT - step) + end * step +
+        EDGE_PEEK_PHASE_FRAME_COUNT // 2
+    ) // EDGE_PEEK_PHASE_FRAME_COUNT
+
+
+def build_edge_peek_sequences() -> dict[str, list[Path]]:
+    """Create a 48-frame closed peek loop for each supported screen edge.
+
+    The four registered poses remain exact keys at frames 48, 12, 24, and 36.
+    RIFE first produces eight substeps per authored edge while the complete
+    silhouettes are still on-canvas. A premultiplied transparent resample
+    expands that dense path to twelve display substeps, then the interpolated
+    reveal offset performs the final Windows-boundary clip. This prevents hands
+    from popping at the crop line and keeps the exact authored keys at frames
+    12/24/36/48 without another RIFE pass.
     """
 
     registered = registered_edge_sources()
@@ -1502,28 +1522,33 @@ def build_edge_peek_sequences() -> dict[str, list[Path]]:
     for direction, dense33 in sequences.items():
         outputs: list[Path] = []
         prefix = f"luban-edge-{direction}-smooth"
-        for sample in range(1, 25):
-            # Dense source has 8 substeps per authored edge; target has 6.
-            source_numerator = 4 * sample
+        for sample in range(1, EDGE_PEEK_FRAME_COUNT + 1):
+            # Dense source has 8 substeps per authored edge; target has 12.
+            source_numerator = 2 * sample
             lower, remainder = divmod(source_numerator, 3)
             destination = ASSETS / f"{prefix}-{sample:03d}.png"
             if remainder == 0:
-                atomic_copy_png(dense33[lower], destination)
+                with Image.open(dense33[lower]) as opened:
+                    sampled = opened.convert("RGBA")
             else:
-                installer.save_png_atomically(
-                    premultiplied_resample(
-                        dense33[lower], dense33[lower + 1], remainder, 3
-                    ),
-                    destination,
+                sampled = premultiplied_resample(
+                    dense33[lower], dense33[lower + 1], remainder, 3
                 )
+            sampled = installer.translate_edge_peek_frame(
+                sampled,
+                direction,
+                edge_reveal_offset_for_sample(direction, sample),
+            )
+            installer.save_png_atomically(sampled, destination)
             outputs.append(destination)
         remove_stale(prefix, len(outputs))
 
+        quarter = EDGE_PEEK_PHASE_FRAME_COUNT
         expected_keys = {
-            6: registered[direction][1],
-            12: registered[direction][2],
-            18: registered[direction][3],
-            24: registered[direction][0],
+            quarter: ASSETS / f"luban-edge-{direction}-02.png",
+            quarter * 2: ASSETS / f"luban-edge-{direction}-03.png",
+            quarter * 3: ASSETS / f"luban-edge-{direction}-04.png",
+            quarter * 4: ASSETS / f"luban-edge-{direction}-01.png",
         }
         for output_number, expected_path in expected_keys.items():
             if not pixel_equal(outputs[output_number - 1], expected_path):
@@ -1531,7 +1556,10 @@ def build_edge_peek_sequences() -> dict[str, list[Path]]:
                     f"edge {direction} phase {output_number:03d} is not exact key"
                 )
         outputs_by_direction[direction] = outputs
-        print(f"wrote edge {direction} smooth 001..024", flush=True)
+        print(
+            f"wrote edge {direction} smooth 001..{EDGE_PEEK_FRAME_COUNT:03d}",
+            flush=True,
+        )
     return outputs_by_direction
 
 
@@ -1782,7 +1810,10 @@ def main() -> None:
     parser.add_argument(
         "--edge-peek",
         action="store_true",
-        help="Generate 24-frame closed left/top/bottom edge-peek sequences",
+        help=(
+            "Generate 48-frame closed left/top/bottom edge-peek sequences "
+            "from the cached dense RIFE path"
+        ),
     )
     parser.add_argument(
         "--reminder",

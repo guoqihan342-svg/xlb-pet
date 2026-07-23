@@ -26,7 +26,7 @@ MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
 ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 REMINDER_PHASES = ("enter", "hold")
 ACTION_LOOP_FRAME_COUNT = 48
-EDGE_PEEK_FRAME_COUNT = 24
+EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_MIN_PREFETCH_FRAMES = 8
@@ -726,7 +726,7 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
     # Wake, dense actions, and natural loops use bounded sequential pages so
     # every decoded page can remain below the fixed 24 MiB runtime limit.
     # Dense edge-peek loops live on three small direction pages. Keeping all
-    # 72 frames on the idle page would violate the fixed 24 MiB decoded-page
+    # 144 frames on the idle page would violate the fixed 24 MiB decoded-page
     # budget; the runtime can prefetch the one direction selected by dragging.
     pages: dict[str, list[str]] = {}
     wake_partitions = partition_wake_resource_paths(wake, [])

@@ -24,6 +24,7 @@ public partial class TodoWindow : Window
     private int _displayedPetSizePercent = int.MinValue;
     private readonly Action _resetImeCompositionAfterFocusLossAction;
     private readonly Action _finishTodoEditAfterFocusLossAction;
+    private readonly Action _finishTodoEditAfterOutsideClickAction;
     private readonly Action _focusInputAction;
     private readonly Action _focusSelectedPageInputAfterTabAction;
     private readonly Action _retryClipboardCopyAction;
@@ -33,6 +34,8 @@ public partial class TodoWindow : Window
     private TodoItem? _editingTodoItem;
     private string _editingTodoOriginalText = string.Empty;
     private string _editingTodoDraftText = string.Empty;
+    private bool _outsideTodoEditCommitPending;
+    private bool _outsideTodoEditCommitQueued;
     private TodoItem? _todoDragCandidate;
     private Point _todoDragStartPoint;
     private bool _todoDragInProgress;
@@ -55,6 +58,8 @@ public partial class TodoWindow : Window
             ResetImeCompositionAfterFocusLoss;
         _finishTodoEditAfterFocusLossAction =
             FinishTodoEditAfterFocusLoss;
+        _finishTodoEditAfterOutsideClickAction =
+            FinishTodoEditAfterOutsideClick;
         _focusInputAction = FocusInputCore;
         _focusSelectedPageInputAfterTabAction =
             FocusSelectedPageInputAfterTabChange;
@@ -82,6 +87,10 @@ public partial class TodoWindow : Window
         PetSizeSlider.PreviewKeyDown += PetSizeSlider_PreviewKeyDown;
         PetSizeSlider.PreviewKeyUp += PetSizeSlider_PreviewKeyUp;
         PetSizeSlider.LostKeyboardFocus += PetSizeSlider_LostKeyboardFocus;
+        AddHandler(
+            Mouse.PreviewMouseDownEvent,
+            new MouseButtonEventHandler(TodoWindow_PreviewMouseDown),
+            handledEventsToo: true);
         PreviewKeyDown += TodoWindow_PreviewKeyDown;
         Closing += TodoWindow_Closing;
         Closed += TodoWindow_Closed;
@@ -389,9 +398,27 @@ public partial class TodoWindow : Window
 
         if (_allowClose)
         {
+            if (_editingTodoTextBox is { } textBox)
+            {
+                CaptureTodoEditDraft(textBox);
+                if (IsImeComposing)
+                {
+                    // Windows TSF can still own an uncommitted candidate here.
+                    // Closing the dispatcher cannot wait for its final TextChanged,
+                    // so discard this one unconfirmed edit instead of persisting a
+                    // stale or half-composed value.
+                    CancelTodoEdit();
+                }
+                else
+                {
+                    CommitTodoEdit();
+                }
+            }
+
             return;
         }
 
+        CommitPendingTodoEdit();
         e.Cancel = true;
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -399,6 +426,8 @@ public partial class TodoWindow : Window
     private void TodoWindow_Closed(object? sender, EventArgs e)
     {
         _hasClosed = true;
+        _outsideTodoEditCommitPending = false;
+        _outsideTodoEditCommitQueued = false;
         _isTransientPopupOpen = false;
         if (_petSizeAdjustmentActive)
         {
@@ -478,13 +507,16 @@ public partial class TodoWindow : Window
             _imeCompositionOwner = null;
         }
 
-        if (IsImeComposing == value)
+        if (IsImeComposing != value)
         {
-            return;
+            IsImeComposing = value;
+            ImeCompositionChanged?.Invoke(value);
         }
 
-        IsImeComposing = value;
-        ImeCompositionChanged?.Invoke(value);
+        if (!value && _outsideTodoEditCommitPending)
+        {
+            ScheduleTodoEditAfterOutsideClick();
+        }
     }
 
     private void TodoTabButton_Click(object sender, RoutedEventArgs e)
@@ -803,6 +835,18 @@ public partial class TodoWindow : Window
 
     public void CommitPendingTodoEdit()
     {
+        if (_editingTodoTextBox is { } textBox)
+        {
+            CaptureTodoEditDraft(textBox);
+        }
+
+        if (IsImeComposing)
+        {
+            _outsideTodoEditCommitPending = true;
+            ScheduleTodoEditAfterOutsideClick();
+            return;
+        }
+
         CommitTodoEdit();
     }
 
@@ -833,6 +877,11 @@ public partial class TodoWindow : Window
         }
 
         CommitTodoEdit();
+        if (_editingTodoTextBox is not null)
+        {
+            return;
+        }
+
         _editingTodoTextBox = textBox;
         _editingTodoItem = item;
         _editingTodoOriginalText = item.Text;
@@ -940,6 +989,7 @@ public partial class TodoWindow : Window
         _editingTodoItem = null;
         _editingTodoOriginalText = string.Empty;
         _editingTodoDraftText = string.Empty;
+        _outsideTodoEditCommitPending = false;
         if (_imeCompositionOwner is null ||
             ReferenceEquals(_imeCompositionOwner, textBox))
         {
@@ -993,8 +1043,27 @@ public partial class TodoWindow : Window
             return;
         }
 
+        HandleTodoEditAfterFocusDeparture(textBox);
+    }
+
+    private void TodoWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        var textBox = _editingTodoTextBox;
+        if (textBox is null ||
+            IsWithin(e.OriginalSource as DependencyObject, textBox))
+        {
+            return;
+        }
+
         CaptureTodoEditDraft(textBox);
-        ScheduleTodoEditAfterFocusLoss();
+        if (!IsImeComposing)
+        {
+            CommitTodoEdit();
+            return;
+        }
+
+        _outsideTodoEditCommitPending = true;
+        ScheduleTodoEditAfterOutsideClick();
     }
 
     private void TodoEditTextBox_TextChanged(
@@ -1016,7 +1085,16 @@ public partial class TodoWindow : Window
             ReferenceEquals(textBox, _editingTodoTextBox) &&
             !ReferenceEquals(e.NewValue, _editingTodoItem))
         {
-            ScheduleTodoEditAfterFocusLoss();
+            if (IsImeComposing)
+            {
+                // A recycled container can no longer receive a trustworthy
+                // final TSF TextChanged for the original item.  Discard the
+                // unconfirmed candidate and make the reused editor read-only.
+                CancelTodoEdit();
+                return;
+            }
+
+            HandleTodoEditAfterFocusDeparture(textBox);
         }
     }
 
@@ -1025,9 +1103,29 @@ public partial class TodoWindow : Window
         if (sender is TextBox textBox &&
             ReferenceEquals(textBox, _editingTodoTextBox))
         {
-            CaptureTodoEditDraft(textBox);
-            ScheduleTodoEditAfterFocusLoss();
+            if (IsImeComposing)
+            {
+                // Once the editor is unloaded, waiting for the IME candidate
+                // could write a partial value back through a recycled control.
+                CancelTodoEdit();
+                return;
+            }
+
+            HandleTodoEditAfterFocusDeparture(textBox);
         }
+    }
+
+    private void HandleTodoEditAfterFocusDeparture(TextBox textBox)
+    {
+        CaptureTodoEditDraft(textBox);
+        if (!IsImeComposing)
+        {
+            CommitTodoEdit();
+            return;
+        }
+
+        _outsideTodoEditCommitPending = true;
+        ScheduleTodoEditAfterFocusLoss();
     }
 
     private void CaptureTodoEditDraft(TextBox textBox)
@@ -1041,12 +1139,58 @@ public partial class TodoWindow : Window
     private void ScheduleTodoEditAfterFocusLoss()
     {
         Dispatcher.BeginInvoke(
-            DispatcherPriority.Input,
+            DispatcherPriority.ContextIdle,
             _finishTodoEditAfterFocusLossAction);
+    }
+
+    private void ScheduleTodoEditAfterOutsideClick()
+    {
+        if (_outsideTodoEditCommitQueued)
+        {
+            return;
+        }
+
+        _outsideTodoEditCommitQueued = true;
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.ContextIdle,
+            _finishTodoEditAfterOutsideClickAction);
+    }
+
+    private void FinishTodoEditAfterOutsideClick()
+    {
+        _outsideTodoEditCommitQueued = false;
+        if (_hasClosed || !_outsideTodoEditCommitPending)
+        {
+            return;
+        }
+
+        var textBox = _editingTodoTextBox;
+        if (textBox is null)
+        {
+            _outsideTodoEditCommitPending = false;
+            return;
+        }
+
+        CaptureTodoEditDraft(textBox);
+        if (IsImeComposing)
+        {
+            return;
+        }
+
+        CommitTodoEdit();
+        if (!ReferenceEquals(_editingTodoTextBox, textBox))
+        {
+            _outsideTodoEditCommitPending = false;
+        }
     }
 
     private void FinishTodoEditAfterFocusLoss()
     {
+        if (_hasClosed)
+        {
+            return;
+        }
+
         var textBox = _editingTodoTextBox;
         if (textBox is null)
         {
@@ -1061,15 +1205,35 @@ public partial class TodoWindow : Window
             return;
         }
 
-        if (containerWasRecycled && IsImeComposing &&
-            (_imeCompositionOwner is null ||
-             ReferenceEquals(_imeCompositionOwner, textBox)))
+        if (containerWasRecycled && IsImeComposing)
         {
-            SetImeComposing(false);
+            // Fail closed even if an unusual WPF event order reaches this
+            // delayed fallback before DataContextChanged/Unloaded handled it.
+            // A recycled control cannot supply a trustworthy final IME value.
+            CancelTodoEdit();
+            return;
         }
 
         ResetImeCompositionAfterFocusLoss();
-        CommitTodoEdit();
+        _outsideTodoEditCommitPending = true;
+        FinishTodoEditAfterOutsideClick();
+    }
+
+    private static bool IsWithin(DependencyObject? source, DependencyObject ancestor)
+    {
+        while (source is not null)
+        {
+            if (ReferenceEquals(source, ancestor))
+            {
+                return true;
+            }
+
+            source = source is Visual
+                ? VisualTreeHelper.GetParent(source)
+                : LogicalTreeHelper.GetParent(source);
+        }
+
+        return false;
     }
 
     private void TodoDragHandle_PreviewMouseLeftButtonDown(
@@ -1356,6 +1520,20 @@ public partial class TodoWindow : Window
     {
         if (sender is Button { Tag: TodoItem item })
         {
+            if (ReferenceEquals(item, _editingTodoItem))
+            {
+                if (IsImeComposing)
+                {
+                    // The item is about to disappear, so an unfinished IME
+                    // candidate must not be committed later to a deleted object.
+                    CancelTodoEdit();
+                }
+                else
+                {
+                    CommitPendingTodoEdit();
+                }
+            }
+
             DeleteRequested?.Invoke(item);
         }
     }

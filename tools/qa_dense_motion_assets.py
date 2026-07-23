@@ -41,6 +41,9 @@ CENTROID_PERPENDICULAR_ERROR_DIP_LIMIT = 0.75
 MIDPOINT_BASELINE_MAX_PHYSICAL_PX_LIMIT = 1.0
 SUBSTEP_CONTOUR_RATIO_LIMIT = 0.85
 ADJACENT_CONTOUR_P95_DIP_LIMIT = 2.0
+EDGE_REVEAL_DEPTH_DIP_MIN = 8.0
+EDGE_REVEAL_BACKTRACK_DIP_MAX = 1.0
+EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX = 4
 
 # Deliberate pose transitions may be exempted only by naming the exact metric,
 # sequence, frame edge/center, and a human-readable reason.  Keep this empty by
@@ -88,12 +91,39 @@ def alpha_iou(first: np.ndarray, second: np.ndarray, threshold: int = 24) -> flo
     return float(np.logical_and(a, b).sum() / union) if union else 1.0
 
 
-def contour_p95(first: np.ndarray, second: np.ndarray) -> float:
+def contour_p95(
+    first: np.ndarray,
+    second: np.ndarray,
+    *,
+    ignored_contact_edge: str | None = None,
+) -> float:
     masks = [(frame[..., 3] >= 24).astype(np.uint8) for frame in (first, second)]
     kernel = np.ones((3, 3), np.uint8)
-    edges = [mask.astype(bool) & ~cv2.erode(mask, kernel).astype(bool) for mask in masks]
+    target_edges = [
+        mask.astype(bool) & ~cv2.erode(mask, kernel).astype(bool)
+        for mask in masks
+    ]
+    source_edges = [edge.copy() for edge in target_edges]
+    # Edge-peek sprites are intentionally clipped by the Windows boundary.
+    # Its antialiased cut line occupies up to four source pixels and can change
+    # topology as a hand crosses it. Omit only those source samples from the
+    # percentile; keep the complete target contour for the distance transform,
+    # otherwise deleting the nearest target edge manufactures a large distance.
+    # Boundary-contact metrics below validate the omitted cut line independently.
+    for edge in source_edges:
+        if ignored_contact_edge == "left":
+            edge[:, :EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX] = False
+        elif ignored_contact_edge == "top":
+            edge[:EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX, :] = False
+        elif ignored_contact_edge == "bottom":
+            edge[-EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX:, :] = False
+        elif ignored_contact_edge is not None:
+            raise ValueError(f"Unsupported ignored contact edge: {ignored_contact_edge}")
     distances = []
-    for source_edge, target_edge in ((edges[0], edges[1]), (edges[1], edges[0])):
+    for source_edge, target_edge in (
+        (source_edges[0], target_edges[1]),
+        (source_edges[1], target_edges[0]),
+    ):
         distance = cv2.distanceTransform((~target_edge).astype(np.uint8), cv2.DIST_L2, 5)
         distances.append(distance[source_edge])
     values = np.concatenate(distances)
@@ -198,7 +228,16 @@ def analyze_sequence(
         hat1 = records[number]["hat_anchor"]
         assert isinstance(brim0, list) and isinstance(brim1, list)
         assert isinstance(hat0, list) and isinstance(hat1, list)
-        contour = contour_p95(first, second)
+        ignored_contact_edge = (
+            anchor_kind.removeprefix("edge-")
+            if anchor_kind.startswith("edge-")
+            else None
+        )
+        contour = contour_p95(
+            first,
+            second,
+            ignored_contact_edge=ignored_contact_edge,
+        )
         pairs.append(
             {
                 "from": number,
@@ -939,7 +978,9 @@ def main() -> None:
     parser.add_argument(
         "--require-edge-peek",
         action="store_true",
-        help="Require and validate the 24-frame left/top/bottom edge-peek loops",
+        help=(
+            "Require and validate the 48-frame left/top/bottom edge-peek loops"
+        ),
     )
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -1050,11 +1091,18 @@ def main() -> None:
         ]
         raise AssertionError(f"missing edge-peek sequences: {missing}")
     if edge_assets_present:
-        registered_edge_keys = generator.registered_edge_sources()
+        runtime_edge_keys = {
+            direction: [
+                ASSETS / f"luban-edge-{direction}-{number:02d}.png"
+                for number in range(1, 5)
+            ]
+            for direction in generator.EDGE_DIRECTIONS
+        }
         for direction, outputs in edge_sequences.items():
-            if len(outputs) != 24:
+            if len(outputs) != generator.EDGE_PEEK_FRAME_COUNT:
                 raise AssertionError(
-                    f"edge {direction} smooth count {len(outputs)} != 24"
+                    f"edge {direction} smooth count {len(outputs)} != "
+                    f"{generator.EDGE_PEEK_FRAME_COUNT}"
                 )
             name = f"edge.{direction}"
             edge_anchor_kind = f"edge-{direction}"
@@ -1075,11 +1123,12 @@ def main() -> None:
             )
             first_geometry = frame_geometry(first, anchor_kind=edge_anchor_kind)
             second_geometry = frame_geometry(second, anchor_kind=edge_anchor_kind)
+            quarter = len(outputs) // 4
             expected_keys = {
-                6: registered_edge_keys[direction][1],
-                12: registered_edge_keys[direction][2],
-                18: registered_edge_keys[direction][3],
-                24: registered_edge_keys[direction][0],
+                quarter: runtime_edge_keys[direction][1],
+                quarter * 2: runtime_edge_keys[direction][2],
+                quarter * 3: runtime_edge_keys[direction][3],
+                quarter * 4: runtime_edge_keys[direction][0],
             }
             edge_result = {
                 "sequence": sequence,
@@ -1090,8 +1139,11 @@ def main() -> None:
                 ],
                 "loop_wrap": {
                     "alpha_iou": alpha_iou(first, second),
-                    "contour_p95_final_dip": contour_p95(first, second)
-                    * SOURCE_TO_DIP,
+                    "contour_p95_final_dip": contour_p95(
+                        first,
+                        second,
+                        ignored_contact_edge=direction,
+                    ) * SOURCE_TO_DIP,
                     "brim_center_step_final_dip": math.hypot(
                         second_hat[0] - first_hat[0],
                         second_hat[1] - first_hat[1],
@@ -1138,11 +1190,66 @@ def main() -> None:
                     )
                 ),
             }
+            fully_peeked_frame = quarter * 3
+            resting_frame = quarter * 4
+            fully_peeked_box = sequence["frames"][
+                fully_peeked_frame - 1
+            ]["atlas_bbox_alpha24"]
+            resting_box = sequence["frames"][
+                resting_frame - 1
+            ]["atlas_bbox_alpha24"]
+            if direction == "left":
+                reveal_depth_dip = (
+                    fully_peeked_box[2] - resting_box[2]
+                ) * ATLAS_X_TO_DIP
+            elif direction == "top":
+                reveal_depth_dip = (
+                    fully_peeked_box[3] - resting_box[3]
+                ) * ATLAS_Y_TO_DIP
+            else:
+                reveal_depth_dip = (
+                    resting_box[1] - fully_peeked_box[1]
+                ) * ATLAS_Y_TO_DIP
+            edge_result["reveal_depth"] = {
+                "rest_frame": resting_frame,
+                "fully_peeked_frame": fully_peeked_frame,
+                "normal_axis_dip": reveal_depth_dip,
+                "minimum_dip": EDGE_REVEAL_DEPTH_DIP_MIN,
+            }
+            reveal_boxes = [
+                sequence["frames"][resting_frame - 1]["atlas_bbox_alpha24"],
+                *[
+                    frame["atlas_bbox_alpha24"]
+                    for frame in sequence["frames"][:fully_peeked_frame]
+                ],
+            ]
+            if direction == "left":
+                reveal_positions_dip = [
+                    box[2] * ATLAS_X_TO_DIP for box in reveal_boxes
+                ]
+            elif direction == "top":
+                reveal_positions_dip = [
+                    box[3] * ATLAS_Y_TO_DIP for box in reveal_boxes
+                ]
+            else:
+                reveal_positions_dip = [
+                    -box[1] * ATLAS_Y_TO_DIP for box in reveal_boxes
+                ]
+            edge_result["reveal_monotonicity"] = {
+                "positions_dip": reveal_positions_dip,
+                "max_backtrack_dip": max(
+                    max(0.0, first - second)
+                    for first, second in zip(
+                        reveal_positions_dip, reveal_positions_dip[1:]
+                    )
+                ),
+                "maximum_backtrack_dip": EDGE_REVEAL_BACKTRACK_DIP_MAX,
+            }
             result["edge_peek"][direction] = edge_result
             sequence_entries.append((name, outputs, sequence))
             authored_hashes_by_sequence[name] = {
                 hashlib.sha256(load(path).tobytes()).hexdigest()
-                for path in registered_edge_keys[direction]
+                for path in runtime_edge_keys[direction]
             }
             if args.contacts:
                 save_contact(
@@ -1452,6 +1559,18 @@ def main() -> None:
         if contact["max_adjacent_step_max_physical_px"] > 1.0:
             failures.append(
                 f"edge {direction} boundary contact moves by more than 1px"
+            )
+        reveal_depth = edge_result["reveal_depth"]["normal_axis_dip"]
+        if reveal_depth < EDGE_REVEAL_DEPTH_DIP_MIN:
+            failures.append(
+                f"edge {direction} reveal depth {reveal_depth:.3f} DIP "
+                f"< {EDGE_REVEAL_DEPTH_DIP_MIN:.1f} DIP"
+            )
+        reveal_backtrack = edge_result["reveal_monotonicity"]["max_backtrack_dip"]
+        if reveal_backtrack > EDGE_REVEAL_BACKTRACK_DIP_MAX:
+            failures.append(
+                f"edge {direction} reveal backtracks {reveal_backtrack:.3f} DIP "
+                f"> {EDGE_REVEAL_BACKTRACK_DIP_MAX:.1f} DIP"
             )
     pillow = result["pillow_layer"]
     if pillow["size"] != [399, 509]:

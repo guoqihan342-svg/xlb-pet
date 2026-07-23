@@ -27,6 +27,7 @@ internal static class Program
     private const int LogicalPetHeight = 242;
     private const int RenderPixelWidth = 399;
     private const int RenderPixelHeight = 509;
+    private const int ExpectedEdgePeekFrameCount = 48;
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
     private const long ExpectedResidentSpritePageBudgetBytes = 112L * 1024L * 1024L;
@@ -486,13 +487,24 @@ internal static class Program
             $"source=({offsetInfo.X},{offsetInfo.Y})");
 
         var idleFrame = GetField<object>(window, "_idleFrame");
+        var idleInfo = GetSpriteFrameInfo(idleFrame);
         var negativeDestinationFrame = GetField<Array>(window, "_edgeLeftFrames").GetValue(0)!;
         var negativeInfo = GetSpriteFrameInfo(negativeDestinationFrame);
         Assert(negativeInfo.DestinationX < 0,
             "脏矩形裁剪回归必须使用负DestinationX的左边界姿势");
+        Assert(!string.Equals(
+                idleInfo.PageName,
+                negativeInfo.PageName,
+                StringComparison.Ordinal),
+            "脏矩形跨页夹具必须使用两个不同的图集页");
         PrimeSpritePageForFrame(window, idleFrame);
+        Assert(GetField<string>(window, "_loadedSpritePageName") == idleInfo.PageName,
+            "写入待机帧前必须先加载待机图集页");
         SetField(window, "_directDisplayFrameBounds", null);
         Invoke(window, "WriteDirectSpriteFrame", idleFrame);
+        PrimeSpritePageForFrame(window, negativeDestinationFrame);
+        Assert(GetField<string>(window, "_loadedSpritePageName") == negativeInfo.PageName,
+            "写入边缘帧前必须先加载边缘图集页");
         Invoke(window, "WriteDirectSpriteFrame", negativeDestinationFrame);
         var incrementalPixels = GetField<byte[]>(window, "_displayFramePixels");
         var fullReference = new byte[incrementalPixels.Length];
@@ -500,6 +512,9 @@ internal static class Program
         Assert(incrementalPixels.AsSpan().SequenceEqual(fullReference),
             "不同bounds增量切到负Destination裁剪帧时，结果必须逐字节等于全清重绘参考");
 
+        PrimeSpritePageForFrame(window, idleFrame);
+        Assert(GetField<string>(window, "_loadedSpritePageName") == idleInfo.PageName,
+            "切回待机帧前必须重新加载待机图集页");
         Invoke(window, "WriteDirectSpriteFrame", idleFrame);
         Array.Clear(fullReference);
         InvokeOverload(window, "CopyFramePixels", idleFrame, fullReference);
@@ -1993,26 +2008,26 @@ internal static class Program
             var edgeDisplayedAt = StopwatchTicksFromSeconds(20 + edgeContractIndex * 10);
             Invoke(window, "TryShowPendingSpriteFrameAt", edgeDisplayedAt);
             var edgeRestDeadline = edgeDisplayedAt +
-                                   ToProductionCharacterAnimationTicks(
-                                       TimeSpan.FromMilliseconds(350));
+                                   ToProductionStopwatchTicks(
+                                       TimeSpan.FromMilliseconds(500));
             Assert(Equals(GetRawField(window, "_currentSpriteFrame"), edgeRestFrame) &&
                     GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex &&
                     GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == edgeRestDeadline &&
                     GetField<Image>(window, "PillowImage").Visibility == Visibility.Visible &&
                     GetField<Image>(window, "PillowImage").Opacity == 0d,
-                $"冷{edgeContract.Dock}休息帧必须从实际显示时刻按1.25倍速度完整停留280ms，不能解码期间偷跑");
+                $"冷{edgeContract.Dock}休息帧必须从实际显示时刻完整停留500ms，不能解码期间偷跑");
             Invoke(window, "AdvanceEdgePeek", edgeRestDeadline - 1);
             Assert(GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex,
-                "边缘休息姿势的1.25倍运行hold结束前不得提前换帧");
+                "边缘休息姿势的500ms运行hold结束前不得提前换帧");
 
             Invoke(window, "AdvanceEdgePeek", edgeRestDeadline);
             var firstEdgeDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
             Assert(GetField<int>(window, "_edgePeekFrameIndex") == 0 &&
                    Equals(GetRawField(window, "_currentSpriteFrame"), edgeFrames.GetValue(0)) &&
                    firstEdgeDeadline - edgeRestDeadline ==
-                   ToProductionCharacterAnimationTicks(
+                   ToProductionStopwatchTicks(
                        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
-                "休息帧后必须按升序进入第001帧，并按代码速度缩放基础60fps姿势间隔");
+                "休息帧后必须按升序进入第001帧，并使用不跳姿势的原生60fps间隔");
 
             var stalledAt = edgeRestDeadline + StopwatchTicksFromMilliseconds(250);
             var expectedEdgeIndex = 0;
@@ -2025,7 +2040,7 @@ internal static class Program
                     "GetEdgePeekFrameHoldDuration",
                     expectedEdgeIndex,
                     edgeFrames.Length)!;
-                expectedEdgeDeadline += ToProductionCharacterAnimationTicks(hold);
+                expectedEdgeDeadline += ToProductionStopwatchTicks(hold);
             }
 
             Invoke(window, "AdvanceEdgePeek", stalledAt);
@@ -2058,7 +2073,7 @@ internal static class Program
                     multiCycleExpectedIndex,
                     edgeFrames.Length)!;
                 multiCycleExpectedDeadline +=
-                    ToProductionCharacterAnimationTicks(hold);
+                    ToProductionStopwatchTicks(hold);
             }
 
             Invoke(window, "AdvanceEdgePeek", multiCycleStallAt);
@@ -2093,7 +2108,7 @@ internal static class Program
                         nextVsyncExpectedIndex,
                         edgeFrames.Length)!;
                     nextVsyncExpectedDeadline +=
-                        ToProductionCharacterAnimationTicks(hold);
+                        ToProductionStopwatchTicks(hold);
                 }
 
                 Invoke(window, "AdvanceEdgePeek", nextVsyncAt);
@@ -2102,7 +2117,7 @@ internal static class Program
                        GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") ==
                        nextVsyncExpectedDeadline,
                     $"{edgeContract.Dock}边缘在{refreshRate:F0}Hz的stall恢复回调必须按" +
-                    "1.25倍绝对时间直接定位，不得补播积压姿势");
+                    "原生60fps绝对时间直接定位，不得补播积压姿势");
             }
 
             Invoke(window, "ExitEdgePeek", false, true);
@@ -2552,13 +2567,14 @@ internal static class Program
                 .EnumerateObject()
                 .Select(frame => frame.Name)
                 .ToArray();
-            var expectedEdgeFrames = Enumerable.Range(1, 24)
+            var expectedEdgeFrames = Enumerable.Range(1, ExpectedEdgePeekFrameCount)
                 .Select(frameNumber =>
                     $"Assets/luban-edge-{edgeName}-smooth-{frameNumber:000}.png")
                 .ToArray();
-            Assert(edgePage.GetProperty("logicalFrameCount").GetInt32() == 24 &&
+            Assert(edgePage.GetProperty("logicalFrameCount").GetInt32() == ExpectedEdgePeekFrameCount &&
                    actualEdgeFrames.SequenceEqual(expectedEdgeFrames),
-                $"{edgePageName} 必须是独立24帧分页并严格按smooth-001..024升序，不能混入idle或旧4帧素材");
+                $"{edgePageName} 必须是独立{ExpectedEdgePeekFrameCount}帧分页并严格按" +
+                $"smooth-001..{ExpectedEdgePeekFrameCount:000}升序，不能混入idle或旧4帧素材");
         }
         foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
         {
@@ -3511,7 +3527,7 @@ internal static class Program
             .Select(name => $"Assets/{name}"));
         foreach (var direction in new[] { "left", "top", "bottom" })
         {
-            paths.AddRange(Enumerable.Range(1, 24).Select(frameNumber =>
+            paths.AddRange(Enumerable.Range(1, ExpectedEdgePeekFrameCount).Select(frameNumber =>
                 $"Assets/luban-edge-{direction}-smooth-{frameNumber:000}.png"));
         }
 
@@ -3996,7 +4012,8 @@ internal static class Program
                        frame.PageName,
                        contract.PageName,
                        StringComparison.Ordinal)),
-                $"{contract.PageName} 必须从独立同名分页按smooth-001..024升序动态载入，不能跳号或借用idle页");
+                $"{contract.PageName} 必须从独立同名分页按" +
+                $"smooth-001..{frames.Length:000}升序动态载入，不能跳号或借用idle页");
 
             var quarter = frames.Length / 4;
             var keyPhaseIndices = new[]
@@ -4026,7 +4043,7 @@ internal static class Program
         Assert(ReferenceEquals(leftFrames, rightFrames),
             "右侧探头必须镜像复用完整edge-left序列，不能维护另一套跳号帧");
 
-        foreach (var supportedFrameCount in new[] { 16, 24 })
+        foreach (var supportedFrameCount in new[] { 16, 24, ExpectedEdgePeekFrameCount })
         {
             var fullyPeekedIndex = supportedFrameCount * 3 / 4 - 1;
             var restIndex = supportedFrameCount - 1;
@@ -4046,8 +4063,8 @@ internal static class Program
                 restIndex,
                 supportedFrameCount)!;
             Assert(normalHold == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
-                   fullyPeekedHold == TimeSpan.FromMilliseconds(350) &&
-                   restHold == TimeSpan.FromMilliseconds(350),
+                   fullyPeekedHold == TimeSpan.FromMilliseconds(500) &&
+                   restHold == TimeSpan.FromMilliseconds(500),
                 $"{supportedFrameCount}帧边缘序列必须动态计算3/4完全探头和末帧休息hold，" +
                 "其余帧保持60fps");
         }
@@ -4186,15 +4203,15 @@ internal static class Program
         var effectiveMotionFrameTicks =
             ToProductionCharacterAnimationTicks(authoredSixtyFpsInterval);
         var effectiveEdgeEndpointTicks =
-            ToProductionCharacterAnimationTicks(TimeSpan.FromMilliseconds(350));
+            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(500));
         AssertClose(
             StopwatchTicksToMilliseconds(effectiveMotionFrameTicks),
             1000d / 60d / playbackSpeed,
             "1.25倍代码速度必须把基础60fps运行hold缩放到约13.333ms");
         AssertClose(
             StopwatchTicksToMilliseconds(effectiveEdgeEndpointTicks),
-            350d / playbackSpeed,
-            "1.25倍代码速度必须把边缘端点350ms运行hold缩放到280ms");
+            500d,
+            "边缘探头必须独立保持500ms卖萌端点，不受全局1.25倍点击动作速度影响");
         Assert(source.Contains("CompositionTarget.Rendering", StringComparison.Ordinal) &&
                source.Contains("Stopwatch.GetTimestamp", StringComparison.Ordinal),
             "动作、探头与淡化必须由 CompositionTarget.Rendering 和绝对 Stopwatch 时钟驱动");
@@ -4212,7 +4229,8 @@ internal static class Program
                    .Contains("AppLogger", StringComparison.Ordinal),
             "统一渲染回调内不得写日志或触发任何磁盘I/O");
         AssertMainRenderingTimeDedupContract(window);
-        AssertRenderingCadenceClassificationContract();
+        AssertRenderingCadenceClassificationContract(source);
+        AssertEdgePeekRenderingCadenceTimelineContract(window);
 
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
@@ -4472,6 +4490,626 @@ internal static class Program
         int StalledFrameIndex,
         int NextFrameIndex,
         long StallElapsedTicks);
+
+    private readonly record struct EdgePeekClockState(
+        int FrameIndex,
+        long DeadlineTimestamp);
+
+    private static void AssertEdgePeekRenderingCadenceTimelineContract(
+        MainWindow window)
+    {
+        PauseSpritePageWarmupForClockSimulation(window);
+        var frames = GetField<Array>(window, "_edgeLeftFrames");
+        Assert(frames.Length == ExpectedEdgePeekFrameCount,
+            $"边缘合成节拍回归必须使用完整{ExpectedEdgePeekFrameCount}帧生产序列，" +
+            $"实际{frames.Length}帧");
+
+        var holdTicks = Enumerable.Range(0, frames.Length)
+            .Select(frameIndex => ToProductionStopwatchTicks(
+                (TimeSpan)InvokeStatic(
+                    typeof(MainWindow),
+                    "GetEdgePeekFrameHoldDuration",
+                    frameIndex,
+                    frames.Length)!))
+            .ToArray();
+        var cycleTicks = (long)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgePeekCycleDurationTicks",
+            frames.Length)!;
+        Assert(cycleTicks == holdTicks.Aggregate(
+                   0L,
+                   checked((total, ticks) => total + ticks)),
+            $"边缘生产周期必须等于{ExpectedEdgePeekFrameCount}个姿势hold之和，" +
+            "长时间模拟才不会掩盖周期漂移");
+
+        try
+        {
+            foreach (var refreshRate in new[] { 59d, 59.94d, 60d })
+            {
+                AssertHealthyNearSixtyEdgePeekTimeline(
+                    window,
+                    frames,
+                    holdTicks,
+                    cycleTicks,
+                    refreshRate);
+            }
+
+            foreach (var refreshRate in new[] { 120d, 144d })
+            {
+                AssertAbsoluteEdgePeekTimeline(
+                    window,
+                    frames,
+                    holdTicks,
+                    cycleTicks,
+                    refreshRate);
+            }
+
+            AssertEdgePeekStallAndCadenceRecovery(
+                window,
+                frames,
+                holdTicks,
+                cycleTicks);
+        }
+        finally
+        {
+            CleanupProductionEdgePeekClockSimulation(window);
+        }
+    }
+
+    private static void AssertHealthyNearSixtyEdgePeekTimeline(
+        MainWindow window,
+        Array frames,
+        IReadOnlyList<long> holdTicks,
+        long cycleTicks,
+        double refreshRate)
+    {
+        var startedAt = StopwatchTicksFromSeconds(100);
+        PrepareProductionEdgePeekClockSimulation(
+            window,
+            frames,
+            startedAt,
+            holdTicks[^1]);
+        try
+        {
+            var endpointHoldTicks =
+                ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(500));
+            var fullyPeekedFrameIndex = frames.Length * 3 / 4 - 1;
+            var restingFrameIndex = frames.Length - 1;
+            var maximumVsyncTicks = (long)Math.Ceiling(
+                Stopwatch.Frequency / refreshRate);
+            var previousFrameIndex = frames.Length - 1;
+            var previousDeadline = GetField<long>(
+                window,
+                "_edgePeekFrameDeadlineTimestamp");
+            var endpointDisplayedAt = startedAt;
+            var endpointHoldCounts = new int[frames.Length];
+            var frameZeroTimestamps = new List<long>();
+            var maximumCycleErrorRatio = 0d;
+            var maximumVsyncOrdinal = checked(
+                (int)Math.Ceiling(60d * refreshRate));
+            var lastTimestamp = startedAt;
+
+            for (var vsyncOrdinal = 1;
+                 vsyncOrdinal <= maximumVsyncOrdinal;
+                 vsyncOrdinal++)
+            {
+                var timestamp = checked(
+                    startedAt + SyntheticStopwatchElapsedTicks(
+                        refreshRate,
+                        vsyncOrdinal));
+                var presentationInterval = SyntheticPresentationInterval(
+                    refreshRate,
+                    vsyncOrdinal);
+                var synchronize = (bool)InvokeStatic(
+                    typeof(MainWindow),
+                    "ShouldSynchronizeEdgePeekToRenderingCadence",
+                    presentationInterval)!;
+                Assert(synchronize,
+                    $"{refreshRate:F2}Hz健康合成的第{vsyncOrdinal}次实际离散间隔必须持续识别为近60Hz");
+
+                SetField(
+                    window,
+                    "_synchronizeEdgePeekToRenderingCadence",
+                    synchronize);
+                try
+                {
+                    Invoke(window, "AdvanceEdgePeek", timestamp);
+                }
+                finally
+                {
+                    SetField(
+                        window,
+                        "_synchronizeEdgePeekToRenderingCadence",
+                        false);
+                }
+
+                var frameIndex = GetField<int>(window, "_edgePeekFrameIndex");
+                var deadline = GetField<long>(
+                    window,
+                    "_edgePeekFrameDeadlineTimestamp");
+                var logicalAdvance =
+                    (frameIndex - previousFrameIndex + frames.Length) %
+                    frames.Length;
+                Assert(logicalAdvance is 0 or 1 &&
+                       (logicalAdvance != 0 || deadline == previousDeadline),
+                    $"{refreshRate:F2}Hz健康合成每次回调只能逻辑推进0或1帧，" +
+                    $"vsync={vsyncOrdinal}, {previousFrameIndex}->{frameIndex}");
+
+                if (logicalAdvance == 1)
+                {
+                    var expectedFrameIndex =
+                        (previousFrameIndex + 1) % frames.Length;
+                    Assert(frameIndex == expectedFrameIndex,
+                        $"{refreshRate:F2}Hz边缘姿势必须完整有序且不漏帧，" +
+                        $"expected={expectedFrameIndex}, actual={frameIndex}");
+                    AssertDisplayedEdgeFrame(window, frames, frameIndex);
+
+                    if (previousFrameIndex == fullyPeekedFrameIndex ||
+                        previousFrameIndex == restingFrameIndex)
+                    {
+                        var actualEndpointHoldTicks =
+                            timestamp - endpointDisplayedAt;
+                        Assert(actualEndpointHoldTicks >= endpointHoldTicks &&
+                               actualEndpointHoldTicks <
+                               endpointHoldTicks + maximumVsyncTicks,
+                            $"{refreshRate:F2}Hz frame{previousFrameIndex}端点实际hold必须" +
+                            $"落在[500ms, 500ms+1vsync)；实际" +
+                            $"{StopwatchTicksToMilliseconds(actualEndpointHoldTicks):F3}ms");
+                        endpointHoldCounts[previousFrameIndex]++;
+                    }
+
+                    if (frameIndex == fullyPeekedFrameIndex ||
+                        frameIndex == restingFrameIndex)
+                    {
+                        endpointDisplayedAt = timestamp;
+                    }
+
+                    if (frameIndex == 0)
+                    {
+                        frameZeroTimestamps.Add(timestamp);
+                    }
+                }
+                else
+                {
+                    AssertDisplayedEdgeFrame(window, frames, frameIndex);
+                }
+
+                previousFrameIndex = frameIndex;
+                previousDeadline = deadline;
+                lastTimestamp = timestamp;
+            }
+
+            Assert(lastTimestamp - startedAt >= StopwatchTicksFromSeconds(60),
+                $"{refreshRate:F2}Hz健康边缘模拟必须覆盖至少60秒");
+            var completedCycles = frameZeroTimestamps.Count - 1;
+            Assert(completedCycles >= 20 &&
+                   endpointHoldCounts[fullyPeekedFrameIndex] >= 20 &&
+                   endpointHoldCounts[restingFrameIndex] >= 20,
+                $"{refreshRate:F2}Hz健康边缘模拟至少应完整覆盖20轮；" +
+                $"cycles={completedCycles}, " +
+                $"hold{fullyPeekedFrameIndex}=" +
+                $"{endpointHoldCounts[fullyPeekedFrameIndex]}, " +
+                $"hold{restingFrameIndex}=" +
+                $"{endpointHoldCounts[restingFrameIndex]}");
+
+            for (var cycleIndex = 1;
+                 cycleIndex < frameZeroTimestamps.Count;
+                 cycleIndex++)
+            {
+                var actualCycleTicks =
+                    frameZeroTimestamps[cycleIndex] -
+                    frameZeroTimestamps[cycleIndex - 1];
+                var cycleErrorRatio =
+                    Math.Abs(actualCycleTicks - cycleTicks) /
+                    (double)cycleTicks;
+                maximumCycleErrorRatio = Math.Max(
+                    maximumCycleErrorRatio,
+                    cycleErrorRatio);
+                Assert(cycleErrorRatio < 0.02,
+                    $"{refreshRate:F2}Hz边缘周期误差必须小于2%，" +
+                    $"cycle={cycleIndex}, error={cycleErrorRatio:P3}");
+            }
+
+            Console.WriteLine(
+                $"[METRIC] edge-peek vsync={refreshRate:F2}Hz: " +
+                $"duration={StopwatchTicksToMilliseconds(lastTimestamp - startedAt):F3}ms, " +
+                $"cycles={completedCycles}, maxCycleError={maximumCycleErrorRatio:P3}");
+        }
+        finally
+        {
+            CleanupProductionEdgePeekClockSimulation(window);
+        }
+    }
+
+    private static void AssertAbsoluteEdgePeekTimeline(
+        MainWindow window,
+        Array frames,
+        IReadOnlyList<long> holdTicks,
+        long cycleTicks,
+        double refreshRate)
+    {
+        var startedAt = StopwatchTicksFromSeconds(200);
+        PrepareProductionEdgePeekClockSimulation(
+            window,
+            frames,
+            startedAt,
+            holdTicks[^1]);
+        try
+        {
+            var expected = new EdgePeekClockState(
+                frames.Length - 1,
+                checked(startedAt + holdTicks[^1]));
+            var maximumVsyncOrdinal = checked(
+                (int)Math.Ceiling(10d * refreshRate));
+            for (var vsyncOrdinal = 1;
+                 vsyncOrdinal <= maximumVsyncOrdinal;
+                 vsyncOrdinal++)
+            {
+                var timestamp = checked(
+                    startedAt + SyntheticStopwatchElapsedTicks(
+                        refreshRate,
+                        vsyncOrdinal));
+                var presentationInterval = SyntheticPresentationInterval(
+                    refreshRate,
+                    vsyncOrdinal);
+                var synchronize = (bool)InvokeStatic(
+                    typeof(MainWindow),
+                    "ShouldSynchronizeEdgePeekToRenderingCadence",
+                    presentationInterval)!;
+                Assert(!synchronize,
+                    $"{refreshRate:F0}Hz必须持续使用既有绝对deadline模型");
+
+                expected = ResolveAbsoluteEdgePeekClockState(
+                    holdTicks,
+                    cycleTicks,
+                    expected,
+                    timestamp);
+                SetField(
+                    window,
+                    "_synchronizeEdgePeekToRenderingCadence",
+                    false);
+                Invoke(window, "AdvanceEdgePeek", timestamp);
+                var actual = new EdgePeekClockState(
+                    GetField<int>(window, "_edgePeekFrameIndex"),
+                    GetField<long>(
+                        window,
+                        "_edgePeekFrameDeadlineTimestamp"));
+                Assert(actual == expected,
+                    $"{refreshRate:F0}Hz边缘绝对时钟必须逐回调匹配既有模型，" +
+                    $"vsync={vsyncOrdinal}, expected={expected}, actual={actual}");
+                AssertDisplayedEdgeFrame(
+                    window,
+                    frames,
+                    actual.FrameIndex);
+            }
+
+            Console.WriteLine(
+                $"[METRIC] edge-peek absolute={refreshRate:F0}Hz: " +
+                $"callbacks={maximumVsyncOrdinal}, final={expected.FrameIndex}");
+        }
+        finally
+        {
+            CleanupProductionEdgePeekClockSimulation(window);
+        }
+    }
+
+    private static void AssertEdgePeekStallAndCadenceRecovery(
+        MainWindow window,
+        Array frames,
+        IReadOnlyList<long> holdTicks,
+        long cycleTicks)
+    {
+        const double refreshRate = 59.94d;
+        var startedAt = StopwatchTicksFromSeconds(300);
+        PrepareProductionEdgePeekClockSimulation(
+            window,
+            frames,
+            startedAt,
+            holdTicks[^1]);
+        try
+        {
+            var firstFrameTimestamp = -1L;
+            var firstFrameVsyncOrdinal = -1;
+            for (var vsyncOrdinal = 1;
+                 vsyncOrdinal <= (int)Math.Ceiling(refreshRate);
+                 vsyncOrdinal++)
+            {
+                var timestamp = checked(
+                    startedAt + SyntheticStopwatchElapsedTicks(
+                        refreshRate,
+                        vsyncOrdinal));
+                var synchronize = (bool)InvokeStatic(
+                    typeof(MainWindow),
+                    "ShouldSynchronizeEdgePeekToRenderingCadence",
+                    SyntheticPresentationInterval(
+                        refreshRate,
+                        vsyncOrdinal))!;
+                Assert(synchronize,
+                    "250ms阻塞探针前的59.94Hz合成必须处于同步路径");
+                SetField(
+                    window,
+                    "_synchronizeEdgePeekToRenderingCadence",
+                    true);
+                try
+                {
+                    Invoke(window, "AdvanceEdgePeek", timestamp);
+                }
+                finally
+                {
+                    SetField(
+                        window,
+                        "_synchronizeEdgePeekToRenderingCadence",
+                        false);
+                }
+
+                if (GetField<int>(window, "_edgePeekFrameIndex") == 0)
+                {
+                    firstFrameTimestamp = timestamp;
+                    firstFrameVsyncOrdinal = vsyncOrdinal;
+                    break;
+                }
+            }
+
+            Assert(firstFrameTimestamp >= startedAt &&
+                   firstFrameVsyncOrdinal > 0,
+                $"59.94Hz基线必须先从rest frame{frames.Length - 1}有序进入frame0");
+            var beforeStall = new EdgePeekClockState(
+                GetField<int>(window, "_edgePeekFrameIndex"),
+                GetField<long>(
+                    window,
+                    "_edgePeekFrameDeadlineTimestamp"));
+            Assert(beforeStall.FrameIndex == 0,
+                "250ms阻塞探针必须从frame0的同步deadline开始");
+
+            var stallTimestamp = checked(
+                firstFrameTimestamp +
+                StopwatchTicksFromMilliseconds(250));
+            var gapSynchronizes = (bool)InvokeStatic(
+                typeof(MainWindow),
+                "ShouldSynchronizeEdgePeekToRenderingCadence",
+                TimeSpan.FromMilliseconds(250))!;
+            Assert(!gapSynchronizes,
+                "250ms合成gap必须关闭近60Hz同步并恢复绝对时钟定位");
+            var expectedAfterStall = ResolveAbsoluteEdgePeekClockState(
+                holdTicks,
+                cycleTicks,
+                beforeStall,
+                stallTimestamp);
+            var skippedFrameCount =
+                (expectedAfterStall.FrameIndex -
+                 beforeStall.FrameIndex +
+                 frames.Length) %
+                frames.Length;
+            Assert(skippedFrameCount > 1,
+                "250ms阻塞样本必须跨过多个运动姿势，才能证明不是逐帧补播");
+
+            SetField(
+                window,
+                "_synchronizeEdgePeekToRenderingCadence",
+                gapSynchronizes);
+            Invoke(window, "AdvanceEdgePeek", stallTimestamp);
+            var actualAfterStall = new EdgePeekClockState(
+                GetField<int>(window, "_edgePeekFrameIndex"),
+                GetField<long>(
+                    window,
+                    "_edgePeekFrameDeadlineTimestamp"));
+            Assert(actualAfterStall == expectedAfterStall,
+                $"250ms gap必须由一次生产调用直接定位最终帧；" +
+                $"expected={expectedAfterStall}, actual={actualAfterStall}");
+            AssertDisplayedEdgeFrame(
+                window,
+                frames,
+                actualAfterStall.FrameIndex);
+
+            Invoke(window, "AdvanceEdgePeek", stallTimestamp);
+            Assert(new EdgePeekClockState(
+                       GetField<int>(window, "_edgePeekFrameIndex"),
+                       GetField<long>(
+                           window,
+                           "_edgePeekFrameDeadlineTimestamp")) ==
+                   actualAfterStall,
+                "相同stall时间戳重复调用不得继续补播积压姿势");
+
+            var previousFrameIndex = actualAfterStall.FrameIndex;
+            var previousDeadline = actualAfterStall.DeadlineTimestamp;
+            var synchronizedAdvanceObserved = false;
+            for (var recoveryVsyncOrdinal = 1;
+                 recoveryVsyncOrdinal <= 40;
+                 recoveryVsyncOrdinal++)
+            {
+                var recoveryTimestamp = checked(
+                    stallTimestamp + SyntheticStopwatchElapsedTicks(
+                        refreshRate,
+                        recoveryVsyncOrdinal));
+                var presentationInterval = SyntheticPresentationInterval(
+                    refreshRate,
+                    recoveryVsyncOrdinal);
+                var synchronize = (bool)InvokeStatic(
+                    typeof(MainWindow),
+                    "ShouldSynchronizeEdgePeekToRenderingCadence",
+                    presentationInterval)!;
+                Assert(synchronize,
+                    "250ms gap后的正常59.94Hz间隔必须重新进入同步路径");
+                SetField(
+                    window,
+                    "_synchronizeEdgePeekToRenderingCadence",
+                    true);
+                try
+                {
+                    Invoke(window, "AdvanceEdgePeek", recoveryTimestamp);
+                }
+                finally
+                {
+                    SetField(
+                        window,
+                        "_synchronizeEdgePeekToRenderingCadence",
+                        false);
+                }
+
+                var frameIndex = GetField<int>(window, "_edgePeekFrameIndex");
+                var deadline = GetField<long>(
+                    window,
+                    "_edgePeekFrameDeadlineTimestamp");
+                var logicalAdvance =
+                    (frameIndex - previousFrameIndex + frames.Length) %
+                    frames.Length;
+                Assert(logicalAdvance is 0 or 1 &&
+                       (logicalAdvance != 0 || deadline == previousDeadline),
+                    "stall恢复后的健康合成仍必须每次只逻辑推进0或1帧");
+                if (logicalAdvance == 1)
+                {
+                    Assert(frameIndex ==
+                           (previousFrameIndex + 1) % frames.Length,
+                        "stall恢复后不得漏帧或乱序");
+                    Assert(deadline == checked(
+                               recoveryTimestamp + holdTicks[frameIndex]),
+                        "stall恢复后的首次逻辑推进必须把deadline重基到当前合成时刻");
+                    synchronizedAdvanceObserved = true;
+                }
+
+                AssertDisplayedEdgeFrame(window, frames, frameIndex);
+                previousFrameIndex = frameIndex;
+                previousDeadline = deadline;
+            }
+
+            Assert(synchronizedAdvanceObserved,
+                "250ms绝对定位后的正常vsync必须实际恢复逐合成同步");
+            Console.WriteLine(
+                $"[METRIC] edge-peek stall=250ms: " +
+                $"frame0->{actualAfterStall.FrameIndex}, " +
+                $"baselineVsync={firstFrameVsyncOrdinal}, recovered=true");
+        }
+        finally
+        {
+            SetField(
+                window,
+                "_synchronizeEdgePeekToRenderingCadence",
+                false);
+            CleanupProductionEdgePeekClockSimulation(window);
+        }
+    }
+
+    private static EdgePeekClockState ResolveAbsoluteEdgePeekClockState(
+        IReadOnlyList<long> holdTicks,
+        long cycleTicks,
+        EdgePeekClockState current,
+        long timestamp)
+    {
+        var frameIndex = current.FrameIndex;
+        var deadline = current.DeadlineTimestamp;
+        var overdueTicks = timestamp - deadline;
+        if (overdueTicks >= cycleTicks)
+        {
+            deadline = checked(
+                deadline + overdueTicks / cycleTicks * cycleTicks);
+        }
+
+        while (timestamp >= deadline)
+        {
+            frameIndex = (frameIndex + 1) % holdTicks.Count;
+            deadline = checked(deadline + holdTicks[frameIndex]);
+        }
+
+        return new EdgePeekClockState(frameIndex, deadline);
+    }
+
+    private static long SyntheticStopwatchElapsedTicks(
+        double refreshRate,
+        int vsyncOrdinal) =>
+        (long)Math.Round(
+            vsyncOrdinal * Stopwatch.Frequency / refreshRate);
+
+    private static TimeSpan SyntheticPresentationInterval(
+        double refreshRate,
+        int vsyncOrdinal)
+    {
+        var currentTicks = (long)Math.Round(
+            vsyncOrdinal * TimeSpan.TicksPerSecond / refreshRate);
+        var previousTicks = (long)Math.Round(
+            (vsyncOrdinal - 1L) * TimeSpan.TicksPerSecond / refreshRate);
+        return TimeSpan.FromTicks(currentTicks - previousTicks);
+    }
+
+    private static void PrepareProductionEdgePeekClockSimulation(
+        MainWindow window,
+        Array frames,
+        long startedAt,
+        long restHoldTicks)
+    {
+        Invoke(window, "StopVisualClock");
+        GetField<DispatcherTimer>(window, "_automaticTimer").Stop();
+        Invoke(window, "StopFrameBlend", false);
+        Assert(GetRawField(window, "_activeClip") is null &&
+               !GetField<bool>(window, "_isReminderActive"),
+            "边缘时钟模拟开始前不得残留动作或提醒状态");
+        SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        SetField(window, "_failedSpritePageName", null);
+
+        var primedPageNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var frame in frames.Cast<object>())
+        {
+            if (primedPageNames.Add(GetSpriteFrameInfo(frame).PageName))
+            {
+                PrimeSpritePageForFrame(window, frame);
+            }
+        }
+
+        Invoke(window, "ResetPetVisualTransforms");
+        var restFrameIndex = frames.Length - 1;
+        var restFrame = frames.GetValue(restFrameIndex)!;
+        SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "Left"));
+        SetField(window, "_edgePeekFrameIndex", restFrameIndex);
+        SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "ShowStableFrame", restFrame);
+        Assert(Equals(GetRawField(window, "_currentSpriteFrame"), restFrame) &&
+               GetRawField(window, "_pendingSpriteFrame") is null,
+            $"边缘时钟模拟必须从已实际显示的rest frame{restFrameIndex}开始");
+        SetField(
+            window,
+            "_edgePeekFrameDeadlineTimestamp",
+            checked(startedAt + restHoldTicks));
+        SetField(
+            window,
+            "_synchronizeEdgePeekToRenderingCadence",
+            false);
+    }
+
+    private static void CleanupProductionEdgePeekClockSimulation(
+        MainWindow window)
+    {
+        SetField(
+            window,
+            "_synchronizeEdgePeekToRenderingCadence",
+            false);
+        SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+        SetField(window, "_edgePeekFrameIndex", 0);
+        SetField(window, "_edgePeekFrameDeadlineTimestamp", 0L);
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "ResetPetVisualTransforms");
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        PrimeSpritePageForFrame(window, idleFrame);
+        SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        Invoke(window, "UpdateVisualClockSubscription");
+        Invoke(window, "StopVisualClock");
+    }
+
+    private static void AssertDisplayedEdgeFrame(
+        MainWindow window,
+        Array frames,
+        int frameIndex)
+    {
+        Assert(Equals(
+                   GetRawField(window, "_currentSpriteFrame"),
+                   frames.GetValue(frameIndex)) &&
+               GetRawField(window, "_pendingSpriteFrame") is null &&
+               !GetField<bool>(window, "_isFrameBlending"),
+            $"生产AdvanceEdgePeek索引{frameIndex}必须直接显示对应SpriteFrame，" +
+            "不得留下待显示帧或整图淡化");
+    }
 
     private static void AssertProductionDiscreteVsyncTimeline(
         MainWindow window,
@@ -4997,7 +5635,8 @@ internal static class Program
         RestoreIdleAfterClipClockSimulation(window);
     }
 
-    private static void AssertRenderingCadenceClassificationContract()
+    private static void AssertRenderingCadenceClassificationContract(
+        string mainWindowSource)
     {
         foreach (var refreshRate in new[] { 59d, 60d, 120d, 144d })
         {
@@ -5009,6 +5648,41 @@ internal static class Program
                 $"{refreshRate:F0}Hz不得把1.25倍代码速度误锁成一回调一姿势，" +
                 "必须保持ToCharacterAnimationTicks绝对时间轴");
         }
+
+        foreach (var refreshRate in new[] { 59d, 59.94d, 60d })
+        {
+            var shouldSynchronizeEdgePeek = (bool)InvokeStatic(
+                typeof(MainWindow),
+                "ShouldSynchronizeEdgePeekToRenderingCadence",
+                TimeSpan.FromSeconds(1d / refreshRate))!;
+            Assert(shouldSynchronizeEdgePeek,
+                $"{refreshRate:F2}Hz必须启用边缘探头逐合成同步，避免原生60fps姿势漏帧");
+        }
+
+        foreach (var refreshRate in new[] { 120d, 144d })
+        {
+            var shouldSynchronizeEdgePeek = (bool)InvokeStatic(
+                typeof(MainWindow),
+                "ShouldSynchronizeEdgePeekToRenderingCadence",
+                TimeSpan.FromSeconds(1d / refreshRate))!;
+            Assert(!shouldSynchronizeEdgePeek,
+                $"{refreshRate:F0}Hz边缘探头必须保留绝对deadline模型");
+        }
+
+        var shouldSynchronizeAfterGap = (bool)InvokeStatic(
+            typeof(MainWindow),
+            "ShouldSynchronizeEdgePeekToRenderingCadence",
+            TimeSpan.FromMilliseconds(250))!;
+        Assert(!shouldSynchronizeAfterGap,
+            "250ms合成gap不得误判为健康近60Hz节拍");
+
+        var edgeCadenceHelperSource = ExtractPrivateMethodSource(
+            mainWindowSource,
+            "ShouldSynchronizeEdgePeekToRenderingCadence");
+        Assert(!edgeCadenceHelperSource.Contains(
+                   "AnimationPlaybackSpeed",
+                   StringComparison.Ordinal),
+            "边缘探头节拍分类必须独立于全局点击动作AnimationPlaybackSpeed");
     }
 
     private static int ResolveAbsoluteFrameIndex(IReadOnlyList<TimeSpan> durations, TimeSpan elapsed)
@@ -5041,6 +5715,13 @@ internal static class Program
             "ToCharacterAnimationTicks",
             baseDuration) ?? throw new InvalidOperationException(
             "生产ToCharacterAnimationTicks未返回运行时截止点"));
+
+    private static long ToProductionStopwatchTicks(TimeSpan duration) =>
+        (long)(InvokeStatic(
+            typeof(MainWindow),
+            "ToStopwatchTicks",
+            duration) ?? throw new InvalidOperationException(
+            "生产ToStopwatchTicks未返回运行时截止点"));
 
     private static double StopwatchTicksToMilliseconds(long ticks) =>
         ticks * 1000d / Stopwatch.Frequency;
@@ -5105,8 +5786,8 @@ internal static class Program
 
     private static void AssertManualTopDockIntegration(MainWindow window)
     {
-        var motionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
-                "MotionFrameInterval",
+        var edgeMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgePeekMotionFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var edgeEndpointHold = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgePeekEndpointHold",
@@ -5114,12 +5795,12 @@ internal static class Program
         var edgeBlendDuration = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeFrameBlendDuration",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
-        Assert(motionFrameInterval == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
-               edgeEndpointHold == TimeSpan.FromMilliseconds(350) &&
+        Assert(edgeMotionFrameInterval == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
+               edgeEndpointHold == TimeSpan.FromMilliseconds(500) &&
                edgeBlendDuration == TimeSpan.Zero &&
                typeof(MainWindow).GetField("EdgePeekFrameInterval", StaticFlags) is null &&
                typeof(MainWindow).GetField("_edgePeekFrameDirection", InstanceFlags) is null,
-            "边缘探头必须复用精确60fps全局间隔、350ms关键姿势停留、禁用整图淡化，" +
+            "边缘探头必须使用不受全局倍速影响的精确60fps间隔、500ms关键姿势停留、禁用整图淡化，" +
             "并彻底删除70ms及ping-pong方向状态");
 
         if (!window.IsVisible)
@@ -5179,8 +5860,8 @@ internal static class Program
             AssertClose(
                 StopwatchTicksToMilliseconds(nextDeadline - deadline),
                 StopwatchTicksToMilliseconds(
-                    ToProductionCharacterAnimationTicks(motionFrameInterval)),
-                $"{edge} 探头离开休息姿势后必须按1.25倍运行时钟换帧");
+                    ToProductionStopwatchTicks(edgeMotionFrameInterval)),
+                $"{edge} 探头离开休息姿势后必须按原生60fps运行时钟换帧");
 
             while (GetField<int>(window, "_edgePeekFrameIndex") !=
                    fullyPeekedFrameIndex)
@@ -5191,18 +5872,18 @@ internal static class Program
                 var frameIndex = GetField<int>(window, "_edgePeekFrameIndex");
                 var expectedHold = frameIndex == fullyPeekedFrameIndex
                     ? edgeEndpointHold
-                    : motionFrameInterval;
+                    : edgeMotionFrameInterval;
                 AssertClose(
                     StopwatchTicksToMilliseconds(nextDeadline - deadline),
                     StopwatchTicksToMilliseconds(
-                        ToProductionCharacterAnimationTicks(expectedHold)),
+                        ToProductionStopwatchTicks(expectedHold)),
                     $"{edge} 探头升序姿势 {frameIndex + 1:000} 的hold必须匹配动态四阶段时钟");
             }
 
             Assert(Equals(
                        GetRawField(window, "_currentSpriteFrame"),
                        edgeFrames.GetValue(fullyPeekedFrameIndex)),
-                $"{edge} 探头必须在3/4阶段显示完全探头姿势并停留350ms");
+                $"{edge} 探头必须在3/4阶段显示完全探头姿势并停留500ms");
             while (GetField<int>(window, "_edgePeekFrameIndex") != restFrameIndex)
             {
                 deadline = nextDeadline;
@@ -5213,8 +5894,8 @@ internal static class Program
             AssertClose(
                 StopwatchTicksToMilliseconds(nextDeadline - deadline),
                 StopwatchTicksToMilliseconds(
-                    ToProductionCharacterAnimationTicks(edgeEndpointHold)),
-                $"{edge} 探头回到末尾收回休息姿势后必须按1.25倍速度停留");
+                    ToProductionStopwatchTicks(edgeEndpointHold)),
+                $"{edge} 探头回到末尾收回休息姿势后必须独立停留500ms");
             deadline = nextDeadline;
             Invoke(window, "AdvanceEdgePeek", deadline);
             nextDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
@@ -5223,8 +5904,8 @@ internal static class Program
             AssertClose(
                 StopwatchTicksToMilliseconds(nextDeadline - deadline),
                 StopwatchTicksToMilliseconds(
-                    ToProductionCharacterAnimationTicks(motionFrameInterval)),
-                $"{edge} 探头新一轮必须继续保持1.25倍绝对时钟");
+                    ToProductionStopwatchTicks(edgeMotionFrameInterval)),
+                $"{edge} 探头新一轮必须继续保持原生60fps绝对时钟");
             Invoke(window, "ExitEdgePeek", false, true);
             Assert(GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == 0,
                 $"退出{edge}探头后必须清除绝对时间截止点");
@@ -7057,6 +7738,33 @@ internal static class Program
             var cancelEditSource = ExtractPrivateMethodSource(
                 todoSource,
                 "CancelTodoEdit");
+            var outsideClickSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoWindow_PreviewMouseDown");
+            var finishOutsideClickSource = ExtractPrivateMethodSource(
+                todoSource,
+                "FinishTodoEditAfterOutsideClick");
+            var scheduleFocusLossSource = ExtractPrivateMethodSource(
+                todoSource,
+                "ScheduleTodoEditAfterFocusLoss");
+            var handleFocusDepartureSource = ExtractPrivateMethodSource(
+                todoSource,
+                "HandleTodoEditAfterFocusDeparture");
+            var finishFocusLossSource = ExtractPrivateMethodSource(
+                todoSource,
+                "FinishTodoEditAfterFocusLoss");
+            var deleteTodoSource = ExtractPrivateMethodSource(
+                todoSource,
+                "DeleteButton_Click");
+            var closingSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoWindow_Closing");
+            var dataContextChangedSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoEditTextBox_DataContextChanged");
+            var editorUnloadedSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TodoEditTextBox_Unloaded");
             var editKeySource = ExtractPrivateMethodSource(
                 todoSource,
                 "TodoEditTextBox_PreviewKeyDown");
@@ -7136,9 +7844,77 @@ internal static class Program
                    cancelEditSource.Contains("EndTodoEdit", StringComparison.Ordinal) &&
                    todoSource.Contains("textBox.IsReadOnly = true", StringComparison.Ordinal) &&
                    editKeySource.Contains("IsImeComposing", StringComparison.Ordinal) &&
-                   editKeySource.Contains("Key.Enter", StringComparison.Ordinal) &&
-                   editKeySource.Contains("Key.Escape", StringComparison.Ordinal),
+                    editKeySource.Contains("Key.Enter", StringComparison.Ordinal) &&
+                    editKeySource.Contains("Key.Escape", StringComparison.Ordinal),
                 "行内编辑必须支持 Trim 后保存、Esc 取消和空白保护，且微软输入法组合中的 Enter/Esc 不得误提交或取消");
+            Assert(todoSource.Contains(
+                       "Mouse.PreviewMouseDownEvent",
+                       StringComparison.Ordinal) &&
+                   todoSource.Contains(
+                       "handledEventsToo: true",
+                       StringComparison.Ordinal) &&
+                   outsideClickSource.Contains(
+                       "IsWithin(e.OriginalSource as DependencyObject, textBox)",
+                       StringComparison.Ordinal) &&
+                   outsideClickSource.Contains(
+                       "ScheduleTodoEditAfterOutsideClick()",
+                       StringComparison.Ordinal) &&
+                   outsideClickSource.Contains(
+                       "if (!IsImeComposing)",
+                       StringComparison.Ordinal) &&
+                   outsideClickSource.Contains(
+                       "CommitTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   finishOutsideClickSource.Contains(
+                       "IsImeComposing",
+                       StringComparison.Ordinal) &&
+                   finishOutsideClickSource.Contains(
+                       "CommitTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   scheduleFocusLossSource.Contains(
+                       "DispatcherPriority.ContextIdle",
+                       StringComparison.Ordinal) &&
+                   !scheduleFocusLossSource.Contains(
+                       "DispatcherPriority.Input",
+                       StringComparison.Ordinal),
+                "点击行内编辑框外的任意窗口区域必须先保存再继续按钮事件；微软输入法组合或真实失焦则统一延后到ContextIdle，不能保存半成品");
+            Assert(handleFocusDepartureSource.Contains(
+                       "if (!IsImeComposing)",
+                       StringComparison.Ordinal) &&
+                   handleFocusDepartureSource.Contains(
+                       "CommitTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   deleteTodoSource.Contains(
+                       "ReferenceEquals(item, _editingTodoItem)",
+                       StringComparison.Ordinal) &&
+                   deleteTodoSource.Contains(
+                       "CancelTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   closingSource.Contains(
+                       "if (IsImeComposing)",
+                       StringComparison.Ordinal) &&
+                   closingSource.Contains(
+                       "CancelTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   dataContextChangedSource.Contains(
+                       "if (IsImeComposing)",
+                       StringComparison.Ordinal) &&
+                   dataContextChangedSource.Contains(
+                       "CancelTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   editorUnloadedSource.Contains(
+                       "if (IsImeComposing)",
+                       StringComparison.Ordinal) &&
+                   editorUnloadedSource.Contains(
+                       "CancelTodoEdit()",
+                       StringComparison.Ordinal) &&
+                   finishFocusLossSource.Contains(
+                       "containerWasRecycled && IsImeComposing",
+                       StringComparison.Ordinal) &&
+                   finishFocusLossSource.Contains(
+                       "CancelTodoEdit()",
+                       StringComparison.Ordinal),
+                "Non-IME focus loss must save synchronously; deleting or closing during IME composition must cancel the unconfirmed draft");
             Assert(dragMoveSource.Contains(
                        "SystemParameters.MinimumHorizontalDragDistance",
                        StringComparison.Ordinal) &&
@@ -7530,7 +8306,8 @@ internal static class Program
                    longTodoItem.Text == "虚拟化回收前保存的草稿" &&
                    recycledTodoItem.Text == "回收容器的新待办" &&
                    longItemTextBox.IsReadOnly,
-                "Recycling 复用行容器时必须把已输入草稿提交给原 TodoItem，不能把新行文字写回旧项或污染新项");
+                "Recycling 复用行容器时必须把已输入草稿提交给原 TodoItem，不能把新行文字写回旧项或污染新项；" +
+                $"edited={editedCount}, old={longTodoItem.Text}, recycled={recycledTodoItem.Text}, readOnly={longItemTextBox.IsReadOnly}");
             longItemTextBox.ClearValue(FrameworkElement.DataContextProperty);
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             Assert(ReferenceEquals(longItemTextBox.DataContext, longTodoItem),
@@ -7545,6 +8322,106 @@ internal static class Program
                    longTodoItem.Text == "失去焦点后自动保存" &&
                    longItemTextBox.IsReadOnly,
                 "行内编辑失去键盘焦点后必须延后提交一次，点击窗口其他位置不能丢失修改");
+
+            var textBeforeImeRecycle = longTodoItem.Text;
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "unconfirmed IME text in a recycled container";
+            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            var imeRecycledItem = new TodoItem { Text = "new recycled item" };
+            longItemTextBox.DataContext = imeRecycledItem;
+            Assert(editedCount == 3 &&
+                   longTodoItem.Text == textBeforeImeRecycle &&
+                   imeRecycledItem.Text == "new recycled item" &&
+                   longItemTextBox.IsReadOnly &&
+                   !todoWindow.IsImeComposing,
+                "Recycling an editor during IME composition must synchronously discard the unconfirmed candidate and never save it to either item");
+            longItemTextBox.ClearValue(FrameworkElement.DataContextProperty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(ReferenceEquals(longItemTextBox.DataContext, longTodoItem),
+                "The IME recycling test must restore the original inherited DataContext");
+
+            var fallbackOriginalText = longTodoItem.Text;
+            var fallbackRecycledItem = new TodoItem { Text = "fallback item" };
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "half-composed fallback text";
+            SetField(todoWindow, "_editingTodoItem", fallbackRecycledItem);
+            SetField(todoWindow, "_editingTodoOriginalText", fallbackRecycledItem.Text);
+            SetField(todoWindow, "_editingTodoDraftText", longItemTextBox.Text);
+            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            Invoke(todoWindow, "FinishTodoEditAfterFocusLoss");
+            Assert(editedCount == 3 &&
+                   longTodoItem.Text == fallbackOriginalText &&
+                   fallbackRecycledItem.Text == "fallback item" &&
+                   longItemTextBox.IsReadOnly &&
+                   !todoWindow.IsImeComposing,
+                "The delayed focus-loss fallback must cancel an IME draft when it discovers that the editor was recycled");
+
+            var todoBorder = GetField<Border>(todoWindow, "TodoBorder");
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "编辑框内部点击不能保存";
+            RaisePreviewMouseDown(longItemTextBox);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 3 &&
+                   longTodoItem.Text == "失去焦点后自动保存" &&
+                   !longItemTextBox.IsReadOnly,
+                "点击当前编辑框或其模板子元素时不得提交，也不能折叠正在编辑的状态");
+
+            longItemTextBox.Text = "  点击空白区域自动保存  ";
+            RaisePreviewMouseDown(todoBorder);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 4 &&
+                   longTodoItem.Text == "点击空白区域自动保存" &&
+                   longItemTextBox.IsReadOnly,
+                "点击不可聚焦 Border/空白区域后必须 Trim 并只触发一次 TodoEdited");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "微软输入法选词完成后保存";
+            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            RaisePreviewMouseDown(todoBorder);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 4 &&
+                   longTodoItem.Text == "点击空白区域自动保存" &&
+                   !longItemTextBox.IsReadOnly,
+                "微软输入法仍在组合时点击空白不得保存尚未上屏的半成品");
+            Invoke(todoWindow, "SetImeComposing", false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 5 &&
+                   longTodoItem.Text == "微软输入法选词完成后保存" &&
+                   longItemTextBox.IsReadOnly,
+                "微软输入法组合结束后，即使焦点仍在编辑框也必须完成一次外点保存");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "旧输入框组合状态结束后保存";
+            SetField(todoWindow, "_imeCompositionOwner", input);
+            Invoke(todoWindow, "SetImeComposing", true);
+            RaisePreviewMouseDown(todoBorder);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 5 &&
+                   longTodoItem.Text == "微软输入法选词完成后保存" &&
+                   !longItemTextBox.IsReadOnly,
+                "IME owner仍指向旧输入框时，外点保存必须保留pending而不能丢失修改");
+            Invoke(todoWindow, "SetImeComposing", false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(editedCount == 6 &&
+                   longTodoItem.Text == "旧输入框组合状态结束后保存" &&
+                   longItemTextBox.IsReadOnly,
+                "旧输入框的IME组合状态清除后必须重试并只保存一次当前行草稿");
+
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "微软输入法真实失焦后保存";
+            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            input.Focus();
+            Keyboard.Focus(input);
+            PumpDispatcher(TimeSpan.FromMilliseconds(60));
+            Assert(editedCount == 7 &&
+                   longTodoItem.Text == "微软输入法真实失焦后保存" &&
+                   longItemTextBox.IsReadOnly &&
+                   !todoWindow.IsImeComposing,
+                "微软输入法组合中的真实焦点转移必须等到ContextIdle捕获最终文字，并只保存一次");
 
             longItemTextBox.Select(1, 5);
             Assert((bool)Invoke(todoWindow, "CanCopyFromTextBox", longItemTextBox)! &&
@@ -7562,6 +8439,31 @@ internal static class Program
             Assert(todoWindow.IsImeComposing,
                 "底部输入框旧的延后失焦回调不得清除已经转移到行内编辑框的微软 IME 组合状态");
             Invoke(todoWindow, "SetImeComposing", false);
+
+            var deleteRequestCount = 0;
+            TodoItem? deletedItem = null;
+            todoWindow.DeleteRequested += item =>
+            {
+                deleteRequestCount++;
+                deletedItem = item;
+            };
+            var textBeforeDelete = longTodoItem.Text;
+            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
+            longItemTextBox.Text = "unfinished IME edit must not outlive deletion";
+            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            Invoke(
+                todoWindow,
+                "DeleteButton_Click",
+                new Button { Tag = longTodoItem },
+                new RoutedEventArgs());
+            Assert(deleteRequestCount == 1 &&
+                   ReferenceEquals(deletedItem, longTodoItem) &&
+                   editedCount == 7 &&
+                   longTodoItem.Text == textBeforeDelete &&
+                   longItemTextBox.IsReadOnly &&
+                   !todoWindow.IsImeComposing,
+                "Deleting the item currently edited by IME must cancel its unconfirmed draft before DeleteRequested and never emit a later TodoEdited event");
 
             var addCount = 0;
             todoWindow.AddRequested += _ => addCount++;
@@ -7642,6 +8544,24 @@ internal static class Program
             {
                 SetField(todoWindow, "_todoDragInProgress", false);
             }
+
+            var closingTextBox = FindVisualDescendant<TextBox>(firstDragContainer)
+                ?? throw new InvalidOperationException(
+                    "Closing IME test cannot find the first todo editor");
+            var closingItem = dragItems[0];
+            var closingOriginalText = closingItem.Text;
+            var editedCountBeforeClose = editedCount;
+            Invoke(todoWindow, "BeginTodoEdit", closingTextBox, closingItem);
+            closingTextBox.Text = "unfinished IME text during application shutdown";
+            SetField(todoWindow, "_imeCompositionOwner", closingTextBox);
+            Invoke(todoWindow, "SetImeComposing", true);
+            todoWindow.CloseForApplication();
+            Assert(!todoWindow.IsVisible &&
+                   closingTextBox.IsReadOnly &&
+                   !todoWindow.IsImeComposing &&
+                   closingItem.Text == closingOriginalText &&
+                   editedCount == editedCountBeforeClose,
+                "Application shutdown during IME composition must discard the unconfirmed draft instead of saving stale or half-composed text");
         }
         finally
         {
@@ -7690,6 +8610,19 @@ internal static class Program
     {
         RoutedEvent = Keyboard.PreviewKeyDownEvent
     };
+
+    private static void RaisePreviewMouseDown(UIElement target)
+    {
+        var mouseEvent = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent,
+            Source = target
+        };
+        target.RaiseEvent(mouseEvent);
+    }
 
     private static void AssertPetSizeScaleContract(MainWindow window)
     {
@@ -9386,7 +10319,7 @@ internal static class Program
                    StringComparison.Ordinal) &&
                loadEdgeFrameSequence.Contains("frames.Length < 8", StringComparison.Ordinal) &&
                loadEdgeFrameSequence.Contains("frames.Length % 4 != 0", StringComparison.Ordinal),
-            "边缘序列必须从独立smooth分页动态加载，允许16/24等四阶段长度，并删除固定4帧、70ms与ping-pong状态");
+            "边缘序列必须从独立smooth分页动态加载，允许16/24/48等四阶段长度，并删除固定4帧、70ms与ping-pong状态");
         Assert(enterEdgePeek.Contains("frames.Length - 1", StringComparison.Ordinal) &&
                enterEdgePeek.Contains(
                    "_edgePeekFrameDeadlineTimestamp = long.MaxValue",
@@ -9657,6 +10590,15 @@ internal static class Program
             if (candidate < 0)
             {
                 break;
+            }
+
+            var precedingIndex = candidate - 1;
+            if (precedingIndex >= 0 &&
+                (char.IsLetterOrDigit(source[precedingIndex]) ||
+                 source[precedingIndex] == '_'))
+            {
+                searchFrom = candidate + marker.Length;
+                continue;
             }
 
             var lineStart = source.LastIndexOf('\n', candidate);

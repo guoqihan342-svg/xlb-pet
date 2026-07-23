@@ -45,6 +45,7 @@ FRAME_DESCRIPTOR_KEYS = (
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
 ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
 USER_SCALES = (0.75, 1.0, 1.4)
 DPI_SCALES = (1.0, 1.25, 1.5)
@@ -861,11 +862,12 @@ def validate_resource_contract(
                 sequence=name,
                 actual=len(resources),
             )
-        if name.startswith("edge.") and len(resources) != 24:
+        if name.startswith("edge.") and len(resources) != EDGE_PEEK_FRAME_COUNT:
             add_failure(
                 failures,
                 "sequence.edge_count",
-                "edge-peek master sequence must contain exactly 24 frames",
+                "edge-peek master sequence must contain exactly "
+                f"{EDGE_PEEK_FRAME_COUNT} frames",
                 sequence=name,
                 actual=len(resources),
             )

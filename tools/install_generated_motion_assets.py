@@ -4,6 +4,7 @@ import argparse
 from collections import deque
 import os
 from pathlib import Path
+from statistics import median
 import time
 
 from PIL import Image
@@ -27,7 +28,7 @@ V10_WAKE_BRIDGE_SOURCE_NAMES = {
     20: "wake-v10-bridge-20-21-composite-runtime-alpha.png",
 }
 V10_PRE_REGISTERED_WAKE_BRIDGES = frozenset({20})
-V6_EDGE_SOURCE_NAME = "edge-v2-12-sheet-alpha.png"
+EDGE_PEEK_SOURCE_NAME = "edge-v3-12-sheet-alpha.png"
 REMINDER_SOURCE_NAME = "reminder-megaphone-v1-8-key-sheet-alpha.png"
 REMINDER_BRIDGE_SOURCE_NAME = "reminder-megaphone-v2-8-bridge-sheet-alpha.png"
 V6_SCALE_REGISTERED_ACTIONS = ACTIONS
@@ -56,6 +57,15 @@ V6_RUNTIME_BOTTOM = RUNTIME_CANVAS_SIZE[1] - 10
 V6_WAKE_TARGET_BRIM_WIDTH = 180
 V9_PILLOW_SIZE = (430, 150)
 V7_EDGE_TARGET_BRIM_WIDTH = 180
+EDGE_PEEK_REVEAL_OFFSETS = {
+    # Keep both hands visible at the Windows boundary in the resting pose.  The
+    # source poses have slightly different silhouettes, so one shared offset
+    # profile would crop the hands and can even make the left sequence briefly
+    # move backwards.
+    "left": (25, 17, 3, 0),
+    "top": (16, 12, 8, 0),
+    "bottom": (22, 12, 8, 0),
+}
 # The older action sheets use several different head/body proportions. A
 # single brim target either enlarges the head or makes the standing body pop
 # shorter. These per-group targets keep every action visually aligned.
@@ -272,6 +282,38 @@ def place_runtime_sprite(
         x = min(RUNTIME_CANVAS_SIZE[0] - sprite.width, max(0, x))
     y = min(RUNTIME_CANVAS_SIZE[1] - sprite.height, max(0, y))
     canvas.alpha_composite(sprite, (x, y))
+    return canvas
+
+
+def translate_rgba_without_wrap(
+    image: Image.Image,
+    *,
+    x: int = 0,
+    y: int = 0,
+) -> Image.Image:
+    """Translate a runtime sprite while clipping pixels outside its canvas."""
+
+    frame = image.convert("RGBA")
+    width, height = frame.size
+    source_left = max(0, -x)
+    source_top = max(0, -y)
+    destination_left = max(0, x)
+    destination_top = max(0, y)
+    copy_width = min(width - source_left, width - destination_left)
+    copy_height = min(height - source_top, height - destination_top)
+    canvas = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    if copy_width <= 0 or copy_height <= 0:
+        return canvas
+
+    visible = frame.crop(
+        (
+            source_left,
+            source_top,
+            source_left + copy_width,
+            source_top + copy_height,
+        )
+    )
+    canvas.alpha_composite(visible, (destination_left, destination_top))
     return canvas
 
 
@@ -707,33 +749,72 @@ def install_v6_actions(
             )
 
 
-def install_v6_edge(source_directory: Path, assets_directory: Path) -> None:
-    """Register every edge-peek frame to the same cap scale as idle/actions."""
+def build_edge_peek_unshifted_frames(
+    source_directory: Path,
+) -> dict[str, list[Image.Image]]:
+    """Register edge poses before the Windows-boundary reveal translation."""
 
     cells, _ = load_cells(
-        resolve_generated_source(source_directory, V6_EDGE_SOURCE_NAME),
+        resolve_generated_source(source_directory, EDGE_PEEK_SOURCE_NAME),
         columns=4,
         rows=3,
         preserve_border_components=True,
         snap_to_transparent_gaps=True,
     )
     if len(cells) != 12:
-        raise ValueError("V6 edge source must contain twelve cells")
+        raise ValueError("Edge-peek source must contain twelve cells")
     groups = (
         ("left", cells[0:4], "left"),
         ("top", cells[4:8], "top"),
         ("bottom", cells[8:12], "bottom"),
     )
+    registered: dict[str, list[Image.Image]] = {}
     for edge_name, edge_cells, anchor in groups:
-        for frame_number, cell in enumerate(edge_cells, start=1):
-            sprite = crop_visible(cell)
+        sprites = [crop_visible(cell) for cell in edge_cells]
+        brim_widths = []
+        for sprite in sprites:
             brim_box = get_blue_brim_box(sprite)
-            brim_width = brim_box[2] - brim_box[0]
-            sprite = resize_sprite(
-                sprite,
-                V7_EDGE_TARGET_BRIM_WIDTH / brim_width,
+            brim_widths.append(brim_box[2] - brim_box[0])
+        group_scale = V7_EDGE_TARGET_BRIM_WIDTH / median(brim_widths)
+        registered[edge_name] = []
+        for sprite in sprites:
+            sprite = resize_sprite(sprite, group_scale)
+            registered[edge_name].append(
+                place_runtime_sprite(sprite, anchor=anchor)
             )
-            frame = place_runtime_sprite(sprite, anchor=anchor)
+    return registered
+
+
+def translate_edge_peek_frame(
+    frame: Image.Image,
+    edge_name: str,
+    reveal_offset: int,
+) -> Image.Image:
+    """Move a registered pose out through one Windows boundary without wrap."""
+
+    if edge_name not in EDGE_PEEK_REVEAL_OFFSETS:
+        raise ValueError(f"Unsupported edge direction: {edge_name}")
+    return translate_rgba_without_wrap(
+        frame,
+        x=-reveal_offset if edge_name == "left" else 0,
+        y=(
+            -reveal_offset
+            if edge_name == "top"
+            else reveal_offset if edge_name == "bottom" else 0
+        ),
+    )
+
+
+def install_edge_peek(source_directory: Path, assets_directory: Path) -> None:
+    """Register each edge-peek group with one stable cap scale."""
+
+    registered = build_edge_peek_unshifted_frames(source_directory)
+    for edge_name, frames in registered.items():
+        for frame_number, frame in enumerate(frames, start=1):
+            reveal_offset = EDGE_PEEK_REVEAL_OFFSETS[edge_name][frame_number - 1]
+            frame = translate_edge_peek_frame(
+                frame, edge_name, reveal_offset
+            )
             save_png_atomically(
                 frame,
                 assets_directory / f"luban-edge-{edge_name}-{frame_number:02d}.png",
@@ -746,7 +827,7 @@ def install_v6_motion(source_directory: Path, assets_directory: Path) -> None:
     assets_directory.mkdir(parents=True, exist_ok=True)
     install_v6_wake(source_directory, assets_directory)
     install_v6_actions(source_directory, assets_directory)
-    install_v6_edge(source_directory, assets_directory)
+    install_edge_peek(source_directory, assets_directory)
 
 
 def install_reminder(source_directory: Path, assets_directory: Path) -> None:
@@ -794,7 +875,7 @@ def main() -> None:
     parser.add_argument(
         "--source-directory",
         type=Path,
-        default=Path("tmp/imagegen"),
+        default=Path("tools/generated_sources"),
     )
     parser.add_argument(
         "--assets-directory",
@@ -816,6 +897,11 @@ def main() -> None:
         ),
     )
     selection.add_argument(
+        "--edge-peek",
+        action="store_true",
+        help="Install only the current twelve authored edge-peek key poses.",
+    )
+    selection.add_argument(
         "--reminder",
         action="store_true",
         help=(
@@ -826,6 +912,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.v2_subset:
         install_v2_subset(args.source_directory, args.assets_directory)
+    elif args.edge_peek:
+        install_edge_peek(args.source_directory, args.assets_directory)
     elif args.v6_motion:
         install_v6_motion(args.source_directory, args.assets_directory)
     elif args.reminder:

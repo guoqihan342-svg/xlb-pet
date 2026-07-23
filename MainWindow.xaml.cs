@@ -56,15 +56,18 @@ public partial class MainWindow : Window
     private const double MaximumPetSizeVelocity = 4;
     private static readonly TimeSpan MotionFrameInterval =
         TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
+    private static readonly TimeSpan EdgePeekMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
     private static readonly long VisualFrameDeadlineToleranceTicks =
         ToCharacterAnimationTicks(TimeSpan.FromMilliseconds(2));
+    private static readonly long EdgeVisualFrameDeadlineToleranceTicks =
+        ToStopwatchTicks(TimeSpan.FromMilliseconds(2));
     private static readonly TimeSpan MinimumNearSixtyHzPresentationInterval =
         TimeSpan.FromSeconds(1d / 62d);
     private static readonly TimeSpan MaximumNearSixtyHzPresentationInterval =
         TimeSpan.FromSeconds(1d / 58d);
-    private static readonly TimeSpan EdgePeekEndpointHold = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan EdgePeekEndpointHold = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ActionTransitionDuration = TimeSpan.Zero;
     private static readonly TimeSpan PetSizeTransitionDuration = TimeSpan.FromMilliseconds(350);
     private static readonly TimeSpan PetSizePersistDelay = TimeSpan.FromMilliseconds(400);
@@ -236,6 +239,7 @@ public partial class MainWindow : Window
     private bool _isVisualClockSubscribed;
     private bool _isInsideVisualRenderingCallback;
     private bool _synchronizeActiveClipToRenderingCadence;
+    private bool _synchronizeEdgePeekToRenderingCadence;
     private TimeSpan _lastVisualRenderingTime = TimeSpan.MinValue;
     private string? _renderDeferredSpritePageName;
     private bool _renderDeferredSpritePageUrgent;
@@ -1833,15 +1837,37 @@ public partial class MainWindow : Window
         }
 
         var frameChanged = false;
-        while (timestamp >= _edgePeekFrameDeadlineTimestamp &&
+        var currentFrameIsEndpoint =
+            GetEdgePeekFrameHoldDuration(_edgePeekFrameIndex, frames.Length) ==
+            EdgePeekEndpointHold;
+        var deadlineToleranceTicks =
+            _synchronizeEdgePeekToRenderingCadence && !currentFrameIsEndpoint
+                ? EdgeVisualFrameDeadlineToleranceTicks
+                : 0;
+        while (timestamp >= _edgePeekFrameDeadlineTimestamp -
+                            deadlineToleranceTicks &&
                _edgeDock != EdgeDock.None)
         {
             _edgePeekFrameIndex = (_edgePeekFrameIndex + 1) % frames.Length;
             frameChanged = true;
-            _edgePeekFrameDeadlineTimestamp += ToCharacterAnimationTicks(
-                GetEdgePeekFrameHoldDuration(
-                    _edgePeekFrameIndex,
-                    frames.Length));
+            var nextHoldDuration = GetEdgePeekFrameHoldDuration(
+                _edgePeekFrameIndex,
+                frames.Length);
+            _edgePeekFrameDeadlineTimestamp +=
+                ToStopwatchTicks(nextHoldDuration);
+            if (_synchronizeEdgePeekToRenderingCadence)
+            {
+                // A 59/59.94/60 Hz compositor cannot present an independent
+                // 60 Hz pose clock without periodically holding one pose and
+                // skipping the next. During a healthy near-60-Hz sequence,
+                // publish exactly one motion pose per composition and rebase
+                // its deadline to that presentation. Endpoint holds use no
+                // early tolerance. A real stall has a non-near-60 gap and
+                // therefore keeps the absolute catch-up behavior.
+                _edgePeekFrameDeadlineTimestamp = checked(
+                    timestamp + ToStopwatchTicks(nextHoldDuration));
+                break;
+            }
         }
 
         if (frameChanged)
@@ -1886,7 +1912,7 @@ public partial class MainWindow : Window
         return frameIndex == fullyPeekedFrameIndex ||
                frameIndex == frameCount - 1
             ? EdgePeekEndpointHold
-            : MotionFrameInterval;
+            : EdgePeekMotionFrameInterval;
     }
 
     private static long GetEdgePeekCycleDurationTicks(int frameCount)
@@ -1899,8 +1925,8 @@ public partial class MainWindow : Window
         }
 
         return checked(
-            (frameCount - 2L) * ToCharacterAnimationTicks(MotionFrameInterval) +
-            2L * ToCharacterAnimationTicks(EdgePeekEndpointHold));
+            (frameCount - 2L) * ToStopwatchTicks(EdgePeekMotionFrameInterval) +
+            2L * ToStopwatchTicks(EdgePeekEndpointHold));
     }
 
     private void StartEdgePeekFrameClockAt(long timestamp)
@@ -1912,7 +1938,7 @@ public partial class MainWindow : Window
 
         var frames = GetEdgeFrames(_edgeDock);
         _edgePeekFrameDeadlineTimestamp = checked(
-            timestamp + ToCharacterAnimationTicks(
+            timestamp + ToStopwatchTicks(
                 GetEdgePeekFrameHoldDuration(
                     _edgePeekFrameIndex,
                     frames.Length)));
@@ -2755,6 +2781,9 @@ public partial class MainWindow : Window
                 _synchronizeActiveClipToRenderingCadence =
                     ShouldSynchronizeActiveClipToRenderingCadence(
                         presentationInterval);
+                _synchronizeEdgePeekToRenderingCadence =
+                    ShouldSynchronizeEdgePeekToRenderingCadence(
+                        presentationInterval);
             }
         }
 
@@ -2782,6 +2811,7 @@ public partial class MainWindow : Window
         {
             _isInsideVisualRenderingCallback = false;
             _synchronizeActiveClipToRenderingCadence = false;
+            _synchronizeEdgePeekToRenderingCadence = false;
         }
     }
 
@@ -2791,6 +2821,10 @@ public partial class MainWindow : Window
         // 60fps timing. Faster or slower code-configured playback must use the
         // absolute clock so it can skip or hold poses without changing duration.
         Math.Abs(AnimationPlaybackSpeed - 1d) <= 0.0001 &&
+        ShouldSynchronizeEdgePeekToRenderingCadence(presentationInterval);
+
+    private static bool ShouldSynchronizeEdgePeekToRenderingCadence(
+        TimeSpan presentationInterval) =>
         presentationInterval >= MinimumNearSixtyHzPresentationInterval &&
         presentationInterval <= MaximumNearSixtyHzPresentationInterval;
 
