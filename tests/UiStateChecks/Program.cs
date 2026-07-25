@@ -28,9 +28,10 @@ internal static class Program
     private const int RenderPixelWidth = 399;
     private const int RenderPixelHeight = 509;
     private const int ExpectedEdgePeekFrameCount = 48;
+    private const int MinimumRoamSequenceFrameCount = 48;
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
-    private const long ExpectedResidentSpritePageBudgetBytes = 112L * 1024L * 1024L;
+    private const long ExpectedResidentSpritePageBudgetBytes = 128L * 1024L * 1024L;
     private const long ExpectedIdleSpritePageTargetBytes = 64L * 1024L * 1024L;
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
@@ -84,6 +85,18 @@ internal static class Program
                     AssertScheduledTaskTabContract);
                 return 0;
             }
+
+            if (args.Contains("--roam-source-only", StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(nameof(AssertEdgeRoamingSourceContract),
+                    AssertEdgeRoamingSourceContract);
+                RunCheck(nameof(AssertEdgeRoamingRouteMathContract),
+                    AssertEdgeRoamingRouteMathContract);
+                return 0;
+            }
+
+            RunCheck(nameof(AssertEdgeRoamingSourceContract),
+                AssertEdgeRoamingSourceContract);
 
             var settingsDirectory = Path.Combine(
                 Path.GetTempPath(),
@@ -209,6 +222,8 @@ internal static class Program
                 RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
                 RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
+                RunCheck(nameof(AssertEdgeRoamingRouteMathContract),
+                    AssertEdgeRoamingRouteMathContract);
                 RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
                 RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
@@ -831,7 +846,7 @@ internal static class Program
             "_residentSpritePageLru");
 
         Assert(residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
-            $"解码分页常驻预算必须固定为112MiB，实际 " +
+            $"解码分页常驻预算必须固定为128MiB，实际 " +
             $"{residentBudgetBytes / 1024d / 1024d:F2}MiB");
         Assert(residentPages.Count == 1 &&
                residentPages.Contains(idlePageName) &&
@@ -987,7 +1002,7 @@ internal static class Program
         }
 
         Assert(observedLruEviction,
-            "112MiB压力必须实际触发一次可观察的LRU驱逐");
+            "128MiB压力必须实际触发一次可观察的LRU驱逐");
 
         // Discover the largest real click clip from its distinct decoded page
         // footprint instead of depending on a clip index or current atlas
@@ -1008,7 +1023,7 @@ internal static class Program
             pageName => GetSpritePageByteCount(pageMap, pageName));
         Assert(pinnedAndMaximumClipBytes <= residentBudgetBytes,
             "永久idle页与按distinct分页字节动态选出的最大动作clip必须可同时容纳于" +
-            $"112MiB预算：{pinnedAndMaximumClipBytes / 1024d / 1024d:F2}MiB");
+            $"128MiB预算：{pinnedAndMaximumClipBytes / 1024d / 1024d:F2}MiB");
         var currentOrPendingPageName = pageNames
             .Where(name => !expectedPinnedPageNames.Contains(name) &&
                            !activeClipPages.Contains(name))
@@ -1078,7 +1093,7 @@ internal static class Program
                 StaticFlags)!.GetValue(null) ?? 0L);
         Assert(idleTargetBytes == ExpectedIdleSpritePageTargetBytes &&
                residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
-            "动作结束后的idle常驻目标必须是64MiB，活动软预算必须保持112MiB");
+            "动作结束后的idle常驻目标必须是64MiB，活动软预算必须保持128MiB");
 
         var idleFrame = GetField<object>(window, "_idleFrame");
         var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
@@ -1438,7 +1453,7 @@ internal static class Program
             $"{stage} resident字节账必须等于实际Pixels总长：" +
             $"tracked={trackedBytes}, actual={calculatedBytes}");
         Assert(trackedBytes <= budgetBytes,
-            $"{stage} resident cache不得超过112MiB预算：" +
+            $"{stage} resident cache不得超过128MiB预算：" +
             $"{trackedBytes / 1024d / 1024d:F2}MiB");
         Assert(lruNames.Length == entries.Length &&
                lruNames.Distinct(StringComparer.Ordinal).Count() == lruNames.Length &&
@@ -2501,7 +2516,13 @@ internal static class Program
                root.GetProperty("displayHeight").GetInt32() == RenderPixelHeight,
             $"分页图集渲染视口必须为{RenderPixelWidth}×{RenderPixelHeight}，" +
             $"同时由WPF保留{LogicalPetWidth}×{LogicalPetHeight}逻辑尺寸");
-        var expectedSourcePaths = BuildExpectedSourceResourcePaths();
+        var includeOptionalRoamWave = root.GetProperty("pages")
+            .EnumerateObject()
+            .Any(page =>
+                string.Equals(page.Name, "roam-wave", StringComparison.Ordinal) ||
+                page.Name.StartsWith("roam-wave-part-", StringComparison.Ordinal));
+        var expectedSourcePaths = BuildExpectedSourceResourcePaths(
+            includeOptionalRoamWave);
         var manifestSourceFrameCount = root.GetProperty("sourceFrameCount").GetInt32();
         var manifestPageFrameCount = root.GetProperty("pageFrameCount").GetInt32();
         Assert(manifestSourceFrameCount == expectedSourcePaths.Length,
@@ -2525,7 +2546,14 @@ internal static class Program
         var manifestPageCount = manifestPages.EnumerateObject().Count();
         Assert(pages.Length == manifestPageCount,
             $"清单与运行时分页数必须动态一致，清单 {manifestPageCount}，运行时 {pages.Length}");
-        var requiredPageNames = new[] { "idle", "edge-left", "edge-bottom" }
+        var requiredPageNames = new[]
+            {
+                "idle",
+                "edge-left",
+                "edge-bottom",
+                "roam-boarding",
+                "roam-flight"
+            }
             .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" }
                 .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
             .Concat(new[] { "action-reminder-enter", "action-reminder-hold" })
@@ -2543,7 +2571,7 @@ internal static class Program
                !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "随后再包含七个动作页、七个循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、七个动作页、七个循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -2577,6 +2605,51 @@ internal static class Program
                 $"{edgePageName} 必须是独立{ExpectedEdgePeekFrameCount}帧分页并严格按" +
                 $"smooth-001..{ExpectedEdgePeekFrameCount:000}升序，不能混入idle或旧4帧素材");
         }
+
+        var roamSequences = new List<string> { "boarding", "flight" };
+        if (includeOptionalRoamWave)
+        {
+            Assert(GetExpectedRoamFrameNames("wave", required: false).Length > 0,
+                "清单包含可选roam-wave分页时，Assets必须提供连续且唯一的wave源帧");
+            roamSequences.Add("wave");
+        }
+        foreach (var roamSequence in roamSequences)
+        {
+            var basePageName = $"roam-{roamSequence}";
+            var expectedRoamFrames = GetExpectedRoamFrameNames(roamSequence)
+                .Select(frameName => $"Assets/{frameName}")
+                .ToArray();
+            var roamPages = manifestPages.EnumerateObject()
+                .Where(page =>
+                    string.Equals(page.Name, basePageName, StringComparison.Ordinal) ||
+                    page.Name.StartsWith(
+                        basePageName + "-part-",
+                        StringComparison.Ordinal))
+                .OrderBy(page => page.Name, StringComparer.Ordinal)
+                .ToArray();
+            var expectedRoamPageNames = Enumerable.Range(1, roamPages.Length)
+                .Select(partNumber => partNumber == 1
+                    ? basePageName
+                    : $"{basePageName}-part-{partNumber:00}")
+                .ToArray();
+            var actualRoamFrames = roamPages
+                .SelectMany(page => page.Value
+                    .GetProperty("frames")
+                    .EnumerateObject()
+                    .Select(frame => frame.Name))
+                .ToArray();
+            Assert(roamPages.Length >= 2 &&
+                   roamPages.Select(page => page.Name)
+                       .SequenceEqual(expectedRoamPageNames) &&
+                   roamPages.All(page =>
+                       page.Value.GetProperty("logicalFrameCount").GetInt32()
+                           is > 0 and <= 32) &&
+                   actualRoamFrames.SequenceEqual(expectedRoamFrames),
+                $"熊猫坐骑必须使用{basePageName}连续动态分页，逐页不超过32帧，" +
+                $"并完整覆盖{roamSequence}-001..{expectedRoamFrames.Length:000}；" +
+                "不得把巡游帧塞进点击动作、idle或手动edge分页");
+        }
+
         foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
         {
             var pageName = $"action-{actionName}";
@@ -3519,7 +3592,8 @@ internal static class Program
         throw new InvalidOperationException(message);
     }
 
-    private static string[] BuildExpectedSourceResourcePaths()
+    private static string[] BuildExpectedSourceResourcePaths(
+        bool includeOptionalRoamWave)
     {
         var assetsDirectory = Path.GetDirectoryName(
             FindWorkspaceFile("Assets", "luban-idle.png"))!;
@@ -3530,6 +3604,19 @@ internal static class Program
         {
             paths.AddRange(Enumerable.Range(1, ExpectedEdgePeekFrameCount).Select(frameNumber =>
                 $"Assets/luban-edge-{direction}-smooth-{frameNumber:000}.png"));
+        }
+        // Keep this order byte-for-byte aligned with
+        // build_sprite_atlas.py REQUIRED_ROAM_SEQUENCES because it is part of
+        // sourceSetFingerprint, even though runtime lookup is name-based.
+        foreach (var sequence in new[] { "flight", "boarding" })
+        {
+            paths.AddRange(GetExpectedRoamFrameNames(sequence, required: true)
+                .Select(name => $"Assets/{name}"));
+        }
+        if (includeOptionalRoamWave)
+        {
+            paths.AddRange(GetExpectedRoamFrameNames("wave", required: false)
+                .Select(name => $"Assets/{name}"));
         }
 
         foreach (var (phase, expectedFrameCount) in new[]
@@ -3583,6 +3670,47 @@ internal static class Program
                result.Distinct(StringComparer.Ordinal).Count() == result.Length,
             "运行时源PNG路径清单不得为空或包含重复项");
         return result;
+    }
+
+    private static string[] GetExpectedRoamFrameNames(
+        string sequence,
+        bool required = true)
+    {
+        Assert(sequence is "boarding" or "flight" or "wave",
+            $"不支持的熊猫坐骑序列：{sequence}");
+        var assetsDirectory = Path.GetDirectoryName(
+            FindWorkspaceFile("Assets", "luban-idle.png"))!;
+        var actualNames = Directory.EnumerateFiles(
+                assetsDirectory,
+                $"luban-roam-{sequence}-*.png",
+                SearchOption.TopDirectoryOnly)
+            .Select(Path.GetFileName)
+            .Where(name => name is not null)
+            .Cast<string>()
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        var expectedNames = Enumerable.Range(1, actualNames.Length)
+            .Select(frameNumber =>
+                $"luban-roam-{sequence}-{frameNumber:000}.png")
+            .ToArray();
+        if (!required && actualNames.Length == 0)
+        {
+            return [];
+        }
+
+        Assert(actualNames.Length >= MinimumRoamSequenceFrameCount &&
+               actualNames.SequenceEqual(expectedNames),
+            $"熊猫坐骑{sequence}源资源必须从{sequence}-001开始连续编号，至少" +
+            $"{MinimumRoamSequenceFrameCount}帧；实际 {actualNames.Length} 帧");
+
+        var uniqueContentHashes = actualNames
+            .Select(name => ComputeFileSha256(Path.Combine(assetsDirectory, name)))
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+        Assert(uniqueContentHashes == actualNames.Length,
+            $"熊猫坐骑{sequence}的{actualNames.Length}帧必须全部是独立姿势，" +
+            $"实际只有{uniqueContentHashes}个不同PNG内容");
+        return actualNames;
     }
 
     private static void AssertCanonicalSha256(string value, string name)
@@ -4174,6 +4302,424 @@ internal static class Program
                 .Any(name => name.Contains("action-run", StringComparison.OrdinalIgnoreCase) ||
                              name.Contains("luban-run", StringComparison.OrdinalIgnoreCase)),
             "主程序集不得嵌入 run 资源");
+    }
+
+    private static void AssertEdgeRoamingSourceContract()
+    {
+        var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var todoSource = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs"));
+        var todoXaml = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml"));
+        var readmeSource = File.ReadAllText(FindWorkspaceFile("README.md"));
+        var settingsSource = File.ReadAllText(FindWorkspaceFile("AppSettingsStore.cs"));
+        var atlasBuilderSource = File.ReadAllText(
+            FindWorkspaceFile("tools", "build_sprite_atlas.py"));
+        var roamAssetBuilderSource = File.ReadAllText(
+            FindWorkspaceFile("tools", "build_roam_flight_assets.py"));
+        var atlasMotionQaSource = File.ReadAllText(
+            FindWorkspaceFile("tools", "qa_sprite_atlas_motion.py"));
+
+        var startRoaming = ExtractPrivateMethodSource(mainSource, "StartEdgeRoaming");
+        var stopRoaming = ExtractPrivateMethodSource(mainSource, "StopEdgeRoaming");
+        var startRoamBoarding = ExtractPrivateMethodSource(
+            mainSource,
+            "StartEdgeRoamBoarding");
+        var advanceRoamBoarding = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceEdgeRoamBoarding");
+        var advanceRoaming = ExtractPrivateMethodSource(mainSource, "AdvanceEdgeRoaming");
+        var advanceRoamTravel = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceEdgeRoamTravel");
+        var advanceRoamClock = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceEdgeRoamClock");
+        var getRoamingPose = ExtractPrivateMethodSource(mainSource, "GetEdgeRoamPose");
+        var rendering = ExtractPrivateMethodSource(mainSource, "VisualClock_Rendering");
+        var updateClock = ExtractPrivateMethodSource(
+            mainSource,
+            "UpdateVisualClockSubscription");
+        var automaticTick = ExtractPrivateMethodSource(mainSource, "AutomaticTimer_Tick");
+        var pointerDown = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseLeftButtonDown");
+        var enterEdgePeek = ExtractPrivateMethodSource(mainSource, "EnterEdgePeek");
+        var setBubbleMode = ExtractPrivateMethodSource(mainSource, "SetBubbleMode");
+        var enterTodo = ExtractPrivateMethodSource(mainSource, "EnterTodoVisualState");
+        var beginReminder = ExtractPrivateMethodSource(
+            mainSource,
+            "BeginReminderPetSizeOverrideAt");
+        var displaySettingsChanged = ExtractPrivateMethodSource(
+            mainSource,
+            "SystemEvents_DisplaySettingsChanged");
+        var canCollect = ExtractPrivateMethodSource(
+            mainSource,
+            "CanRunIdleSpritePageCollection");
+        var isPageProtected = ExtractPrivateMethodSource(
+            mainSource,
+            "IsSpritePageProtected");
+        var failedPage = ExtractPrivateMethodSource(
+            mainSource,
+            "StopAnimatedStateForFailedSpritePage");
+        var saveSettings = ExtractPrivateMethodSource(mainSource, "SaveSettings");
+        var roamingSettingChanged = ExtractPrivateMethodSource(
+            mainSource,
+            "TodoWindow_EdgeRoamingEnabledChanged");
+        var setRoamingToggle = todoSource.IndexOf(
+            "public void SetEdgeRoamingEnabled(bool enabled)",
+            StringComparison.Ordinal);
+        var toggleChanged = ExtractPrivateMethodSource(
+            todoSource,
+            "EdgeRoamingToggle_Changed");
+
+        Assert(settingsSource.Contains(
+                   "public bool EdgeRoamingEnabled",
+                   StringComparison.Ordinal) &&
+               settingsSource.Contains("= true;", StringComparison.Ordinal) &&
+               settingsSource.Contains(
+                   "PropertyNamingPolicy = JsonNamingPolicy.CamelCase",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains("_edgeRoamingEnabled", StringComparison.Ordinal) &&
+               mainSource.Contains("_isEdgeRoaming", StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "_todoWindow.EdgeRoamingEnabledChanged +=",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "TodoWindow_EdgeRoamingEnabledChanged;",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "_todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled)",
+                   StringComparison.Ordinal) &&
+               saveSettings.Contains(
+                   "EdgeRoamingEnabled = _edgeRoamingEnabled",
+                   StringComparison.Ordinal),
+            "绕屏开关必须默认开启、使用edgeRoamingEnabled驼峰JSON持久化，" +
+            "并在MainWindow与TodoWindow之间双向同步；保存尺寸时不得覆盖绕屏选择");
+        var legacyChineseMountName = string.Concat("木", "鸢");
+        var legacyEnglishMountName = string.Concat("wood", "en", "-bird");
+        var legacyEnglishMountPhrase = string.Concat("wood", "en", " bird");
+        Assert(readmeSource.Contains("大头熊猫", StringComparison.Ordinal) &&
+               readmeSource.Contains("铃铛", StringComparison.Ordinal) &&
+               readmeSource.Contains("竹筒", StringComparison.Ordinal) &&
+               mainSource.Contains("熊猫坐骑", StringComparison.Ordinal) &&
+               !readmeSource.Contains(
+                   legacyChineseMountName,
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   legacyChineseMountName,
+                   StringComparison.Ordinal) &&
+               !roamAssetBuilderSource.Contains(
+                   legacyEnglishMountName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               !atlasMotionQaSource.Contains(
+                   legacyEnglishMountPhrase,
+                   StringComparison.OrdinalIgnoreCase),
+            "绕屏视觉必须统一为带铃铛和竹筒的大头熊猫坐骑，README、运行日志、" +
+            "生成器与QA不得残留旧版飞行坐骑描述");
+        Assert(setRoamingToggle >= 0 &&
+               todoSource[setRoamingToggle..].Contains(
+                   "_settingEdgeRoamingEnabled = true",
+                   StringComparison.Ordinal) &&
+               todoSource[setRoamingToggle..].Contains(
+                   "EdgeRoamingToggle.IsChecked = enabled",
+                   StringComparison.Ordinal) &&
+               toggleChanged.Contains(
+                   "if (!_settingEdgeRoamingEnabled)",
+                   StringComparison.Ordinal) &&
+               toggleChanged.Contains(
+                   "EdgeRoamingEnabledChanged?.Invoke",
+                   StringComparison.Ordinal) &&
+               todoXaml.Contains(
+                   "x:Name=\"EdgeRoamingToggle\"",
+                   StringComparison.Ordinal) &&
+               todoXaml.Contains("IsChecked=\"True\"", StringComparison.Ordinal) &&
+               todoXaml.Contains(
+                   "AutomationProperties.Name=\"绕屏动画\"",
+                   StringComparison.Ordinal),
+            "绕屏勾选必须位于TodoWindow，默认勾选且有无障碍名称；" +
+            "程序加载设置时必须由保护位静默更新，不能反向触发重复保存");
+
+        Assert(mainSource.Contains(
+                   "\"Assets/luban-roam-boarding-\"",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "\"Assets/luban-roam-flight-\"",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains("\"roam-boarding\"", StringComparison.Ordinal) &&
+               mainSource.Contains("\"roam-flight\"", StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "_roamBoardingFrames.Length < 48",
+                   StringComparison.Ordinal) &&
+               (!mainSource.Contains("\"roam-wave\"", StringComparison.Ordinal) ||
+                mainSource.Contains(
+                    "LoadOptionalNumberedFrameSequence",
+                    StringComparison.Ordinal) ||
+                mainSource.Contains(
+                    "TryLoadNumberedFrameSequence",
+                    StringComparison.Ordinal)) &&
+               !mainSource.Contains("RoamFlightFrameCount", StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "EdgeRoamWaveInterval",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "EdgeRoamWaveDelay",
+                   StringComparison.Ordinal) &&
+               atlasBuilderSource.Contains(
+                   "luban-roam-{sequence}",
+                   StringComparison.Ordinal) &&
+               atlasBuilderSource.Contains(
+                   "\"boarding\"",
+                   StringComparison.Ordinal) &&
+               atlasBuilderSource.Contains("\"flight\"", StringComparison.Ordinal) &&
+               atlasBuilderSource.Contains(
+                   "f\"roam-{sequence}\"",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "luban-roam-boarding",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "luban-roam-flight",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "panda",
+                   StringComparison.OrdinalIgnoreCase) &&
+               roamAssetBuilderSource.Contains(
+                   "bamboo",
+                   StringComparison.OrdinalIgnoreCase) &&
+               roamAssetBuilderSource.Contains(
+                   "len(pixel_hashes) != len(paths)",
+                   StringComparison.Ordinal) &&
+               atlasMotionQaSource.Contains(
+                   "\"boarding\"",
+                   StringComparison.Ordinal) &&
+               atlasMotionQaSource.Contains("\"flight\"", StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "f\"roam.{sequence}\"",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "ROAM_LOOP_SEQUENCES = (\"flight\", \"wave\")",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "ROAM_NON_LOOP_SEQUENCES = (\"boarding\",)",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "ROAM_BOARDING_SEQUENCE = \"roam.boarding\"",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains("MIN_ALPHA_IOU = 0.92", StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MIN_MEAN_ALPHA_IOU = 0.95",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MAX_HAT_SCALE_STEP = 0.025",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MAX_TORSO_SCALE_STEP = 0.035",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MAX_BOARDING_CENTROID_STEP_DIP = 10.0",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MAX_BOARDING_HEAD_CENTER_STEP_DIP = 12.0",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MAX_BOARDING_WIDE_TRANSLUCENT_TRAIL_RATIO = 0.010",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "is_boarding_transition = sequence_name == ROAM_BOARDING_SEQUENCE",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "if not is_boarding_transition and iou < MIN_ALPHA_IOU:",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "if not is_boarding_transition and head_scale > head_scale_limit:",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "if not is_boarding_transition and torso_width_scale > torso_width_limit:",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "if not is_boarding_transition and torso_height_scale > torso_height_limit:",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "if not is_boarding_transition and mean_iou < MIN_MEAN_ALPHA_IOU:",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "MAX_BOARDING_CENTROID_STEP_DIP + quantisation_dip",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "if is_boarding_transition:",
+                    StringComparison.Ordinal) &&
+                atlasMotionQaSource.Contains(
+                    "violations.append(finding)",
+                    StringComparison.Ordinal),
+            "熊猫坐骑必须从boarding-001正放登乘、停止时倒放，并使用flight-001连续主循环；" +
+            "wave只能是可选补充，禁止固定7秒硬切。运行时不能硬编码总帧数或混用跑步、" +
+            "爬行素材；最终图集QA必须让flight保持稳态Alpha IoU及帽子/躯干身形硬门槛，" +
+            "boarding则使用非循环姿态转换专用的质心、头部单步位移和半透明拖影硬门槛，" +
+            "不得假装复用flight门槛形成测试假覆盖");
+        var forbiddenLegacyRoamingNames = new[]
+        {
+            "roam-crawl",
+            "roam-wriggle",
+            "roam-hop",
+            "EdgeDock.Top",
+            "\"edge-top\""
+        };
+        Assert(forbiddenLegacyRoamingNames.All(name =>
+                !mainSource.Contains(name, StringComparison.OrdinalIgnoreCase) &&
+                !atlasBuilderSource.Contains(name, StringComparison.OrdinalIgnoreCase)),
+            "运行时和最终图集不得恢复旧爬行、蠕动、跳跃绕屏素材，也不得恢复手动顶部吸附");
+        Assert(startRoaming.Contains(
+                   "!_edgeRoamingEnabled",
+                   StringComparison.Ordinal) &&
+               startRoaming.Contains("_isReminderActive", StringComparison.Ordinal) &&
+               startRoaming.Contains("_dragInteractionActive", StringComparison.Ordinal) &&
+               startRoaming.Contains("_pointerDown", StringComparison.Ordinal) &&
+               startRoaming.Contains("_bubbleMode", StringComparison.Ordinal) &&
+               startRoaming.Contains("_edgeDock", StringComparison.Ordinal) &&
+               startRoaming.Contains(
+                   "MonitorWorkArea.GetForWindow(this)",
+                   StringComparison.Ordinal) &&
+               startRoaming.Contains("_isEdgeRoaming = true", StringComparison.Ordinal) &&
+               startRoaming.Contains(
+                   "StartEdgeRoamBoarding(",
+                   StringComparison.Ordinal) &&
+               startRoaming.Contains("reverse: false", StringComparison.Ordinal) &&
+               stopRoaming.Contains(
+                   "StartEdgeRoamBoarding(",
+                   StringComparison.Ordinal) &&
+               stopRoaming.Contains("reverse: true", StringComparison.Ordinal) &&
+                startRoamBoarding.Contains(
+                    "_roamBoardingFrames",
+                    StringComparison.Ordinal) &&
+                startRoamBoarding.Contains("reverse", StringComparison.Ordinal) &&
+                startRoamBoarding.Contains(
+                    "var boardingStartIndex = 0",
+                    StringComparison.Ordinal) &&
+                startRoamBoarding.Contains(
+                    ": _roamBoardingFrames.Length - 1",
+                    StringComparison.Ordinal) &&
+                startRoamBoarding.Contains(
+                    "_roamBoardingFrames[_edgeRoamBoardingStartIndex]",
+                    StringComparison.Ordinal) &&
+                advanceRoamBoarding.Contains(
+                    "? _edgeRoamBoardingStartIndex - frameStep",
+                    StringComparison.Ordinal) &&
+                advanceRoamBoarding.Contains(
+                    ": frameStep",
+                    StringComparison.Ordinal) &&
+               !stopRoaming.Contains(
+                   "ShowStableFrame(_idleFrame)",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains("_isEdgeRoaming = false", StringComparison.Ordinal) &&
+               automaticTick.Contains("StartEdgeRoaming(", StringComparison.Ordinal),
+            "自动计时器只能把熊猫坐骑巡游作为独立活动启动；开始必须正放boarding，" +
+            "停止必须倒放同一序列并等退场完成后才恢复idle。提醒、拖拽、指针按下、" +
+            "待办和手动探头活跃时必须拒绝启动，且路线锁定人物当前显示器WorkArea");
+
+        var hasLogicalPosition =
+            mainSource.Contains("_edgeRoamingLogicalPosition", StringComparison.Ordinal) ||
+            (mainSource.Contains("_edgeRoamLogicalLeft", StringComparison.Ordinal) &&
+             mainSource.Contains("_edgeRoamLogicalTop", StringComparison.Ordinal)) ||
+            (mainSource.Contains("_edgeRoamingLogicalLeft", StringComparison.Ordinal) &&
+             mainSource.Contains("_edgeRoamingLogicalTop", StringComparison.Ordinal));
+        Assert(hasLogicalPosition &&
+               rendering.Contains("AdvanceEdgeRoaming(timestamp)", StringComparison.Ordinal) &&
+               updateClock.Contains("_isEdgeRoaming", StringComparison.Ordinal) &&
+               advanceRoaming.Contains(
+                   "AdvanceEdgeRoamTravel(timestamp)",
+                   StringComparison.Ordinal) &&
+               advanceRoamTravel.Contains(
+                   "AdvanceEdgeRoamClock(timestamp)",
+                   StringComparison.Ordinal) &&
+               advanceRoamTravel.Contains("ShowStableFrame", StringComparison.Ordinal) &&
+               advanceRoamClock.Contains("Stopwatch", StringComparison.Ordinal) &&
+               advanceRoamClock.Contains(
+                   "EdgeRoamMaximumClockGap",
+                   StringComparison.Ordinal) &&
+               advanceRoamClock.Contains(
+                   "_edgeRoamStartedTimestamp = checked(",
+                   StringComparison.Ordinal) &&
+               !advanceRoaming.Contains("while (", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains("while (", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains("while (", StringComparison.Ordinal) &&
+               getRoamingPose.Contains("_roamFlightFrames.Length", StringComparison.Ordinal) &&
+               !getRoamingPose.Contains("waveElapsed", StringComparison.Ordinal) &&
+               !getRoamingPose.Contains("waveCycle", StringComparison.Ordinal) &&
+               (advanceRoamTravel.Contains(
+                    "SnapDipToPhysicalPixel",
+                    StringComparison.Ordinal) ||
+                advanceRoamTravel.Contains(
+                    "ApplyEdgeRoamingPosition",
+                    StringComparison.Ordinal)) &&
+               !advanceRoaming.Contains("Dispatcher", StringComparison.Ordinal) &&
+               !advanceRoaming.Contains("AppLogger", StringComparison.Ordinal) &&
+               !advanceRoaming.Contains("LogInfo", StringComparison.Ordinal) &&
+               !advanceRoaming.Contains("File.", StringComparison.Ordinal) &&
+               !advanceRoaming.Contains("Task.Run", StringComparison.Ordinal) &&
+               !advanceRoaming.Contains(".Select(", StringComparison.Ordinal) &&
+               !advanceRoaming.Contains(".ToArray(", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains("Dispatcher", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains("AppLogger", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains("LogInfo", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains("File.", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains("Task.Run", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains(".Select(", StringComparison.Ordinal) &&
+               !advanceRoamTravel.Contains(".ToArray(", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains("Dispatcher", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains("AppLogger", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains("File.", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains("Task.Run", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains(".Select(", StringComparison.Ordinal) &&
+               !advanceRoamClock.Contains(".ToArray(", StringComparison.Ordinal) &&
+               !getRoamingPose.Contains("Dispatcher", StringComparison.Ordinal) &&
+               !getRoamingPose.Contains("AppLogger", StringComparison.Ordinal) &&
+               !getRoamingPose.Contains(".Select(", StringComparison.Ordinal) &&
+               !getRoamingPose.Contains(".ToArray(", StringComparison.Ordinal) &&
+               !advanceRoamBoarding.Contains("Dispatcher", StringComparison.Ordinal) &&
+               !advanceRoamBoarding.Contains("AppLogger", StringComparison.Ordinal) &&
+               !advanceRoamBoarding.Contains("File.", StringComparison.Ordinal) &&
+               !advanceRoamBoarding.Contains("Task.Run", StringComparison.Ordinal) &&
+               !advanceRoamBoarding.Contains(".Select(", StringComparison.Ordinal) &&
+               !advanceRoamBoarding.Contains(".ToArray(", StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "DispatcherTimer _edgeRoaming",
+                   StringComparison.Ordinal),
+            "熊猫坐骑位置与姿势必须由唯一Rendering绝对时钟推进；逻辑坐标保持double精度，" +
+            "最终Left/Top才对齐物理像素，热路径不得使用定时器、日志、I/O、Task或LINQ分配");
+
+        var stopBeforeDrag = pointerDown.IndexOf(
+            "StopEdgeRoaming(",
+            StringComparison.Ordinal);
+        var dragBecomesActive = pointerDown.IndexOf(
+            "_dragInteractionActive = true",
+            StringComparison.Ordinal);
+        Assert(stopBeforeDrag >= 0 &&
+               dragBecomesActive > stopBeforeDrag &&
+               enterEdgePeek.Contains("StopEdgeRoaming(", StringComparison.Ordinal) &&
+               (setBubbleMode.Contains("StopEdgeRoaming(", StringComparison.Ordinal) ||
+                enterTodo.Contains("StopEdgeRoaming(", StringComparison.Ordinal)) &&
+               (setBubbleMode.Contains("StopEdgeRoaming(", StringComparison.Ordinal) ||
+                beginReminder.Contains("StopEdgeRoaming(", StringComparison.Ordinal)) &&
+               displaySettingsChanged.Contains(
+                   "StopEdgeRoaming(",
+                   StringComparison.Ordinal) &&
+               roamingSettingChanged.Contains(
+                   "_edgeRoamingEnabled = enabled",
+                   StringComparison.Ordinal) &&
+               roamingSettingChanged.Contains("StopEdgeRoaming(", StringComparison.Ordinal),
+            "拖拽必须先抢占巡游再捕获鼠标；手动探头、待办、提醒、取消勾选和" +
+            "显示器变化也必须停止旧路线，永不让巡游与EdgeDock同时运行");
+        Assert(!mainSource.Contains("EdgeDock.Top", StringComparison.Ordinal) &&
+               !mainSource.Contains("\"edge-top\"", StringComparison.Ordinal) &&
+               mainSource.Contains("CornerRadius", StringComparison.Ordinal),
+            "自动巡游可以经过独立圆角路线的顶部段，但不得恢复手动EdgeDock.Top或edge-top分页");
+
+        Assert(canCollect.Contains("!_isEdgeRoaming", StringComparison.Ordinal) &&
+               isPageProtected.Contains("_isEdgeRoaming", StringComparison.Ordinal) &&
+               isPageProtected.Contains("_roamBoardingFrames", StringComparison.Ordinal) &&
+               isPageProtected.Contains("_roamFlightFrames", StringComparison.Ordinal) &&
+               failedPage.Contains("StopEdgeRoaming(", StringComparison.Ordinal),
+            "巡游活动时不得触发空闲Gen2；缓存只在活动期保护boarding/flight所需分页，" +
+            "冷页失败必须安全停止巡游而不能永久忙等或闪回旧帧");
     }
 
     private static void AssertAbsoluteTimelineMathContract(MainWindow window)
@@ -5732,6 +6278,108 @@ internal static class Program
 
     private static double StopwatchTicksToMilliseconds(long ticks) =>
         ticks * 1000d / Stopwatch.Frequency;
+
+    private static void AssertEdgeRoamingRouteMathContract()
+    {
+        // A negative-coordinate secondary monitor exercises the same geometry
+        // used by per-monitor DPI layouts without requiring a physical second
+        // display on the test machine.
+        var routeBounds = new Rect(-2548, -168, 2346, 1174);
+        var radius = (double)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgeRoamCornerRadius",
+            routeBounds)!;
+        var routeLength = (double)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgeRoamRouteLength",
+            routeBounds,
+            radius)!;
+        var horizontal = routeBounds.Width - radius * 2;
+        var vertical = routeBounds.Height - radius * 2;
+        var quarterArc = Math.PI * radius / 2;
+        Assert(radius > 0 &&
+               radius <= Math.Min(routeBounds.Width, routeBounds.Height) / 2,
+            $"熊猫坐骑圆角半径必须适配当前副屏工作区，实际 {radius:F3}");
+        AssertClose(
+            routeLength,
+            horizontal * 2 + vertical * 2 + Math.PI * radius * 2,
+            "熊猫坐骑完整一圈必须覆盖四条直线和四个圆角且只计算一次");
+
+        var checkpoints = new[]
+        {
+            (
+                Distance: 0d,
+                Expected: new Point(routeBounds.Left + radius, routeBounds.Top),
+                Stage: "顶部左侧起点"),
+            (
+                Distance: horizontal,
+                Expected: new Point(routeBounds.Right - radius, routeBounds.Top),
+                Stage: "顶部右圆角入口"),
+            (
+                Distance: horizontal + quarterArc,
+                Expected: new Point(routeBounds.Right, routeBounds.Top + radius),
+                Stage: "右边直线入口"),
+            (
+                Distance: horizontal + quarterArc + vertical,
+                Expected: new Point(routeBounds.Right, routeBounds.Bottom - radius),
+                Stage: "右下圆角入口"),
+            (
+                Distance: horizontal + quarterArc * 2 + vertical,
+                Expected: new Point(routeBounds.Right - radius, routeBounds.Bottom),
+                Stage: "底边右侧入口"),
+            (
+                Distance: horizontal * 2 + quarterArc * 2 + vertical,
+                Expected: new Point(routeBounds.Left + radius, routeBounds.Bottom),
+                Stage: "左下圆角入口"),
+            (
+                Distance: horizontal * 2 + quarterArc * 3 + vertical,
+                Expected: new Point(routeBounds.Left, routeBounds.Bottom - radius),
+                Stage: "左边直线入口"),
+            (
+                Distance: horizontal * 2 + quarterArc * 3 + vertical * 2,
+                Expected: new Point(routeBounds.Left, routeBounds.Top + radius),
+                Stage: "左上圆角入口")
+        };
+        foreach (var checkpoint in checkpoints)
+        {
+            var actual = (Point)InvokeStatic(
+                typeof(MainWindow),
+                "GetEdgeRoamRoutePoint",
+                routeBounds,
+                radius,
+                checkpoint.Distance)!;
+            AssertClose(actual.X, checkpoint.Expected.X, $"{checkpoint.Stage} X");
+            AssertClose(actual.Y, checkpoint.Expected.Y, $"{checkpoint.Stage} Y");
+            Assert(actual.X >= routeBounds.Left - 0.01 &&
+                   actual.X <= routeBounds.Right + 0.01 &&
+                   actual.Y >= routeBounds.Top - 0.01 &&
+                   actual.Y <= routeBounds.Bottom + 0.01,
+                $"{checkpoint.Stage}不得离开当前显示器独立WorkArea路线");
+        }
+
+        var start = (Point)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgeRoamRoutePoint",
+            routeBounds,
+            radius,
+            0d)!;
+        var completedLap = (Point)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgeRoamRoutePoint",
+            routeBounds,
+            radius,
+            routeLength)!;
+        var reverseLap = (Point)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgeRoamRoutePoint",
+            routeBounds,
+            radius,
+            -routeLength)!;
+        AssertClose(completedLap.X, start.X, "顺时针整圈必须回到同一逻辑X");
+        AssertClose(completedLap.Y, start.Y, "顺时针整圈必须回到同一逻辑Y");
+        AssertClose(reverseLap.X, start.X, "逆时针整圈必须回到同一逻辑X");
+        AssertClose(reverseLap.Y, start.Y, "逆时针整圈必须回到同一逻辑Y");
+    }
 
     private static void AssertExactEdgeContactContract()
     {
@@ -7676,7 +8324,12 @@ internal static class Program
                 $"TodoWindow 应公开 {propertyName} 属性");
         }
 
-        foreach (var methodName in new[] { "FocusInput", "SetPetSizeScale" })
+        foreach (var methodName in new[]
+                 {
+                     "FocusInput",
+                     "SetEdgeRoamingEnabled",
+                     "SetPetSizeScale"
+                 })
         {
             Assert(type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public) is not null,
                 $"TodoWindow 应公开 {methodName} 方法");
@@ -7690,6 +8343,7 @@ internal static class Program
                      "TodoMoveRequested",
                      "TodoDragCompleted",
                      "DeleteRequested",
+                     "EdgeRoamingEnabledChanged",
                      "PetSizeScaleChanged",
                      "CloseRequested",
                      "ExitRequested",
@@ -7709,7 +8363,7 @@ internal static class Program
         try
         {
             AssertClose(todoWindow.Width, 292, "TodoWindow 总宽度");
-            AssertClose(todoWindow.Height, 350, "TodoWindow 总高度");
+            AssertClose(todoWindow.Height, 378, "TodoWindow 增加绕屏行后的总高度");
             Assert(string.Equals(
                     todoWindow.FontFamily.Source,
                     "Microsoft YaHei",
@@ -8022,8 +8676,57 @@ internal static class Program
             var scrollViewer = FindVisualDescendant<ScrollViewer>(todoWindow)
                 ?? throw new InvalidOperationException("TodoWindow 找不到待办滚动区域");
             var itemsControl = GetField<ItemsControl>(todoWindow, "TodoItemsControl");
+            var roamingToggle = GetField<CheckBox>(todoWindow, "EdgeRoamingToggle");
             var sizeSlider = GetField<Slider>(todoWindow, "PetSizeSlider");
             var sizeLabel = GetField<TextBlock>(todoWindow, "PetSizeLabel");
+            Assert(roamingToggle.IsChecked == true &&
+                   string.Equals(
+                       roamingToggle.Content?.ToString(),
+                       "绕屏动画",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       System.Windows.Automation.AutomationProperties.GetName(
+                           roamingToggle),
+                       "绕屏动画",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       roamingToggle.FontFamily.Source,
+                       "Microsoft YaHei",
+                       StringComparison.OrdinalIgnoreCase),
+                "桌宠大小上方必须显示默认勾选的“绕屏动画”，并统一使用微软雅黑和无障碍名称");
+            var roamingToggleCenter = roamingToggle.TranslatePoint(
+                new Point(0, roamingToggle.ActualHeight / 2),
+                todoWindow);
+            var sizeSliderCenter = sizeSlider.TranslatePoint(
+                new Point(0, sizeSlider.ActualHeight / 2),
+                todoWindow);
+            Assert(roamingToggleCenter.Y < sizeSliderCenter.Y &&
+                   todoXaml.Contains(
+                       "x:Name=\"EdgeRoamingToggle\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "<Grid Grid.Row=\"3\"",
+                       StringComparison.Ordinal),
+                "绕屏勾选必须直接位于桌宠大小滑块上方，不能挤进标题或列表区域");
+            var roamingEventCount = 0;
+            var roamingEventValue = false;
+            todoWindow.EdgeRoamingEnabledChanged += enabled =>
+            {
+                roamingEventCount++;
+                roamingEventValue = enabled;
+            };
+            todoWindow.SetEdgeRoamingEnabled(false);
+            Assert(roamingToggle.IsChecked == false && roamingEventCount == 0,
+                "程序加载已保存的绕屏设置时必须静默更新勾选，不能反向触发保存事件");
+            roamingToggle.IsChecked = true;
+            Assert(roamingEventCount == 1 && roamingEventValue,
+                "用户重新勾选绕屏必须且只能发布一次true事件");
+            roamingToggle.IsChecked = false;
+            Assert(roamingEventCount == 2 && !roamingEventValue,
+                "用户取消绕屏必须且只能发布一次false事件");
+            todoWindow.SetEdgeRoamingEnabled(true);
+            Assert(roamingToggle.IsChecked == true && roamingEventCount == 2,
+                "程序同步最终绕屏状态不得重复发布用户事件");
             AssertClose(sizeSlider.Minimum, 75, "桌宠尺寸滑块下限");
             AssertClose(sizeSlider.Maximum, 140, "桌宠尺寸滑块上限");
             AssertClose(sizeSlider.TickFrequency, 1, "桌宠尺寸滑块刻度");
@@ -10115,7 +10818,7 @@ internal static class Program
             "delta-sub必须直接消费Brotli流，前帧暂存只使用容量1的私有池且Rent/Return成对，" +
             "按expected长度严格重建并拒绝不一致的重复sprite；不得保留整页压缩或payload字段");
         Assert(mainSource.Contains(
-                   "SpritePageResidentBudgetBytes = 112L * 1024 * 1024",
+                   "SpritePageResidentBudgetBytes = 128L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
                    "SpritePageIdleResidentTargetBytes = 64L * 1024 * 1024",
@@ -10141,7 +10844,7 @@ internal static class Program
                prefetchDispatchTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
                    StringComparison.Ordinal),
-            "活动resident软预算必须是112MiB、动作终态idle回收目标必须是64MiB；" +
+            "活动resident软预算必须是128MiB、动作终态idle回收目标必须是64MiB；" +
             "Rendering内只发布idle trim标志并在dispatcher tick执行");
         Assert(removeResidentSpritePage.Contains(
                    "RecordDiscardedSpritePageBytes(residentPage.ByteCount)",

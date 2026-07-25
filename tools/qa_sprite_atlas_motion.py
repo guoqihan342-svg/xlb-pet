@@ -46,6 +46,12 @@ PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
 ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
+ROAM_LOOP_SEQUENCES = ("flight", "wave")
+ROAM_NON_LOOP_SEQUENCES = ("boarding",)
+ROAM_FLIGHT_SEQUENCES = (*ROAM_LOOP_SEQUENCES, *ROAM_NON_LOOP_SEQUENCES)
+ROAM_BOARDING_SEQUENCE = "roam.boarding"
+OPTIONAL_SEQUENCE_NAMES = frozenset(("roam.wave",))
+MIN_ROAM_FRAME_COUNT = 48
 EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
 USER_SCALES = (0.75, 1.0, 1.4)
@@ -65,6 +71,13 @@ MAX_CENTROID_SECOND_DIFFERENCE_DIP = 1.0
 MAX_HEAD_SECOND_DIFFERENCE_DIP = 1.0
 MAX_TRANSIENT_EDGE_RATIO = 0.010
 MAX_WIDE_TRANSLUCENT_TRAIL_RATIO = 0.0015
+# Boarding is an authored non-loop transition from the prone idle silhouette to
+# the mounted flight silhouette.  It may legitimately translate the character
+# and change the occupied outline, so it has a displacement/trail profile
+# instead of the steady-loop IoU and fixed-silhouette scale profile above.
+MAX_BOARDING_CENTROID_STEP_DIP = 10.0
+MAX_BOARDING_HEAD_CENTER_STEP_DIP = 12.0
+MAX_BOARDING_WIDE_TRANSLUCENT_TRAIL_RATIO = 0.010
 MAX_EDGE_CONTACT_ERROR_PX = 1.0
 MAX_EDGE_CONTACT_STEP_PX = 1.0
 FLOAT_COMPARISON_EPSILON = 1e-9
@@ -81,6 +94,12 @@ SEQUENCE_EXPRESSIONS = {
             rf"^Assets/luban-edge-{re.escape(direction)}-smooth-(\d{{3}})\.png$"
         )
         for direction in RUNTIME_EDGE_DIRECTIONS
+    },
+    **{
+        f"roam.{sequence}": re.compile(
+            rf"^Assets/luban-roam-{re.escape(sequence)}-(\d{{3}})\.png$"
+        )
+        for sequence in ROAM_FLIGHT_SEQUENCES
     },
     **{
         f"{action}.smooth": re.compile(
@@ -831,12 +850,13 @@ def validate_resource_contract(
         resources = [resource for _, resource in numbered]
         manifest_sequences[name] = resources
         if not numbers:
-            add_failure(
-                failures,
-                "sequence.missing",
-                "required dense sequence is absent from manifest",
-                sequence=name,
-            )
+            if name not in OPTIONAL_SEQUENCE_NAMES:
+                add_failure(
+                    failures,
+                    "sequence.missing",
+                    "required dense sequence is absent from manifest",
+                    sequence=name,
+                )
             continue
         if numbers != list(range(1, len(numbers) + 1)):
             add_failure(
@@ -872,6 +892,31 @@ def validate_resource_contract(
                 sequence=name,
                 actual=len(resources),
             )
+        if name.startswith("roam."):
+            unique_count = len(
+                {
+                    hashlib.sha256(reader.reconstruct(resource).tobytes()).digest()
+                    for resource in resources
+                }
+            )
+            if len(resources) < MIN_ROAM_FRAME_COUNT:
+                add_failure(
+                    failures,
+                    "sequence.roam_count",
+                    "roaming sequence must contain enough frames for smooth playback",
+                    sequence=name,
+                    minimum=MIN_ROAM_FRAME_COUNT,
+                    actual=len(resources),
+                )
+            if unique_count != len(resources):
+                add_failure(
+                    failures,
+                    "sequence.roam_unique",
+                    "every roaming runtime frame must be pixel-unique",
+                    sequence=name,
+                    expected=len(resources),
+                    actual=unique_count,
+                )
         if name.startswith("reminder."):
             phase = name.removeprefix("reminder.")
             expected_count = REMINDER_PHASE_FRAME_COUNTS[phase]
@@ -910,6 +955,30 @@ def validate_resource_contract(
                     sequence=name,
                     page=page_name,
                     numbers=page_numbers,
+                )
+
+    boarding = manifest_sequences.get("roam.boarding", [])
+    flight = manifest_sequences.get("roam.flight", [])
+    idle_resource = "Assets/luban-idle.png"
+    if boarding and flight and idle_resource in reader.locations:
+        idle_frame = reader.reconstruct(idle_resource)
+        boarding_first = reader.reconstruct(boarding[0])
+        boarding_last = reader.reconstruct(boarding[-1])
+        flight_first = reader.reconstruct(flight[0])
+        for boundary, first, second in (
+            ("idle_to_boarding", idle_frame, boarding_first),
+            ("boarding_to_flight", boarding_last, flight_first),
+        ):
+            if not np.array_equal(first, second):
+                add_failure(
+                    failures,
+                    "sequence.roam_boundary",
+                    "roaming entry boundary must be byte-exact",
+                    boundary=boundary,
+                    rgba_equal=False,
+                    alpha_equal=bool(
+                        np.array_equal(first[..., 3], second[..., 3])
+                    ),
                 )
     return manifest_sequences
 
@@ -1041,6 +1110,27 @@ def relative_step(first: float, second: float) -> float:
     return abs(second - first) / max((first + second) / 2.0, 1e-9)
 
 
+def pair_gate_score(sequence_name: str, pair: dict[str, Any]) -> float:
+    if sequence_name == ROAM_BOARDING_SEQUENCE:
+        return max(
+            pair["centroid_step_dip"] / MAX_BOARDING_CENTROID_STEP_DIP,
+            pair["head_center_step_dip"] / MAX_BOARDING_HEAD_CENTER_STEP_DIP,
+        )
+    return max(
+        max(0.0, (MIN_ALPHA_IOU - pair["alpha_iou"]) / 0.03),
+        pair["head_center_step_dip"] / MAX_HEAD_CENTER_STEP_DIP,
+        pair["head_width_change_ratio"] / MAX_HAT_SCALE_STEP,
+        pair["torso_width_change_ratio"] / MAX_TORSO_SCALE_STEP,
+        pair["torso_height_change_ratio"] / MAX_TORSO_SCALE_STEP,
+        (
+            pair["baseline_step_physical_px"]
+            / MAX_BASELINE_STEP_PHYSICAL_PX
+            if pair["baseline_gate_applicable"]
+            else 0.0
+        ),
+    )
+
+
 def pair_waived(sequence: str, metric: str, first: int, second: int) -> str | None:
     return EXACT_PAIR_WAIVERS.get((sequence, metric, first, second))
 
@@ -1056,6 +1146,7 @@ def analyze_surface(
     *,
     loop: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    is_boarding_transition = sequence_name == ROAM_BOARDING_SEQUENCE
     geometry = [frame_geometry(frame, surface) for frame in frames]
     pair_indexes = [(index, index + 1) for index in range(len(frames) - 1)]
     if loop:
@@ -1193,7 +1284,16 @@ def analyze_surface(
             if surface.physical_scale is None
             else 1.0 / surface.physical_scale
         )
-        head_center_limit = MAX_HEAD_CENTER_STEP_DIP + quantisation_dip
+        head_center_limit = (
+            MAX_BOARDING_HEAD_CENTER_STEP_DIP
+            if is_boarding_transition
+            else MAX_HEAD_CENTER_STEP_DIP
+        ) + quantisation_dip
+        centroid_step_limit = (
+            MAX_BOARDING_CENTROID_STEP_DIP + quantisation_dip
+            if is_boarding_transition
+            else None
+        )
         baseline_limit = MAX_BASELINE_STEP_PHYSICAL_PX + (
             0.0 if surface.physical_scale is None else 1.0
         )
@@ -1227,35 +1327,64 @@ def analyze_surface(
             "wrap": bool(loop and second_index == 0),
             "alpha_iou": iou,
             "head_center_step_dip": head_step_dip,
+            "head_center_step_limit_dip": head_center_limit,
             "head_width_change_ratio": head_scale,
             "torso_width_change_ratio": torso_width_scale,
             "torso_height_change_ratio": torso_height_scale,
             "baseline_step_physical_px": baseline_physical,
-            "baseline_gate_applicable": not sequence_name.startswith("edge."),
+            # The flying panda mount deliberately bobs its bell and bamboo
+            # leaves and has no ground-contact baseline. Steady roam loops keep
+            # the normal head/hat/torso gates; boarding uses its dedicated
+            # non-loop displacement/trail profile.
+            "baseline_gate_applicable": not (
+                sequence_name.startswith("edge.") or
+                sequence_name.startswith("roam.")
+            ),
             "centroid_step_dip": centroid_step_dip,
+            "centroid_step_limit_dip": centroid_step_limit,
+            "gate_profile": (
+                "non_loop_pose_transition"
+                if is_boarding_transition
+                else "steady_motion"
+            ),
         }
         pairs.append(pair)
-        if iou < MIN_ALPHA_IOU:
+        if not is_boarding_transition and iou < MIN_ALPHA_IOU:
             violate("alpha_iou", first_number, second_number, iou, MIN_ALPHA_IOU)
         if head_step_dip > head_center_limit + FLOAT_COMPARISON_EPSILON:
             violate(
                 "head_center_step_dip", first_number, second_number,
                 head_step_dip, head_center_limit,
             )
-        if head_scale > head_scale_limit:
+        if (
+            centroid_step_limit is not None
+            and centroid_step_dip
+            > centroid_step_limit + FLOAT_COMPARISON_EPSILON
+        ):
+            violate(
+                "centroid_step_dip",
+                first_number,
+                second_number,
+                centroid_step_dip,
+                centroid_step_limit,
+            )
+        if not is_boarding_transition and head_scale > head_scale_limit:
             violate("head_width_change_ratio", first_number, second_number, head_scale, head_scale_limit)
-        if torso_width_scale > torso_width_limit:
+        if not is_boarding_transition and torso_width_scale > torso_width_limit:
             violate(
                 "torso_width_change_ratio", first_number, second_number,
                 torso_width_scale, torso_width_limit,
             )
-        if torso_height_scale > torso_height_limit:
+        if not is_boarding_transition and torso_height_scale > torso_height_limit:
             violate(
                 "torso_height_change_ratio", first_number, second_number,
                 torso_height_scale, torso_height_limit,
             )
         if (
-            not sequence_name.startswith("edge.")
+            not (
+                sequence_name.startswith("edge.") or
+                sequence_name.startswith("roam.")
+            )
             and baseline_physical > baseline_limit + FLOAT_COMPARISON_EPSILON
         ):
             violate(
@@ -1264,7 +1393,7 @@ def analyze_surface(
             )
 
     mean_iou = float(np.mean([pair["alpha_iou"] for pair in pairs])) if pairs else 1.0
-    if mean_iou < MIN_MEAN_ALPHA_IOU:
+    if not is_boarding_transition and mean_iou < MIN_MEAN_ALPHA_IOU:
         violations.append(
             {
                 "metric": "mean_alpha_iou",
@@ -1433,36 +1562,31 @@ def analyze_surface(
                 / max(record["wide_translucent_trail_ratio"], 1e-12)
             ),
         )
-        trail_limit_pixels = max(
-            8, round(visible_estimate * MAX_WIDE_TRANSLUCENT_TRAIL_RATIO)
+        trail_ratio_limit = (
+            MAX_BOARDING_WIDE_TRANSLUCENT_TRAIL_RATIO
+            if is_boarding_transition
+            else MAX_WIDE_TRANSLUCENT_TRAIL_RATIO
         )
+        trail_limit_pixels = max(8, round(visible_estimate * trail_ratio_limit))
         if record["wide_translucent_trail_pixels"] > trail_limit_pixels:
-            report_only_findings.append(
-                {
-                    "metric": "wide_translucent_trail_pixels",
-                    "frame": frame_number,
-                    "value": record["wide_translucent_trail_pixels"],
-                    "limit": trail_limit_pixels,
-                    "ratio": record["wide_translucent_trail_ratio"],
-                    "status": "report_only",
-                }
-            )
+            finding = {
+                "metric": "wide_translucent_trail_pixels",
+                "frame": frame_number,
+                "value": record["wide_translucent_trail_pixels"],
+                "limit": trail_limit_pixels,
+                "ratio": record["wide_translucent_trail_ratio"],
+                "ratio_limit": trail_ratio_limit,
+            }
+            if is_boarding_transition:
+                violations.append(finding)
+            else:
+                report_only_findings.append(
+                    {**finding, "status": "report_only"}
+                )
 
     pair_worst = sorted(
         pairs,
-        key=lambda pair: max(
-            max(0.0, (MIN_ALPHA_IOU - pair["alpha_iou"]) / 0.03),
-            pair["head_center_step_dip"] / MAX_HEAD_CENTER_STEP_DIP,
-            pair["head_width_change_ratio"] / MAX_HAT_SCALE_STEP,
-            pair["torso_width_change_ratio"] / MAX_TORSO_SCALE_STEP,
-            pair["torso_height_change_ratio"] / MAX_TORSO_SCALE_STEP,
-            (
-                pair["baseline_step_physical_px"]
-                / MAX_BASELINE_STEP_PHYSICAL_PX
-                if pair["baseline_gate_applicable"]
-                else 0.0
-            ),
-        ),
+        key=lambda pair: pair_gate_score(sequence_name, pair),
         reverse=True,
     )
     center_worst = sorted(
@@ -1479,6 +1603,12 @@ def analyze_surface(
             "width": surface.width,
             "height": surface.height,
             "frame_count": len(frames),
+            "is_loop": loop,
+            "gate_profile": (
+                "non_loop_pose_transition"
+                if is_boarding_transition
+                else "steady_motion"
+            ),
             "head_proxy_methods": dict(
                 sorted(
                     (method, sum(g["head_proxy_method"] == method for g in geometry))
@@ -1578,6 +1708,7 @@ def analyze_sequence(
     is_loop = (
         name.endswith(".loop") or
         name.startswith("edge.") or
+        name.removeprefix("roam.") in ROAM_LOOP_SEQUENCES or
         name == "reminder.hold"
     )
     for surface in surface_matrix():
@@ -1604,19 +1735,7 @@ def analyze_sequence(
             )
         if surface.name == "native-399x509":
             for pair in result["worst_pairs"]:
-                score = max(
-                    max(0.0, (MIN_ALPHA_IOU - pair["alpha_iou"]) / 0.03),
-                    pair["head_center_step_dip"] / MAX_HEAD_CENTER_STEP_DIP,
-                    pair["head_width_change_ratio"] / MAX_HAT_SCALE_STEP,
-                    pair["torso_width_change_ratio"] / MAX_TORSO_SCALE_STEP,
-                    pair["torso_height_change_ratio"] / MAX_TORSO_SCALE_STEP,
-                    (
-                        pair["baseline_step_physical_px"]
-                        / MAX_BASELINE_STEP_PHYSICAL_PX
-                        if pair["baseline_gate_applicable"]
-                        else 0.0
-                    ),
-                )
+                score = pair_gate_score(name, pair)
                 contact_candidates.append(
                     {
                         "sequence": name,
@@ -1709,6 +1828,7 @@ def write_worst_contacts(
         is_loop = (
             name.endswith(".loop") or
             name.startswith("edge.") or
+            name.removeprefix("roam.") in ROAM_LOOP_SEQUENCES or
             name == "reminder.hold"
         )
         center = int(candidate.get("center", candidate.get("from", 1)))
@@ -1932,6 +2052,21 @@ def main() -> int:
             "diagnostic_reference_wide_translucent_trail_ratio": (
                 MAX_WIDE_TRANSLUCENT_TRAIL_RATIO
             ),
+            "roam_boarding_non_loop_profile": {
+                "minimum_alpha_iou": None,
+                "minimum_mean_alpha_iou": None,
+                "fixed_silhouette_scale_gate": False,
+                "maximum_centroid_step_dip": MAX_BOARDING_CENTROID_STEP_DIP,
+                "maximum_head_center_step_dip": (
+                    MAX_BOARDING_HEAD_CENTER_STEP_DIP
+                ),
+                "maximum_wide_translucent_trail_ratio": (
+                    MAX_BOARDING_WIDE_TRANSLUCENT_TRAIL_RATIO
+                ),
+                "byte_exact_idle_and_flight_endpoints": True,
+                "pixel_unique_frames": True,
+                "clean_pbgra_required": True,
+            },
         },
         "report_only_metrics": [
             "wide_translucent_trail_pixels",
@@ -1939,6 +2074,13 @@ def main() -> int:
             "head_micro_roundtrip",
             "head_second_difference_dip",
         ],
+        "strict_profile_overrides": {
+            ROAM_BOARDING_SEQUENCE: [
+                "centroid_step_dip",
+                "head_center_step_dip",
+                "wide_translucent_trail_pixels",
+            ]
+        },
         "exact_pair_waivers": [
             {
                 "sequence": key[0], "metric": key[1], "from": key[2], "to": key[3],

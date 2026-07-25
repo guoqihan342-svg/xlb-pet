@@ -26,8 +26,16 @@ MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
 ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 REMINDER_PHASES = ("enter", "hold")
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
+REQUIRED_ROAM_SEQUENCES = ("flight", "boarding")
+OPTIONAL_ROAM_SEQUENCES = ("wave",)
+ROAM_FLIGHT_SEQUENCES = (
+    *REQUIRED_ROAM_SEQUENCES,
+    *OPTIONAL_ROAM_SEQUENCES,
+)
 ACTION_LOOP_FRAME_COUNT = 48
 EDGE_PEEK_FRAME_COUNT = 48
+MIN_ROAM_FRAME_COUNT = 48
+ROAM_FLIGHT_PAGE_FRAME_LIMIT = 32
 REMINDER_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_MIN_PREFETCH_FRAMES = 8
@@ -323,6 +331,69 @@ def edge_peek_resource_paths(root: Path, direction: str) -> list[str]:
     )
 
 
+def roam_flight_resource_paths(root: Path, sequence: str) -> list[str]:
+    if sequence not in ROAM_FLIGHT_SEQUENCES:
+        raise ValueError(f"Unknown roaming flight sequence: {sequence}")
+    paths = numbered_resource_paths(
+        root,
+        f"luban-roam-{sequence}",
+    )
+    if len(paths) < MIN_ROAM_FRAME_COUNT:
+        raise RuntimeError(
+            f"Dense roaming sequence {sequence} must contain at least "
+            f"{MIN_ROAM_FRAME_COUNT} frames, found {len(paths)}"
+        )
+    return paths
+
+
+def runtime_roam_sequences(root: Path) -> tuple[str, ...]:
+    assets = root / "Assets"
+    optional = tuple(
+        sequence
+        for sequence in OPTIONAL_ROAM_SEQUENCES
+        if any(assets.glob(f"luban-roam-{sequence}-*.png"))
+    )
+    return (*REQUIRED_ROAM_SEQUENCES, *optional)
+
+
+def partition_roam_flight_resource_paths(
+    sequence: str,
+    paths: list[str],
+) -> list[tuple[str, list[str]]]:
+    if sequence not in ROAM_FLIGHT_SEQUENCES or not paths:
+        raise RuntimeError(
+            f"Invalid roaming flight sequence {sequence}: {len(paths)} frames"
+        )
+
+    base_page_name = f"roam-{sequence}"
+    partitions = [
+        (
+            base_page_name
+            if part_number == 1
+            else f"{base_page_name}-part-{part_number:02d}",
+            list(paths[offset : offset + ROAM_FLIGHT_PAGE_FRAME_LIMIT]),
+        )
+        for part_number, offset in enumerate(
+            range(0, len(paths), ROAM_FLIGHT_PAGE_FRAME_LIMIT),
+            start=1,
+        )
+    ]
+    if (
+        any(not partition_paths for _, partition_paths in partitions)
+        or any(
+            len(partition_paths) > ROAM_FLIGHT_PAGE_FRAME_LIMIT
+            for _, partition_paths in partitions
+        )
+        or [path for _, partition_paths in partitions for path in partition_paths]
+        != paths
+    ):
+        raise RuntimeError(
+            f"Invalid roaming page partition for {sequence}: "
+            f"{[len(partition_paths) for _, partition_paths in partitions]}"
+        )
+    return partitions
+
+
 def reminder_resource_paths(root: Path, phase: str) -> list[str]:
     if phase not in REMINDER_PHASES:
         raise ValueError(f"Unknown reminder phase: {phase}")
@@ -546,6 +617,8 @@ def resource_paths(root: Path) -> list[str]:
     ]
     for direction in RUNTIME_EDGE_DIRECTIONS:
         paths.extend(edge_peek_resource_paths(root, direction))
+    for sequence in runtime_roam_sequences(root):
+        paths.extend(roam_flight_resource_paths(root, sequence))
     for phase in REMINDER_PHASES:
         paths.extend(reminder_resource_paths(root, phase))
     for action in ACTION_NAMES:
@@ -734,6 +807,17 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
     # wake/action pages, so entering edge mode does not flash a cold fallback.
     for direction in RUNTIME_EDGE_DIRECTIONS:
         pages[f"edge-{direction}"] = edge_peek_resource_paths(root, direction)
+    # Roaming pages stay independent from manual edge-peek pages. Boarding is
+    # a non-loop entry path; flight and wave are the two continuous panda
+    # loops. Each sequence keeps ordered <=32-frame partitions for prefetch.
+    for sequence in runtime_roam_sequences(root):
+        for page_name, partition_paths in partition_roam_flight_resource_paths(
+            sequence,
+            roam_flight_resource_paths(root, sequence),
+        ):
+            if page_name in pages:
+                raise RuntimeError(f"Duplicate sprite page name: {page_name}")
+            pages[page_name] = partition_paths
     for page_name, partition_paths in wake_partitions[1:]:
         if page_name in pages:
             raise RuntimeError(f"Duplicate sprite page name: {page_name}")

@@ -17,6 +17,7 @@ public partial class TodoWindow : Window
     private static readonly Brush TodoDropIndicatorBrush =
         CreateTodoDropIndicatorBrush();
 
+    private bool _settingEdgeRoamingEnabled;
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
     private bool _petSizeScaleNotificationQueued;
@@ -142,6 +143,8 @@ public partial class TodoWindow : Window
     public event Action<ScheduledTaskItem>? ScheduledTaskDeleteRequested;
 
     public event Action? TransientInteractionCompleted;
+
+    public event Action<bool>? EdgeRoamingEnabledChanged;
 
     public event Action<double>? PetSizeScaleChanged;
 
@@ -334,6 +337,19 @@ public partial class TodoWindow : Window
         {
             // The clipboard can be held briefly by another process. One
             // deferred retry keeps Ctrl+C responsive without a blocking loop.
+        }
+    }
+
+    public void SetEdgeRoamingEnabled(bool enabled)
+    {
+        _settingEdgeRoamingEnabled = true;
+        try
+        {
+            EdgeRoamingToggle.IsChecked = enabled;
+        }
+        finally
+        {
+            _settingEdgeRoamingEnabled = false;
         }
     }
 
@@ -1619,6 +1635,14 @@ public partial class TodoWindow : Window
         PetSizeScaleChanged?.Invoke(scale);
     }
 
+    private void EdgeRoamingToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_settingEdgeRoamingEnabled)
+        {
+            EdgeRoamingEnabledChanged?.Invoke(
+                EdgeRoamingToggle.IsChecked == true);
+        }
+    }
 
     private void PetSizeSlider_ValueChanged(
         object sender,

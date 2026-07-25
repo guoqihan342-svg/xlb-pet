@@ -74,11 +74,17 @@ static void CheckAppSettingsStore(string tempDirectory)
     var settingsPath = Path.Combine(tempDirectory, "nested", "settings.json");
     var store = new AppSettingsStore(settingsPath);
     var defaults = store.Load();
+    Assert(defaults.EdgeRoamingEnabled, "设置文件缺失时应默认开启绕屏动画");
     AssertClose(defaults.PetSizeScale, 1.0, "设置文件缺失时桌宠尺寸应为 100%");
 
-    Assert(store.Save(new AppSettings { PetSizeScale = 1.25 }), "首次保存尺寸设置应成功");
+    Assert(store.Save(new AppSettings
+    {
+        EdgeRoamingEnabled = false,
+        PetSizeScale = 1.25
+    }), "首次保存绕屏开关和尺寸设置应成功");
     Assert(Directory.Exists(Path.GetDirectoryName(settingsPath)), "保存时应自动创建设置目录");
     var firstLoaded = store.Load();
+    Assert(!firstLoaded.EdgeRoamingEnabled, "关闭绕屏动画应能往返保存和加载");
     AssertClose(firstLoaded.PetSizeScale, 1.25, "125% 尺寸应能往返保存和加载");
 
     var bytes = File.ReadAllBytes(settingsPath);
@@ -86,36 +92,56 @@ static void CheckAppSettingsStore(string tempDirectory)
         bytes.Length < 3 || bytes[0] != 0xEF || bytes[1] != 0xBB || bytes[2] != 0xBF,
         "设置 JSON 应使用无 BOM 的 UTF-8 编码");
     var firstJson = File.ReadAllText(settingsPath);
-    Assert(!firstJson.Contains("\"edgeRoamingEnabled\"", StringComparison.OrdinalIgnoreCase),
-        "设置 JSON 不应继续写出已删除的绕屏开关字段");
+    Assert(firstJson.Contains("\"edgeRoamingEnabled\"", StringComparison.Ordinal),
+        "设置 JSON 必须持久化 camelCase 的绕屏开关字段");
     Assert(firstJson.Contains("\"petSizeScale\"", StringComparison.Ordinal),
         "设置 JSON 必须持久化 camelCase 的桌宠尺寸字段");
 
-    Assert(store.Save(new AppSettings { PetSizeScale = 0.75 }), "覆盖保存尺寸下限应成功");
+    Assert(store.Save(new AppSettings
+    {
+        EdgeRoamingEnabled = true,
+        PetSizeScale = 0.75
+    }), "覆盖保存开启绕屏和尺寸下限应成功");
     var secondLoaded = store.Load();
+    Assert(secondLoaded.EdgeRoamingEnabled, "开启绕屏动画应能往返保存和加载");
     AssertClose(secondLoaded.PetSizeScale, 0.75, "尺寸下限应能往返保存和加载");
     Assert(!File.Exists(settingsPath + ".tmp"), "成功保存后不应残留临时文件");
 
     File.WriteAllText(settingsPath, "{\"edgeRoamingEnabled\":false,\"petSizeScale\":1.1}");
     var legacySettings = store.Load();
+    Assert(!legacySettings.EdgeRoamingEnabled,
+        "旧版 JSON 中关闭的绕屏开关应继续保留");
     AssertClose(legacySettings.PetSizeScale, 1.1,
-        "旧版 JSON 中已删除的绕屏字段应被忽略，同时保留尺寸设置");
+        "旧版 JSON 应同时保留桌宠尺寸");
     Assert(store.Save(legacySettings), "加载旧版 JSON 后应能按当前格式保存");
     var migratedJson = File.ReadAllText(settingsPath);
-    Assert(!migratedJson.Contains("\"edgeRoamingEnabled\"", StringComparison.OrdinalIgnoreCase),
-        "旧版 JSON 保存后不得残留已删除的绕屏字段");
+    Assert(migratedJson.Contains("\"edgeRoamingEnabled\": false", StringComparison.Ordinal),
+        "旧版 JSON 保存后应继续持久化关闭的绕屏开关");
     Assert(migratedJson.Contains("\"petSizeScale\"", StringComparison.Ordinal),
         "旧版 JSON 保存后应继续保留尺寸字段");
 
+    File.WriteAllText(settingsPath, "{\"petSizeScale\":1.15}");
+    var missingRoamingSetting = store.Load();
+    Assert(missingRoamingSetting.EdgeRoamingEnabled,
+        "当前版本缺少绕屏字段的 JSON 应平滑迁移为默认开启");
+    AssertClose(missingRoamingSetting.PetSizeScale, 1.15,
+        "迁移缺少绕屏字段的 JSON 时不得丢失桌宠尺寸");
+
     File.WriteAllText(settingsPath, "这不是有效 JSON");
     var corruptedFallback = store.Load();
+    Assert(corruptedFallback.EdgeRoamingEnabled,
+        "损坏 JSON 应回退到默认开启绕屏动画");
     AssertClose(corruptedFallback.PetSizeScale, 1.0,
         "损坏 JSON 应回退到 100% 桌宠尺寸");
 
     var blockedPath = Path.Combine(tempDirectory, "blocked-settings.json");
     Directory.CreateDirectory(blockedPath);
     var blockedStore = new AppSettingsStore(blockedPath);
-    var saveResult = blockedStore.Save(new AppSettings { PetSizeScale = 1.2 });
+    var saveResult = blockedStore.Save(new AppSettings
+    {
+        EdgeRoamingEnabled = false,
+        PetSizeScale = 1.2
+    });
     Assert(!saveResult, "保存失败时应返回 false 而不是抛异常");
     Assert(!File.Exists(blockedPath + ".tmp"), "保存失败后应尽量清理临时文件");
 }

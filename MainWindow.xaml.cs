@@ -32,6 +32,15 @@ public partial class MainWindow : Window
     private const double ReminderBubbleHeight = 148;
     private const double ScreenEdgeMargin = 12;
     private const double EdgeContactTolerance = 1;
+    // Code-only roaming tuning. Position is evaluated from the absolute visual
+    // clock on every monitor refresh; these values do not create a UI slider.
+    private const double EdgeRoamBaseSpeedDipsPerSecond = 160;
+    private const double EdgeRoamCornerRadiusDips = 48;
+    // 48 authored poses at the global 1.25x playback setting land exactly on
+    // 60fps. A 75fps pose clock on a 60Hz desktop periodically skipped two
+    // adjacent in-between frames and made an otherwise smooth path pulse.
+    private const double EdgeRoamPoseFramesPerSecond = 48;
+    private const int EdgeRoamClosestPointSamples = 256;
     private const int DisplayPixelWidth = 399;
     private const int DisplayPixelHeight = 509;
     private const string SpriteAtlasManifestPath = "Assets/luban-sprite-pages.json";
@@ -43,11 +52,11 @@ public partial class MainWindow : Window
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
     // Decoded atlas pages are byte-for-byte identical regardless of whether
-    // they are cached. The largest complete action is about 102 MiB; 112 MiB
-    // keeps that whole clip resident while avoiding an unrelated permanent
-    // reminder/edge hot set. Idle retains the complete idle/wake chain so
-    // recurring reactions do not churn large LOH pages between every action.
-    private const long SpritePageResidentBudgetBytes = 112L * 1024 * 1024;
+    // they are cached. The complete idle/wake chain plus the authored
+    // 121-frame panda boarding and 64-frame flight clips occupy about
+    // 123 MiB; 128 MiB keeps one whole roaming presentation resident without
+    // permanently retaining an unrelated reminder/edge hot set.
+    private const long SpritePageResidentBudgetBytes = 128L * 1024 * 1024;
     private const long SpritePageIdleResidentTargetBytes = 64L * 1024 * 1024;
     private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
@@ -88,6 +97,11 @@ public partial class MainWindow : Window
             DisplayPixelWidth * DisplayPixelHeight * 4,
             maxArraysPerBucket: 1);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan EdgeRoamInitialDelay = TimeSpan.FromSeconds(16);
+    private static readonly TimeSpan EdgeRoamRepeatDelay = TimeSpan.FromSeconds(46);
+    private static readonly TimeSpan EdgeRoamInterruptedDelay = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan EdgeRoamMaximumClockGap =
+        TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaximumReminderWakeInterval =
         TimeSpan.FromHours(12);
@@ -126,6 +140,9 @@ public partial class MainWindow : Window
     private readonly SpriteFrame _todoFrame;
     private readonly SpriteFrame[] _edgeLeftFrames;
     private readonly SpriteFrame[] _edgeBottomFrames;
+    private readonly SpriteFrame[] _roamBoardingFrames;
+    private readonly SpriteFrame[] _roamFlightFrames;
+    private readonly SpriteFrame[] _roamWaveFrames;
     private readonly SpriteFrame[] _reminderEnterFrames;
     private readonly SpriteFrame[] _reminderHoldFrames;
     private readonly AnimationClip[] _reactionClips;
@@ -185,6 +202,33 @@ public partial class MainWindow : Window
     private int _edgePeekFrameIndex;
     private long _edgePeekFrameDeadlineTimestamp;
     private EdgeDock _edgeDock;
+    private bool _edgeRoamingEnabled = true;
+    private bool _isEdgeRoaming;
+    private bool _isApplyingEdgeRoamPosition;
+    private bool _edgeRoamClockStarted;
+    private bool _edgeRoamBoardingPagesReady;
+    private bool _edgeRoamFlightPagesReady;
+    private bool _edgeRoamBoardingReverse;
+    private bool _edgeRoamStopScheduleNext;
+    private bool _edgeRoamStopInterrupted;
+    private int _edgeRoamDirection = 1;
+    private int _edgeRoamBoardingStartIndex;
+    private EdgeRoamPhase _edgeRoamPhase;
+    private double _edgeRoamRouteStartDistance;
+    private double _edgeRoamRouteLength;
+    private double _edgeRoamApproachLength;
+    private double _edgeRoamReturnLength;
+    private double _edgeRoamLandingSeamElapsedSeconds;
+    private double _edgeRoamLogicalLeft;
+    private double _edgeRoamLogicalTop;
+    private double _edgeRoamFacingScaleX = 1;
+    private long _edgeRoamStartedTimestamp;
+    private long _edgeRoamLastRenderingTimestamp;
+    private long _nextEdgeRoamDueTimestamp;
+    private Rect _edgeRoamRouteBounds;
+    private Point _edgeRoamStartPoint;
+    private Point _edgeRoamRouteStartPoint;
+    private Vector _edgeRoamRouteTangent;
     private double _petSizeScale = 1;
     private double _persistedPetSizeScale = 1;
     private double _petSizePreviewBaseScale = 1;
@@ -311,6 +355,23 @@ public partial class MainWindow : Window
         _edgeBottomFrames = LoadEdgeFrameSequence(
             "edge-bottom",
             "Assets/luban-edge-bottom-smooth-");
+        _roamBoardingFrames = LoadNumberedFrameSequence(
+            "roam-boarding",
+            "Assets/luban-roam-boarding-");
+        _roamFlightFrames = LoadNumberedFrameSequence(
+            "roam-flight",
+            "Assets/luban-roam-flight-");
+        _roamWaveFrames = LoadOptionalNumberedFrameSequence(
+            "roam-wave",
+            "Assets/luban-roam-wave-");
+        if (_roamBoardingFrames.Length < 48 ||
+            _roamFlightFrames.Length < 48 ||
+            (_roamWaveFrames.Length > 0 && _roamWaveFrames.Length < 48))
+        {
+            throw new InvalidOperationException(
+                "Roaming boarding/flight must contain at least 48 frames and " +
+                "an optional wave sequence cannot be shorter than 48 frames.");
+        }
         _reminderEnterFrames = LoadNumberedFrameSequence(
             "action-reminder-enter",
             "Assets/luban-reminder-enter-",
@@ -403,6 +464,8 @@ public partial class MainWindow : Window
         _todoWindow.PetSizeScaleChanged += TodoWindow_PetSizeScaleChanged;
         _todoWindow.PetSizeAdjustmentStarted += TodoWindow_PetSizeAdjustmentStarted;
         _todoWindow.PetSizeAdjustmentCompleted += TodoWindow_PetSizeAdjustmentCompleted;
+        _todoWindow.EdgeRoamingEnabledChanged +=
+            TodoWindow_EdgeRoamingEnabledChanged;
         _todoWindow.CloseRequested += TodoWindow_CloseRequested;
         _todoWindow.ExitRequested += TodoWindow_ExitRequested;
         _todoWindow.ImeCompositionChanged += TodoWindow_ImeCompositionChanged;
@@ -428,10 +491,12 @@ public partial class MainWindow : Window
         _scheduledTaskTimer.Tick += ScheduledTaskTimer_Tick;
 
         var settings = _settingsStore.Load();
+        _edgeRoamingEnabled = settings.EdgeRoamingEnabled;
         _petSizeScale = NormalizePetSizeScale(settings.PetSizeScale);
         _persistedPetSizeScale = _petSizeScale;
         _petSizeTargetScale = _petSizeScale;
         _todoWindow.SetPetSizeScale(_petSizeScale);
+        _todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled);
         ApplyPetSizeScale(_petSizeScale, persist: false, preservePosition: false);
 
         _automaticTimer = new DispatcherTimer
@@ -469,6 +534,26 @@ public partial class MainWindow : Window
         // hundreds of milliseconds for the existing next-page prefetch. Keeping
         // reminder, edge, or later wake pages resident before they are needed
         // consumed 55+ MiB without improving presentation quality.
+        return [];
+    }
+
+    private SpriteFrame[] LoadOptionalNumberedFrameSequence(
+        string pageNamePrefix,
+        string resourcePrefix)
+    {
+        foreach (var pageName in _spritePages.Keys)
+        {
+            if (TryGetNumberedSequencePagePart(
+                    pageName,
+                    pageNamePrefix,
+                    out _))
+            {
+                return LoadNumberedFrameSequence(
+                    pageNamePrefix,
+                    resourcePrefix);
+            }
+        }
+
         return [];
     }
 
@@ -1085,6 +1170,7 @@ public partial class MainWindow : Window
         Left = Math.Max(workArea.Left, workArea.Right - ActualWidth - ScreenEdgeMargin);
         Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight - ScreenEdgeMargin);
         _automaticAnimationEnabled = true;
+        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInitialDelay);
         ProcessScheduledTasksAt(_nowProvider());
         RestartAutomaticCountdown();
         _spritePageWarmupEnabled = true;
@@ -1094,7 +1180,7 @@ public partial class MainWindow : Window
 
     private void Window_LocationChanged(object? sender, EventArgs e)
     {
-        if (!_isApplyingPetSizeLayout)
+        if (!_isApplyingPetSizeLayout && !_isApplyingEdgeRoamPosition)
         {
             // A drag, monitor recovery, or any other real window
             // movement establishes a new logical anchor. Size-only layout
@@ -1170,6 +1256,10 @@ public partial class MainWindow : Window
                     _petSizeLogicalAnchor = null;
                     _todoWindowPositionCache.InvalidateGeometry();
 
+                    StopEdgeRoaming(
+                        scheduleNext: true,
+                        restoreIdleFrame: true,
+                        interrupted: true);
                     ExitEdgePeek(restartAutomaticCountdown: false);
                     var workArea = MonitorWorkArea.GetForWindow(this);
                     var width = ActualWidth > 0 ? ActualWidth : Width;
@@ -1426,6 +1516,15 @@ public partial class MainWindow : Window
         }
         AppLogger.Info("主窗口正在关闭");
         _automaticAnimationEnabled = false;
+        _isEdgeRoaming = false;
+        _edgeRoamPhase = EdgeRoamPhase.None;
+        _edgeRoamClockStarted = false;
+        _edgeRoamBoardingPagesReady = false;
+        _edgeRoamFlightPagesReady = false;
+        _edgeRoamBoardingReverse = false;
+        _edgeRoamStopScheduleNext = false;
+        _edgeRoamStopInterrupted = false;
+        _nextEdgeRoamDueTimestamp = 0;
         _petSizePersistTimer.Stop();
         _petSizePersistTimer.Tick -= PetSizePersistTimer_Tick;
         _reminderSizeCommitTimer.Stop();
@@ -1485,6 +1584,10 @@ public partial class MainWindow : Window
             CommitPetSizePreviewSession(persist: true);
         }
 
+        StopEdgeRoaming(
+            scheduleNext: true,
+            restoreIdleFrame: true,
+            interrupted: true);
         StopPillowBreathing();
         _automaticTimer.Stop();
         _dragInteractionActive = true;
@@ -1675,6 +1778,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        StopEdgeRoaming(
+            scheduleNext: true,
+            restoreIdleFrame: false,
+            interrupted: true);
         var frames = GetEdgeFrames(dock);
         var restFrameIndex = frames.Length - 1;
         var restFrame = frames[restFrameIndex];
@@ -2007,7 +2114,8 @@ public partial class MainWindow : Window
         if (_isClosing || _activeClip is not null || _dragInteractionActive ||
             _isReminderActive ||
             _bubbleMode == BubbleMode.Todo ||
-            _edgeDock != EdgeDock.None)
+            _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
         {
             return false;
         }
@@ -2034,11 +2142,925 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private void ScheduleNextEdgeRoam(long timestamp, TimeSpan delay)
+    {
+        if (_isClosing || !_edgeRoamingEnabled)
+        {
+            _nextEdgeRoamDueTimestamp = 0;
+            return;
+        }
+
+        _nextEdgeRoamDueTimestamp = checked(
+            timestamp + ToStopwatchTicks(delay));
+    }
+
+    private bool IsEdgeRoamDue(long timestamp) =>
+        _edgeRoamingEnabled &&
+        _nextEdgeRoamDueTimestamp > 0 &&
+        timestamp >= _nextEdgeRoamDueTimestamp;
+
+    private bool StartEdgeRoaming()
+    {
+        if (_isClosing || !_edgeRoamingEnabled || _isEdgeRoaming ||
+            !_automaticAnimationEnabled || _isReminderActive ||
+            _activeClip is not null || _dragInteractionActive || _pointerDown ||
+            _isPetSizeTransitioning || _isPetSizePreviewSessionActive ||
+            _isPetSizeAdjustmentActive || _bubbleMode != BubbleMode.None ||
+            _todoWindow.IsVisible || BubblePopup.IsOpen ||
+            _edgeDock != EdgeDock.None)
+        {
+            return false;
+        }
+
+        var workArea = MonitorWorkArea.GetForWindow(this);
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        var height = ActualHeight > 0 ? ActualHeight : Height;
+        var routeLeft = workArea.Left + ScreenEdgeMargin;
+        var routeTop = workArea.Top + ScreenEdgeMargin;
+        var routeRight = workArea.Right - width - ScreenEdgeMargin;
+        var routeBottom = workArea.Bottom - height - ScreenEdgeMargin;
+        if (!double.IsFinite(routeLeft) || !double.IsFinite(routeTop) ||
+            !double.IsFinite(routeRight) || !double.IsFinite(routeBottom) ||
+            routeRight - routeLeft < 24 || routeBottom - routeTop < 24)
+        {
+            ScheduleNextEdgeRoam(
+                Stopwatch.GetTimestamp(),
+                EdgeRoamInterruptedDelay);
+            return false;
+        }
+
+        _edgeRoamRouteBounds = new Rect(
+            routeLeft,
+            routeTop,
+            routeRight - routeLeft,
+            routeBottom - routeTop);
+        var radius = GetEdgeRoamCornerRadius(_edgeRoamRouteBounds);
+        _edgeRoamRouteLength = GetEdgeRoamRouteLength(
+            _edgeRoamRouteBounds,
+            radius);
+        _edgeRoamStartPoint = new Point(
+            double.IsFinite(Left) ? Left : routeRight,
+            double.IsFinite(Top) ? Top : routeBottom);
+        _edgeRoamRouteStartDistance = FindClosestEdgeRoamRouteDistance(
+            _edgeRoamRouteBounds,
+            radius,
+            _edgeRoamStartPoint);
+        _edgeRoamRouteStartPoint = GetEdgeRoamRoutePoint(
+            _edgeRoamRouteBounds,
+            radius,
+            _edgeRoamRouteStartDistance);
+        _edgeRoamDirection = _random.Next(2) == 0 ? -1 : 1;
+        _edgeRoamRouteTangent = GetEdgeRoamRouteTangent(
+            _edgeRoamRouteBounds,
+            radius,
+            _edgeRoamRouteStartDistance,
+            _edgeRoamDirection);
+        _edgeRoamApproachLength = GetPointDistance(
+            _edgeRoamStartPoint,
+            _edgeRoamRouteStartPoint);
+        _edgeRoamReturnLength = _edgeRoamApproachLength;
+        _edgeRoamLogicalLeft = _edgeRoamStartPoint.X;
+        _edgeRoamLogicalTop = _edgeRoamStartPoint.Y;
+        _edgeRoamFacingScaleX = PetFacingScale.ScaleX < 0 ? -1 : 1;
+        _edgeRoamStartedTimestamp = 0;
+        _edgeRoamLastRenderingTimestamp = 0;
+        _edgeRoamClockStarted = false;
+        _edgeRoamBoardingPagesReady = false;
+        _edgeRoamFlightPagesReady = false;
+        _edgeRoamBoardingReverse = false;
+        _edgeRoamStopScheduleNext = false;
+        _edgeRoamStopInterrupted = false;
+        _edgeRoamBoardingStartIndex = 0;
+        _edgeRoamPhase = EdgeRoamPhase.None;
+        _edgeRoamLandingSeamElapsedSeconds = 0;
+        _nextEdgeRoamDueTimestamp = 0;
+        _isEdgeRoaming = true;
+
+        StopPillowBreathing();
+        _automaticTimer.Stop();
+        StartEdgeRoamBoarding(
+            reverse: false,
+            timestamp: Stopwatch.GetTimestamp());
+        AppLogger.Info(
+            $"绕屏开始：大头熊猫坐骑巡游，方向={(_edgeRoamDirection > 0 ? "顺时针" : "逆时针")}，" +
+            $"显示器工作区={workArea}");
+        return true;
+    }
+
+    private void StopEdgeRoaming(
+        bool scheduleNext,
+        bool restoreIdleFrame,
+        bool interrupted)
+    {
+        var wasRoaming = _isEdgeRoaming;
+        if (!wasRoaming)
+        {
+            if (scheduleNext)
+            {
+                ScheduleNextEdgeRoam(
+                    Stopwatch.GetTimestamp(),
+                    interrupted
+                        ? EdgeRoamInterruptedDelay
+                        : EdgeRoamRepeatDelay);
+            }
+            else if (!_edgeRoamingEnabled)
+            {
+                _nextEdgeRoamDueTimestamp = 0;
+            }
+
+            return;
+        }
+
+        _edgeRoamStopScheduleNext = scheduleNext;
+        _edgeRoamStopInterrupted |= interrupted;
+        var boardingPageFailed =
+            IsSequenceSpritePageName(
+                _roamBoardingFrames,
+                _failedSpritePageName);
+        if (restoreIdleFrame && !_isReminderActive && !boardingPageFailed)
+        {
+            // Stop movement immediately, but keep the visual state active until
+            // the same boarding sequence has played backwards to frame zero.
+            CancelEdgeRoamSpritePagePrefetch(includeBoarding: false);
+            if (_edgeRoamPhase != EdgeRoamPhase.Disembarking)
+            {
+                StartEdgeRoamBoarding(
+                    reverse: true,
+                    timestamp: Stopwatch.GetTimestamp());
+            }
+
+            RequestResidentSpritePageTrim();
+            return;
+        }
+
+        // Todo/reminder/edge pages can be cold. Preserve the exact mirrored
+        // panda pixels before clearing transforms so the old hot frame cannot
+        // visibly flip while its replacement page is decoding.
+        BakeCurrentPetVisualTransformIntoDisplayFrame();
+        CompleteEdgeRoamStop(
+            restoreIdleFrame: restoreIdleFrame && !_isReminderActive);
+    }
+
+    private void CompleteEdgeRoamStop(bool restoreIdleFrame)
+    {
+        var wasRoaming = _isEdgeRoaming;
+        var scheduleNext = _edgeRoamStopScheduleNext;
+        var interrupted = _edgeRoamStopInterrupted;
+        _isEdgeRoaming = false;
+        _edgeRoamPhase = EdgeRoamPhase.None;
+        _edgeRoamClockStarted = false;
+        _edgeRoamBoardingPagesReady = false;
+        _edgeRoamFlightPagesReady = false;
+        _edgeRoamBoardingReverse = false;
+        _edgeRoamBoardingStartIndex = 0;
+        _edgeRoamStopScheduleNext = false;
+        _edgeRoamStopInterrupted = false;
+        _edgeRoamStartedTimestamp = 0;
+        _edgeRoamLastRenderingTimestamp = 0;
+        _edgeRoamRouteLength = 0;
+        _edgeRoamApproachLength = 0;
+        _edgeRoamReturnLength = 0;
+        _edgeRoamLandingSeamElapsedSeconds = 0;
+        _edgeRoamRouteTangent = default;
+        _edgeRoamFacingScaleX = 1;
+        CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
+        if (wasRoaming)
+        {
+            ResetPetVisualTransforms();
+            if (restoreIdleFrame && !_isReminderActive)
+            {
+                _nextFrameBlendDuration = TimeSpan.Zero;
+                ShowStableFrame(_idleFrame);
+            }
+        }
+
+        if (scheduleNext)
+        {
+            ScheduleNextEdgeRoam(
+                Stopwatch.GetTimestamp(),
+                interrupted
+                    ? EdgeRoamInterruptedDelay
+                    : EdgeRoamRepeatDelay);
+        }
+        else if (!_edgeRoamingEnabled)
+        {
+            _nextEdgeRoamDueTimestamp = 0;
+        }
+
+        if (wasRoaming)
+        {
+            RequestIdleSpritePageTrim();
+            RestartAutomaticCountdown();
+            UpdateVisualClockSubscription();
+            // AppLogger only enqueues here; its background writer performs the
+            // disk I/O, so the one completion summary is safe even when the
+            // final dismount frame is advanced by CompositionTarget.Rendering.
+            AppLogger.Info(
+                interrupted ? "绕屏中止：用户交互或系统状态变化" : "绕屏完成：大头熊猫坐骑已平稳返回");
+        }
+    }
+
+    private void AdvanceEdgeRoaming(long timestamp)
+    {
+        if (!_isEdgeRoaming)
+        {
+            return;
+        }
+
+        if (_edgeRoamPhase is EdgeRoamPhase.Boarding or
+            EdgeRoamPhase.Disembarking)
+        {
+            AdvanceEdgeRoamBoarding(timestamp);
+            return;
+        }
+
+        if (_edgeRoamPhase == EdgeRoamPhase.Traveling)
+        {
+            AdvanceEdgeRoamTravel(timestamp);
+        }
+    }
+
+    private void StartEdgeRoamBoarding(bool reverse, long timestamp)
+    {
+        if (!_isEdgeRoaming)
+        {
+            return;
+        }
+
+        var wasForwardBoarding =
+            _edgeRoamPhase == EdgeRoamPhase.Boarding &&
+            !_edgeRoamBoardingReverse;
+        var boardingStartIndex = 0;
+        if (reverse &&
+            _currentSpriteFrame is SpriteFrame currentFrame)
+        {
+            var currentBoardingIndex = FindSpriteFrameIndex(
+                _roamBoardingFrames,
+                currentFrame);
+            boardingStartIndex = currentBoardingIndex >= 0
+                ? currentBoardingIndex
+                : wasForwardBoarding
+                    ? 0
+                    : _roamBoardingFrames.Length - 1;
+        }
+
+        _edgeRoamPhase = reverse
+            ? EdgeRoamPhase.Disembarking
+            : EdgeRoamPhase.Boarding;
+        _edgeRoamBoardingReverse = reverse;
+        _edgeRoamBoardingStartIndex = boardingStartIndex;
+        _edgeRoamClockStarted = false;
+        _edgeRoamStartedTimestamp = 0;
+        _edgeRoamLastRenderingTimestamp = 0;
+        _edgeRoamBoardingPagesReady =
+            AreRequiredEdgeRoamBoardingPagesResident();
+
+        if (!reverse)
+        {
+            ResetPetVisualTransforms();
+        }
+        else
+        {
+            // Keep the final travel facing while the authored boarding poses
+            // play backwards. Resetting ScaleX here made a left-facing panda
+            // flip for one composition just before dismounting.
+            PetFacingScale.ScaleY = 1;
+        }
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        ShowStableFrame(
+            _roamBoardingFrames[_edgeRoamBoardingStartIndex]);
+        if (!_edgeRoamBoardingPagesReady)
+        {
+            RequestNextMissingEdgeRoamBoardingPage();
+        }
+
+        UpdateVisualClockSubscription();
+    }
+
+    private void AdvanceEdgeRoamBoarding(long timestamp)
+    {
+        if (!_edgeRoamBoardingPagesReady)
+        {
+            _edgeRoamBoardingPagesReady =
+                AreRequiredEdgeRoamBoardingPagesResident();
+        }
+
+        var firstFrame = _edgeRoamBoardingReverse
+            ? _roamBoardingFrames[_edgeRoamBoardingStartIndex]
+            : _roamBoardingFrames[0];
+        if (!_edgeRoamClockStarted)
+        {
+            if (_currentSpriteFrame is not SpriteFrame currentFrame ||
+                currentFrame != firstFrame ||
+                !_edgeRoamBoardingPagesReady)
+            {
+                _nextFrameBlendDuration = TimeSpan.Zero;
+                ShowStableFrame(firstFrame);
+                RequestNextMissingEdgeRoamBoardingPage();
+                return;
+            }
+
+            _edgeRoamClockStarted = true;
+            _edgeRoamStartedTimestamp = timestamp;
+            _edgeRoamLastRenderingTimestamp = timestamp;
+        }
+
+        if (!_edgeRoamBoardingReverse && !_edgeRoamFlightPagesReady)
+        {
+            _edgeRoamFlightPagesReady =
+                AreAllSequencePagesResident(_roamFlightFrames);
+            if (!_edgeRoamFlightPagesReady)
+            {
+                RequestNextMissingSequencePage(_roamFlightFrames);
+            }
+        }
+
+        var elapsedSeconds = AdvanceEdgeRoamClock(timestamp);
+        var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
+        var frameStep = (int)Math.Floor(elapsedSeconds * poseSpeed);
+        var frameStepCount = _edgeRoamBoardingReverse
+            ? _edgeRoamBoardingStartIndex + 1
+            : _roamBoardingFrames.Length;
+        if (frameStep < frameStepCount)
+        {
+            var frameIndex = _edgeRoamBoardingReverse
+                ? _edgeRoamBoardingStartIndex - frameStep
+                : frameStep;
+            _nextFrameBlendDuration = TimeSpan.Zero;
+            ShowStableFrame(_roamBoardingFrames[frameIndex]);
+            return;
+        }
+
+        if (_edgeRoamBoardingReverse)
+        {
+            CompleteEdgeRoamStop(restoreIdleFrame: true);
+            return;
+        }
+
+        if (!_edgeRoamFlightPagesReady)
+        {
+            // The panda is already fully mounted. Hold the authored final pose
+            // instead of letting a cold flight page consume logical time.
+            _nextFrameBlendDuration = TimeSpan.Zero;
+            ShowStableFrame(_roamBoardingFrames[^1]);
+            RequestNextMissingSequencePage(_roamFlightFrames);
+            return;
+        }
+
+        StartEdgeRoamTravel(timestamp);
+    }
+
+    private void StartEdgeRoamTravel(long timestamp)
+    {
+        _edgeRoamPhase = EdgeRoamPhase.Traveling;
+        _edgeRoamBoardingReverse = false;
+        _edgeRoamClockStarted = true;
+        _edgeRoamStartedTimestamp = timestamp;
+        _edgeRoamLastRenderingTimestamp = timestamp;
+
+        var speed = EdgeRoamBaseSpeedDipsPerSecond * AnimationPlaybackSpeed;
+        var totalDistance = _edgeRoamApproachLength +
+                            _edgeRoamRouteLength +
+                            _edgeRoamReturnLength;
+        var motionDuration = totalDistance / speed;
+        var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
+        var flightLoopDuration = _roamFlightFrames.Length / poseSpeed;
+        _edgeRoamLandingSeamElapsedSeconds =
+            Math.Ceiling(
+                Math.Max(0, motionDuration / flightLoopDuration) - 1e-9) *
+            flightLoopDuration;
+        if (_edgeRoamLandingSeamElapsedSeconds < motionDuration)
+        {
+            _edgeRoamLandingSeamElapsedSeconds += flightLoopDuration;
+        }
+
+        ResetPetVisualTransforms();
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        ShowStableFrame(_roamFlightFrames[0]);
+        UpdateVisualClockSubscription();
+    }
+
+    private void AdvanceEdgeRoamTravel(long timestamp)
+    {
+        var elapsedSeconds = AdvanceEdgeRoamClock(timestamp);
+        var speed = EdgeRoamBaseSpeedDipsPerSecond * AnimationPlaybackSpeed;
+        var distance = elapsedSeconds * speed;
+        var totalDistance = _edgeRoamApproachLength +
+                            _edgeRoamRouteLength +
+                            _edgeRoamReturnLength;
+
+        if (elapsedSeconds >= _edgeRoamLandingSeamElapsedSeconds)
+        {
+            ApplyEdgeRoamingPosition(
+                _edgeRoamStartPoint.X,
+                _edgeRoamStartPoint.Y);
+            StopEdgeRoaming(
+                scheduleNext: true,
+                restoreIdleFrame: true,
+                interrupted: false);
+            return;
+        }
+
+        var radius = GetEdgeRoamCornerRadius(_edgeRoamRouteBounds);
+        Point position;
+        Point lookAhead;
+        if (distance < _edgeRoamApproachLength)
+        {
+            var progress = _edgeRoamApproachLength <= 0
+                ? 1
+                : distance / _edgeRoamApproachLength;
+            position = GetEdgeRoamConnectionPoint(
+                _edgeRoamStartPoint,
+                _edgeRoamRouteStartPoint,
+                startTangent: default,
+                endTangent: _edgeRoamRouteTangent * _edgeRoamApproachLength,
+                progress: progress);
+            lookAhead = GetEdgeRoamConnectionPoint(
+                _edgeRoamStartPoint,
+                _edgeRoamRouteStartPoint,
+                startTangent: default,
+                endTangent: _edgeRoamRouteTangent * _edgeRoamApproachLength,
+                progress: Math.Min(
+                    1,
+                    progress +
+                    GetEdgeRoamConnectionLookAhead(_edgeRoamApproachLength)));
+        }
+        else if (distance < _edgeRoamApproachLength + _edgeRoamRouteLength)
+        {
+            var routeDistance = distance - _edgeRoamApproachLength;
+            var directedDistance = _edgeRoamRouteStartDistance +
+                                   routeDistance * _edgeRoamDirection;
+            position = GetEdgeRoamRoutePoint(
+                _edgeRoamRouteBounds,
+                radius,
+                directedDistance);
+            lookAhead = GetEdgeRoamRoutePoint(
+                _edgeRoamRouteBounds,
+                radius,
+                directedDistance + _edgeRoamDirection * 2);
+        }
+        else if (distance < totalDistance)
+        {
+            var returnDistance = distance -
+                                 _edgeRoamApproachLength -
+                                 _edgeRoamRouteLength;
+            var progress = _edgeRoamReturnLength <= 0
+                ? 1
+                : returnDistance / _edgeRoamReturnLength;
+            position = GetEdgeRoamConnectionPoint(
+                _edgeRoamRouteStartPoint,
+                _edgeRoamStartPoint,
+                startTangent: _edgeRoamRouteTangent * _edgeRoamReturnLength,
+                endTangent: default,
+                progress: progress);
+            lookAhead = GetEdgeRoamConnectionPoint(
+                _edgeRoamRouteStartPoint,
+                _edgeRoamStartPoint,
+                startTangent: _edgeRoamRouteTangent * _edgeRoamReturnLength,
+                endTangent: default,
+                progress: Math.Min(
+                    1,
+                    progress +
+                    GetEdgeRoamConnectionLookAhead(_edgeRoamReturnLength)));
+        }
+        else
+        {
+            // Position has eased to rest; hover for at most one flight loop so
+            // disembarking starts at the exact loop seam instead of an arbitrary
+            // interpolated pose.
+            position = _edgeRoamStartPoint;
+            lookAhead = _edgeRoamStartPoint;
+        }
+
+        UpdateEdgeRoamFacing(position, lookAhead);
+        ApplyEdgeRoamingPosition(position.X, position.Y);
+        ShowStableFrame(GetEdgeRoamPose(elapsedSeconds));
+    }
+
+    private SpriteFrame GetEdgeRoamPose(double elapsedSeconds)
+    {
+        var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
+        // Flight and wave were authored as independent loops. Switching at a
+        // wall-clock interval jumped between unrelated silhouettes. Keep wave
+        // available in the atlas for a future seam-authored bridge, but present
+        // only the phase-stable flight loop at runtime.
+        var absoluteFrame = Math.Max(
+            0L,
+            (long)Math.Floor(elapsedSeconds * poseSpeed));
+        var flightIndex = (int)(absoluteFrame % _roamFlightFrames.Length);
+        return _roamFlightFrames[flightIndex];
+    }
+
+    private double AdvanceEdgeRoamClock(long timestamp)
+    {
+        var frameGap = timestamp - _edgeRoamLastRenderingTimestamp;
+        if (frameGap > ToStopwatchTicks(EdgeRoamMaximumClockGap))
+        {
+            // Suspend/debugger/UI stalls are dead time. Moving the phase origin
+            // drops the gap without replaying poses or accumulated distance.
+            _edgeRoamStartedTimestamp = checked(
+                _edgeRoamStartedTimestamp + frameGap);
+        }
+
+        _edgeRoamLastRenderingTimestamp = timestamp;
+        var elapsedTicks = Math.Max(
+            0,
+            timestamp - _edgeRoamStartedTimestamp);
+        return elapsedTicks / (double)Stopwatch.Frequency;
+    }
+
+    private bool AreRequiredEdgeRoamBoardingPagesResident()
+    {
+        var finalRequiredIndex = _edgeRoamBoardingReverse
+            ? _edgeRoamBoardingStartIndex
+            : _roamBoardingFrames.Length - 1;
+        for (var index = 0; index <= finalRequiredIndex; index++)
+        {
+            if (!_residentSpritePages.ContainsKey(
+                    _roamBoardingFrames[index].PageName))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void RequestNextMissingEdgeRoamBoardingPage()
+    {
+        var finalRequiredIndex = _edgeRoamBoardingReverse
+            ? _edgeRoamBoardingStartIndex
+            : _roamBoardingFrames.Length - 1;
+        for (var index = 0; index <= finalRequiredIndex; index++)
+        {
+            var pageName = _roamBoardingFrames[index].PageName;
+            if (!_residentSpritePages.ContainsKey(pageName))
+            {
+                RequestSpritePagePrefetch(pageName, urgent: true);
+                return;
+            }
+        }
+    }
+
+    private bool AreAllSequencePagesResident(SpriteFrame[] frames)
+    {
+        foreach (var frame in frames)
+        {
+            if (!_residentSpritePages.ContainsKey(frame.PageName))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static int FindSpriteFrameIndex(
+        SpriteFrame[] frames,
+        SpriteFrame target)
+    {
+        for (var index = 0; index < frames.Length; index++)
+        {
+            if (frames[index] == target)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private void RequestNextMissingSequencePage(SpriteFrame[] frames)
+    {
+        foreach (var frame in frames)
+        {
+            if (!_residentSpritePages.ContainsKey(frame.PageName))
+            {
+                RequestSpritePagePrefetch(frame.PageName, urgent: true);
+                return;
+            }
+        }
+    }
+
+    private void CancelEdgeRoamSpritePagePrefetch(bool includeBoarding)
+    {
+        var activeRoamDecode =
+            IsEdgeRoamSpritePageName(
+                _spritePagePrefetchPageName,
+                includeBoarding);
+        if (_pendingSpriteFrame is SpriteFrame pendingFrame &&
+            IsEdgeRoamSpritePageName(
+                pendingFrame.PageName,
+                includeBoarding))
+        {
+            _pendingSpriteFrame = null;
+            _pendingSpriteFrameBlendDuration = TimeSpan.Zero;
+        }
+
+        if (IsEdgeRoamSpritePageName(
+                _renderDeferredSpritePageName,
+                includeBoarding))
+        {
+            _renderDeferredSpritePageName = null;
+            _renderDeferredSpritePageUrgent = false;
+        }
+
+        if (IsEdgeRoamSpritePageName(
+                _renderDeferredSpritePageFailureName,
+                includeBoarding))
+        {
+            _renderDeferredSpritePageFailureName = null;
+            _renderDeferredSpritePageFailureReason = null;
+        }
+
+        if (IsEdgeRoamSpritePageName(
+                _desiredSpritePageName,
+                includeBoarding))
+        {
+            _desiredSpritePageName = null;
+            _desiredSpritePageUrgent = false;
+        }
+
+        if (activeRoamDecode)
+        {
+            // A completion already queued to the UI thread must be stale even if
+            // cancellation loses the race. It will discard its decoded buffer
+            // instead of publishing an unused roam page after the idle trim.
+            _spritePagePrefetchGeneration++;
+            RequestSpritePagePrefetchCancellation();
+        }
+
+        if (IsEdgeRoamSpritePageName(
+                _failedSpritePageName,
+                includeBoarding))
+        {
+            _failedSpritePageName = null;
+        }
+
+        if (!HasDeferredSpritePageDispatchWork())
+        {
+            _spritePagePrefetchDispatchTimer.Stop();
+        }
+    }
+
+    private bool IsEdgeRoamSpritePageName(
+        string? pageName,
+        bool includeBoarding) =>
+        pageName is not null &&
+        ((includeBoarding &&
+          FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName)) ||
+         FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
+         FrameSequenceUsesSpritePage(_roamWaveFrames, pageName));
+
+    private static bool IsSequenceSpritePageName(
+        SpriteFrame[] frames,
+        string? pageName) =>
+        pageName is not null &&
+        FrameSequenceUsesSpritePage(frames, pageName);
+
+    private void UpdateEdgeRoamFacing(Point position, Point lookAhead)
+    {
+        var deltaX = lookAhead.X - position.X;
+        var deltaY = lookAhead.Y - position.Y;
+        if (Math.Abs(deltaY) > Math.Abs(deltaX) * 1.2 &&
+            Math.Abs(deltaY) > 0.01)
+        {
+            var radius = GetEdgeRoamCornerRadius(_edgeRoamRouteBounds);
+            if (position.X <= _edgeRoamRouteBounds.Left + radius * 0.55)
+            {
+                // On the left edge the panda looks right, into the screen.
+                _edgeRoamFacingScaleX = 1;
+            }
+            else if (position.X >=
+                     _edgeRoamRouteBounds.Right - radius * 0.55)
+            {
+                // On the right edge the panda looks left, into the screen.
+                _edgeRoamFacingScaleX = -1;
+            }
+        }
+        else if (Math.Abs(deltaX) > Math.Abs(deltaY) * 1.2 &&
+            Math.Abs(deltaX) > 0.01)
+        {
+            _edgeRoamFacingScaleX = deltaX > 0 ? 1 : -1;
+        }
+
+        PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
+        PetFacingScale.ScaleY = 1;
+    }
+
+    private void ApplyEdgeRoamingPosition(double logicalLeft, double logicalTop)
+    {
+        _edgeRoamLogicalLeft = logicalLeft;
+        _edgeRoamLogicalTop = logicalTop;
+        _isApplyingEdgeRoamPosition = true;
+        try
+        {
+            Left = SnapDipToPhysicalPixel(_edgeRoamLogicalLeft, horizontal: true);
+            Top = SnapDipToPhysicalPixel(_edgeRoamLogicalTop, horizontal: false);
+        }
+        finally
+        {
+            _isApplyingEdgeRoamPosition = false;
+        }
+    }
+
+    private static double GetPointDistance(Point first, Point second)
+    {
+        var deltaX = second.X - first.X;
+        var deltaY = second.Y - first.Y;
+        return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+    }
+
+    private static Point GetEdgeRoamConnectionPoint(
+        Point start,
+        Point end,
+        Vector startTangent,
+        Vector endTangent,
+        double progress)
+    {
+        var t = Math.Clamp(progress, 0, 1);
+        var t2 = t * t;
+        var t3 = t2 * t;
+        var startWeight = 2 * t3 - 3 * t2 + 1;
+        var startTangentWeight = t3 - 2 * t2 + t;
+        var endWeight = -2 * t3 + 3 * t2;
+        var endTangentWeight = t3 - t2;
+        return new Point(
+            startWeight * start.X +
+            startTangentWeight * startTangent.X +
+            endWeight * end.X +
+            endTangentWeight * endTangent.X,
+            startWeight * start.Y +
+            startTangentWeight * startTangent.Y +
+            endWeight * end.Y +
+            endTangentWeight * endTangent.Y);
+    }
+
+    private static double GetEdgeRoamConnectionLookAhead(double length) =>
+        length > 0.01
+            ? Math.Min(0.1, 2 / length)
+            : 1;
+
+    private static double GetEdgeRoamCornerRadius(Rect bounds) =>
+        Math.Max(
+            1,
+            Math.Min(
+                EdgeRoamCornerRadiusDips,
+                Math.Min(bounds.Width, bounds.Height) / 2));
+
+    private static double GetEdgeRoamRouteLength(Rect bounds, double radius)
+    {
+        var straightWidth = Math.Max(0, bounds.Width - radius * 2);
+        var straightHeight = Math.Max(0, bounds.Height - radius * 2);
+        return 2 * straightWidth +
+               2 * straightHeight +
+               2 * Math.PI * radius;
+    }
+
+    private static Vector GetEdgeRoamRouteTangent(
+        Rect bounds,
+        double radius,
+        double distance,
+        int direction)
+    {
+        var normalizedDirection = direction < 0 ? -1 : 1;
+        var before = GetEdgeRoamRoutePoint(
+            bounds,
+            radius,
+            distance - normalizedDirection);
+        var after = GetEdgeRoamRoutePoint(
+            bounds,
+            radius,
+            distance + normalizedDirection);
+        var tangent = after - before;
+        if (tangent.LengthSquared <= 1e-9)
+        {
+            return new Vector(normalizedDirection, 0);
+        }
+
+        tangent.Normalize();
+        return tangent;
+    }
+
+    private static double FindClosestEdgeRoamRouteDistance(
+        Rect bounds,
+        double radius,
+        Point point)
+    {
+        var routeLength = GetEdgeRoamRouteLength(bounds, radius);
+        var bestDistance = 0d;
+        var bestSquaredDistance = double.PositiveInfinity;
+        for (var sample = 0; sample < EdgeRoamClosestPointSamples; sample++)
+        {
+            var distance = routeLength * sample / EdgeRoamClosestPointSamples;
+            var candidate = GetEdgeRoamRoutePoint(bounds, radius, distance);
+            var deltaX = candidate.X - point.X;
+            var deltaY = candidate.Y - point.Y;
+            var squaredDistance = deltaX * deltaX + deltaY * deltaY;
+            if (squaredDistance < bestSquaredDistance)
+            {
+                bestSquaredDistance = squaredDistance;
+                bestDistance = distance;
+            }
+        }
+
+        return bestDistance;
+    }
+
+    private static Point GetEdgeRoamRoutePoint(
+        Rect bounds,
+        double radius,
+        double distance)
+    {
+        var routeLength = GetEdgeRoamRouteLength(bounds, radius);
+        var normalized = distance % routeLength;
+        if (normalized < 0)
+        {
+            normalized += routeLength;
+        }
+
+        var horizontal = Math.Max(0, bounds.Width - radius * 2);
+        var vertical = Math.Max(0, bounds.Height - radius * 2);
+        var arc = Math.PI * radius / 2;
+        var left = bounds.Left;
+        var top = bounds.Top;
+        var right = bounds.Right;
+        var bottom = bounds.Bottom;
+
+        if (normalized < horizontal)
+        {
+            return new Point(left + radius + normalized, top);
+        }
+
+        normalized -= horizontal;
+        if (normalized < arc)
+        {
+            var angle = -Math.PI / 2 + normalized / radius;
+            return new Point(
+                right - radius + Math.Cos(angle) * radius,
+                top + radius + Math.Sin(angle) * radius);
+        }
+
+        normalized -= arc;
+        if (normalized < vertical)
+        {
+            return new Point(right, top + radius + normalized);
+        }
+
+        normalized -= vertical;
+        if (normalized < arc)
+        {
+            var angle = normalized / radius;
+            return new Point(
+                right - radius + Math.Cos(angle) * radius,
+                bottom - radius + Math.Sin(angle) * radius);
+        }
+
+        normalized -= arc;
+        if (normalized < horizontal)
+        {
+            return new Point(right - radius - normalized, bottom);
+        }
+
+        normalized -= horizontal;
+        if (normalized < arc)
+        {
+            var angle = Math.PI / 2 + normalized / radius;
+            return new Point(
+                left + radius + Math.Cos(angle) * radius,
+                bottom - radius + Math.Sin(angle) * radius);
+        }
+
+        normalized -= arc;
+        if (normalized < vertical)
+        {
+            return new Point(left, bottom - radius - normalized);
+        }
+
+        normalized -= vertical;
+        var finalAngle = Math.PI + normalized / radius;
+        return new Point(
+            left + radius + Math.Cos(finalAngle) * radius,
+            top + radius + Math.Sin(finalAngle) * radius);
+    }
+
     private void AutomaticTimer_Tick(object? sender, EventArgs e)
     {
         if (_isClosing || _isReminderActive || !_automaticAnimationEnabled)
         {
             return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        if (IsEdgeRoamDue(timestamp))
+        {
+            StopPillowBreathing();
+            if (StartEdgeRoaming())
+            {
+                return;
+            }
+
+            ScheduleNextEdgeRoam(timestamp, EdgeRoamInterruptedDelay);
         }
 
         if (_isPillowBreathing)
@@ -2050,7 +3072,8 @@ public partial class MainWindow : Window
         }
 
         if (_activeClip is not null || _dragInteractionActive ||
-            _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None)
+            _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
         {
             return;
         }
@@ -2074,12 +3097,28 @@ public partial class MainWindow : Window
         if (_isClosing || !_automaticAnimationEnabled ||
             _isReminderActive ||
             _activeClip is not null || _isPillowBreathing || _dragInteractionActive ||
-            _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None)
+            _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
         {
             return;
         }
 
-        _automaticTimer.Interval = AutomaticAnimationInterval;
+        var interval = AutomaticAnimationInterval;
+        if (_edgeRoamingEnabled && _nextEdgeRoamDueTimestamp > 0)
+        {
+            var remainingTicks =
+                _nextEdgeRoamDueTimestamp - Stopwatch.GetTimestamp();
+            var remaining = remainingTicks <= 0
+                ? TimeSpan.FromMilliseconds(1)
+                : TimeSpan.FromSeconds(
+                    remainingTicks / (double)Stopwatch.Frequency);
+            if (remaining < interval)
+            {
+                interval = remaining;
+            }
+        }
+
+        _automaticTimer.Interval = interval;
         _automaticTimer.Start();
     }
 
@@ -2524,7 +3563,8 @@ public partial class MainWindow : Window
     }
 
     private static bool IsEdgeSpriteFrame(SpriteFrame frame) =>
-        frame.Name.StartsWith("Assets/luban-edge-", StringComparison.Ordinal);
+        frame.Name.StartsWith("Assets/luban-edge-", StringComparison.Ordinal) ||
+        frame.Name.StartsWith("Assets/luban-roam-", StringComparison.Ordinal);
 
     private void DiscardSupersededPendingSpriteFrame(SpriteFrame displayedFrame)
     {
@@ -2801,6 +3841,11 @@ public partial class MainWindow : Window
                 AdvanceEdgePeek(timestamp);
             }
 
+            if (_isEdgeRoaming)
+            {
+                AdvanceEdgeRoaming(timestamp);
+            }
+
             UpdateFrameBlend(timestamp, force: false);
             UpdateVisualClockSubscription();
         }
@@ -2833,6 +3878,7 @@ public partial class MainWindow : Window
                            _isPetSizeTransitioning ||
                            _activeClip is not null ||
                             _edgeDock != EdgeDock.None ||
+                           _isEdgeRoaming ||
                            _isFrameBlending ||
                            _pendingSpriteFrame is not null ||
                             (_petSizeTodoPositionNeedsUpdate &&
@@ -3688,6 +4734,11 @@ public partial class MainWindow : Window
     private bool StopAnimatedStateForFailedSpritePage(string pageName)
     {
         var failedCurrentEdge = false;
+        var failedRoamingPage =
+            _isEdgeRoaming &&
+            (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_roamWaveFrames, pageName));
         if (_edgeDock != EdgeDock.None)
         {
             var edgeFrames = GetEdgeFrames(_edgeDock);
@@ -3699,7 +4750,7 @@ public partial class MainWindow : Window
                                     StringComparison.Ordinal);
         }
 
-        if (!failedCurrentEdge)
+        if (!failedCurrentEdge && !failedRoamingPage)
         {
             return false;
         }
@@ -3715,8 +4766,22 @@ public partial class MainWindow : Window
                 restartAutomaticCountdown: false,
                 restoreIdleFrame: false);
         }
+        if (failedRoamingPage)
+        {
+            StopEdgeRoaming(
+                scheduleNext: true,
+                restoreIdleFrame: true,
+                interrupted: true);
+        }
 
-        ResetPetVisualTransforms();
+        var reverseRoamExitActive =
+            failedRoamingPage &&
+            _isEdgeRoaming &&
+            _edgeRoamPhase == EdgeRoamPhase.Disembarking;
+        if (!reverseRoamExitActive)
+        {
+            ResetPetVisualTransforms();
+        }
         RestartAutomaticCountdown();
         UpdateVisualClockSubscription();
         return true;
@@ -4070,6 +5135,7 @@ public partial class MainWindow : Window
         !_petSizeCommitPending &&
         !_isFrameBlending &&
         !_isPillowBreathing &&
+        !_isEdgeRoaming &&
         _bubbleMode == BubbleMode.None &&
         !_todoWindow.IsVisible &&
         !BubblePopup.IsOpen &&
@@ -4267,6 +5333,15 @@ public partial class MainWindow : Window
         if (_isReminderActive &&
             (FrameSequenceUsesSpritePage(_reminderEnterFrames, pageName) ||
              FrameSequenceUsesSpritePage(_reminderHoldFrames, pageName)))
+        {
+            return true;
+        }
+
+        if (_isEdgeRoaming &&
+            (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
+             (_edgeRoamPhase != EdgeRoamPhase.Disembarking &&
+              (FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
+               FrameSequenceUsesSpritePage(_roamWaveFrames, pageName)))))
         {
             return true;
         }
@@ -4777,6 +5852,10 @@ public partial class MainWindow : Window
         var previousMode = _bubbleMode;
         if (mode is BubbleMode.Todo or BubbleMode.Reminder)
         {
+            StopEdgeRoaming(
+                scheduleNext: true,
+                restoreIdleFrame: false,
+                interrupted: true);
             // Showing an owned WPF window can synchronously pump layout/render work.
             // Unsubscribe before Show() so a re-entrant composition callback cannot
             // observe BubbleMode.Todo while the old reaction is still active and
@@ -5116,6 +6195,7 @@ public partial class MainWindow : Window
         {
             _todoWindow.ShowDefaultTab();
             _todoWindow.SetPetSizeScale(_petSizeScale);
+            _todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled);
             _todoWindow.Opacity = 0;
             if (!_todoWindow.IsVisible)
             {
@@ -5172,6 +6252,35 @@ public partial class MainWindow : Window
         QueuePetSizeScaleTargetAt(scale, Stopwatch.GetTimestamp());
     }
 
+    private void TodoWindow_EdgeRoamingEnabledChanged(bool enabled)
+    {
+        if (_edgeRoamingEnabled == enabled)
+        {
+            return;
+        }
+
+        _edgeRoamingEnabled = enabled;
+        _todoWindow.SetEdgeRoamingEnabled(enabled);
+        if (enabled)
+        {
+            ScheduleNextEdgeRoam(
+                Stopwatch.GetTimestamp(),
+                EdgeRoamInitialDelay);
+        }
+        else
+        {
+            StopEdgeRoaming(
+                scheduleNext: false,
+                restoreIdleFrame: true,
+                interrupted: true);
+            _nextEdgeRoamDueTimestamp = 0;
+        }
+
+        SaveSettings();
+        RestartAutomaticCountdown();
+        AppLogger.Info($"绕屏动画：{(enabled ? "开启" : "关闭")}");
+    }
+
     private void TodoWindow_PetSizeAdjustmentStarted()
     {
         if (_isTransientPetSizeOverride)
@@ -5179,6 +6288,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        StopEdgeRoaming(
+            scheduleNext: true,
+            restoreIdleFrame: true,
+            interrupted: true);
         _isPetSizeAdjustmentActive = true;
         _petSizeAdjustmentValueChanged = false;
         _petSizeCommitPending = false;
@@ -5965,6 +7078,7 @@ public partial class MainWindow : Window
             _petSizeSettingsDirty ? _petSizeTargetScale : _petSizeScale);
         var saved = _settingsStore.Save(new AppSettings
         {
+            EdgeRoamingEnabled = _edgeRoamingEnabled,
             PetSizeScale = scaleToPersist
         });
         if (saved)
@@ -6410,6 +7524,14 @@ public partial class MainWindow : Window
         Cute,
         Todo,
         Reminder
+    }
+
+    private enum EdgeRoamPhase
+    {
+        None,
+        Boarding,
+        Traveling,
+        Disembarking
     }
 
     private enum EdgeDock

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="小鲁班任务小屋"
         Width="292"
-        Height="350"
+        Height="378"
         AllowsTransparency="True"
         Background="Transparent"
         ResizeMode="NoResize"
@@ -39,6 +39,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="34" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="28" />
                     <RowDefinition Height="44" />
                 </Grid.RowDefinitions>
 
@@ -709,7 +710,22 @@
                     </Grid>
                 </Grid>
 
-                <Grid Grid.Row="2" Margin="0,2,0,4">
+                <CheckBox x:Name="EdgeRoamingToggle"
+                          Grid.Row="2"
+                          HorizontalAlignment="Left"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="绕屏动画"
+                          Content="绕屏动画"
+                          Cursor="Hand"
+                          FontFamily="Microsoft YaHei"
+                          FontSize="12"
+                          Foreground="#515966"
+                          IsChecked="True"
+                          ToolTip="控制小鲁班是否自动绕着屏幕移动"
+                          Checked="EdgeRoamingToggle_Changed"
+                          Unchecked="EdgeRoamingToggle_Changed" />
+
+                <Grid Grid.Row="3" Margin="0,2,0,4">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="72" />
                         <ColumnDefinition Width="*" />
