@@ -67,6 +67,11 @@ internal static class Program
         };
         try
         {
+            if (args.Contains("--picker-preview", StringComparer.OrdinalIgnoreCase))
+            {
+                return RunScheduledPickerPreview(application);
+            }
+
             AssertLoggingContract();
             RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
 
@@ -274,6 +279,27 @@ internal static class Program
         {
             application.Shutdown();
         }
+    }
+
+    private static int RunScheduledPickerPreview(Application application)
+    {
+        var preview = new TodoWindow
+        {
+            AllowsTransparency = false,
+            Background = Brushes.White,
+            Left = 420,
+            ShowInTaskbar = true,
+            Title = "小鲁班日期时间选择器预览",
+            Top = 220,
+            Topmost = false,
+            WindowStyle = WindowStyle.SingleBorderWindow,
+            ScheduledTasks = new ObservableCollection<ScheduledTaskItem>()
+        };
+        Invoke(preview, "SelectTaskPage", true, false);
+        preview.AllowApplicationClose();
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        application.Run(preview);
+        return 0;
     }
 
     private static void RunCheck(string name, Action check)
@@ -7953,7 +7979,30 @@ internal static class Program
             var scheduledPage = GetField<Grid>(todoWindow, "ScheduledTaskPage");
             var scheduledList = GetField<ListBox>(todoWindow, "ScheduledTaskItemsControl");
             var scheduledInput = GetField<TextBox>(todoWindow, "ScheduledTaskInput");
-            var scheduledDate = GetField<DatePicker>(todoWindow, "ScheduledDatePicker");
+            var scheduledDatePickerHost = GetField<Border>(
+                todoWindow,
+                "ScheduledDatePickerHost");
+            var scheduledDateInput = GetField<TextBox>(
+                todoWindow,
+                "ScheduledDateInput");
+            var scheduledDatePickerPopup = GetField<Popup>(
+                todoWindow,
+                "ScheduledDatePickerPopup");
+            var scheduledDateItems = GetField<ItemsControl>(
+                todoWindow,
+                "ScheduledDateItemsControl");
+            var scheduledDateMonthText = GetField<TextBlock>(
+                todoWindow,
+                "ScheduledDateMonthText");
+            var scheduledDatePreviousMonthButton = GetField<Button>(
+                todoWindow,
+                "ScheduledDatePreviousMonthButton");
+            var scheduledDateNextMonthButton = GetField<Button>(
+                todoWindow,
+                "ScheduledDateNextMonthButton");
+            var scheduledDateTodayButton = GetField<Button>(
+                todoWindow,
+                "ScheduledDatePickerTodayButton");
             var scheduledTime = GetField<TextBox>(todoWindow, "ScheduledTimeInput");
             var scheduledTimePickerHost = GetField<Border>(
                 todoWindow,
@@ -7991,14 +8040,16 @@ internal static class Program
                    scheduledTime.MaxLength == 8 &&
                    Equals(scheduledSubmit.Content, "设定") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed &&
-                   scheduledDate.SelectedDate is not null &&
+                   GetRawField(todoWindow, "_scheduledDate") is DateTime &&
+                   scheduledDateInput.IsReadOnly &&
+                   !InputMethod.GetIsInputMethodEnabled(scheduledDateInput) &&
                    DateTime.TryParseExact(
                        scheduledTime.Text,
                        "HH:mm:ss",
                        CultureInfo.InvariantCulture,
                        DateTimeStyles.None,
                        out _),
-                "定时页必须同时提供内容、日期和 HH:mm:ss 秒级时间控件");
+                "定时页必须同时提供只读自定义日期入口和 HH:mm:ss 秒级时间控件");
             Assert(string.IsNullOrEmpty(validationText.Text),
                 "定时任务初始状态不应显示错误提示");
 
@@ -8013,7 +8064,11 @@ internal static class Program
                     new DateTime(2031, 5, 6, 7, 8, 9)));
             Invoke(todoWindow, "ResetScheduledTaskDraftClock", exactNow);
             var expectedLocalNow = exactNow.LocalDateTime;
-            Assert(scheduledDate.SelectedDate == expectedLocalNow.Date &&
+            Assert(GetRawField(todoWindow, "_scheduledDate") is DateTime scheduledDate &&
+                   scheduledDate == expectedLocalNow.Date &&
+                   scheduledDateInput.Text == expectedLocalNow.ToString(
+                       "yyyy-MM-dd",
+                       CultureInfo.InvariantCulture) &&
                    scheduledTime.Text == expectedLocalNow.ToString(
                        "HH:mm:ss",
                        CultureInfo.InvariantCulture) &&
@@ -8025,10 +8080,15 @@ internal static class Program
                    scheduledSecondPicker.Items.Count == 60 &&
                    scheduledTime.IsReadOnly &&
                    ReferenceEquals(
+                       scheduledDatePickerPopup.PlacementTarget,
+                       scheduledDatePickerHost) &&
+                   scheduledDatePickerPopup.AllowsTransparency &&
+                   scheduledDatePickerPopup.StaysOpen &&
+                   ReferenceEquals(
                        scheduledTimePickerPopup.PlacementTarget,
                        scheduledTimePickerHost) &&
                    scheduledTimePickerPopup.AllowsTransparency,
-                "定时任务默认值必须精确使用当前本地秒，并通过 24/60/60 的可爱瞬态时间选择浮层编辑");
+                "定时任务默认值必须精确使用当前本地秒，并通过自定义日期月历和 24/60/60 时间浮层编辑");
 
             Invoke(todoWindow, "SelectTaskPage", true, false);
             Assert(todoTab.IsChecked != true &&
@@ -8036,6 +8096,26 @@ internal static class Program
                    todoPage.Visibility == Visibility.Collapsed &&
                    scheduledPage.Visibility == Visibility.Visible,
                 "点击右侧“定时任务”后必须只显示定时页");
+            todoWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            todoWindow.UpdateLayout();
+            var formattedTime = new FormattedText(
+                scheduledTime.Text,
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface(
+                    scheduledTime.FontFamily,
+                    scheduledTime.FontStyle,
+                    scheduledTime.FontWeight,
+                    scheduledTime.FontStretch),
+                scheduledTime.FontSize,
+                scheduledTime.Foreground,
+                VisualTreeHelper.GetDpi(scheduledTime).PixelsPerDip);
+            Assert(scheduledDatePickerHost.ActualWidth >= 101.5 &&
+                   scheduledTimePickerHost.ActualWidth >= 91.5 &&
+                   scheduledTime.ActualWidth >=
+                   formattedTime.WidthIncludingTrailingWhitespace,
+                "日期行必须给 HH:mm:ss 留足宽度，不能被时钟图标或下拉箭头裁掉");
             todoWindow.ShowDefaultTab();
             Assert(todoTab.IsChecked == true &&
                    scheduledTab.IsChecked != true &&
@@ -8046,57 +8126,213 @@ internal static class Program
             var transientCompletionCount = 0;
             todoWindow.TransientInteractionCompleted += () =>
                 transientCompletionCount++;
-            Invoke(
-                todoWindow,
-                "ScheduledDatePicker_CalendarOpened",
-                scheduledDate,
-                new RoutedEventArgs());
-            Assert(todoWindow.IsTransientPopupOpen,
-                "DatePicker 日历展开时必须标记 transient popup，防止外部失焦误收起窗口");
-            Invoke(
-                todoWindow,
-                "ScheduledDatePicker_CalendarClosed",
-                scheduledDate,
-                new RoutedEventArgs());
-            Assert(!todoWindow.IsTransientPopupOpen &&
-                   transientCompletionCount == 1,
-                "DatePicker 日历关闭后必须清理 transient 状态并通知主窗口重新判定收起");
-            Invoke(
-                todoWindow,
-                "ScheduledDatePicker_CalendarClosed",
-                scheduledDate,
-                new RoutedEventArgs());
-            Assert(transientCompletionCount == 1,
-                "DatePicker 重复 CalendarClosed 不得重复发出 transient 完成事件");
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            var timeBeforeDateBrowsing = scheduledTime.Text;
+            Invoke(todoWindow, "OpenScheduledDatePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledDatePickerPopup.IsOpen &&
+                   todoWindow.IsTransientPopupOpen &&
+                   scheduledDateItems.Items.Count == 42 &&
+                   scheduledDateMonthText.Text ==
+                   expectedLocalNow.ToString(
+                       "yyyy年M月",
+                       CultureInfo.GetCultureInfo("zh-CN")),
+                "自定义日期浮层必须使用固定六周、可切换月份并标记 transient 交互");
+            var currentMonthCells = scheduledDateItems.Items
+                .Cast<object>()
+                .Count(cell => GetProperty<bool>(cell, "IsCurrentMonth"));
+            var selectedCells = scheduledDateItems.Items
+                .Cast<object>()
+                .Where(cell => GetProperty<bool>(cell, "IsSelected"))
+                .ToArray();
+            Assert(currentMonthCells == DateTime.DaysInMonth(
+                       expectedLocalNow.Year,
+                       expectedLocalNow.Month) &&
+                   selectedCells.Length == 1 &&
+                   GetProperty<DateTime>(selectedCells[0], "Date") ==
+                   expectedLocalNow.Date,
+                "自定义日期浮层必须准确生成本月天数并唯一标出当前草稿日期");
 
             Invoke(
                 todoWindow,
-                "ScheduledTimePickerPopup_Opened",
-                scheduledTimePickerPopup,
-                EventArgs.Empty);
-            Assert(todoWindow.IsTransientPopupOpen,
-                "秒级时间选择浮层打开时必须进入 transient 交互保护");
+                "RefreshScheduledCalendar",
+                new DateTime(2031, 12, 1));
+            Assert(scheduledDateMonthText.Text == "2031年12月" &&
+                   GetRawField(todoWindow, "_scheduledDate") is DateTime browsedDate &&
+                   browsedDate == expectedLocalNow.Date &&
+                   scheduledDateInput.Text == "2031-05-06" &&
+                   scheduledTime.Text == timeBeforeDateBrowsing &&
+                   GetRawField(todoWindow, "_scheduledTaskDraftClockEdited") is false,
+                "浏览到同年其他月份不得偷偷修改已选日期、时分秒或草稿编辑状态");
+            scheduledDateNextMonthButton.RaiseEvent(
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    scheduledDateNextMonthButton));
+            Assert(scheduledDateMonthText.Text == "2032年1月",
+                "点击“下一个月”必须从十二月正确跨到下一年一月");
+            scheduledDatePreviousMonthButton.RaiseEvent(
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    scheduledDatePreviousMonthButton));
+            Assert(scheduledDateMonthText.Text == "2031年12月" &&
+                   GetRawField(todoWindow, "_scheduledDate") is DateTime returnedDate &&
+                   returnedDate == expectedLocalNow.Date,
+                "点击“上一个月”必须从一月正确退回上一年十二月，且不得改动已选日期");
             Invoke(
                 todoWindow,
-                "ScheduledTimePickerPopup_Closed",
-                scheduledTimePickerPopup,
-                EventArgs.Empty);
+                "RefreshScheduledCalendar",
+                new DateTime(2032, 2, 1));
+            Assert(scheduledDateItems.Items
+                       .Cast<object>()
+                       .Any(cell =>
+                           GetProperty<DateTime>(cell, "Date") ==
+                           new DateTime(2032, 2, 29) &&
+                           GetProperty<bool>(cell, "IsCurrentMonth")),
+                "固定六周月历必须正确显示闰年二月二十九日");
+
+            var dateInputSource = PresentationSource.FromVisual(scheduledDateInput)
+                ?? throw new InvalidOperationException("日期入口未建立输入源");
+            var dateEscape = CreateKeyEvent(dateInputSource, Key.Escape);
+            Invoke(
+                todoWindow,
+                "TodoWindow_PreviewKeyDown",
+                todoWindow,
+                dateEscape);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(dateEscape.Handled &&
+                   !scheduledDatePickerPopup.IsOpen &&
+                   !todoWindow.IsTransientPopupOpen &&
+                   transientCompletionCount == 1 &&
+                   GetRawField(todoWindow, "_scheduledDate") is DateTime escapedDate &&
+                   escapedDate == expectedLocalNow.Date &&
+                   scheduledTime.Text == timeBeforeDateBrowsing,
+                $"Esc 必须只关闭日期浮层，不改变已选日期或时分秒，并只通知一次结束；" +
+                $"Handled={dateEscape.Handled}, DateOpen={scheduledDatePickerPopup.IsOpen}, " +
+                $"Transient={todoWindow.IsTransientPopupOpen}, Completions={transientCompletionCount}, " +
+                $"Date={GetRawField(todoWindow, "_scheduledDate")}, Time={scheduledTime.Text}");
+            Invoke(todoWindow, "CloseScheduledDatePicker");
+            Assert(transientCompletionCount == 1,
+                "重复关闭日期浮层不得重复发出 transient 完成事件");
+
+            Invoke(todoWindow, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledTimePickerPopup.IsOpen &&
+                   !scheduledDatePickerPopup.IsOpen &&
+                   todoWindow.IsTransientPopupOpen,
+                "打开秒级时间浮层时必须关闭日期浮层并保持 transient 保护");
+            Invoke(todoWindow, "OpenScheduledDatePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledDatePickerPopup.IsOpen &&
+                   !scheduledTimePickerPopup.IsOpen &&
+                   todoWindow.IsTransientPopupOpen &&
+                   transientCompletionCount == 1,
+                "日期和时间浮层必须原子互斥，切换中不能误报交互结束");
+            Invoke(todoWindow, "CloseScheduledDatePicker");
             Assert(!todoWindow.IsTransientPopupOpen &&
                    transientCompletionCount == 2,
-                "秒级时间选择浮层关闭时必须退出 transient 状态并只通知一次");
+                "最后一个日期或时间浮层关闭时必须且只能通知一次结束");
+
             Invoke(
                 todoWindow,
-                "ScheduledTimePickerPopup_Closed",
-                scheduledTimePickerPopup,
-                EventArgs.Empty);
-            Assert(transientCompletionCount == 2,
-                "重复关闭秒级时间选择浮层不得重复发送 transient 完成事件");
+                "OpenScheduledDatePicker");
+            Invoke(
+                todoWindow,
+                "RefreshScheduledCalendar",
+                new DateTime(2032, 2, 1));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var leapDate = new DateTime(2032, 2, 29);
+            var leapCell = scheduledDateItems.Items
+                .Cast<object>()
+                .Single(cell => GetProperty<DateTime>(cell, "Date") == leapDate);
+            var leapContainer = scheduledDateItems.ItemContainerGenerator
+                .ContainerFromItem(leapCell) as DependencyObject
+                ?? throw new InvalidOperationException("闰日日期格没有生成可视容器");
+            var leapButton = FindVisualDescendants<Button>(leapContainer).Single();
+            Assert(leapButton.Tag is DateTime leapTag && leapTag == leapDate,
+                "闰日按钮必须通过真实 Tag 绑定携带 2032-02-29");
+            var timeBeforeLeapSelection = scheduledTime.Text;
+            leapButton.RaiseEvent(
+                new RoutedEventArgs(ButtonBase.ClickEvent, leapButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(GetRawField(todoWindow, "_scheduledDate") is DateTime selectedLeapDay &&
+                   selectedLeapDay == leapDate &&
+                   scheduledDateInput.Text == "2032-02-29" &&
+                   scheduledTime.Text == timeBeforeLeapSelection &&
+                   GetRawField(todoWindow, "_scheduledTaskDraftClockEdited") is true &&
+                   !scheduledDatePickerPopup.IsOpen &&
+                   transientCompletionCount == 3,
+                "真实闰日按钮必须选择日期、关闭浮层且不能改动已经选好的时分秒");
+
+            var todayBeforeClick = DateTime.Today;
+            var timeBeforeToday = scheduledTime.Text;
+            Invoke(todoWindow, "OpenScheduledDatePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            scheduledDateTodayButton.RaiseEvent(
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    scheduledDateTodayButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var todayAfterClick = DateTime.Today;
+            Assert(GetRawField(todoWindow, "_scheduledDate") is DateTime selectedToday &&
+                   (selectedToday == todayBeforeClick ||
+                    selectedToday == todayAfterClick) &&
+                   scheduledDateInput.Text == selectedToday.ToString(
+                       "yyyy-MM-dd",
+                       CultureInfo.InvariantCulture) &&
+                   scheduledTime.Text == timeBeforeToday &&
+                   !scheduledDatePickerPopup.IsOpen &&
+                   transientCompletionCount == 4,
+                "真实“今天”按钮必须选择本地今天、关闭日期浮层且不能改动时分秒");
+            Invoke(todoWindow, "ResetScheduledTaskDraftClock", exactNow);
+            Invoke(todoWindow, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            foreach (var (picker, selectedIndex) in new[]
+                     {
+                         (scheduledHourPicker, 11),
+                         (scheduledMinutePicker, 22),
+                         (scheduledSecondPicker, 33)
+                     })
+            {
+                picker.IsDropDownOpen = true;
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                var option = picker.ItemContainerGenerator.ContainerFromIndex(selectedIndex)
+                    as ComboBoxItem
+                    ?? throw new InvalidOperationException(
+                        $"时分秒选择器未生成第 {selectedIndex} 个可点击选项");
+                var optionClick = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent,
+                    Source = option
+                };
+                option.RaiseEvent(optionClick);
+                Assert(optionClick.Handled &&
+                       picker.SelectedIndex == selectedIndex &&
+                       !picker.IsDropDownOpen,
+                    "点击时分秒下拉值必须显式选中并立即关闭当前下拉层，不能丢焦或无响应");
+            }
+
+            Assert(scheduledTime.Text == "11:22:33",
+                "依次选择时、分、秒后，右侧入口必须完整同步为 11:22:33");
+            var timeConfirmButton = new Button();
+            Invoke(
+                todoWindow,
+                "ScheduledTimePickerConfirmButton_Click",
+                timeConfirmButton,
+                new RoutedEventArgs(ButtonBase.ClickEvent, timeConfirmButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(!scheduledTimePickerPopup.IsOpen &&
+                   scheduledTime.Text == "11:22:33",
+                "确定时必须关闭时间浮层并保留刚选好的完整 HH:mm:ss");
 
             var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
             var outsideCloseSource = ExtractPrivateMethodSource(
                 mainSource,
                 "ProcessOutsideTodoClose");
             var todoSource = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs"));
+            var todoXaml = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml"));
             var scheduledTabClickSource = ExtractPrivateMethodSource(
                 todoSource,
                 "ScheduledTaskTabButton_Click");
@@ -8115,7 +8351,74 @@ internal static class Program
                    !resetDraftClockSource.Contains(
                        "AddMinutes(",
                        StringComparison.Ordinal),
-                "MainWindow 的外部点击收起判定必须显式保护 DatePicker transient popup");
+                "MainWindow 的外部点击收起判定必须显式保护自定义日期和时间 transient popup");
+            var datePopupChild = scheduledDatePickerPopup.Child
+                ?? throw new InvalidOperationException("日期浮层缺少可视子树");
+            var timePopupChild = scheduledTimePickerPopup.Child
+                ?? throw new InvalidOperationException("时间浮层缺少可视子树");
+            Assert(!(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       scheduledDatePickerHost,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerPopup)! &&
+                   !(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       scheduledTimePickerHost,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerPopup)! &&
+                   !(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       datePopupChild,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerPopup)! &&
+                   (bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       scheduledInput,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerPopup)!,
+                "日期浮层外点判定必须保护日期宿主、时间宿主和自身子树，只把表单其他区域视为外部");
+            Assert(!(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       scheduledTimePickerHost,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerPopup)! &&
+                   !(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       scheduledDatePickerHost,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerPopup)! &&
+                   !(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       timePopupChild,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerPopup)! &&
+                   (bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "ShouldCloseScheduledPickerPopup",
+                       scheduledInput,
+                       scheduledTimePickerHost,
+                       scheduledDatePickerHost,
+                       scheduledTimePickerPopup)!,
+                "时间浮层外点判定必须保护时间宿主、日期宿主和自身子树，只把表单其他区域视为外部");
+            Assert(!todoXaml.Contains("<DatePicker", StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "x:Name=\"ScheduledDatePickerPopup\"",
+                       StringComparison.Ordinal),
+                "日期入口必须彻底摆脱系统 DatePicker，并使用命名的自定义日期浮层");
             Assert(mainSource.Contains(
                        "_todoWindow.ScheduledTaskEditRequested +=",
                        StringComparison.Ordinal) &&
@@ -8149,7 +8452,11 @@ internal static class Program
             }
 
             scheduledInput.Text = "  明天带好小喇叭  ";
-            scheduledDate.SelectedDate = futureLocal.Date;
+            Invoke(
+                todoWindow,
+                "SetScheduledDate",
+                futureLocal.Date,
+                true);
             scheduledTime.Text = futureLocal.ToString(
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture);
@@ -8163,7 +8470,13 @@ internal static class Program
                    requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0,
                 "定时页应发出去除首尾空白的内容和精确到整秒的本地 DateTimeOffset");
             Assert(scheduledInput.Text.Length == 0 &&
-                   scheduledDate.SelectedDate is not null &&
+                   GetRawField(todoWindow, "_scheduledDate") is DateTime &&
+                   DateTime.TryParseExact(
+                       scheduledDateInput.Text,
+                       "yyyy-MM-dd",
+                       CultureInfo.InvariantCulture,
+                       DateTimeStyles.None,
+                       out _) &&
                    DateTime.TryParseExact(
                        scheduledTime.Text,
                        "HH:mm:ss",
@@ -8197,7 +8510,6 @@ internal static class Program
             };
             scheduledTasks.Add(editItem);
             Invoke(todoWindow, "SelectTaskPage", true, false);
-            todoWindow.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(50));
 
             var editContainer = scheduledList.ItemContainerGenerator.ContainerFromItem(editItem)
@@ -8229,10 +8541,14 @@ internal static class Program
                 editButton,
                 new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
             Assert(ReferenceEquals(
-                       GetRawField(todoWindow, "_editingScheduledTask"),
+                   GetRawField(todoWindow, "_editingScheduledTask"),
                        editItem) &&
                    scheduledInput.Text == editItem.Text &&
-                   scheduledDate.SelectedDate == editLocal.Date &&
+                   GetRawField(todoWindow, "_scheduledDate") is DateTime editingDate &&
+                   editingDate == editLocal.Date &&
+                   scheduledDateInput.Text == editLocal.ToString(
+                       "yyyy-MM-dd",
+                       CultureInfo.InvariantCulture) &&
                    scheduledTime.Text == editLocal.ToString(
                        "HH:mm:ss",
                        CultureInfo.InvariantCulture) &&
@@ -8255,7 +8571,11 @@ internal static class Program
             }
 
             scheduledInput.Text = "  修改后的定时任务  ";
-            scheduledDate.SelectedDate = savedLocal.Date;
+            Invoke(
+                todoWindow,
+                "SetScheduledDate",
+                savedLocal.Date,
+                true);
             scheduledTime.Text = savedLocal.ToString(
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture);
@@ -8333,9 +8653,13 @@ internal static class Program
                 pastLocal.Hour,
                 pastLocal.Minute,
                 pastLocal.Second,
-                DateTimeKind.Unspecified);
+             DateTimeKind.Unspecified);
             scheduledInput.Text = "不能保存到过去";
-            scheduledDate.SelectedDate = pastLocal.Date;
+            Invoke(
+                todoWindow,
+                "SetScheduledDate",
+                pastLocal.Date,
+                true);
             scheduledTime.Text = pastLocal.ToString(
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture);

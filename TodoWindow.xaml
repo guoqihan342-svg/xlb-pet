@@ -628,24 +628,414 @@
 
                     <Grid Grid.Row="2" Margin="0,4,0,0">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="108" />
-                            <ColumnDefinition Width="6" />
-                            <ColumnDefinition Width="80" />
-                            <ColumnDefinition Width="6" />
-                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="102" />
+                            <ColumnDefinition Width="4" />
+                            <ColumnDefinition Width="92" />
+                            <ColumnDefinition Width="4" />
+                            <ColumnDefinition Width="48" />
                         </Grid.ColumnDefinitions>
-                        <DatePicker x:Name="ScheduledDatePicker"
-                                    Grid.Column="0"
-                                    Height="30"
-                                    Padding="3,0"
-                                    VerticalContentAlignment="Center"
-                                    BorderBrush="#E4C8AA"
-                                    FontFamily="Microsoft YaHei"
-                                    FontSize="11"
-                                    ToolTip="选择提醒日期"
-                                    CalendarOpened="ScheduledDatePicker_CalendarOpened"
-                                    CalendarClosed="ScheduledDatePicker_CalendarClosed"
-                                    SelectedDateChanged="ScheduledDatePicker_SelectedDateChanged" />
+                        <Border x:Name="ScheduledDatePickerHost"
+                                Grid.Column="0"
+                                Height="30"
+                                BorderThickness="1"
+                                CornerRadius="10"
+                                Cursor="Hand"
+                                SnapsToDevicePixels="True"
+                                PreviewMouseLeftButtonDown="ScheduledDateInput_PreviewMouseLeftButtonDown">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="#FFFFF8EE" />
+                                    <Setter Property="BorderBrush" Value="#E4C8AA" />
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#FFFFF1DF" />
+                                            <Setter Property="BorderBrush" Value="#E7AD70" />
+                                        </Trigger>
+                                        <DataTrigger Binding="{Binding IsKeyboardFocusWithin, ElementName=ScheduledDateInput}"
+                                                     Value="True">
+                                            <Setter Property="Background" Value="#FFFFF4E5" />
+                                            <Setter Property="BorderBrush" Value="#E89D52" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsOpen, ElementName=ScheduledDatePickerPopup}"
+                                                     Value="True">
+                                            <Setter Property="Background" Value="#FFFFF4E5" />
+                                            <Setter Property="BorderBrush" Value="#E89D52" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="15" />
+                                </Grid.ColumnDefinitions>
+                                <Viewbox Grid.Column="0"
+                                         Width="13"
+                                         Height="13"
+                                         Margin="5,0,0,0"
+                                         HorizontalAlignment="Left"
+                                         VerticalAlignment="Center"
+                                         IsHitTestVisible="False">
+                                    <Canvas Width="16" Height="16">
+                                        <Rectangle Width="12.5"
+                                                   Height="11.5"
+                                                   Canvas.Left="1.75"
+                                                   Canvas.Top="2.75"
+                                                   RadiusX="2.3"
+                                                   RadiusY="2.3"
+                                                   Fill="#FFFFE6C6"
+                                                   Stroke="#C87534"
+                                                   StrokeThickness="1.2" />
+                                        <Path Data="M2.2,6.1 L13.8,6.1 M5,1.6 L5,4.2 M11,1.6 L11,4.2"
+                                              Stroke="#C87534"
+                                              StrokeEndLineCap="Round"
+                                              StrokeStartLineCap="Round"
+                                              StrokeThickness="1.2" />
+                                        <Ellipse Width="1.5"
+                                                 Height="1.5"
+                                                 Canvas.Left="4.1"
+                                                 Canvas.Top="8.1"
+                                                 Fill="#D98A45" />
+                                        <Ellipse Width="1.5"
+                                                 Height="1.5"
+                                                 Canvas.Left="7.25"
+                                                 Canvas.Top="8.1"
+                                                 Fill="#D98A45" />
+                                        <Ellipse Width="1.5"
+                                                 Height="1.5"
+                                                 Canvas.Left="10.4"
+                                                 Canvas.Top="8.1"
+                                                 Fill="#D98A45" />
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBox x:Name="ScheduledDateInput"
+                                         Grid.Column="1"
+                                         Padding="0"
+                                         VerticalContentAlignment="Center"
+                                         AutomationProperties.Name="提醒日期"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         CaretBrush="Transparent"
+                                         Cursor="Hand"
+                                         FontFamily="Microsoft YaHei"
+                                         FontSize="10.8"
+                                         Foreground="#7A4B2C"
+                                         InputMethod.IsInputMethodEnabled="False"
+                                         IsReadOnly="True"
+                                         TextAlignment="Center"
+                                         ToolTip="点击选择提醒日期"
+                                         PreviewKeyDown="ScheduledDateInput_PreviewKeyDown" />
+                                <Path Grid.Column="2"
+                                      Width="7"
+                                      Height="4"
+                                      Margin="0,0,5,0"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Center"
+                                      Data="M0,0 L3.5,3.5 L7,0"
+                                      IsHitTestVisible="False"
+                                      Stroke="#B47A4E"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round"
+                                      StrokeStartLineCap="Round"
+                                      StrokeThickness="1.2" />
+                            </Grid>
+                        </Border>
+                        <Popup x:Name="ScheduledDatePickerPopup"
+                               Grid.Column="0"
+                               AllowsTransparency="True"
+                               Closed="ScheduledDatePickerPopup_Closed"
+                               HorizontalOffset="0"
+                               Opened="ScheduledDatePickerPopup_Opened"
+                               Placement="Bottom"
+                               PlacementTarget="{Binding ElementName=ScheduledDatePickerHost}"
+                               PopupAnimation="Fade"
+                               StaysOpen="True"
+                               VerticalOffset="5">
+                            <Border Width="236"
+                                    Padding="10"
+                                    Background="#FFFFFCF7"
+                                    BorderBrush="#EAB777"
+                                    BorderThickness="1"
+                                    CornerRadius="15"
+                                    PreviewKeyDown="ScheduledDatePickerPopup_PreviewKeyDown"
+                                    SnapsToDevicePixels="True"
+                                    UseLayoutRounding="True">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="15"
+                                                      Direction="270"
+                                                      Opacity="0.18"
+                                                      ShadowDepth="3"
+                                                      Color="#7A4B2C" />
+                                </Border.Effect>
+                                <Border.Resources>
+                                    <Style x:Key="ScheduledCalendarNavButtonStyle"
+                                           TargetType="{x:Type Button}">
+                                        <Setter Property="Width" Value="27" />
+                                        <Setter Property="Height" Value="27" />
+                                        <Setter Property="Background" Value="#FFFFF0DD" />
+                                        <Setter Property="BorderBrush" Value="#E7B77D" />
+                                        <Setter Property="BorderThickness" Value="1" />
+                                        <Setter Property="Cursor" Value="Hand" />
+                                        <Setter Property="Foreground" Value="#A45F30" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="{x:Type Button}">
+                                                    <Border x:Name="CalendarNavBorder"
+                                                            Background="{TemplateBinding Background}"
+                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            CornerRadius="9">
+                                                        <ContentPresenter HorizontalAlignment="Center"
+                                                                          VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="CalendarNavBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFE3C1" />
+                                                            <Setter TargetName="CalendarNavBorder"
+                                                                    Property="BorderBrush"
+                                                                    Value="#E39B50" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsPressed" Value="True">
+                                                            <Setter TargetName="CalendarNavBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFD6A4" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsKeyboardFocused" Value="True">
+                                                            <Setter TargetName="CalendarNavBorder"
+                                                                    Property="BorderBrush"
+                                                                    Value="#D98238" />
+                                                            <Setter TargetName="CalendarNavBorder"
+                                                                    Property="BorderThickness"
+                                                                    Value="1.5" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </Border.Resources>
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="31" />
+                                        <RowDefinition Height="22" />
+                                        <RowDefinition Height="168" />
+                                        <RowDefinition Height="34" />
+                                    </Grid.RowDefinitions>
+                                    <Grid Grid.Row="0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="31" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="31" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="ScheduledDatePreviousMonthButton"
+                                                Grid.Column="0"
+                                                AutomationProperties.Name="上一个月"
+                                                Style="{StaticResource ScheduledCalendarNavButtonStyle}"
+                                                ToolTip="上一个月"
+                                                Click="ScheduledDatePreviousMonthButton_Click">
+                                            <Path Width="6"
+                                                  Height="10"
+                                                  Data="M6,0 L1,5 L6,10"
+                                                  Stroke="#A45F30"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeThickness="1.5" />
+                                        </Button>
+                                        <StackPanel Grid.Column="1"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center"
+                                                    Orientation="Horizontal">
+                                            <Ellipse Width="5"
+                                                     Height="5"
+                                                     Margin="0,1,6,0"
+                                                     Fill="#F2A65A" />
+                                            <TextBlock x:Name="ScheduledDateMonthText"
+                                                       FontFamily="Microsoft YaHei"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="#8B512C" />
+                                        </StackPanel>
+                                        <Button x:Name="ScheduledDateNextMonthButton"
+                                                Grid.Column="2"
+                                                AutomationProperties.Name="下一个月"
+                                                Style="{StaticResource ScheduledCalendarNavButtonStyle}"
+                                                ToolTip="下一个月"
+                                                Click="ScheduledDateNextMonthButton_Click">
+                                            <Path Width="6"
+                                                  Height="10"
+                                                  Data="M0,0 L5,5 L0,10"
+                                                  Stroke="#A45F30"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeThickness="1.5" />
+                                        </Button>
+                                    </Grid>
+                                    <UniformGrid Grid.Row="1" Columns="7">
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#B69275" Text="一" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#B69275" Text="二" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#B69275" Text="三" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#B69275" Text="四" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#B69275" Text="五" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#C9826E" Text="六" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Microsoft YaHei" FontSize="10.5" Foreground="#C9826E" Text="日" />
+                                    </UniformGrid>
+                                    <ItemsControl x:Name="ScheduledDateItemsControl"
+                                                  Grid.Row="2"
+                                                  KeyboardNavigation.DirectionalNavigation="Cycle"
+                                                  SnapsToDevicePixels="True">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <UniformGrid Rows="6" Columns="7" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button Height="26"
+                                                        Margin="1"
+                                                        Padding="0"
+                                                        HorizontalAlignment="Stretch"
+                                                        AutomationProperties.Name="{Binding AccessibleName}"
+                                                        Background="Transparent"
+                                                        BorderThickness="0"
+                                                        Cursor="Hand"
+                                                        FontFamily="Microsoft YaHei"
+                                                        Tag="{Binding Date}"
+                                                        ToolTip="{Binding AccessibleName}"
+                                                        Click="ScheduledDateDayButton_Click">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="{x:Type Button}">
+                                                            <Border x:Name="ScheduledCalendarDayBorder"
+                                                                    Background="Transparent"
+                                                                    BorderBrush="Transparent"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="8">
+                                                                <TextBlock x:Name="ScheduledCalendarDayText"
+                                                                           HorizontalAlignment="Center"
+                                                                           VerticalAlignment="Center"
+                                                                           FontFamily="Microsoft YaHei"
+                                                                           FontSize="11.5"
+                                                                           Foreground="#75513A"
+                                                                           Text="{Binding DayText}" />
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <DataTrigger Binding="{Binding IsWeekend}" Value="True">
+                                                                    <Setter TargetName="ScheduledCalendarDayText"
+                                                                            Property="Foreground"
+                                                                            Value="#BF715C" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsCurrentMonth}" Value="False">
+                                                                    <Setter TargetName="ScheduledCalendarDayText"
+                                                                            Property="Foreground"
+                                                                            Value="#C8BDB2" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="BorderBrush"
+                                                                            Value="#F2A65A" />
+                                                                    <Setter TargetName="ScheduledCalendarDayText"
+                                                                            Property="FontWeight"
+                                                                            Value="SemiBold" />
+                                                                </DataTrigger>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="Background"
+                                                                            Value="#FFFFEBD2" />
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="BorderBrush"
+                                                                            Value="#F2C58F" />
+                                                                </Trigger>
+                                                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="BorderBrush"
+                                                                            Value="#D98238" />
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="BorderThickness"
+                                                                            Value="1.5" />
+                                                                </Trigger>
+                                                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="Background"
+                                                                            Value="#F2A65A" />
+                                                                    <Setter TargetName="ScheduledCalendarDayBorder"
+                                                                            Property="BorderBrush"
+                                                                            Value="#E49345" />
+                                                                    <Setter TargetName="ScheduledCalendarDayText"
+                                                                            Property="Foreground"
+                                                                            Value="White" />
+                                                                    <Setter TargetName="ScheduledCalendarDayText"
+                                                                            Property="FontWeight"
+                                                                            Value="SemiBold" />
+                                                                </DataTrigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <Grid Grid.Row="3" Margin="0,5,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="ScheduledDatePickerTodayButton"
+                                                Grid.Column="0"
+                                                MinWidth="48"
+                                                Height="27"
+                                                Padding="10,0"
+                                                AutomationProperties.Name="选择今天"
+                                                Background="#FFFFF0DD"
+                                                BorderBrush="#E7B77D"
+                                                BorderThickness="1"
+                                                Content="今天"
+                                                Cursor="Hand"
+                                                FontFamily="Microsoft YaHei"
+                                                FontSize="11.5"
+                                                Foreground="#A45F30"
+                                                ToolTip="选择今天并关闭"
+                                                Click="ScheduledDatePickerTodayButton_Click">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="{x:Type Button}">
+                                                    <Border x:Name="ScheduledDateTodayBorder"
+                                                            Padding="{TemplateBinding Padding}"
+                                                            Background="{TemplateBinding Background}"
+                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            CornerRadius="9">
+                                                        <ContentPresenter HorizontalAlignment="Center"
+                                                                          VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="ScheduledDateTodayBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFE4C3" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsPressed" Value="True">
+                                                            <Setter TargetName="ScheduledDateTodayBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFD6A4" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+                                        <TextBlock Grid.Column="1"
+                                                   HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"
+                                                   FontFamily="Microsoft YaHei"
+                                                   FontSize="10.5"
+                                                   Foreground="#B69275"
+                                                   Text="点一下就选好啦" />
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Popup>
                         <Border x:Name="ScheduledTimePickerHost"
                                 Grid.Column="2"
                                 Height="30"
@@ -710,7 +1100,7 @@
                                          CaretBrush="Transparent"
                                          Cursor="Hand"
                                          FontFamily="Microsoft YaHei"
-                                         FontSize="11.5"
+                                         FontSize="11.2"
                                          Foreground="#7A4B2C"
                                          InputMethod.IsInputMethodEnabled="False"
                                          IsReadOnly="True"
@@ -737,7 +1127,7 @@
                         <Popup x:Name="ScheduledTimePickerPopup"
                                Grid.Column="2"
                                AllowsTransparency="True"
-                               HorizontalOffset="-71"
+                               HorizontalOffset="-65"
                                Opened="ScheduledTimePickerPopup_Opened"
                                Closed="ScheduledTimePickerPopup_Closed"
                                Placement="Bottom"
@@ -852,6 +1242,8 @@
                                         <Setter Property="ItemContainerStyle">
                                             <Setter.Value>
                                                 <Style TargetType="{x:Type ComboBoxItem}">
+                                                    <EventSetter Event="PreviewMouseLeftButtonDown"
+                                                                 Handler="ScheduledTimePartItem_PreviewMouseLeftButtonDown" />
                                                     <Setter Property="Padding" Value="7,4" />
                                                     <Setter Property="FontFamily" Value="Microsoft YaHei" />
                                                     <Setter Property="FontSize" Value="12" />

@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -51,9 +52,12 @@ public partial class TodoWindow : Window
     private string? _pendingClipboardCopyText;
     private bool _clipboardCopyRetryQueued;
     private ScheduledTaskItem? _editingScheduledTask;
+    private DateTime? _scheduledDate;
+    private DateTime _displayedScheduledCalendarMonth;
     private bool _scheduledTaskDraftClockEdited;
     private bool _updatingScheduledTaskDraftClock;
     private bool _updatingScheduledTimePickerSelection;
+    private bool _switchingScheduledPickerPopup;
     private bool _isScheduledDatePickerPopupOpen;
     private bool _isScheduledTimePickerPopupOpen;
     private bool _tailOnRight = true;
@@ -128,6 +132,23 @@ public partial class TodoWindow : Window
         return options;
     }
 
+    private sealed class ScheduledCalendarDateCell
+    {
+        public required DateTime Date { get; init; }
+
+        public required string DayText { get; init; }
+
+        public required string AccessibleName { get; init; }
+
+        public bool IsCurrentMonth { get; init; }
+
+        public bool IsSelected { get; init; }
+
+        public bool IsToday { get; init; }
+
+        public bool IsWeekend { get; init; }
+    }
+
     public IEnumerable? Todos
     {
         get => TodoItemsControl.ItemsSource;
@@ -146,12 +167,13 @@ public partial class TodoWindow : Window
 
     public bool IsTransientPopupOpen =>
         _isScheduledDatePickerPopupOpen ||
-        _isScheduledTimePickerPopupOpen;
+        _isScheduledTimePickerPopupOpen ||
+        ScheduledDatePickerPopup.IsOpen ||
+        ScheduledTimePickerPopup.IsOpen;
 
     internal void RecoverAfterSystemResume()
     {
-        CloseScheduledTimePicker();
-        ScheduledDatePicker.IsDropDownOpen = false;
+        CloseScheduledPickers();
         WindowState = WindowState.Normal;
         Width = 292;
         Height = 378;
@@ -198,7 +220,7 @@ public partial class TodoWindow : Window
 
     public void ShowDefaultTab()
     {
-        CloseScheduledTimePicker();
+        CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: false);
     }
@@ -289,6 +311,12 @@ public partial class TodoWindow : Window
 
     private void TodoWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (ScheduledDatePickerPopup.IsOpen &&
+            HandleScheduledDatePickerKey(e))
+        {
+            return;
+        }
+
         if (e.Key == Key.Escape && ScheduledTimePickerPopup.IsOpen)
         {
             CloseScheduledTimePicker();
@@ -456,7 +484,7 @@ public partial class TodoWindow : Window
 
     private void TodoWindow_Closing(object? sender, CancelEventArgs e)
     {
-        CloseScheduledTimePicker();
+        CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
 
         if (_allowClose)
@@ -585,7 +613,7 @@ public partial class TodoWindow : Window
 
     private void TodoTabButton_Click(object sender, RoutedEventArgs e)
     {
-        CloseScheduledTimePicker();
+        CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: true);
     }
@@ -632,6 +660,260 @@ public partial class TodoWindow : Window
         e.Handled = true;
     }
 
+    private void ScheduledDateInput_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        OpenScheduledDatePicker();
+        e.Handled = true;
+    }
+
+    private void ScheduledDateInput_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key is Key.Space or Key.Enter or Key.Down or Key.F4)
+        {
+            OpenScheduledDatePicker();
+            e.Handled = true;
+        }
+    }
+
+    private void ScheduledDatePickerPopup_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        HandleScheduledDatePickerKey(e);
+    }
+
+    private bool HandleScheduledDatePickerKey(KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Escape:
+                CloseScheduledDatePicker();
+                FocusScheduledDateInput();
+                e.Handled = true;
+                return true;
+            case Key.PageUp:
+                ChangeScheduledCalendarMonth(-1);
+                e.Handled = true;
+                return true;
+            case Key.PageDown:
+                ChangeScheduledCalendarMonth(1);
+                e.Handled = true;
+                return true;
+            case Key.Home:
+                SelectScheduledToday(DateTime.Today);
+                e.Handled = true;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void OpenScheduledDatePicker()
+    {
+        if (_hasClosed)
+        {
+            return;
+        }
+
+        var selectedDate = _scheduledDate ?? DateTime.Today;
+        RefreshScheduledCalendar(selectedDate);
+        SwitchScheduledPickerPopup(
+            () =>
+            {
+                CloseScheduledTimePicker();
+                ScheduledDatePickerPopup.IsOpen = true;
+                SetTransientPopupState(
+                    isDatePicker: true,
+                    isOpen: true);
+            });
+        ScheduledDatePickerTodayButton.Focus();
+        Keyboard.Focus(ScheduledDatePickerTodayButton);
+    }
+
+    private void CloseScheduledDatePicker()
+    {
+        if (ScheduledDatePickerPopup.IsOpen)
+        {
+            ScheduledDatePickerPopup.IsOpen = false;
+        }
+
+        SetTransientPopupState(
+            isDatePicker: true,
+            isOpen: false);
+    }
+
+    private void CloseScheduledPickers()
+    {
+        CloseScheduledDatePicker();
+        CloseScheduledTimePicker();
+    }
+
+    private void SwitchScheduledPickerPopup(Action switchAction)
+    {
+        var wasOpen = IsTransientPopupOpen;
+        _switchingScheduledPickerPopup = true;
+        try
+        {
+            switchAction();
+        }
+        finally
+        {
+            _switchingScheduledPickerPopup = false;
+        }
+
+        if (wasOpen && !IsTransientPopupOpen)
+        {
+            TransientInteractionCompleted?.Invoke();
+        }
+    }
+
+    private void ScheduledDatePickerPopup_Opened(object sender, EventArgs e)
+    {
+        SetTransientPopupState(
+            isDatePicker: true,
+            isOpen: true);
+    }
+
+    private void ScheduledDatePickerPopup_Closed(object sender, EventArgs e)
+    {
+        SetTransientPopupState(
+            isDatePicker: true,
+            isOpen: false);
+    }
+
+    private void ScheduledDatePreviousMonthButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ChangeScheduledCalendarMonth(-1);
+        e.Handled = true;
+    }
+
+    private void ScheduledDateNextMonthButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ChangeScheduledCalendarMonth(1);
+        e.Handled = true;
+    }
+
+    private void ChangeScheduledCalendarMonth(int monthOffset)
+    {
+        var displayedMonth = _displayedScheduledCalendarMonth == default
+            ? new DateTime(
+                (_scheduledDate ?? DateTime.Today).Year,
+                (_scheduledDate ?? DateTime.Today).Month,
+                1)
+            : _displayedScheduledCalendarMonth;
+
+        if ((monthOffset < 0 &&
+             displayedMonth.Year == DateTime.MinValue.Year &&
+             displayedMonth.Month == 1) ||
+            (monthOffset > 0 &&
+             displayedMonth.Year == DateTime.MaxValue.Year &&
+             displayedMonth.Month == 12))
+        {
+            return;
+        }
+
+        RefreshScheduledCalendar(displayedMonth.AddMonths(monthOffset));
+    }
+
+    private void RefreshScheduledCalendar(DateTime month)
+    {
+        var firstOfMonth = new DateTime(month.Year, month.Month, 1);
+        _displayedScheduledCalendarMonth = firstOfMonth;
+        ScheduledDateMonthText.Text = firstOfMonth.ToString(
+            "yyyy年M月",
+            CultureInfo.GetCultureInfo("zh-CN"));
+
+        var mondayOffset = ((int)firstOfMonth.DayOfWeek + 6) % 7;
+        var firstCellDate = firstOfMonth.AddDays(-mondayOffset);
+        var selectedDate = _scheduledDate?.Date;
+        var today = DateTime.Today;
+        var cells = new List<ScheduledCalendarDateCell>(42);
+        for (var index = 0; index < 42; index++)
+        {
+            var date = firstCellDate.AddDays(index);
+            cells.Add(new ScheduledCalendarDateCell
+            {
+                Date = date,
+                DayText = date.Day.ToString(CultureInfo.InvariantCulture),
+                AccessibleName = date.ToString(
+                    "yyyy年M月d日 dddd",
+                    CultureInfo.GetCultureInfo("zh-CN")),
+                IsCurrentMonth = date.Month == firstOfMonth.Month &&
+                                 date.Year == firstOfMonth.Year,
+                IsSelected = selectedDate == date,
+                IsToday = today == date,
+                IsWeekend = date.DayOfWeek is DayOfWeek.Saturday or
+                    DayOfWeek.Sunday
+            });
+        }
+
+        ScheduledDateItemsControl.ItemsSource = cells;
+    }
+
+    private void ScheduledDateDayButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: DateTime date })
+        {
+            SelectScheduledDate(date);
+        }
+
+        e.Handled = true;
+    }
+
+    private void ScheduledDatePickerTodayButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        SelectScheduledToday(DateTime.Today);
+        e.Handled = true;
+    }
+
+    private void SelectScheduledToday(DateTime localToday)
+    {
+        SelectScheduledDate(localToday.Date);
+    }
+
+    private void SelectScheduledDate(DateTime date)
+    {
+        SetScheduledDate(date, markEdited: true);
+        CloseScheduledDatePicker();
+        FocusScheduledDateInput();
+    }
+
+    private void SetScheduledDate(DateTime date, bool markEdited)
+    {
+        _scheduledDate = date.Date;
+        ScheduledDateInput.Text = date.ToString(
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture);
+        if (markEdited && !_updatingScheduledTaskDraftClock)
+        {
+            _scheduledTaskDraftClockEdited = true;
+        }
+
+        ClearScheduledTaskValidation();
+        if (ScheduledDatePickerPopup.IsOpen)
+        {
+            RefreshScheduledCalendar(date);
+        }
+    }
+
+    private void FocusScheduledDateInput()
+    {
+        ScheduledDateInput.Focus();
+        Keyboard.Focus(ScheduledDateInput);
+    }
+
     private void ScheduledTimeInput_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key is Key.Space or Key.Down or Key.F4)
@@ -673,7 +955,15 @@ public partial class TodoWindow : Window
         }
 
         SynchronizeScheduledTimePickerSelection();
-        ScheduledTimePickerPopup.IsOpen = true;
+        SwitchScheduledPickerPopup(
+            () =>
+            {
+                CloseScheduledDatePicker();
+                ScheduledTimePickerPopup.IsOpen = true;
+                SetTransientPopupState(
+                    isDatePicker: false,
+                    isOpen: true);
+            });
         ScheduledHourComboBox.Focus();
         Keyboard.Focus(ScheduledHourComboBox);
     }
@@ -684,6 +974,10 @@ public partial class TodoWindow : Window
         {
             ScheduledTimePickerPopup.IsOpen = false;
         }
+
+        SetTransientPopupState(
+            isDatePicker: false,
+            isOpen: false);
     }
 
     private void ScheduledTimePickerPopup_Opened(object sender, EventArgs e)
@@ -716,6 +1010,25 @@ public partial class TodoWindow : Window
         UpdateScheduledTimeTextFromPicker();
     }
 
+    private void ScheduledTimePartItem_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not ComboBoxItem item ||
+            ItemsControl.ItemsControlFromItemContainer(item) is not ComboBox comboBox)
+        {
+            return;
+        }
+
+        comboBox.SelectedItem = item.DataContext;
+        comboBox.IsDropDownOpen = false;
+        _scheduledTaskDraftClockEdited = true;
+        UpdateScheduledTimeTextFromPicker();
+        comboBox.Focus();
+        Keyboard.Focus(comboBox);
+        e.Handled = true;
+    }
+
     private void ScheduledTimePickerNowButton_Click(
         object sender,
         RoutedEventArgs e)
@@ -724,7 +1037,7 @@ public partial class TodoWindow : Window
         _updatingScheduledTaskDraftClock = true;
         try
         {
-            ScheduledDatePicker.SelectedDate = now.Date;
+            SetScheduledDate(now.Date, markEdited: false);
         }
         finally
         {
@@ -847,10 +1160,10 @@ public partial class TodoWindow : Window
             return false;
         }
 
-        if (ScheduledDatePicker.SelectedDate is not { } selectedDate)
+        if (_scheduledDate is not { } selectedDate)
         {
             SetScheduledTaskValidation("请选择提醒日期");
-            ScheduledDatePicker.Focus();
+            FocusScheduledDateInput();
             return false;
         }
 
@@ -901,7 +1214,7 @@ public partial class TodoWindow : Window
         _editingScheduledTask = item;
         var localDueAt = item.DueAt.ToLocalTime();
         ScheduledTaskInput.Text = item.Text;
-        ScheduledDatePicker.SelectedDate = localDueAt.Date;
+        SetScheduledDate(localDueAt.Date, markEdited: false);
         ScheduledTimeInput.Text = localDueAt.ToString(
             "HH:mm:ss",
             CultureInfo.InvariantCulture);
@@ -972,33 +1285,6 @@ public partial class TodoWindow : Window
         ClearScheduledTaskValidation();
     }
 
-    private void ScheduledDatePicker_SelectedDateChanged(
-        object sender,
-        SelectionChangedEventArgs e)
-    {
-        if (!_updatingScheduledTaskDraftClock)
-        {
-            _scheduledTaskDraftClockEdited = true;
-        }
-
-        ClearScheduledTaskValidation();
-    }
-
-    private void ScheduledDatePicker_CalendarOpened(object sender, RoutedEventArgs e)
-    {
-        CloseScheduledTimePicker();
-        SetTransientPopupState(
-            isDatePicker: true,
-            isOpen: true);
-    }
-
-    private void ScheduledDatePicker_CalendarClosed(object sender, RoutedEventArgs e)
-    {
-        SetTransientPopupState(
-            isDatePicker: true,
-            isOpen: false);
-    }
-
     private void SetTransientPopupState(bool isDatePicker, bool isOpen)
     {
         var wasOpen = IsTransientPopupOpen;
@@ -1011,7 +1297,9 @@ public partial class TodoWindow : Window
             _isScheduledTimePickerPopupOpen = isOpen;
         }
 
-        if (wasOpen && !IsTransientPopupOpen)
+        if (wasOpen &&
+            !IsTransientPopupOpen &&
+            !_switchingScheduledPickerPopup)
         {
             TransientInteractionCompleted?.Invoke();
         }
@@ -1021,7 +1309,7 @@ public partial class TodoWindow : Window
         object? sender,
         EventArgs e)
     {
-        CloseScheduledTimePicker();
+        CloseScheduledPickers();
     }
 
     private void PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset now)
@@ -1050,7 +1338,7 @@ public partial class TodoWindow : Window
         _updatingScheduledTaskDraftClock = true;
         try
         {
-            ScheduledDatePicker.SelectedDate = suggested.Date;
+            SetScheduledDate(suggested.Date, markEdited: false);
             ScheduledTimeInput.Text = suggested.ToString(
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture);
@@ -1083,14 +1371,14 @@ public partial class TodoWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
-        CloseScheduledTimePicker();
+        CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e)
     {
-        CloseScheduledTimePicker();
+        CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         ExitRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -1339,10 +1627,22 @@ public partial class TodoWindow : Window
     private void TodoWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         var originalSource = e.OriginalSource as DependencyObject;
+        if (ScheduledDatePickerPopup.IsOpen &&
+            ShouldCloseScheduledPickerPopup(
+                originalSource,
+                ScheduledDatePickerHost,
+                ScheduledTimePickerHost,
+                ScheduledDatePickerPopup))
+        {
+            CloseScheduledDatePicker();
+        }
+
         if (ScheduledTimePickerPopup.IsOpen &&
-            !IsWithin(originalSource, ScheduledTimePickerHost) &&
-            (ScheduledTimePickerPopup.Child is not DependencyObject popupChild ||
-             !IsWithin(originalSource, popupChild)))
+            ShouldCloseScheduledPickerPopup(
+                originalSource,
+                ScheduledTimePickerHost,
+                ScheduledDatePickerHost,
+                ScheduledTimePickerPopup))
         {
             CloseScheduledTimePicker();
         }
@@ -1363,6 +1663,18 @@ public partial class TodoWindow : Window
 
         _outsideTodoEditCommitPending = true;
         ScheduleTodoEditAfterOutsideClick();
+    }
+
+    private static bool ShouldCloseScheduledPickerPopup(
+        DependencyObject? source,
+        DependencyObject pickerHost,
+        DependencyObject peerPickerHost,
+        Popup popup)
+    {
+        return !IsWithin(source, pickerHost) &&
+               !IsWithin(source, peerPickerHost) &&
+               (popup.Child is not DependencyObject popupChild ||
+                !IsWithin(source, popupChild));
     }
 
     private void TodoEditTextBox_TextChanged(
