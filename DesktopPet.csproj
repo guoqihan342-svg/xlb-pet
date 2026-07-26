@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LubanDesktopPet</RootNamespace>
     <AssemblyName>LubanDesktopPet</AssemblyName>
-    <Version>1.0.10</Version>
+    <Version>1.0.11</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
@@ -15,6 +15,7 @@
     <Resource Include="Assets\sprite-pages\*.pbgra.br" />
     <Resource Include="Assets\luban-sprite-pages.json" />
     <Resource Include="Assets\luban-pillow-layer.png" />
+    <Resource Include="Assets\luban-idle-no-snore-patch-source.png" />
     <None Update="log\.gitkeep"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest" />

@@ -99,7 +99,8 @@
                                                Foreground="#8B4B24"
                                                Text="!" />
                                 </Border>
-                                <TextBlock VerticalAlignment="Center"
+                                <TextBlock x:Name="ReminderTitleText"
+                                           VerticalAlignment="Center"
                                            FontFamily="Microsoft YaHei"
                                            FontSize="15"
                                            FontWeight="Bold"
@@ -116,7 +117,8 @@
                                     CornerRadius="10">
                                 <TextBox x:Name="ReminderMessageText"
                                          Padding="0"
-                                         VerticalContentAlignment="Center"
+                                         HorizontalContentAlignment="Left"
+                                         VerticalContentAlignment="Top"
                                          AcceptsReturn="True"
                                          Background="Transparent"
                                          BorderThickness="0"
@@ -126,7 +128,7 @@
                                          Foreground="#543C2F"
                                          IsReadOnly="True"
                                          SelectionBrush="#9ED2FF"
-                                         TextAlignment="Center"
+                                         TextAlignment="Left"
                                          TextWrapping="Wrap"
                                          HorizontalScrollBarVisibility="Disabled"
                                          VerticalScrollBarVisibility="Auto" />
@@ -134,7 +136,8 @@
 
                             <Button x:Name="ReminderAcknowledgeButton"
                                     Grid.Row="2"
-                                    Width="82"
+                                    MinWidth="82"
+                                    MaxWidth="132"
                                     Height="28"
                                     HorizontalAlignment="Center"
                                     VerticalAlignment="Bottom"
@@ -221,10 +224,11 @@
                   Width="190"
                   Height="242"
                   Background="Transparent"
-                  RenderTransformOrigin="0.5,0.72">
+                  RenderTransformOrigin="0.5,0.5371900826446281">
                 <Grid.RenderTransform>
                     <TransformGroup>
                         <ScaleTransform x:Name="PetFacingScale" ScaleX="1" ScaleY="1" />
+                        <RotateTransform x:Name="PetRoamRotate" Angle="0" />
                         <ScaleTransform x:Name="PetScale" ScaleX="1" ScaleY="1" />
                     </TransformGroup>
                 </Grid.RenderTransform>
@@ -258,6 +262,22 @@
                                         AlignmentY="Top" />
                         </Rectangle.Fill>
                     </Rectangle>
+                    <Ellipse x:Name="SnoreBubbleBakedCover"
+                             Width="15.20"
+                             Height="13.91"
+                             Canvas.Left="60.38"
+                             Canvas.Top="180.72"
+                             IsHitTestVisible="False"
+                             Opacity="0"
+                             RenderOptions.BitmapScalingMode="HighQuality"
+                             SnapsToDevicePixels="False">
+                        <Ellipse.Fill>
+                            <ImageBrush ImageSource="/LubanDesktopPet;component/Assets/luban-idle-no-snore-patch-source.png"
+                                        Viewbox="143,405,36,33"
+                                        ViewboxUnits="Absolute"
+                                        Stretch="Fill" />
+                        </Ellipse.Fill>
+                    </Ellipse>
                     <Grid x:Name="SnoreBubbleHost"
                           Width="17"
                           Height="16"
@@ -272,7 +292,7 @@
                                             ScaleX="1"
                                             ScaleY="1" />
                         </Grid.RenderTransform>
-                        <Ellipse Stroke="#B8D2D9"
+                        <Ellipse Stroke="#78AFC8D2"
                                  StrokeThickness="0.7">
                             <Ellipse.Fill>
                                 <RadialGradientBrush Center="0.34,0.30"
@@ -280,20 +300,14 @@
                                                      RadiusX="0.78"
                                                      RadiusY="0.78">
                                     <GradientStop Offset="0"
-                                                  Color="#FFFFFFFF" />
+                                                  Color="#72FFFFFF" />
                                     <GradientStop Offset="0.58"
-                                                  Color="#FFF1F8FA" />
+                                                  Color="#58F1F8FA" />
                                     <GradientStop Offset="1"
-                                                  Color="#FFD9E9ED" />
+                                                  Color="#3CD9E9ED" />
                                 </RadialGradientBrush>
                             </Ellipse.Fill>
                         </Ellipse>
-                        <Ellipse Width="4.2"
-                                 Height="3.4"
-                                 Margin="3.2,2.7,0,0"
-                                 HorizontalAlignment="Left"
-                                 VerticalAlignment="Top"
-                                 Fill="#E8FFFFFF" />
                     </Grid>
                 </Canvas>
 

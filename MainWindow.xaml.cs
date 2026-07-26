@@ -98,10 +98,8 @@ public partial class MainWindow : Window
         ArrayPool<byte>.Create(
             DisplayPixelWidth * DisplayPixelHeight * 4,
             maxArraysPerBucket: 1);
-    private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan EdgeRoamInitialDelay = TimeSpan.FromSeconds(16);
-    private static readonly TimeSpan EdgeRoamRepeatDelay = TimeSpan.FromSeconds(46);
-    private static readonly TimeSpan EdgeRoamInterruptedDelay = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan EdgeRoamMaximumClockGap =
         TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
@@ -170,12 +168,14 @@ public partial class MainWindow : Window
     private ScheduledTaskStore _scheduledTaskStore = ScheduledTaskStore.CreateDefault();
     private readonly Queue<ScheduledTaskItem> _reminderQueue = new();
     private readonly HashSet<Guid> _queuedReminderIds = new();
+    private readonly List<ScheduledTaskItem> _activeReminderBatch = [];
     private readonly AppSettingsStore _settingsStore = AppSettingsStore.CreateDefault();
     private readonly TodoWindow _todoWindow;
     private readonly OwnedWindowPositioner.PositionCache _todoWindowPositionCache;
     private readonly Action _processOutsideTodoCloseAction;
     private readonly Action _processTodoWindowPositionUpdateAction;
     private readonly Action _processSystemTimeChangedAction;
+    private readonly Action _processSystemRecoveryAction;
 
     private BubbleMode _bubbleMode;
     private Point _pointerDownPosition;
@@ -226,9 +226,12 @@ public partial class MainWindow : Window
     private double _edgeRoamLogicalLeft;
     private double _edgeRoamLogicalTop;
     private double _edgeRoamFacingScaleX = 1;
+    private double _edgeRoamRotationDegrees;
     private long _edgeRoamStartedTimestamp;
     private long _edgeRoamLastRenderingTimestamp;
     private long _nextEdgeRoamDueTimestamp;
+    private long _nextAutomaticActivityDueTimestamp;
+    private long _pillowBreathingDueTimestamp;
     private Rect _edgeRoamRouteBounds;
     private Point _edgeRoamStartPoint;
     private Point _edgeRoamRouteStartPoint;
@@ -267,6 +270,12 @@ public partial class MainWindow : Window
     private bool _suppressTodoWindowDeactivate;
     private bool _displaySettingsSubscribed;
     private bool _systemTimeChangedSubscribed;
+    private bool _sessionSwitchSubscribed;
+    private bool _powerModeSubscribed;
+    private bool _userPreferenceChangedSubscribed;
+    private bool _sessionInactive;
+    private int _systemRecoveryQueued;
+    private bool _suppressClickReactionAfterRoamInterruption;
     private bool _isReminderActive;
     private bool _isTransientPetSizeOverride;
     private bool _isRestoringReminderSize;
@@ -313,6 +322,7 @@ public partial class MainWindow : Window
         _processOutsideTodoCloseAction = ProcessOutsideTodoClose;
         _processTodoWindowPositionUpdateAction = ProcessTodoWindowPositionUpdate;
         _processSystemTimeChangedAction = ProcessSystemTimeChanged;
+        _processSystemRecoveryAction = ProcessSystemRecovery;
         _spritePagePrefetchDispatchTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -478,6 +488,9 @@ public partial class MainWindow : Window
         _todoWindow.ImeCompositionChanged += TodoWindow_ImeCompositionChanged;
         _todoWindow.Deactivated += TodoWindow_Deactivated;
         _todoWindow.LostKeyboardFocus += TodoWindow_LostKeyboardFocus;
+        _todoWindow.DpiChanged += TodoWindow_DpiChanged;
+        _todoWindow.SizeChanged += TodoWindow_SizeChanged;
+        DpiChanged += MainWindow_DpiChanged;
 
         _petSizePersistTimer = new DispatcherTimer
         {
@@ -1173,12 +1186,31 @@ public partial class MainWindow : Window
             _systemTimeChangedSubscribed = true;
         }
 
+        if (!_sessionSwitchSubscribed)
+        {
+            SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
+            _sessionSwitchSubscribed = true;
+        }
+
+        if (!_powerModeSubscribed)
+        {
+            SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
+            _powerModeSubscribed = true;
+        }
+
+        if (!_userPreferenceChangedSubscribed)
+        {
+            SystemEvents.UserPreferenceChanged +=
+                SystemEvents_UserPreferenceChanged;
+            _userPreferenceChangedSubscribed = true;
+        }
+
         var workArea = MonitorWorkArea.GetForWindow(this);
         Left = Math.Max(workArea.Left, workArea.Right - ActualWidth - ScreenEdgeMargin);
         Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight - ScreenEdgeMargin);
         _automaticAnimationEnabled = true;
         RefreshSnoreBubbleAnimationState();
-        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInitialDelay);
+        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
         ProcessScheduledTasksAt(_nowProvider());
         RestartAutomaticCountdown();
         _spritePageWarmupEnabled = true;
@@ -1231,64 +1263,27 @@ public partial class MainWindow : Window
         BubblePopup.HorizontalOffset = horizontalOffset;
     }
 
+    private void MainWindow_DpiChanged(object sender, DpiChangedEventArgs e)
+    {
+        _todoWindowPositionCache.InvalidateGeometry();
+        QueueTodoWindowPositionUpdate();
+    }
+
+    private void TodoWindow_DpiChanged(object sender, DpiChangedEventArgs e)
+    {
+        _todoWindowPositionCache.InvalidateGeometry();
+        QueueTodoWindowPositionUpdate();
+    }
+
+    private void TodoWindow_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        _todoWindowPositionCache.InvalidateGeometry();
+        QueueTodoWindowPositionUpdate();
+    }
+
     private void SystemEvents_DisplaySettingsChanged(object? sender, EventArgs e)
     {
-        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
-        {
-            return;
-        }
-
-        try
-        {
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.Send,
-                new Action(() =>
-                {
-                    if (_isClosing)
-                    {
-                        return;
-                    }
-
-                    ConsumeLatestPetSizeInputAt(Stopwatch.GetTimestamp());
-                    if (_isPetSizePreviewSessionActive)
-                    {
-                        var deferSettingsSave = _isPetSizeAdjustmentActive ||
-                                                _isTransientPetSizeOverride;
-                        CommitPetSizePreviewSession(persist: !deferSettingsSave);
-                        if (deferSettingsSave)
-                        {
-                            _petSizeCommitPending = !_isTransientPetSizeOverride;
-                        }
-                    }
-
-                    _petSizeLogicalAnchor = null;
-                    _todoWindowPositionCache.InvalidateGeometry();
-
-                    StopEdgeRoaming(
-                        scheduleNext: true,
-                        restoreIdleFrame: true,
-                        interrupted: true);
-                    ExitEdgePeek(restartAutomaticCountdown: false);
-                    var workArea = MonitorWorkArea.GetForWindow(this);
-                    var width = ActualWidth > 0 ? ActualWidth : Width;
-                    var height = ActualHeight > 0 ? ActualHeight : Height;
-                    Left = Math.Clamp(
-                        Left,
-                        workArea.Left,
-                        Math.Max(workArea.Left, workArea.Right - width));
-                    Top = Math.Clamp(
-                        Top,
-                        workArea.Top,
-                        Math.Max(workArea.Top, workArea.Bottom - height));
-                    UpdateTodoWindowPosition();
-                    RestartAutomaticCountdown();
-                    AppLogger.Info("显示器配置已变化，桌宠位置已重新校准");
-                }));
-        }
-        catch (InvalidOperationException)
-        {
-            // Dispatcher 正在关闭；在途的系统显示事件可以安全忽略。
-        }
+        QueueSystemRecovery();
     }
 
     private void SystemEvents_TimeChanged(object? sender, EventArgs e)
@@ -1308,6 +1303,186 @@ public partial class MainWindow : Window
         {
             // The application is already shutting down.
         }
+    }
+
+    private void SystemEvents_SessionSwitch(
+        object sender,
+        SessionSwitchEventArgs e)
+    {
+        switch (e.Reason)
+        {
+            case SessionSwitchReason.SessionLock:
+            case SessionSwitchReason.ConsoleDisconnect:
+            case SessionSwitchReason.RemoteDisconnect:
+                QueueSessionInactive();
+                break;
+            case SessionSwitchReason.SessionUnlock:
+            case SessionSwitchReason.ConsoleConnect:
+            case SessionSwitchReason.RemoteConnect:
+                QueueSystemRecovery();
+                break;
+        }
+    }
+
+    private void SystemEvents_PowerModeChanged(
+        object sender,
+        PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Suspend)
+        {
+            QueueSessionInactive();
+        }
+        else if (e.Mode == PowerModes.Resume)
+        {
+            QueueSystemRecovery();
+        }
+    }
+
+    private void SystemEvents_UserPreferenceChanged(
+        object sender,
+        UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is UserPreferenceCategory.Desktop or
+            UserPreferenceCategory.General or
+            UserPreferenceCategory.Window)
+        {
+            QueueSystemRecovery();
+        }
+    }
+
+    private void QueueSessionInactive()
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Send,
+                new Action(() =>
+                {
+                    if (_isClosing)
+                    {
+                        return;
+                    }
+
+                    _sessionInactive = true;
+                    _suppressTodoWindowDeactivate = true;
+                    _outsideTodoCloseGeneration++;
+                    _automaticTimer.Stop();
+                    StopEdgeRoaming(
+                        scheduleNext: false,
+                        restoreIdleFrame: true,
+                        interrupted: true,
+                        immediate: true);
+                }));
+        }
+        catch (InvalidOperationException)
+        {
+            // The dispatcher is already shutting down.
+        }
+    }
+
+    private void QueueSystemRecovery()
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished ||
+            Interlocked.Exchange(ref _systemRecoveryQueued, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.ContextIdle,
+                _processSystemRecoveryAction);
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref _systemRecoveryQueued, 0);
+        }
+    }
+
+    private void ProcessSystemRecovery()
+    {
+        Interlocked.Exchange(ref _systemRecoveryQueued, 0);
+        if (_isClosing)
+        {
+            return;
+        }
+
+        _sessionInactive = false;
+        var timestamp = Stopwatch.GetTimestamp();
+        ConsumeLatestPetSizeInputAt(timestamp);
+        if (_isPetSizePreviewSessionActive)
+        {
+            var deferSettingsSave = _isPetSizeAdjustmentActive ||
+                                    _isTransientPetSizeOverride;
+            CommitPetSizePreviewSession(persist: !deferSettingsSave);
+            if (deferSettingsSave)
+            {
+                _petSizeCommitPending = !_isTransientPetSizeOverride;
+            }
+        }
+
+        StopEdgeRoaming(
+            scheduleNext: false,
+            restoreIdleFrame: true,
+            interrupted: true,
+            immediate: true);
+        ExitEdgePeek(restartAutomaticCountdown: false);
+
+        _petSizeLogicalAnchor = null;
+        _todoWindowPositionCache.InvalidateGeometry();
+        var workArea = MonitorWorkArea.GetForWindow(this);
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        var height = ActualHeight > 0 ? ActualHeight : Height;
+        Left = Math.Clamp(
+            Left,
+            workArea.Left,
+            Math.Max(workArea.Left, workArea.Right - width));
+        Top = Math.Clamp(
+            Top,
+            workArea.Top,
+            Math.Max(workArea.Top, workArea.Bottom - height));
+
+        if (_todoWindow.IsVisible)
+        {
+            _todoWindow.RecoverAfterSystemResume();
+            UpdateTodoWindowPosition();
+        }
+
+        _suppressTodoWindowDeactivate = false;
+
+        ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
+        RestartAutomaticCountdown();
+        ProcessScheduledTasksAt(_nowProvider());
+        if (_isReminderActive)
+        {
+            MovePetToReminderCorner();
+            ConfigureReminderBubblePlacement();
+            RefreshReminderBubbleOffset();
+        }
+
+        if (_todoWindow.IsVisible)
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Render,
+                new Action(() =>
+                {
+                    if (_isClosing || !_todoWindow.IsVisible)
+                    {
+                        return;
+                    }
+
+                    _todoWindowPositionCache.InvalidateGeometry();
+                    UpdateTodoWindowPosition();
+                }));
+        }
+
+        AppLogger.Info("系统解锁或恢复：桌宠、待办窗口和定时任务已重新校准");
     }
 
     private void ProcessSystemTimeChanged()
@@ -1522,6 +1697,22 @@ public partial class MainWindow : Window
             SystemEvents.TimeChanged -= SystemEvents_TimeChanged;
             _systemTimeChangedSubscribed = false;
         }
+        if (_sessionSwitchSubscribed)
+        {
+            SystemEvents.SessionSwitch -= SystemEvents_SessionSwitch;
+            _sessionSwitchSubscribed = false;
+        }
+        if (_powerModeSubscribed)
+        {
+            SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged;
+            _powerModeSubscribed = false;
+        }
+        if (_userPreferenceChangedSubscribed)
+        {
+            SystemEvents.UserPreferenceChanged -=
+                SystemEvents_UserPreferenceChanged;
+            _userPreferenceChangedSubscribed = false;
+        }
         AppLogger.Info("主窗口正在关闭");
         _automaticAnimationEnabled = false;
         _isEdgeRoaming = false;
@@ -1533,6 +1724,8 @@ public partial class MainWindow : Window
         _edgeRoamStopScheduleNext = false;
         _edgeRoamStopInterrupted = false;
         _nextEdgeRoamDueTimestamp = 0;
+        _nextAutomaticActivityDueTimestamp = 0;
+        _pillowBreathingDueTimestamp = 0;
         _petSizePersistTimer.Stop();
         _petSizePersistTimer.Tick -= PetSizePersistTimer_Tick;
         _reminderSizeCommitTimer.Stop();
@@ -1552,6 +1745,9 @@ public partial class MainWindow : Window
         StopFrameBlend(snapToTarget: false);
         _automaticTimer.Stop();
         _automaticTimer.Tick -= AutomaticTimer_Tick;
+        DpiChanged -= MainWindow_DpiChanged;
+        _todoWindow.DpiChanged -= TodoWindow_DpiChanged;
+        _todoWindow.SizeChanged -= TodoWindow_SizeChanged;
         _activeClip = null;
         _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
@@ -1559,6 +1755,7 @@ public partial class MainWindow : Window
         ClearDeferredActiveClipClock();
         _isReminderActive = false;
         _activeReminder = null;
+        _activeReminderBatch.Clear();
         _reminderQueue.Clear();
         _queuedReminderIds.Clear();
         _edgeDock = EdgeDock.None;
@@ -1592,10 +1789,12 @@ public partial class MainWindow : Window
             CommitPetSizePreviewSession(persist: true);
         }
 
+        _suppressClickReactionAfterRoamInterruption = _isEdgeRoaming;
         StopEdgeRoaming(
             scheduleNext: true,
             restoreIdleFrame: true,
-            interrupted: true);
+            interrupted: true,
+            immediate: _suppressClickReactionAfterRoamInterruption);
         StopPillowBreathing();
         _automaticTimer.Stop();
         _dragInteractionActive = true;
@@ -1657,9 +1856,11 @@ public partial class MainWindow : Window
 
         var wasSimpleClick = _pointerDown && !_dragStarted;
         var shouldActCute = wasSimpleClick &&
-                            _edgeDock == EdgeDock.None;
+                            _edgeDock == EdgeDock.None &&
+                            !_suppressClickReactionAfterRoamInterruption;
         _pointerDown = false;
         _dragInteractionActive = false;
+        _suppressClickReactionAfterRoamInterruption = false;
         PetHost.ReleaseMouseCapture();
 
         if (wasSimpleClick && _bubbleMode == BubbleMode.Todo)
@@ -1686,6 +1887,7 @@ public partial class MainWindow : Window
             _pointerDown = false;
             _dragStarted = false;
             _dragInteractionActive = false;
+            _suppressClickReactionAfterRoamInterruption = false;
             RestartAutomaticCountdown();
         }
     }
@@ -1722,8 +1924,31 @@ public partial class MainWindow : Window
             Top,
             ActualWidth > 0 ? ActualWidth : Width,
             ActualHeight > 0 ? ActualHeight : Height);
-        var touchedEdge = FindTouchedEdge(workArea, windowBounds, EdgeContactTolerance);
+        var contactBounds = GetPetContactBounds(windowBounds);
+        var touchedEdge = FindTouchedEdge(
+            workArea,
+            contactBounds,
+            EdgeContactTolerance);
         if (touchedEdge == EdgeDock.None)
+        {
+            RestartAutomaticCountdown();
+            return;
+        }
+
+        var screenEdge = touchedEdge switch
+        {
+            EdgeDock.Left => MonitorWorkArea.ScreenEdge.Left,
+            EdgeDock.Right => MonitorWorkArea.ScreenEdge.Right,
+            EdgeDock.Bottom => MonitorWorkArea.ScreenEdge.Bottom,
+            _ => throw new ArgumentOutOfRangeException()
+        };
+        var orthogonalContact = touchedEdge == EdgeDock.Bottom
+            ? contactBounds.Left + contactBounds.Width / 2
+            : contactBounds.Top + contactBounds.Height / 2;
+        if (!MonitorWorkArea.IsExternalWorkAreaEdgeAt(
+                this,
+                screenEdge,
+                orthogonalContact))
         {
             RestartAutomaticCountdown();
             return;
@@ -1745,17 +1970,51 @@ public partial class MainWindow : Window
                 break;
         }
 
-        if (_bubbleMode == BubbleMode.Todo)
+        EnterEdgePeek(touchedEdge);
+    }
+
+    private Rect GetPetContactBounds(Rect windowBounds)
+    {
+        if (_currentSpriteFrame is not { } frame ||
+            windowBounds.Width <= 0 || windowBounds.Height <= 0)
         {
-            ExitEdgePeek(
-                restartAutomaticCountdown: false,
-                restoreIdleFrame: false);
-            ResetPetVisualTransforms();
-            ShowStableTodoFrame();
-            return;
+            return windowBounds;
         }
 
-        EnterEdgePeek(touchedEdge);
+        var leftPixel = Math.Clamp(frame.DestinationX, 0, DisplayPixelWidth);
+        var topPixel = Math.Clamp(frame.DestinationY, 0, DisplayPixelHeight);
+        var rightPixel = Math.Clamp(
+            frame.DestinationX + frame.Width,
+            0,
+            DisplayPixelWidth);
+        var bottomPixel = Math.Clamp(
+            frame.DestinationY + frame.Height,
+            0,
+            DisplayPixelHeight);
+
+        if (PillowImage.Opacity > 0.5)
+        {
+            // Tight non-transparent bounds of luban-pillow-layer.png. Contact
+            // follows the pixels the user can actually see instead of the
+            // transparent HWND margin around the sprite.
+            leftPixel = Math.Min(leftPixel, 6);
+            topPixel = Math.Min(topPixel, 366);
+            rightPixel = Math.Max(rightPixel, 393);
+            bottomPixel = Math.Max(bottomPixel, 503);
+        }
+
+        if (rightPixel <= leftPixel || bottomPixel <= topPixel)
+        {
+            return windowBounds;
+        }
+
+        var horizontalScale = windowBounds.Width / DisplayPixelWidth;
+        var verticalScale = windowBounds.Height / DisplayPixelHeight;
+        return new Rect(
+            windowBounds.Left + leftPixel * horizontalScale,
+            windowBounds.Top + topPixel * verticalScale,
+            (rightPixel - leftPixel) * horizontalScale,
+            (bottomPixel - topPixel) * verticalScale);
     }
 
     private static EdgeDock FindTouchedEdge(
@@ -1771,7 +2030,9 @@ public partial class MainWindow : Window
         };
 
         return candidates
-            .Where(candidate => candidate.Gap <= tolerance)
+            .Where(candidate =>
+                double.IsFinite(candidate.Gap) &&
+                Math.Abs(candidate.Gap) <= tolerance)
             .OrderBy(candidate => Math.Abs(candidate.Gap))
             .ThenBy(candidate => (int)candidate.Dock)
             .Select(candidate => candidate.Dock)
@@ -1804,16 +2065,6 @@ public partial class MainWindow : Window
             RestartAutomaticCountdown();
             AppLogger.Info(
                 $"边缘探头已跳过：精灵分页不可用 {edgePageName}");
-            UpdateVisualClockSubscription();
-            return;
-        }
-
-        if (_bubbleMode == BubbleMode.Todo)
-        {
-            _edgeDock = EdgeDock.None;
-            _edgePeekFrameDeadlineTimestamp = 0;
-            ResetPetVisualTransforms();
-            ShowStableTodoFrame();
             UpdateVisualClockSubscription();
             return;
         }
@@ -1889,12 +2140,18 @@ public partial class MainWindow : Window
             BakeCurrentPetVisualTransformIntoDisplayFrame();
         }
 
-        PetFacingScale.ScaleX = 1;
-        PetFacingScale.ScaleY = 1;
+        ResetPetVisualTransforms();
         if (restoreIdleFrame)
         {
             _nextFrameBlendDuration = EdgeFrameBlendDuration;
-            ShowStableFrame(_idleFrame);
+            if (_bubbleMode == BubbleMode.Todo)
+            {
+                ShowStableTodoFrame();
+            }
+            else
+            {
+                ShowStableFrame(_idleFrame);
+            }
         }
         LogInfo($"边缘探头结束：{GetEdgeName(previousDock)}");
         if (restartAutomaticCountdown)
@@ -1912,16 +2169,6 @@ public partial class MainWindow : Window
             ExitEdgePeek(
                 restartAutomaticCountdown: false,
                 restoreIdleFrame: false);
-            return;
-        }
-
-        if (_bubbleMode == BubbleMode.Todo)
-        {
-            ExitEdgePeek(
-                restartAutomaticCountdown: false,
-                restoreIdleFrame: false);
-            ResetPetVisualTransforms();
-            ShowStableTodoFrame();
             return;
         }
 
@@ -2119,7 +2366,8 @@ public partial class MainWindow : Window
 
     private bool TryStartReaction(AnimationClip clip, bool showCuteBubble)
     {
-        if (_isClosing || _activeClip is not null || _dragInteractionActive ||
+        if (_isClosing || _sessionInactive ||
+            _activeClip is not null || _dragInteractionActive ||
             _isReminderActive ||
             _bubbleMode == BubbleMode.Todo ||
             _edgeDock != EdgeDock.None ||
@@ -2169,7 +2417,8 @@ public partial class MainWindow : Window
 
     private bool StartEdgeRoaming()
     {
-        if (_isClosing || !_edgeRoamingEnabled || _isEdgeRoaming ||
+        if (_isClosing || _sessionInactive ||
+            !_edgeRoamingEnabled || _isEdgeRoaming ||
             !_automaticAnimationEnabled || _isReminderActive ||
             _activeClip is not null || _dragInteractionActive || _pointerDown ||
             _isPetSizeTransitioning || _isPetSizePreviewSessionActive ||
@@ -2193,7 +2442,7 @@ public partial class MainWindow : Window
         {
             ScheduleNextEdgeRoam(
                 Stopwatch.GetTimestamp(),
-                EdgeRoamInterruptedDelay);
+                EdgeRoamInterval);
             return false;
         }
 
@@ -2258,7 +2507,8 @@ public partial class MainWindow : Window
     private void StopEdgeRoaming(
         bool scheduleNext,
         bool restoreIdleFrame,
-        bool interrupted)
+        bool interrupted,
+        bool immediate = false)
     {
         var wasRoaming = _isEdgeRoaming;
         if (!wasRoaming)
@@ -2267,9 +2517,7 @@ public partial class MainWindow : Window
             {
                 ScheduleNextEdgeRoam(
                     Stopwatch.GetTimestamp(),
-                    interrupted
-                        ? EdgeRoamInterruptedDelay
-                        : EdgeRoamRepeatDelay);
+                    EdgeRoamInterval);
             }
             else if (!_edgeRoamingEnabled)
             {
@@ -2281,6 +2529,22 @@ public partial class MainWindow : Window
 
         _edgeRoamStopScheduleNext = scheduleNext;
         _edgeRoamStopInterrupted |= interrupted;
+        if (immediate)
+        {
+            if (!restoreIdleFrame || _isReminderActive)
+            {
+                // Keep the exact rotated/mirrored pixels stable until the
+                // Todo or reminder pose takes over. Resetting transforms
+                // before a cold target page is ready causes a one-frame flip.
+                BakeCurrentPetVisualTransformIntoDisplayFrame();
+            }
+
+            CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
+            CompleteEdgeRoamStop(
+                restoreIdleFrame: restoreIdleFrame && !_isReminderActive);
+            return;
+        }
+
         var boardingPageFailed =
             IsSequenceSpritePageName(
                 _roamBoardingFrames,
@@ -2331,6 +2595,7 @@ public partial class MainWindow : Window
         _edgeRoamLandingSeamElapsedSeconds = 0;
         _edgeRoamRouteTangent = default;
         _edgeRoamFacingScaleX = 1;
+        _edgeRoamRotationDegrees = 0;
         CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
         if (wasRoaming)
         {
@@ -2346,9 +2611,7 @@ public partial class MainWindow : Window
         {
             ScheduleNextEdgeRoam(
                 Stopwatch.GetTimestamp(),
-                interrupted
-                    ? EdgeRoamInterruptedDelay
-                    : EdgeRoamRepeatDelay);
+                EdgeRoamInterval);
         }
         else if (!_edgeRoamingEnabled)
         {
@@ -2433,6 +2696,8 @@ public partial class MainWindow : Window
             // play backwards. Resetting ScaleX here made a left-facing panda
             // flip for one composition just before dismounting.
             PetFacingScale.ScaleY = 1;
+            _edgeRoamRotationDegrees = 0;
+            PetRoamRotate.Angle = 0;
         }
         _nextFrameBlendDuration = TimeSpan.Zero;
         ShowStableFrame(
@@ -2858,9 +3123,15 @@ public partial class MainWindow : Window
             _edgeRoamRouteBounds,
             GetEdgeRoamCornerRadius(_edgeRoamRouteBounds),
             _edgeRoamFacingScaleX);
+        _edgeRoamRotationDegrees = ResolveEdgeRoamRotationDegrees(
+            position,
+            lookAhead,
+            _edgeRoamFacingScaleX,
+            _edgeRoamRotationDegrees);
 
         PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
         PetFacingScale.ScaleY = 1;
+        PetRoamRotate.Angle = _edgeRoamRotationDegrees;
     }
 
     private static double ResolveEdgeRoamFacingScaleX(
@@ -2896,6 +3167,37 @@ public partial class MainWindow : Window
         }
 
         return currentScaleX < 0 ? -1 : 1;
+    }
+
+    private static double ResolveEdgeRoamRotationDegrees(
+        Point position,
+        Point lookAhead,
+        double facingScaleX,
+        double currentRotationDegrees)
+    {
+        var deltaX = lookAhead.X - position.X;
+        var deltaY = lookAhead.Y - position.Y;
+        if (Math.Abs(deltaY) > Math.Abs(deltaX) * 1.2 &&
+            Math.Abs(deltaY) > 0.01)
+        {
+            var facesMirrored = facingScaleX < 0;
+            if (deltaY < 0)
+            {
+                return facesMirrored ? -90 : 90;
+            }
+
+            return facesMirrored ? 90 : -90;
+        }
+
+        if (Math.Abs(deltaX) > Math.Abs(deltaY) * 1.2 &&
+            Math.Abs(deltaX) > 0.01)
+        {
+            return 0;
+        }
+
+        return double.IsFinite(currentRotationDegrees)
+            ? Math.Clamp(currentRotationDegrees, -90, 90)
+            : 0;
     }
 
     private void ApplyEdgeRoamingPosition(double logicalLeft, double logicalTop)
@@ -3096,7 +3398,9 @@ public partial class MainWindow : Window
 
     private void AutomaticTimer_Tick(object? sender, EventArgs e)
     {
-        if (_isClosing || _isReminderActive || !_automaticAnimationEnabled)
+        _automaticTimer.Stop();
+        if (_isClosing || _sessionInactive ||
+            _isReminderActive || !_automaticAnimationEnabled)
         {
             return;
         }
@@ -3110,11 +3414,17 @@ public partial class MainWindow : Window
                 return;
             }
 
-            ScheduleNextEdgeRoam(timestamp, EdgeRoamInterruptedDelay);
+            ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
         }
 
         if (_isPillowBreathing)
         {
+            if (_pillowBreathingDueTimestamp > timestamp)
+            {
+                ArmAutomaticWakeTimer(timestamp);
+                return;
+            }
+
             StopPillowBreathing();
             RestartAutomaticCountdown();
             return;
@@ -3127,7 +3437,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        _automaticTimer.Stop();
+        if (_nextAutomaticActivityDueTimestamp <= 0 ||
+            timestamp < _nextAutomaticActivityDueTimestamp)
+        {
+            ArmAutomaticWakeTimer(timestamp);
+            return;
+        }
+
+        _nextAutomaticActivityDueTimestamp = 0;
         var activity = GetNextAutomaticActivity();
         if (activity is null)
         {
@@ -3143,7 +3460,11 @@ public partial class MainWindow : Window
     private void RestartAutomaticCountdown()
     {
         _automaticTimer.Stop();
-        if (_isClosing || !_automaticAnimationEnabled ||
+        var timestamp = Stopwatch.GetTimestamp();
+        _pillowBreathingDueTimestamp = 0;
+        _nextAutomaticActivityDueTimestamp = checked(
+            timestamp + ToStopwatchTicks(AutomaticAnimationInterval));
+        if (_isClosing || _sessionInactive || !_automaticAnimationEnabled ||
             _isReminderActive ||
             _activeClip is not null || _isPillowBreathing || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
@@ -3152,23 +3473,75 @@ public partial class MainWindow : Window
             return;
         }
 
-        var interval = AutomaticAnimationInterval;
+        ArmAutomaticWakeTimer(timestamp);
+    }
+
+    private void ArmAutomaticWakeTimer(long timestamp)
+    {
+        if (_isClosing || _sessionInactive || !_automaticAnimationEnabled ||
+            _isReminderActive ||
+            _activeClip is not null || _dragInteractionActive ||
+            _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
+        {
+            _automaticTimer.Stop();
+            return;
+        }
+
+        var nextDueTimestamp = long.MaxValue;
+        if (_nextAutomaticActivityDueTimestamp > 0)
+        {
+            nextDueTimestamp = Math.Min(
+                nextDueTimestamp,
+                _nextAutomaticActivityDueTimestamp);
+        }
+        if (_pillowBreathingDueTimestamp > 0)
+        {
+            nextDueTimestamp = Math.Min(
+                nextDueTimestamp,
+                _pillowBreathingDueTimestamp);
+        }
         if (_edgeRoamingEnabled && _nextEdgeRoamDueTimestamp > 0)
         {
-            var remainingTicks =
-                _nextEdgeRoamDueTimestamp - Stopwatch.GetTimestamp();
-            var remaining = remainingTicks <= 0
-                ? TimeSpan.FromMilliseconds(1)
-                : TimeSpan.FromSeconds(
-                    remainingTicks / (double)Stopwatch.Frequency);
-            if (remaining < interval)
-            {
-                interval = remaining;
-            }
+            nextDueTimestamp = Math.Min(
+                nextDueTimestamp,
+                _nextEdgeRoamDueTimestamp);
+        }
+
+        if (nextDueTimestamp == long.MaxValue)
+        {
+            _automaticTimer.Stop();
+            return;
+        }
+
+        var remainingTicks = nextDueTimestamp - timestamp;
+        var interval = remainingTicks <= 0
+            ? TimeSpan.FromMilliseconds(1)
+            : TimeSpan.FromSeconds(
+                remainingTicks / (double)Stopwatch.Frequency);
+        if (interval > TimeSpan.FromDays(1))
+        {
+            interval = TimeSpan.FromDays(1);
         }
 
         _automaticTimer.Interval = interval;
         _automaticTimer.Start();
+    }
+
+    private void PreserveAutomaticActivityDeadlineOrRestart(long timestamp)
+    {
+        if (_nextAutomaticActivityDueTimestamp <= 0)
+        {
+            _nextAutomaticActivityDueTimestamp = checked(
+                timestamp + ToStopwatchTicks(AutomaticAnimationInterval));
+        }
+
+        if (!_isPillowBreathing)
+        {
+            _pillowBreathingDueTimestamp = 0;
+        }
+
+        ArmAutomaticWakeTimer(timestamp);
     }
 
     private AnimationClip? GetNextAutomaticActivity()
@@ -3202,17 +3575,21 @@ public partial class MainWindow : Window
     {
         StopPillowBreathing();
         _isPillowBreathing = true;
+        var timestamp = Stopwatch.GetTimestamp();
+        _nextAutomaticActivityDueTimestamp = 0;
+        _pillowBreathingDueTimestamp = checked(
+            timestamp + ToStopwatchTicks(PillowAnimationDuration));
         // This timer reserves one explicit five-second rest slot in the
         // shuffled activity bag. The independent snore bubble is driven by the
         // absolute composition clock throughout every stable idle period.
-        _automaticTimer.Interval = PillowAnimationDuration;
-        _automaticTimer.Start();
+        ArmAutomaticWakeTimer(timestamp);
         RefreshSnoreBubbleAnimationState();
     }
 
     private void StopPillowBreathing()
     {
         _isPillowBreathing = false;
+        _pillowBreathingDueTimestamp = 0;
         _automaticTimer.Stop();
         RefreshSnoreBubbleAnimationState();
     }
@@ -3239,6 +3616,7 @@ public partial class MainWindow : Window
         _snoreBubbleCurrentScale = SnoreBubbleMinimumScale;
         SnoreBubbleScale.ScaleX = SnoreBubbleMinimumScale;
         SnoreBubbleScale.ScaleY = SnoreBubbleMinimumScale;
+        SnoreBubbleBakedCover.Opacity = shouldAnimate ? 1 : 0;
         SnoreBubbleHost.Opacity = shouldAnimate ? 1 : 0;
         UpdateVisualClockSubscription();
     }
@@ -5973,7 +6351,8 @@ public partial class MainWindow : Window
             StopEdgeRoaming(
                 scheduleNext: true,
                 restoreIdleFrame: false,
-                interrupted: true);
+                interrupted: true,
+                immediate: true);
             // Showing an owned WPF window can synchronously pump layout/render work.
             // Unsubscribe before Show() so a re-entrant composition callback cannot
             // observe BubbleMode.Todo while the old reaction is still active and
@@ -6270,8 +6649,11 @@ public partial class MainWindow : Window
 
     private void ResetPetVisualTransforms()
     {
+        _edgeRoamFacingScaleX = 1;
+        _edgeRoamRotationDegrees = 0;
         PetFacingScale.ScaleX = 1;
         PetFacingScale.ScaleY = 1;
+        PetRoamRotate.Angle = 0;
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         PetScale.ScaleX = 1;
@@ -6383,7 +6765,7 @@ public partial class MainWindow : Window
         {
             ScheduleNextEdgeRoam(
                 Stopwatch.GetTimestamp(),
-                EdgeRoamInitialDelay);
+                EdgeRoamInterval);
         }
         else
         {
@@ -6995,6 +7377,10 @@ public partial class MainWindow : Window
             SaveSettings();
         }
 
+        // A slider preview owns an anchor captured at its old screen position.
+        // Commit that preview first, then establish the reminder corner before
+        // the temporary 140% preview captures its bottom-right anchor.
+        MovePetToReminderCorner();
         _reminderRestoreScale = NormalizePetSizeScale(_petSizeScale);
         _isTransientPetSizeOverride = true;
         _isRestoringReminderSize = false;
@@ -7291,7 +7677,7 @@ public partial class MainWindow : Window
 
     private void TodoWindow_ScheduledTaskDeleteRequested(ScheduledTaskItem item)
     {
-        if (ReferenceEquals(item, _activeReminder))
+        if (_queuedReminderIds.Contains(item.Id))
         {
             return;
         }
@@ -7311,7 +7697,7 @@ public partial class MainWindow : Window
         string text,
         DateTimeOffset dueAt)
     {
-        if (ReferenceEquals(item, _activeReminder))
+        if (_queuedReminderIds.Contains(item.Id))
         {
             AppLogger.Info($"忽略正在提示的定时任务修改：{item.Id}");
             return;
@@ -7393,6 +7779,10 @@ public partial class MainWindow : Window
         {
             ShowNextQueuedReminderAt(now);
         }
+        else
+        {
+            RefreshActiveReminderPresentation(now);
+        }
 
         ScheduleNextReminderAt(now);
     }
@@ -7401,10 +7791,24 @@ public partial class MainWindow : Window
     {
         _reminderQueue.Clear();
         _queuedReminderIds.Clear();
-        if (_activeReminder is { } activeReminder &&
-            _scheduledTasks.Contains(activeReminder))
+        if (_activeReminder is { } activeReminder)
         {
-            _queuedReminderIds.Add(activeReminder.Id);
+            if (_scheduledTasks.Contains(activeReminder))
+            {
+                _queuedReminderIds.Add(activeReminder.Id);
+                foreach (var displayedItem in _activeReminderBatch)
+                {
+                    if (_scheduledTasks.Contains(displayedItem))
+                    {
+                        _queuedReminderIds.Add(displayedItem.Id);
+                    }
+                }
+            }
+            else
+            {
+                _activeReminder = null;
+                _activeReminderBatch.Clear();
+            }
         }
 
         foreach (var item in _scheduledTasks)
@@ -7434,18 +7838,7 @@ public partial class MainWindow : Window
 
             _upcomingReminderPreloadPageName = null;
             _activeReminder = item;
-            _isReminderActive = true;
-            ReminderMessageText.Text = item.Text;
-            ReminderMessageText.Select(0, 0);
-            if (_bubbleMode != BubbleMode.Reminder)
-            {
-                SetBubbleMode(BubbleMode.Reminder);
-                BeginReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
-            }
-            else
-            {
-                StartReminderHoldAnimation();
-            }
+            RefreshActiveReminderPresentation(now);
 
             AppLogger.Info(
                 $"定时任务触发：{item.Id}，计划时间 {item.DueAt:O}，" +
@@ -7454,6 +7847,79 @@ public partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    private void RefreshActiveReminderPresentation(DateTimeOffset now)
+    {
+        if (_activeReminder is not { } activeReminder)
+        {
+            return;
+        }
+
+        _activeReminderBatch.RemoveAll(item =>
+            !_scheduledTasks.Contains(item));
+        if (_activeReminderBatch.All(item => item.Id != activeReminder.Id))
+        {
+            _activeReminderBatch.Add(activeReminder);
+        }
+
+        foreach (var item in _reminderQueue)
+        {
+            if (_activeReminderBatch.All(existing => existing.Id != item.Id))
+            {
+                _activeReminderBatch.Add(item);
+            }
+        }
+
+        _activeReminderBatch.Sort(CompareScheduledTasks);
+        foreach (var item in _activeReminderBatch)
+        {
+            _queuedReminderIds.Add(item.Id);
+        }
+
+        ReminderTitleText.Text = _activeReminderBatch.Count == 1
+            ? "定时任务到点啦"
+            : $"{_activeReminderBatch.Count} 个定时任务到点啦";
+        ReminderMessageText.Text = string.Join(
+            Environment.NewLine,
+            _activeReminderBatch.Select(item =>
+                $"{item.DueAt.ToLocalTime():M月d日 HH:mm:ss}  {item.Text}"));
+        ReminderMessageText.Select(0, 0);
+        ReminderAcknowledgeButton.Content = _activeReminderBatch.Count == 1
+            ? "知道啦"
+            : $"都知道啦 · {_activeReminderBatch.Count}";
+
+        if (_isReminderActive && _bubbleMode == BubbleMode.Reminder)
+        {
+            AppLogger.Info(
+                $"定时提醒合并刷新：{_activeReminderBatch.Count} 条，最早延迟 " +
+                $"{Math.Max(0, (now - _activeReminderBatch[0].DueAt).TotalSeconds):F1} 秒");
+            return;
+        }
+
+        _isReminderActive = true;
+        BeginReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
+        SetBubbleMode(BubbleMode.Reminder);
+    }
+
+    private void MovePetToReminderCorner()
+    {
+        StopEdgeRoaming(
+            scheduleNext: true,
+            restoreIdleFrame: false,
+            interrupted: true,
+            immediate: true);
+        ExitEdgePeek(
+            restartAutomaticCountdown: false,
+            restoreIdleFrame: false);
+
+        var workArea = MonitorWorkArea.GetForWindow(this);
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        var height = ActualHeight > 0 ? ActualHeight : Height;
+        _petSizeLogicalAnchor = null;
+        Left = Math.Max(workArea.Left, workArea.Right - width);
+        Top = Math.Max(workArea.Top, workArea.Bottom - height);
+        _todoWindowPositionCache.InvalidateGeometry();
     }
 
     private void ReminderAcknowledgeButton_Click(
@@ -7466,15 +7932,22 @@ public partial class MainWindow : Window
 
     private void AcknowledgeActiveReminder()
     {
-        var acknowledged = _activeReminder;
-        if (acknowledged is null)
+        if (_activeReminder is null)
         {
             return;
         }
 
+        var acknowledged = _activeReminderBatch.Count > 0
+            ? _activeReminderBatch.ToArray()
+            : [_activeReminder];
         _activeReminder = null;
-        _queuedReminderIds.Remove(acknowledged.Id);
-        _scheduledTasks.Remove(acknowledged);
+        _activeReminderBatch.Clear();
+        foreach (var item in acknowledged)
+        {
+            _queuedReminderIds.Remove(item.Id);
+            _scheduledTasks.Remove(item);
+        }
+        _reminderQueue.Clear();
         SaveScheduledTasks();
 
         var now = _nowProvider();
@@ -7489,7 +7962,7 @@ public partial class MainWindow : Window
         SetBubbleMode(BubbleMode.None);
         RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
         ScheduleNextReminderAt(now);
-        AppLogger.Info($"定时任务已确认：{acknowledged.Id}");
+        AppLogger.Info($"定时任务已批量确认：{acknowledged.Length} 条");
     }
 
     private void ScheduleNextReminderAt(DateTimeOffset now)

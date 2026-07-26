@@ -13,6 +13,14 @@ namespace LubanDesktopPet;
 internal static class MonitorWorkArea
 {
     private const uint MonitorDefaultToNearest = 0x00000002;
+    private const int NativeEdgeTolerancePixels = 1;
+
+    internal enum ScreenEdge
+    {
+        Left,
+        Right,
+        Bottom
+    }
 
     internal static Rect GetForWindow(Window window)
     {
@@ -56,6 +64,149 @@ internal static class MonitorWorkArea
             return GetFallbackWorkArea();
         }
     }
+
+    internal static bool IsExternalWorkAreaEdgeAt(
+        Window window,
+        ScreenEdge edge,
+        double orthogonalScreenDip)
+    {
+        try
+        {
+            var handle = new WindowInteropHelper(window).Handle;
+            if (handle == IntPtr.Zero)
+            {
+                return true;
+            }
+
+            var currentMonitor = MonitorFromWindow(
+                handle,
+                MonitorDefaultToNearest);
+            var currentInfo = new MonitorInfo
+            {
+                Size = (uint)Marshal.SizeOf<MonitorInfo>()
+            };
+            if (currentMonitor == IntPtr.Zero ||
+                !GetMonitorInfo(currentMonitor, ref currentInfo))
+            {
+                return true;
+            }
+
+            var workEdgeMatchesMonitorEdge = edge switch
+            {
+                ScreenEdge.Left =>
+                    Math.Abs(currentInfo.WorkArea.Left -
+                             currentInfo.MonitorArea.Left) <=
+                    NativeEdgeTolerancePixels,
+                ScreenEdge.Right =>
+                    Math.Abs(currentInfo.WorkArea.Right -
+                             currentInfo.MonitorArea.Right) <=
+                    NativeEdgeTolerancePixels,
+                ScreenEdge.Bottom =>
+                    Math.Abs(currentInfo.WorkArea.Bottom -
+                             currentInfo.MonitorArea.Bottom) <=
+                    NativeEdgeTolerancePixels,
+                _ => true
+            };
+            if (!workEdgeMatchesMonitorEdge)
+            {
+                // A taskbar or reserved desktop band is itself a real work-area
+                // boundary even when the physical monitor continues behind it.
+                return true;
+            }
+
+            var localPoint = edge == ScreenEdge.Bottom
+                ? new Point(orthogonalScreenDip - window.Left, 0)
+                : new Point(0, orthogonalScreenDip - window.Top);
+            var physicalPoint = window.PointToScreen(localPoint);
+            var orthogonalPhysical = edge == ScreenEdge.Bottom
+                ? (int)Math.Round(physicalPoint.X)
+                : (int)Math.Round(physicalPoint.Y);
+
+            var hasAdjacentMonitor = false;
+            _ = EnumDisplayMonitors(
+                IntPtr.Zero,
+                IntPtr.Zero,
+                (
+                    IntPtr monitor,
+                    IntPtr monitorHdc,
+                    ref NativeRect monitorRectangle,
+                    IntPtr callbackData) =>
+                {
+                    if (monitor == currentMonitor)
+                    {
+                        return true;
+                    }
+
+                    var otherInfo = new MonitorInfo
+                    {
+                        Size = (uint)Marshal.SizeOf<MonitorInfo>()
+                    };
+                    if (!GetMonitorInfo(monitor, ref otherInfo))
+                    {
+                        return true;
+                    }
+
+                    var adjacent = edge switch
+                    {
+                        ScreenEdge.Left =>
+                            Math.Abs(otherInfo.MonitorArea.Right -
+                                     currentInfo.MonitorArea.Left) <=
+                            NativeEdgeTolerancePixels &&
+                            IsWithinHalfOpenRange(
+                                orthogonalPhysical,
+                                Math.Max(
+                                    currentInfo.MonitorArea.Top,
+                                    otherInfo.MonitorArea.Top),
+                                Math.Min(
+                                    currentInfo.MonitorArea.Bottom,
+                                    otherInfo.MonitorArea.Bottom)),
+                        ScreenEdge.Right =>
+                            Math.Abs(otherInfo.MonitorArea.Left -
+                                     currentInfo.MonitorArea.Right) <=
+                            NativeEdgeTolerancePixels &&
+                            IsWithinHalfOpenRange(
+                                orthogonalPhysical,
+                                Math.Max(
+                                    currentInfo.MonitorArea.Top,
+                                    otherInfo.MonitorArea.Top),
+                                Math.Min(
+                                    currentInfo.MonitorArea.Bottom,
+                                    otherInfo.MonitorArea.Bottom)),
+                        ScreenEdge.Bottom =>
+                            Math.Abs(otherInfo.MonitorArea.Top -
+                                     currentInfo.MonitorArea.Bottom) <=
+                            NativeEdgeTolerancePixels &&
+                            IsWithinHalfOpenRange(
+                                orthogonalPhysical,
+                                Math.Max(
+                                    currentInfo.MonitorArea.Left,
+                                    otherInfo.MonitorArea.Left),
+                                Math.Min(
+                                    currentInfo.MonitorArea.Right,
+                                    otherInfo.MonitorArea.Right)),
+                        _ => false
+                    };
+                    if (!adjacent)
+                    {
+                        return true;
+                    }
+
+                    hasAdjacentMonitor = true;
+                    return false;
+                },
+                IntPtr.Zero);
+            return !hasAdjacentMonitor;
+        }
+        catch
+        {
+            // Failing open preserves edge animation on unusual display drivers;
+            // the exact contact-gap check still prevents premature snapping.
+            return true;
+        }
+    }
+
+    private static bool IsWithinHalfOpenRange(int value, int start, int end) =>
+        end > start && value >= start && value < end;
 
     private static bool TryConvertToWindowDips(Window window, NativeRect nativeRect, out Rect workArea)
     {
@@ -120,6 +271,14 @@ internal static class MonitorWorkArea
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr windowHandle, uint flags);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDisplayMonitors(
+        IntPtr hdc,
+        IntPtr clipRectangle,
+        MonitorEnumProcedure callback,
+        IntPtr data);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetMonitorInfo(IntPtr monitorHandle, ref MonitorInfo monitorInfo);
@@ -141,4 +300,10 @@ internal static class MonitorWorkArea
         public int Right;
         public int Bottom;
     }
+
+    private delegate bool MonitorEnumProcedure(
+        IntPtr monitor,
+        IntPtr hdc,
+        ref NativeRect monitorRectangle,
+        IntPtr data);
 }

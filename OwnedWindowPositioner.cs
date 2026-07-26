@@ -75,51 +75,42 @@ internal static class OwnedWindowPositioner
                 X = (int)Math.Round((anchorTopLeft.X + anchorBottomRight.X) / 2),
                 Y = (int)Math.Round((anchorTopLeft.Y + anchorBottomRight.Y) / 2)
             };
-            var anchorRemainsOnCachedMonitor = cache._hasMonitorGeometry &&
-                                               anchorCenter.X >= cache._monitorArea.Left &&
-                                               anchorCenter.X < cache._monitorArea.Right &&
-                                               anchorCenter.Y >= cache._monitorArea.Top &&
-                                               anchorCenter.Y < cache._monitorArea.Bottom;
-            var monitorChanged = !anchorRemainsOnCachedMonitor;
-            if (!anchorRemainsOnCachedMonitor)
+            var monitor = MonitorFromPoint(anchorCenter, MonitorDefaultToNearest);
+            var monitorInfo = new MonitorInfo
             {
-                var monitor = MonitorFromPoint(anchorCenter, MonitorDefaultToNearest);
-                var monitorInfo = new MonitorInfo
-                {
-                    Size = MonitorInfoSize
-                };
-                if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref monitorInfo))
-                {
-                    return false;
-                }
-
-                cache._monitorArea = monitorInfo.MonitorArea;
-                cache._workArea = monitorInfo.WorkArea;
-                cache._hasMonitorGeometry = true;
-                cache._hasChildGeometry = false;
+                Size = MonitorInfoSize
+            };
+            if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref monitorInfo))
+            {
+                return false;
             }
 
+            cache._monitorArea = monitorInfo.MonitorArea;
+            cache._workArea = monitorInfo.WorkArea;
+            cache._hasMonitorGeometry = true;
+
+            // Lock/unlock, remote-session switches and per-monitor DPI changes
+            // can move or resize an HWND without changing the anchor's logical
+            // monitor. Re-read the native child rectangle on every real
+            // positioning pass; cached coordinates are only observations, not
+            // authoritative window-manager state.
+            if (!GetWindowRect(cache._childHandle, out var childRect))
+            {
+                cache._hasChildGeometry = false;
+                cache._hasLastPosition = false;
+                return false;
+            }
+
+            cache._childWidth = childRect.Right - childRect.Left;
+            cache._childHeight = childRect.Bottom - childRect.Top;
+            cache._hasChildGeometry =
+                cache._childWidth > 0 && cache._childHeight > 0;
             if (!cache._hasChildGeometry)
             {
-                if (!GetWindowRect(cache._childHandle, out var childRect))
-                {
-                    return false;
-                }
-
-                cache._childWidth = childRect.Right - childRect.Left;
-                cache._childHeight = childRect.Bottom - childRect.Top;
-                cache._lastLeft = childRect.Left;
-                cache._lastTop = childRect.Top;
-                cache._hasChildGeometry = cache._childWidth > 0 && cache._childHeight > 0;
-                cache._hasLastPosition = cache._hasChildGeometry;
-                if (!cache._hasChildGeometry)
-                {
-                    return false;
-                }
+                cache._hasLastPosition = false;
+                return false;
             }
 
-            var childWidth = cache._childWidth;
-            var childHeight = cache._childHeight;
             var anchorLeft = (int)Math.Round(anchorTopLeft.X);
             var anchorRight = (int)Math.Round(anchorBottomRight.X);
             var anchorBottom = (int)Math.Round(anchorBottomRight.Y);
@@ -127,89 +118,80 @@ internal static class OwnedWindowPositioner
                 anchorLeft,
                 anchorRight,
                 anchorBottom,
-                childWidth,
-                childHeight,
+                cache._childWidth,
+                cache._childHeight,
                 cache._workArea,
                 preferredChildIsOnLeft,
                 out childIsOnLeft);
 
-            // Slider composition frames can request the same child position
-            // repeatedly. Avoid a redundant native transition (and its window
-            // manager/layout work) when the physical-pixel target is unchanged.
-            if (cache._hasLastPosition &&
-                cache._lastLeft == desiredPosition.X &&
-                cache._lastTop == desiredPosition.Y)
+            if (childRect.Left == desiredPosition.X &&
+                childRect.Top == desiredPosition.Y)
             {
+                cache._lastLeft = childRect.Left;
+                cache._lastTop = childRect.Top;
+                cache._hasLastPosition = true;
                 return true;
             }
 
-            var positioned = SetWindowPos(
+            if (!SetWindowPos(
                 cache._childHandle,
                 IntPtr.Zero,
                 desiredPosition.X,
                 desiredPosition.Y,
                 0,
                 0,
-                SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
-            if (!positioned)
+                SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder))
             {
                 cache._hasLastPosition = false;
                 return false;
             }
 
-            if (monitorChanged)
+            if (!GetWindowRect(cache._childHandle, out var movedChildRect))
             {
-                // PerMonitorV2 can resize the child synchronously when it
-                // crosses onto a monitor with a different DPI. Refresh the
-                // native rectangle and correct the position once now, instead
-                // of carrying the old screen's pixel size into later frames.
-                if (!GetWindowRect(cache._childHandle, out var movedChildRect))
-                {
-                    cache._hasChildGeometry = false;
-                    cache._hasLastPosition = false;
-                    return true;
-                }
-
-                cache._childWidth = movedChildRect.Right - movedChildRect.Left;
-                cache._childHeight = movedChildRect.Bottom - movedChildRect.Top;
-                cache._hasChildGeometry =
-                    cache._childWidth > 0 && cache._childHeight > 0;
-                if (!cache._hasChildGeometry)
-                {
-                    cache._hasLastPosition = false;
-                    return true;
-                }
-
-                desiredPosition = CalculateDesiredPosition(
-                    anchorLeft,
-                    anchorRight,
-                    anchorBottom,
-                    cache._childWidth,
-                    cache._childHeight,
-                    cache._workArea,
-                    preferredChildIsOnLeft,
-                    out childIsOnLeft);
-                if (movedChildRect.Left != desiredPosition.X ||
-                    movedChildRect.Top != desiredPosition.Y)
-                {
-                    positioned = SetWindowPos(
-                        cache._childHandle,
-                        IntPtr.Zero,
-                        desiredPosition.X,
-                        desiredPosition.Y,
-                        0,
-                        0,
-                        SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
-                    if (!positioned)
-                    {
-                        cache._hasLastPosition = false;
-                        return false;
-                    }
-                }
+                cache._hasChildGeometry = false;
+                cache._hasLastPosition = false;
+                return false;
             }
 
-            cache._lastLeft = desiredPosition.X;
-            cache._lastTop = desiredPosition.Y;
+            // WM_DPICHANGED can synchronously alter the physical child size
+            // during the first move. Recompute against the current work area
+            // and correct the position once with that post-move rectangle.
+            cache._childWidth = movedChildRect.Right - movedChildRect.Left;
+            cache._childHeight = movedChildRect.Bottom - movedChildRect.Top;
+            cache._hasChildGeometry =
+                cache._childWidth > 0 && cache._childHeight > 0;
+            if (!cache._hasChildGeometry)
+            {
+                cache._hasLastPosition = false;
+                return false;
+            }
+
+            var correctedPosition = CalculateDesiredPosition(
+                anchorLeft,
+                anchorRight,
+                anchorBottom,
+                cache._childWidth,
+                cache._childHeight,
+                cache._workArea,
+                preferredChildIsOnLeft,
+                out childIsOnLeft);
+            if ((movedChildRect.Left != correctedPosition.X ||
+                 movedChildRect.Top != correctedPosition.Y) &&
+                !SetWindowPos(
+                    cache._childHandle,
+                    IntPtr.Zero,
+                    correctedPosition.X,
+                    correctedPosition.Y,
+                    0,
+                    0,
+                    SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder))
+            {
+                cache._hasLastPosition = false;
+                return false;
+            }
+
+            cache._lastLeft = correctedPosition.X;
+            cache._lastTop = correctedPosition.Y;
             cache._hasLastPosition = true;
             return true;
         }

@@ -92,6 +92,8 @@ internal static class Program
                     AssertEdgeRoamingSourceContract);
                 RunCheck(nameof(AssertEdgeRoamingRouteMathContract),
                     AssertEdgeRoamingRouteMathContract);
+                RunCheck(nameof(AssertEdgeRoamRotationContract),
+                    AssertEdgeRoamRotationContract);
                 return 0;
             }
 
@@ -178,8 +180,8 @@ internal static class Program
                         AssertScheduledTaskTabContract);
                     RunCheck(nameof(AssertScheduledTaskEditContract),
                         () => AssertScheduledTaskEditContract(window));
-                    RunCheck(nameof(AssertScheduledReminderContract),
-                        () => AssertScheduledReminderContract(window));
+                    RunCheck(nameof(AssertScheduledReminderBatchContract),
+                        () => AssertScheduledReminderBatchContract(window));
                     return 0;
                 }
 
@@ -224,6 +226,10 @@ internal static class Program
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
                 RunCheck(nameof(AssertEdgeRoamingRouteMathContract),
                     AssertEdgeRoamingRouteMathContract);
+                RunCheck(nameof(AssertEdgeRoamRotationContract),
+                    AssertEdgeRoamRotationContract);
+                RunCheck(nameof(AssertAutomaticDeadlineContract),
+                    () => AssertAutomaticDeadlineContract(window));
                 RunCheck(nameof(AssertSnoreBubbleAnimationContract),
                     () => AssertSnoreBubbleAnimationContract(window));
                 RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
@@ -238,8 +244,8 @@ internal static class Program
                     () => AssertTodoReorderPersistenceContract(window));
                 RunCheck(nameof(AssertScheduledTaskEditContract),
                     () => AssertScheduledTaskEditContract(window));
-                RunCheck(nameof(AssertScheduledReminderContract),
-                    () => AssertScheduledReminderContract(window));
+                RunCheck(nameof(AssertScheduledReminderBatchContract),
+                    () => AssertScheduledReminderBatchContract(window));
                 RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
             }
             finally
@@ -1251,11 +1257,13 @@ internal static class Program
         var automaticTimer = GetField<DispatcherTimer>(window, "_automaticTimer");
         Invoke(window, "StartPillowBreathing");
         Assert(GetField<bool>(window, "_isPillowBreathing") &&
-               automaticTimer.IsEnabled &&
+               GetField<long>(window, "_pillowBreathingDueTimestamp") >
+                   Stopwatch.GetTimestamp() &&
                !(bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
             "真实枕头待机占位期间必须阻止Gen2回收");
         Invoke(window, "StopPillowBreathing");
         Assert(!GetField<bool>(window, "_isPillowBreathing") &&
+               GetField<long>(window, "_pillowBreathingDueTimestamp") == 0 &&
                !automaticTimer.IsEnabled &&
                (bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
             "停止枕头待机必须清理timer并恢复空闲Gen2门禁");
@@ -3755,15 +3763,21 @@ internal static class Program
             .Select(element => ((string?)element.Attribute("Include") ?? string.Empty)
                 .Replace('\\', '/'))
             .ToArray();
-        Assert(includes.Length == 3 &&
+        Assert(includes.Length == 4 &&
                includes.Contains("Assets/sprite-pages/*.pbgra.br", StringComparer.OrdinalIgnoreCase) &&
                includes.Contains("Assets/luban-sprite-pages.json", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase),
+               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase) &&
+               includes.Contains(
+                   "Assets/luban-idle-no-snore-patch-source.png",
+                   StringComparer.OrdinalIgnoreCase),
             "csproj只能嵌入无损Brotli分页通配符和v4 manifest");
         Assert(!includes.Any(include =>
                 include.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (include.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !include.Equals("Assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
+                 !include.Equals("Assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
+                 !include.Equals(
+                     "Assets/luban-idle-no-snore-patch-source.png",
+                     StringComparison.OrdinalIgnoreCase))),
             "csproj不得嵌入分页预览PNG、源PNG或旧单atlas");
 
         var assembly = typeof(MainWindow).Assembly;
@@ -3787,14 +3801,18 @@ internal static class Program
             .Select(resource => resource.ToLowerInvariant())
             .Append("assets/luban-sprite-pages.json")
             .Append("assets/luban-pillow-layer.png")
+            .Append("assets/luban-idle-no-snore-patch-source.png")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         Assert(assetKeys.SetEquals(expectedAssets) &&
-               assetKeys.Count == expectedPageResources.Count + 2,
+               assetKeys.Count == expectedPageResources.Count + 3,
             $"主程序集Assets资源必须严格等于{expectedPageResources.Count}个Brotli分页和一个v4 manifest");
         Assert(!assetKeys.Any(key =>
                 key.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
+                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
+                 !key.Equals(
+                     "assets/luban-idle-no-snore-patch-source.png",
+                     StringComparison.OrdinalIgnoreCase))),
             "主程序集不得包含分页预览PNG、旧单atlas或源PNG");
     }
 
@@ -4350,6 +4368,24 @@ internal static class Program
         var pointerDown = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseLeftButtonDown");
+        var pointerUp = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseLeftButtonUp");
+        var completeRoamStop = ExtractPrivateMethodSource(
+            mainSource,
+            "CompleteEdgeRoamStop");
+        var resetPetVisualTransforms = ExtractPrivateMethodSource(
+            mainSource,
+            "ResetPetVisualTransforms");
+        var restartAutomaticCountdown = ExtractPrivateMethodSource(
+            mainSource,
+            "RestartAutomaticCountdown");
+        var scheduleNextEdgeRoam = ExtractPrivateMethodSource(
+            mainSource,
+            "ScheduleNextEdgeRoam");
+        var armAutomaticWakeTimer = ExtractPrivateMethodSource(
+            mainSource,
+            "ArmAutomaticWakeTimer");
         var enterEdgePeek = ExtractPrivateMethodSource(mainSource, "EnterEdgePeek");
         var setBubbleMode = ExtractPrivateMethodSource(mainSource, "SetBubbleMode");
         var enterTodo = ExtractPrivateMethodSource(mainSource, "EnterTodoVisualState");
@@ -4359,6 +4395,9 @@ internal static class Program
         var displaySettingsChanged = ExtractPrivateMethodSource(
             mainSource,
             "SystemEvents_DisplaySettingsChanged");
+        var processSystemRecovery = ExtractPrivateMethodSource(
+            mainSource,
+            "ProcessSystemRecovery");
         var canCollect = ExtractPrivateMethodSource(
             mainSource,
             "CanRunIdleSpritePageCollection");
@@ -4732,13 +4771,42 @@ internal static class Program
             StringComparison.Ordinal);
         Assert(stopBeforeDrag >= 0 &&
                dragBecomesActive > stopBeforeDrag &&
+               pointerDown.Contains(
+                   "_suppressClickReactionAfterRoamInterruption = _isEdgeRoaming",
+                   StringComparison.Ordinal) &&
+               pointerDown.Contains(
+                   "immediate: _suppressClickReactionAfterRoamInterruption",
+                   StringComparison.Ordinal) &&
+               pointerUp.Contains(
+                   "!_suppressClickReactionAfterRoamInterruption",
+                   StringComparison.Ordinal) &&
+               pointerUp.IndexOf(
+                   "_suppressClickReactionAfterRoamInterruption = false",
+                   StringComparison.Ordinal) <
+               pointerUp.IndexOf("ShowCuteReaction()", StringComparison.Ordinal) &&
+               stopRoaming.Contains("if (immediate)", StringComparison.Ordinal) &&
+               stopRoaming.Contains(
+                   "CompleteEdgeRoamStop(",
+                   StringComparison.Ordinal) &&
+               completeRoamStop.Contains(
+                   "ShowStableFrame(_idleFrame)",
+                   StringComparison.Ordinal) &&
+               resetPetVisualTransforms.Contains(
+                   "PetRoamRotate.Angle = 0",
+                   StringComparison.Ordinal) &&
                enterEdgePeek.Contains("StopEdgeRoaming(", StringComparison.Ordinal) &&
                (setBubbleMode.Contains("StopEdgeRoaming(", StringComparison.Ordinal) ||
                 enterTodo.Contains("StopEdgeRoaming(", StringComparison.Ordinal)) &&
                (setBubbleMode.Contains("StopEdgeRoaming(", StringComparison.Ordinal) ||
                 beginReminder.Contains("StopEdgeRoaming(", StringComparison.Ordinal)) &&
                displaySettingsChanged.Contains(
+                   "QueueSystemRecovery()",
+                   StringComparison.Ordinal) &&
+               processSystemRecovery.Contains(
                    "StopEdgeRoaming(",
+                   StringComparison.Ordinal) &&
+               processSystemRecovery.Contains(
+                   "immediate: true",
                    StringComparison.Ordinal) &&
                roamingSettingChanged.Contains(
                    "_edgeRoamingEnabled = enabled",
@@ -4746,6 +4814,36 @@ internal static class Program
                roamingSettingChanged.Contains("StopEdgeRoaming(", StringComparison.Ordinal),
             "拖拽必须先抢占巡游再捕获鼠标；手动探头、待办、提醒、取消勾选和" +
             "显示器变化也必须停止旧路线，永不让巡游与EdgeDock同时运行");
+        var automaticInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "AutomaticAnimationInterval",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var roamInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeRoamInterval",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        Assert(automaticInterval == TimeSpan.FromMinutes(1) &&
+               roamInterval == TimeSpan.FromMinutes(10) &&
+               restartAutomaticCountdown.Contains(
+                   "_nextAutomaticActivityDueTimestamp = checked(",
+                   StringComparison.Ordinal) &&
+               !restartAutomaticCountdown.Contains(
+                   "_nextEdgeRoamDueTimestamp = checked(",
+                   StringComparison.Ordinal) &&
+               scheduleNextEdgeRoam.Contains(
+                   "_nextEdgeRoamDueTimestamp = checked(",
+                   StringComparison.Ordinal) &&
+               !scheduleNextEdgeRoam.Contains(
+                   "_nextAutomaticActivityDueTimestamp",
+                   StringComparison.Ordinal) &&
+               armAutomaticWakeTimer.Contains(
+                   "_nextAutomaticActivityDueTimestamp",
+                   StringComparison.Ordinal) &&
+               armAutomaticWakeTimer.Contains(
+                   "_nextEdgeRoamDueTimestamp",
+                   StringComparison.Ordinal) &&
+               armAutomaticWakeTimer.Contains(
+                   "Math.Min(",
+                   StringComparison.Ordinal),
+            "普通可爱动作必须独立按 1 分钟截止，绕屏必须独立按 10 分钟截止；共享唤醒 timer 只能选择最早绝对截止时间");
         Assert(!mainSource.Contains("EdgeDock.Top", StringComparison.Ordinal) &&
                !mainSource.Contains("\"edge-top\"", StringComparison.Ordinal) &&
                mainSource.Contains("CornerRadius", StringComparison.Ordinal),
@@ -6496,6 +6594,66 @@ internal static class Program
             "右侧反向竖移也必须始终朝屏幕内部");
     }
 
+    private static void AssertEdgeRoamRotationContract()
+    {
+        var left = new Point(-1600, 480);
+        var right = new Point(0, 480);
+        AssertClose(
+            ResolveProductionEdgeRoamRotation(
+                left,
+                new Point(left.X, left.Y - 2),
+                -1,
+                0),
+            -90,
+            "左侧向上绕屏时必须旋转 -90 度");
+        AssertClose(
+            ResolveProductionEdgeRoamRotation(
+                right,
+                new Point(right.X, right.Y - 2),
+                1,
+                0),
+            90,
+            "右侧向上绕屏时必须旋转 90 度");
+        AssertClose(
+            ResolveProductionEdgeRoamRotation(
+                left,
+                new Point(left.X, left.Y + 2),
+                -1,
+                0),
+            90,
+            "左侧向下绕屏时必须旋转 90 度");
+        AssertClose(
+            ResolveProductionEdgeRoamRotation(
+                right,
+                new Point(right.X, right.Y + 2),
+                1,
+                0),
+            -90,
+            "右侧向下绕屏时必须旋转 -90 度");
+        AssertClose(
+            ResolveProductionEdgeRoamRotation(
+                left,
+                new Point(left.X + 2, left.Y),
+                -1,
+                90),
+            0,
+            "恢复横向绕屏时必须清零旋转");
+    }
+
+    private static double ResolveProductionEdgeRoamRotation(
+        Point position,
+        Point lookAhead,
+        double facingScaleX,
+        double currentRotationDegrees) =>
+        (double)(InvokeStatic(
+            typeof(MainWindow),
+            "ResolveEdgeRoamRotationDegrees",
+            position,
+            lookAhead,
+            facingScaleX,
+            currentRotationDegrees) ?? throw new InvalidOperationException(
+            "生产绕屏旋转函数未返回角度"));
+
     private static double ResolveProductionEdgeRoamFacing(
         Point position,
         Point lookAhead,
@@ -6549,6 +6707,57 @@ internal static class Program
             Assert(touching.ToString() == edgeCase.Edge,
                 $"{edgeCase.Edge} 距边界 1.0 DIP 时必须吸附");
         }
+
+        var overlappingLeft = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(-0.75, safeY, width, height),
+            1d)!;
+        var tooFarAcrossLeft = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(-1.25, safeY, width, height),
+            1d)!;
+        Assert(overlappingLeft.ToString() == "Left" &&
+               tooFarAcrossLeft.ToString() == "None",
+            "可见像素边界允许 1 DIP 内的轻微负间隙，但越过 1 DIP 后不得错误吸附");
+
+        var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var updateDock = ExtractPrivateMethodSource(
+            mainSource,
+            "UpdateEdgeDockAfterDrag");
+        var visibleContact = ExtractPrivateMethodSource(
+            mainSource,
+            "GetPetContactBounds");
+        var monitorSource = File.ReadAllText(
+            FindWorkspaceFile("MonitorWorkArea.cs"));
+        var externalEdge = ExtractPrivateMethodSource(
+            monitorSource,
+            "IsExternalWorkAreaEdgeAt");
+        Assert(updateDock.Contains(
+                   "GetPetContactBounds(windowBounds)",
+                   StringComparison.Ordinal) &&
+               updateDock.Contains(
+                   "IsExternalWorkAreaEdgeAt(",
+                   StringComparison.Ordinal) &&
+               visibleContact.Contains(
+                   "frame.DestinationX",
+                   StringComparison.Ordinal) &&
+               visibleContact.Contains(
+                   "frame.DestinationY",
+                   StringComparison.Ordinal) &&
+               externalEdge.Contains(
+                   "EnumDisplayMonitors(",
+                   StringComparison.Ordinal) &&
+               externalEdge.Contains(
+                   "hasAdjacentMonitor",
+                   StringComparison.Ordinal) &&
+               externalEdge.Contains(
+                   "return !hasAdjacentMonitor",
+                   StringComparison.Ordinal),
+            "边缘接触必须使用精灵可见像素边界，并在共享双屏接缝处拒绝假吸附");
 
         var topCenter = InvokeStatic(
             typeof(MainWindow),
@@ -6622,17 +6831,29 @@ internal static class Program
             var restFrameIndex = edgeFrames.Length - 1;
             var fullyPeekedFrameIndex = edgeFrames.Length / 2 - 1;
             PrimeSpritePageForFrame(window, edgeFrames.GetValue(restFrameIndex)!);
-            window.Left = edge switch
+            window.Left = safeLeft;
+            window.Top = safeTop;
+            var initialWindowBounds = new Rect(
+                window.Left,
+                window.Top,
+                width,
+                height);
+            var initialContactBounds = (Rect)Invoke(
+                window,
+                "GetPetContactBounds",
+                initialWindowBounds)!;
+            if (edge == "Left")
             {
-                "Left" => workArea.Left,
-                "Right" => workArea.Right - width,
-                _ => safeLeft
-            };
-            window.Top = edge switch
+                window.Left += workArea.Left - initialContactBounds.Left;
+            }
+            else if (edge == "Right")
             {
-                "Bottom" => workArea.Bottom - height,
-                _ => safeTop
-            };
+                window.Left += workArea.Right - initialContactBounds.Right;
+            }
+            else
+            {
+                window.Top += workArea.Bottom - initialContactBounds.Bottom;
+            }
             Invoke(window, "UpdateEdgeDockAfterDrag");
             var deadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
             Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
@@ -6719,6 +6940,159 @@ internal static class Program
         window.Top = safeTop;
     }
 
+    private static void AssertAutomaticDeadlineContract(MainWindow window)
+    {
+        var automaticInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "AutomaticAnimationInterval",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var roamInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeRoamInterval",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var timer = GetField<DispatcherTimer>(window, "_automaticTimer");
+        var timerWasEnabled = timer.IsEnabled;
+        var originalTimerInterval = timer.Interval;
+        var originalClosing = GetField<bool>(window, "_isClosing");
+        var originalSessionInactive = GetField<bool>(window, "_sessionInactive");
+        var originalAutomaticEnabled = GetField<bool>(
+            window,
+            "_automaticAnimationEnabled");
+        var originalRoamingEnabled = GetField<bool>(
+            window,
+            "_edgeRoamingEnabled");
+        var originalReminderActive = GetField<bool>(window, "_isReminderActive");
+        var originalDragActive = GetField<bool>(window, "_dragInteractionActive");
+        var originalRoaming = GetField<bool>(window, "_isEdgeRoaming");
+        var originalActiveClip = GetRawField(window, "_activeClip");
+        var originalBubbleMode = GetRawField(window, "_bubbleMode")!;
+        var originalEdgeDock = GetRawField(window, "_edgeDock")!;
+        var originalActivityDue = GetField<long>(
+            window,
+            "_nextAutomaticActivityDueTimestamp");
+        var originalRoamDue = GetField<long>(
+            window,
+            "_nextEdgeRoamDueTimestamp");
+        var originalPillowDue = GetField<long>(
+            window,
+            "_pillowBreathingDueTimestamp");
+
+        try
+        {
+            timer.Stop();
+            SetField(window, "_isClosing", false);
+            SetField(window, "_sessionInactive", false);
+            SetField(window, "_automaticAnimationEnabled", true);
+            SetField(window, "_edgeRoamingEnabled", true);
+            SetField(window, "_isReminderActive", false);
+            SetField(window, "_dragInteractionActive", false);
+            SetField(window, "_isEdgeRoaming", false);
+            SetField(window, "_activeClip", null);
+            SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+            SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+            SetField(window, "_pillowBreathingDueTimestamp", 0L);
+
+            var timestamp = Stopwatch.GetTimestamp();
+            var activitySentinel = checked(
+                timestamp + ToProductionStopwatchTicks(TimeSpan.FromSeconds(33)));
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                activitySentinel);
+            Invoke(window, "ScheduleNextEdgeRoam", timestamp, roamInterval);
+            Assert(GetField<long>(
+                       window,
+                       "_nextAutomaticActivityDueTimestamp") ==
+                       activitySentinel &&
+                   GetField<long>(window, "_nextEdgeRoamDueTimestamp") ==
+                       checked(timestamp +
+                               ToProductionStopwatchTicks(roamInterval)),
+                "安排 10 分钟绕屏不得改写普通动作的独立截止时间");
+
+            var roamSentinel = checked(
+                timestamp + ToProductionStopwatchTicks(TimeSpan.FromSeconds(45)));
+            SetField(window, "_nextEdgeRoamDueTimestamp", roamSentinel);
+            var restartBefore = Stopwatch.GetTimestamp();
+            Invoke(window, "RestartAutomaticCountdown");
+            var restartAfter = Stopwatch.GetTimestamp();
+            var activityDue = GetField<long>(
+                window,
+                "_nextAutomaticActivityDueTimestamp");
+            Assert(activityDue >= checked(
+                       restartBefore +
+                       ToProductionStopwatchTicks(automaticInterval)) &&
+                   activityDue <= checked(
+                       restartAfter +
+                       ToProductionStopwatchTicks(automaticInterval)) &&
+                   GetField<long>(window, "_nextEdgeRoamDueTimestamp") ==
+                       roamSentinel,
+                "重启 1 分钟普通动作倒计时不得推迟独立的绕屏截止时间");
+
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                checked(timestamp +
+                        ToProductionStopwatchTicks(TimeSpan.FromSeconds(20))));
+            SetField(
+                window,
+                "_nextEdgeRoamDueTimestamp",
+                checked(timestamp +
+                        ToProductionStopwatchTicks(TimeSpan.FromSeconds(40))));
+            Invoke(window, "ArmAutomaticWakeTimer", timestamp);
+            Assert(timer.IsEnabled &&
+                   Math.Abs(
+                       timer.Interval.TotalSeconds -
+                       TimeSpan.FromSeconds(20).TotalSeconds) < 0.01,
+                "共享唤醒 timer 必须选择较早的普通动作绝对截止时间");
+
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                checked(timestamp +
+                        ToProductionStopwatchTicks(TimeSpan.FromSeconds(50))));
+            SetField(
+                window,
+                "_nextEdgeRoamDueTimestamp",
+                checked(timestamp +
+                        ToProductionStopwatchTicks(TimeSpan.FromSeconds(25))));
+            Invoke(window, "ArmAutomaticWakeTimer", timestamp);
+            Assert(timer.IsEnabled &&
+                   Math.Abs(
+                       timer.Interval.TotalSeconds -
+                       TimeSpan.FromSeconds(25).TotalSeconds) < 0.01,
+                "共享唤醒 timer 必须选择较早的绕屏绝对截止时间");
+        }
+        finally
+        {
+            timer.Stop();
+            SetField(window, "_isClosing", originalClosing);
+            SetField(window, "_sessionInactive", originalSessionInactive);
+            SetField(
+                window,
+                "_automaticAnimationEnabled",
+                originalAutomaticEnabled);
+            SetField(window, "_edgeRoamingEnabled", originalRoamingEnabled);
+            SetField(window, "_isReminderActive", originalReminderActive);
+            SetField(window, "_dragInteractionActive", originalDragActive);
+            SetField(window, "_isEdgeRoaming", originalRoaming);
+            SetField(window, "_activeClip", originalActiveClip);
+            SetField(window, "_bubbleMode", originalBubbleMode);
+            SetField(window, "_edgeDock", originalEdgeDock);
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                originalActivityDue);
+            SetField(window, "_nextEdgeRoamDueTimestamp", originalRoamDue);
+            SetField(
+                window,
+                "_pillowBreathingDueTimestamp",
+                originalPillowDue);
+            timer.Interval = originalTimerInterval;
+            if (timerWasEnabled)
+            {
+                timer.Start();
+            }
+        }
+    }
+
     private static void AssertRandomActivityBag(MainWindow window)
     {
         var activityCount = GetField<Array>(window, "_automaticActivities").Length;
@@ -6750,9 +7124,11 @@ internal static class Program
             .ToArray();
         Assert(pillowDuration == TimeSpan.FromSeconds(5) &&
                startPillowSource.Contains(
-                   "_automaticTimer.Interval = PillowAnimationDuration",
+                   "_pillowBreathingDueTimestamp = checked(",
                    StringComparison.Ordinal) &&
-               startPillowSource.Contains("_automaticTimer.Start()", StringComparison.Ordinal) &&
+               startPillowSource.Contains(
+                   "ArmAutomaticWakeTimer(timestamp)",
+                   StringComparison.Ordinal) &&
                !startPillowSource.Contains("DoubleAnimation", StringComparison.Ordinal) &&
                !startPillowSource.Contains("BeginAnimation", StringComparison.Ordinal) &&
                !mainSource.Contains("new DoubleAnimation", StringComparison.Ordinal) &&
@@ -6762,13 +7138,17 @@ internal static class Program
         Invoke(window, "StartPillowBreathing");
         Assert(GetField<bool>(window, "_isPillowBreathing") &&
                automaticTimer.IsEnabled &&
-               automaticTimer.Interval == TimeSpan.FromSeconds(5) &&
+               automaticTimer.Interval > TimeSpan.Zero &&
+               automaticTimer.Interval <= TimeSpan.FromSeconds(5) &&
+               GetField<long>(window, "_pillowBreathingDueTimestamp") >
+                   Stopwatch.GetTimestamp() &&
                !petScale.HasAnimatedProperties &&
                Math.Abs(petScale.ScaleX - 1) < 0.000001 &&
                Math.Abs(petScale.ScaleY - 1) < 0.000001,
             "枕头待机占位启动后必须只运行5秒automaticTimer，视觉缩放保持静止且零动画属性");
         Invoke(window, "StopPillowBreathing");
         Assert(!GetField<bool>(window, "_isPillowBreathing") &&
+               GetField<long>(window, "_pillowBreathingDueTimestamp") == 0 &&
                !automaticTimer.IsEnabled &&
                !petScale.HasAnimatedProperties,
             "停止枕头待机占位后必须关闭automaticTimer且不遗留WPF动画");
@@ -6796,10 +7176,36 @@ internal static class Program
         var calculateScale = ExtractPrivateMethodSource(
             mainSource,
             "GetSnoreBubbleScale");
+        XNamespace xamlNamespace =
+            "http://schemas.microsoft.com/winfx/2006/xaml";
+        var snoreBubbleElement = XDocument.Parse(xaml)
+            .Descendants()
+            .Single(element =>
+                string.Equals(
+                    (string?)element.Attribute(xamlNamespace + "Name"),
+                    "SnoreBubbleHost",
+                    StringComparison.Ordinal));
+        var snoreBubbleAlphaValues = snoreBubbleElement
+            .DescendantsAndSelf()
+            .Attributes()
+            .Where(attribute =>
+                attribute.Name.LocalName is "Color" or "Fill" or "Stroke")
+            .Select(attribute => attribute.Value)
+            .Where(value => value.Length == 9 && value[0] == '#')
+            .Select(value => byte.Parse(
+                value.AsSpan(1, 2),
+                NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture))
+            .ToArray();
         Assert(
             xaml.Contains("x:Name=\"SnoreBubbleHost\"", StringComparison.Ordinal) &&
             xaml.Contains("x:Name=\"SnoreBubbleScale\"", StringComparison.Ordinal) &&
             xaml.Contains("RenderTransformOrigin=\"0.88,0.52\"", StringComparison.Ordinal) &&
+            snoreBubbleElement
+                .Descendants()
+                .Count(element => element.Name.LocalName == "Ellipse") == 1 &&
+            snoreBubbleAlphaValues.Length >= 4 &&
+            snoreBubbleAlphaValues.All(alpha => alpha is > 0 and < byte.MaxValue) &&
             rendering.Contains("AdvanceSnoreBubble(timestamp)", StringComparison.Ordinal) &&
             updateClock.Contains("_isSnoreBubbleAnimating", StringComparison.Ordinal) &&
             calculateScale.Contains("Math.Cos", StringComparison.Ordinal) &&
@@ -6870,6 +7276,20 @@ internal static class Program
                Math.Abs(petScale.ScaleY - 1) < 0.000001,
             "稳定待机时必须只让鼻泡持续呼吸，人物和枕头尺寸保持完全不变");
 
+        bubbleHost.UpdateLayout();
+        var bubbleEllipse =
+            (System.Windows.Shapes.Ellipse)VisualTreeHelper.GetChild(
+                bubbleHost,
+                0);
+        var bubbleStroke =
+            (SolidColorBrush)bubbleEllipse.Stroke;
+        var bubbleFill =
+            (RadialGradientBrush)bubbleEllipse.Fill;
+        Assert(bubbleStroke.Color.A is > 0 and < byte.MaxValue &&
+               bubbleFill.GradientStops.Count >= 3 &&
+               bubbleFill.GradientStops.All(stop =>
+                   stop.Color.A is > 0 and < byte.MaxValue),
+            "运行时唯一呼噜泡泡的描边和全部渐变色阶都必须保持半透明");
         var viewport = GetField<FrameworkElement>(window, "PetFrameViewport");
         bubbleScale.ScaleX = minimum;
         bubbleScale.ScaleY = minimum;
@@ -7033,6 +7453,72 @@ internal static class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
         }
 
+        var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var loadedSource = ExtractPrivateMethodSource(mainSource, "Window_Loaded");
+        var closedSource = ExtractPrivateMethodSource(mainSource, "Window_Closing");
+        var sessionSwitchSource = ExtractPrivateMethodSource(
+            mainSource,
+            "SystemEvents_SessionSwitch");
+        var powerModeSource = ExtractPrivateMethodSource(
+            mainSource,
+            "SystemEvents_PowerModeChanged");
+        var preferenceSource = ExtractPrivateMethodSource(
+            mainSource,
+            "SystemEvents_UserPreferenceChanged");
+        var recoverySource = ExtractPrivateMethodSource(
+            mainSource,
+            "ProcessSystemRecovery");
+        var positionerSource = File.ReadAllText(
+            FindWorkspaceFile("OwnedWindowPositioner.cs"));
+        var liveChildRead = positionerSource.IndexOf(
+            "GetWindowRect(cache._childHandle, out var childRect)",
+            StringComparison.Ordinal);
+        var unchangedPositionGuard = positionerSource.IndexOf(
+            "childRect.Left == desiredPosition.X",
+            StringComparison.Ordinal);
+        Assert(loadedSource.Contains(
+                   "SystemEvents.SessionSwitch +=",
+                   StringComparison.Ordinal) &&
+               loadedSource.Contains(
+                   "SystemEvents.PowerModeChanged +=",
+                   StringComparison.Ordinal) &&
+               loadedSource.Contains(
+                   "SystemEvents.UserPreferenceChanged +=",
+                   StringComparison.Ordinal) &&
+               closedSource.Contains(
+                   "SystemEvents.SessionSwitch -=",
+                   StringComparison.Ordinal) &&
+               closedSource.Contains(
+                   "SystemEvents.PowerModeChanged -=",
+                   StringComparison.Ordinal) &&
+               closedSource.Contains(
+                   "SystemEvents.UserPreferenceChanged -=",
+                   StringComparison.Ordinal) &&
+               sessionSwitchSource.Contains(
+                   "QueueSystemRecovery()",
+                   StringComparison.Ordinal) &&
+               powerModeSource.Contains(
+                   "PowerModes.Resume",
+                   StringComparison.Ordinal) &&
+               powerModeSource.Contains(
+                   "QueueSystemRecovery()",
+                   StringComparison.Ordinal) &&
+               preferenceSource.Contains(
+                   "QueueSystemRecovery()",
+                   StringComparison.Ordinal) &&
+               recoverySource.Contains(
+                   "_todoWindow.RecoverAfterSystemResume()",
+                   StringComparison.Ordinal) &&
+               recoverySource.Contains(
+                   "_todoWindowPositionCache.InvalidateGeometry()",
+                   StringComparison.Ordinal) &&
+               positionerSource.Contains(
+                   "MonitorFromPoint(anchorCenter, MonitorDefaultToNearest)",
+                   StringComparison.Ordinal) &&
+               liveChildRead >= 0 &&
+               unchangedPositionGuard > liveChildRead,
+            "解锁、恢复、电源与桌面首选项变化必须统一恢复；待办定位每次都要读取实时 HWND 矩形，不能信任旧坐标缓存");
+
         SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
         SetField(window, "_activeClip", null);
         SetField(window, "_isPillowBreathing", false);
@@ -7048,6 +7534,16 @@ internal static class Program
             originalWorkArea.Top + 40,
             originalWorkArea.Top,
             originalWorkArea.Bottom - window.ActualHeight);
+        var recoveryWindowBounds = new Rect(
+            window.Left,
+            window.Top,
+            window.ActualWidth > 0 ? window.ActualWidth : window.Width,
+            window.ActualHeight > 0 ? window.ActualHeight : window.Height);
+        var recoveryContactBounds = (Rect)Invoke(
+            window,
+            "GetPetContactBounds",
+            recoveryWindowBounds)!;
+        window.Left += originalWorkArea.Left - recoveryContactBounds.Left;
         Invoke(window, "UpdateEdgeDockAfterDrag");
         Assert(GetField<object>(window, "_edgeDock").ToString() == "Left",
             "显示器变化回归测试必须先进入真实手动边缘探头状态");
@@ -7243,29 +7739,52 @@ internal static class Program
                 "LubanDesktopPet.MonitorWorkArea",
                 throwOnError: true)!;
             var workArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
+            var todoEdgeFrames = GetField<Array>(window, "_edgeLeftFrames");
+            var todoEdgeRestFrame =
+                todoEdgeFrames.GetValue(todoEdgeFrames.Length - 1)!;
+            PrimeSpritePageForFrame(window, todoEdgeRestFrame);
             window.Left = workArea.Left;
             window.Top = Math.Clamp(
                 window.Top,
                 workArea.Top,
                 workArea.Bottom - window.ActualHeight);
+            var todoWindowBounds = new Rect(
+                window.Left,
+                window.Top,
+                window.ActualWidth > 0 ? window.ActualWidth : window.Width,
+                window.ActualHeight > 0 ? window.ActualHeight : window.Height);
+            var todoContactBounds = (Rect)Invoke(
+                window,
+                "GetPetContactBounds",
+                todoWindowBounds)!;
+            window.Left += workArea.Left - todoContactBounds.Left;
             Invoke(window, "UpdateEdgeDockAfterDrag");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
-            Assert(GetField<object>(window, "_edgeDock").ToString() == "None",
-                "Todo 打开时拖到屏幕边缘不得启动探头状态");
-            Assert(GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == 0,
-                "Todo 打开时边缘探头绝对时间截止点必须保持清空");
-            Assert(Equals(GetField<object>(window, "_currentSpriteFrame"), todoFrameObject),
-                "Todo 打开时拖到屏幕边缘仍应保持专用思考姿势");
+            Assert(GetField<object>(window, "_edgeDock").ToString() == "Left",
+                "Todo 打开时拖到可见像素接触屏幕左边缘必须启动探头状态");
+            Assert(GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
+                   Stopwatch.GetTimestamp(),
+                "Todo 打开时边缘探头必须保留有效的绝对时间截止点");
+            Assert(todoWindow.IsVisible &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "Todo" &&
+                   Equals(
+                       GetField<object>(window, "_currentSpriteFrame"),
+                       todoEdgeRestFrame),
+                "Todo 打开时边缘动画必须显示休息帧，同时待办窗口继续可见");
 
             SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "Left"));
             var inFlightEdgeTimestamp = Stopwatch.GetTimestamp();
             SetField(window, "_edgePeekFrameDeadlineTimestamp", inFlightEdgeTimestamp);
             Invoke(window, "AdvanceEdgePeek", inFlightEdgeTimestamp);
-            Assert(GetField<object>(window, "_edgeDock").ToString() == "None" &&
-                   GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == 0,
-                "即使有在途边缘 Tick，Todo 也必须防御性清理探头状态");
-            Assert(Equals(GetField<object>(window, "_currentSpriteFrame"), todoFrameObject),
-                "清理在途边缘 Tick 后必须恢复 Todo 专用姿势");
+            Assert(GetField<object>(window, "_edgeDock").ToString() == "Left" &&
+                   GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
+                       inFlightEdgeTimestamp,
+                "Todo 打开时在途边缘 Tick 必须继续推进而不是清理探头状态");
+            Assert(todoWindow.IsVisible &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "Todo" &&
+                   todoEdgeFrames.Cast<object>().Contains(
+                       GetField<object>(window, "_currentSpriteFrame")),
+                "Todo 打开时推进边缘 Tick 后仍须保持待办窗口和边缘序列");
 
             todoWindow.Close();
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
@@ -7436,6 +7955,21 @@ internal static class Program
             var scheduledInput = GetField<TextBox>(todoWindow, "ScheduledTaskInput");
             var scheduledDate = GetField<DatePicker>(todoWindow, "ScheduledDatePicker");
             var scheduledTime = GetField<TextBox>(todoWindow, "ScheduledTimeInput");
+            var scheduledTimePickerHost = GetField<Border>(
+                todoWindow,
+                "ScheduledTimePickerHost");
+            var scheduledTimePickerPopup = GetField<Popup>(
+                todoWindow,
+                "ScheduledTimePickerPopup");
+            var scheduledHourPicker = GetField<ComboBox>(
+                todoWindow,
+                "ScheduledHourComboBox");
+            var scheduledMinutePicker = GetField<ComboBox>(
+                todoWindow,
+                "ScheduledMinuteComboBox");
+            var scheduledSecondPicker = GetField<ComboBox>(
+                todoWindow,
+                "ScheduledSecondComboBox");
             var scheduledSubmit = GetField<Button>(
                 todoWindow,
                 "ScheduledTaskSubmitButton");
@@ -7467,6 +8001,34 @@ internal static class Program
                 "定时页必须同时提供内容、日期和 HH:mm:ss 秒级时间控件");
             Assert(string.IsNullOrEmpty(validationText.Text),
                 "定时任务初始状态不应显示错误提示");
+
+            var exactNow = new DateTimeOffset(
+                2031,
+                5,
+                6,
+                7,
+                8,
+                9,
+                TimeZoneInfo.Local.GetUtcOffset(
+                    new DateTime(2031, 5, 6, 7, 8, 9)));
+            Invoke(todoWindow, "ResetScheduledTaskDraftClock", exactNow);
+            var expectedLocalNow = exactNow.LocalDateTime;
+            Assert(scheduledDate.SelectedDate == expectedLocalNow.Date &&
+                   scheduledTime.Text == expectedLocalNow.ToString(
+                       "HH:mm:ss",
+                       CultureInfo.InvariantCulture) &&
+                   scheduledHourPicker.SelectedIndex == expectedLocalNow.Hour &&
+                   scheduledMinutePicker.SelectedIndex == expectedLocalNow.Minute &&
+                   scheduledSecondPicker.SelectedIndex == expectedLocalNow.Second &&
+                   scheduledHourPicker.Items.Count == 24 &&
+                   scheduledMinutePicker.Items.Count == 60 &&
+                   scheduledSecondPicker.Items.Count == 60 &&
+                   scheduledTime.IsReadOnly &&
+                   ReferenceEquals(
+                       scheduledTimePickerPopup.PlacementTarget,
+                       scheduledTimePickerHost) &&
+                   scheduledTimePickerPopup.AllowsTransparency,
+                "定时任务默认值必须精确使用当前本地秒，并通过 24/60/60 的可爱瞬态时间选择浮层编辑");
 
             Invoke(todoWindow, "SelectTaskPage", true, false);
             Assert(todoTab.IsChecked != true &&
@@ -7507,12 +8069,51 @@ internal static class Program
             Assert(transientCompletionCount == 1,
                 "DatePicker 重复 CalendarClosed 不得重复发出 transient 完成事件");
 
+            Invoke(
+                todoWindow,
+                "ScheduledTimePickerPopup_Opened",
+                scheduledTimePickerPopup,
+                EventArgs.Empty);
+            Assert(todoWindow.IsTransientPopupOpen,
+                "秒级时间选择浮层打开时必须进入 transient 交互保护");
+            Invoke(
+                todoWindow,
+                "ScheduledTimePickerPopup_Closed",
+                scheduledTimePickerPopup,
+                EventArgs.Empty);
+            Assert(!todoWindow.IsTransientPopupOpen &&
+                   transientCompletionCount == 2,
+                "秒级时间选择浮层关闭时必须退出 transient 状态并只通知一次");
+            Invoke(
+                todoWindow,
+                "ScheduledTimePickerPopup_Closed",
+                scheduledTimePickerPopup,
+                EventArgs.Empty);
+            Assert(transientCompletionCount == 2,
+                "重复关闭秒级时间选择浮层不得重复发送 transient 完成事件");
+
             var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
             var outsideCloseSource = ExtractPrivateMethodSource(
                 mainSource,
                 "ProcessOutsideTodoClose");
+            var todoSource = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs"));
+            var scheduledTabClickSource = ExtractPrivateMethodSource(
+                todoSource,
+                "ScheduledTaskTabButton_Click");
+            var resetDraftClockSource = ExtractPrivateMethodSource(
+                todoSource,
+                "ResetScheduledTaskDraftClock");
             Assert(outsideCloseSource.Contains(
                        "_todoWindow.IsTransientPopupOpen",
+                       StringComparison.Ordinal) &&
+                   scheduledTabClickSource.Contains(
+                       "PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset.Now)",
+                       StringComparison.Ordinal) &&
+                   resetDraftClockSource.Contains(
+                       "var suggested = now.LocalDateTime",
+                       StringComparison.Ordinal) &&
+                   !resetDraftClockSource.Contains(
+                       "AddMinutes(",
                        StringComparison.Ordinal),
                 "MainWindow 的外部点击收起判定必须显式保护 DatePicker transient popup");
             Assert(mainSource.Contains(
@@ -7945,6 +8546,9 @@ internal static class Program
 
             var queuedFirstId = queuedFirst.Id;
             var queuedFirstCreatedAt = queuedFirst.CreatedAt;
+            var queuedFirstOriginalText = queuedFirst.Text;
+            var queuedFirstOriginalDueAt = queuedFirst.DueAt;
+            var frozenBatchOrder = scheduledTasks.ToArray();
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskEditRequested",
@@ -7956,17 +8560,16 @@ internal static class Program
                        active) &&
                    queuedFirst.Id == queuedFirstId &&
                    queuedFirst.CreatedAt == queuedFirstCreatedAt &&
-                   queuedFirst.Text == "排队任务延后" &&
-                   queuedFirst.DueAt == now.AddSeconds(30) &&
-                   reminderQueue.SequenceEqual([queuedSecond]) &&
-                   queuedReminderIds.SetEquals([active.Id, queuedSecond.Id]) &&
-                   scheduledTimer.IsEnabled &&
-                   Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(28))
-                       .TotalMilliseconds) < 1 &&
+                   queuedFirst.Text == queuedFirstOriginalText &&
+                   queuedFirst.DueAt == queuedFirstOriginalDueAt &&
+                   scheduledTasks.SequenceEqual(frozenBatchOrder) &&
+                   reminderQueue.SequenceEqual([queuedFirst, queuedSecond]) &&
+                   queuedReminderIds.SetEquals(
+                       [active.Id, queuedFirst.Id, queuedSecond.Id]) &&
+                   !scheduledTimer.IsEnabled &&
                    scheduledStore.Load().Select(item => item.Id)
-                       .SequenceEqual([active.Id, queuedSecond.Id, queuedFirst.Id]),
-                "把已排队任务改到未来后必须立即移出等待队列、保留活动提醒，" +
-                "并按新时间持久化和重新定时");
+                       .SequenceEqual(frozenBatchOrder.Select(item => item.Id)),
+                "已进入可见或排队提醒批次的任务必须冻结修改，保持内存、队列与磁盘顺序一致");
 
             Invoke(
                 window,
@@ -7977,16 +8580,17 @@ internal static class Program
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
                        active) &&
-                   scheduledTasks.SequenceEqual([queuedFirst, active, queuedSecond]) &&
+                   queuedFirst.Text == queuedFirstOriginalText &&
+                   queuedFirst.DueAt == queuedFirstOriginalDueAt &&
+                   scheduledTasks.SequenceEqual(frozenBatchOrder) &&
                    reminderQueue.SequenceEqual([queuedFirst, queuedSecond]) &&
                    queuedReminderIds.SetEquals(
                        [active.Id, queuedFirst.Id, queuedSecond.Id]) &&
                    queuedReminderIds.Count == 3 &&
                    !scheduledTimer.IsEnabled &&
                    scheduledStore.Load().Select(item => item.Id)
-                       .SequenceEqual([queuedFirst.Id, active.Id, queuedSecond.Id]),
-                "把已排队任务改回到期时间后必须按新顺序只入队一次，" +
-                "不得覆盖当前提醒或产生重复Id");
+                       .SequenceEqual(frozenBatchOrder.Select(item => item.Id)),
+                "对冻结批次重复发起修改也不得改变内容、截止时间、顺序或产生重复Id");
         }
         finally
         {
@@ -7998,6 +8602,394 @@ internal static class Program
             SetField(window, "_activeReminder", null);
             SetField(window, "_isReminderActive", false);
             SetField(window, "_nowProvider", originalNowProvider);
+        }
+    }
+
+    private static void AssertScheduledReminderBatchContract(MainWindow window)
+    {
+        var scheduledTasks = GetField<ObservableCollection<ScheduledTaskItem>>(
+            window,
+            "_scheduledTasks");
+        var reminderQueue = GetField<Queue<ScheduledTaskItem>>(
+            window,
+            "_reminderQueue");
+        var queuedReminderIds = GetField<HashSet<Guid>>(
+            window,
+            "_queuedReminderIds");
+        var activeBatch = GetField<List<ScheduledTaskItem>>(
+            window,
+            "_activeReminderBatch");
+        var scheduledStore = GetField<ScheduledTaskStore>(
+            window,
+            "_scheduledTaskStore");
+        var scheduledTimer = GetField<DispatcherTimer>(
+            window,
+            "_scheduledTaskTimer");
+        var automaticTimer = GetField<DispatcherTimer>(
+            window,
+            "_automaticTimer");
+        var reminderSizeTimer = GetField<DispatcherTimer>(
+            window,
+            "_reminderSizeCommitTimer");
+        var originalNowProvider = GetField<Func<DateTimeOffset>>(
+            window,
+            "_nowProvider");
+        var originalAutomaticEnabled = GetField<bool>(
+            window,
+            "_automaticAnimationEnabled");
+        var originalScale = GetField<double>(window, "_petSizeScale");
+        var originalHitTestVisible = window.IsHitTestVisible;
+        var now = new DateTimeOffset(
+            2032,
+            6,
+            7,
+            8,
+            9,
+            10,
+            TimeSpan.FromHours(8));
+        Func<DateTimeOffset> controlledNow = () => now;
+
+        var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var processSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ProcessScheduledTasksAt");
+        var refreshSource = ExtractPrivateMethodSource(
+            mainSource,
+            "RefreshActiveReminderPresentation");
+        var moveSource = ExtractPrivateMethodSource(
+            mainSource,
+            "MovePetToReminderCorner");
+        var acknowledgeSource = ExtractPrivateMethodSource(
+            mainSource,
+            "AcknowledgeActiveReminder");
+        var rebuildQueueSource = ExtractPrivateMethodSource(
+            mainSource,
+            "RebuildReminderQueueAt");
+        var systemTimeChangedSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ProcessSystemTimeChanged");
+        Assert(processSource.Contains(
+                   "RefreshActiveReminderPresentation(now)",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "_activeReminderBatch.Sort(CompareScheduledTasks)",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "string.Join(",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "Environment.NewLine",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "M月d日 HH:mm:ss",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "_activeReminderBatch.RemoveAll(",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "ReminderAcknowledgeButton.Content",
+                   StringComparison.Ordinal) &&
+               moveSource.Contains(
+                   "StopEdgeRoaming(",
+                   StringComparison.Ordinal) &&
+               moveSource.Contains(
+                   "immediate: true",
+                   StringComparison.Ordinal) &&
+               moveSource.Contains(
+                   "workArea.Right - width",
+                   StringComparison.Ordinal) &&
+               moveSource.Contains(
+                   "workArea.Bottom - height",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "_activeReminderBatch.ToArray()",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "foreach (var item in acknowledged)",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "SaveScheduledTasks()",
+                   StringComparison.Ordinal) &&
+               rebuildQueueSource.Contains(
+                   "foreach (var displayedItem in _activeReminderBatch)",
+                   StringComparison.Ordinal) &&
+               systemTimeChangedSource.Contains(
+                   "ProcessScheduledTasksAt(_nowProvider())",
+                   StringComparison.Ordinal),
+            "到点提醒必须抢占绕屏、移动到右下角，并把同批任务稳定排序合并到一个泡泡和一次确认中");
+
+        scheduledTimer.Stop();
+        automaticTimer.Stop();
+        reminderSizeTimer.Stop();
+        scheduledTasks.Clear();
+        reminderQueue.Clear();
+        queuedReminderIds.Clear();
+        activeBatch.Clear();
+        SetField(window, "_activeReminder", null);
+        SetField(window, "_isReminderActive", false);
+        SetField(window, "_upcomingReminderPreloadPageName", null);
+        SetField(window, "_nowProvider", controlledNow);
+        SetField(window, "_automaticAnimationEnabled", false);
+        window.IsHitTestVisible = false;
+
+        try
+        {
+            if (!window.IsVisible)
+            {
+                window.Show();
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            }
+
+            Invoke(window, "StopVisualClock");
+            SetField(window, "_activeClip", null);
+            SetField(window, "_activeFrameIndex", -1);
+            SetField(window, "_activeClipStartedTimestamp", 0L);
+            SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+            Invoke(window, "HideBubbleVisuals");
+            SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+
+            var firstByDue = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("41000000-0000-0000-0000-000000000003"),
+                Text = "最早到点",
+                DueAt = now.AddSeconds(-2),
+                CreatedAt = now.AddMinutes(-1)
+            };
+            var firstByCreated = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("41000000-0000-0000-0000-000000000002"),
+                Text = "同秒先创建",
+                DueAt = now.AddSeconds(-1),
+                CreatedAt = now.AddMinutes(-3)
+            };
+            var firstById = new ScheduledTaskItem
+            {
+                Id = Guid.Parse("41000000-0000-0000-0000-000000000001"),
+                Text = "同秒按编号",
+                DueAt = now.AddSeconds(-1),
+                CreatedAt = now.AddMinutes(-3)
+            };
+            foreach (var item in new[]
+                     {
+                         firstByCreated,
+                         firstByDue,
+                         firstById
+                     })
+            {
+                Invoke(window, "InsertScheduledTaskSorted", item);
+            }
+
+            var expectedOrder = new[]
+            {
+                firstByDue,
+                firstById,
+                firstByCreated
+            };
+            Assert(scheduledTasks.SequenceEqual(expectedOrder) &&
+                   scheduledStore.Save(scheduledTasks),
+                "提醒合并测试数据必须先按 DueAt、CreatedAt、Id 建立稳定顺序");
+
+            var monitorType = typeof(MainWindow).Assembly.GetType(
+                "LubanDesktopPet.MonitorWorkArea",
+                throwOnError: true)!;
+            var workArea = (Rect)InvokeStatic(
+                monitorType,
+                "GetForWindow",
+                window)!;
+            window.Left = workArea.Left +
+                          Math.Max(10, workArea.Width * 0.2);
+            window.Top = workArea.Top +
+                         Math.Max(10, workArea.Height * 0.2);
+            Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+            var sizePreviewTimestamp = Stopwatch.GetTimestamp();
+            Invoke(window, "TodoWindow_PetSizeAdjustmentStarted");
+            Invoke(
+                window,
+                "QueuePetSizeScaleTargetAt",
+                1.18d,
+                sizePreviewTimestamp);
+            Invoke(
+                window,
+                "ConsumeLatestPetSizeInputAt",
+                sizePreviewTimestamp +
+                StopwatchTicksFromMilliseconds(1));
+            Assert(GetField<bool>(
+                       window,
+                       "_isPetSizePreviewSessionActive"),
+                "提醒抢占回归必须先建立一个尚未提交的尺寸预览会话");
+            SetField(window, "_isEdgeRoaming", true);
+            SetField(
+                window,
+                "_edgeRoamPhase",
+                GetNestedEnum("EdgeRoamPhase", "Traveling"));
+            SetField(window, "_edgeRoamRotationDegrees", 90d);
+            GetField<RotateTransform>(window, "PetRoamRotate").Angle = 90;
+
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            var reminderMessage = GetField<TextBox>(
+                window,
+                "ReminderMessageText");
+            var acknowledgeButton = GetField<Button>(
+                window,
+                "ReminderAcknowledgeButton");
+            var expectedMessage = string.Join(
+                Environment.NewLine,
+                expectedOrder.Select(item =>
+                    $"{item.DueAt.ToLocalTime():M月d日 HH:mm:ss}  {item.Text}"));
+            var width = window.ActualWidth > 0
+                ? window.ActualWidth
+                : window.Width;
+            var height = window.ActualHeight > 0
+                ? window.ActualHeight
+                : window.Height;
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       expectedOrder[0]) &&
+                   activeBatch.SequenceEqual(expectedOrder) &&
+                   reminderQueue.SequenceEqual(expectedOrder.Skip(1)) &&
+                   queuedReminderIds.SetEquals(
+                       expectedOrder.Select(item => item.Id)) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   !GetField<bool>(
+                       window,
+                       "_isPetSizeAdjustmentActive") &&
+                   GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   Math.Abs(
+                       GetField<double>(window, "_reminderRestoreScale") -
+                       1.18d) < 0.001 &&
+                   !GetField<bool>(window, "_isEdgeRoaming") &&
+                   GetField<object>(window, "_edgeRoamPhase").ToString() ==
+                       "None" &&
+                   Math.Abs(
+                       GetField<RotateTransform>(
+                           window,
+                           "PetRoamRotate").Angle) < 0.001 &&
+                   GetField<object>(window, "_bubbleMode").ToString() ==
+                       "Reminder" &&
+                   reminderMessage.Text == expectedMessage &&
+                   reminderMessage.IsReadOnly &&
+                   acknowledgeButton.Content?.ToString()?.Contains(
+                       expectedOrder.Length.ToString(
+                           CultureInfo.InvariantCulture),
+                       StringComparison.Ordinal) == true &&
+                   Math.Abs(window.Left - (workArea.Right - width)) <= 1 &&
+                   Math.Abs(window.Top - (workArea.Bottom - height)) <= 1,
+                "三个到点任务必须抢占绕屏、清零旋转、移到当前屏幕右下角，并按稳定顺序合并为一个可复制泡泡；" +
+                $"active={GetRawField(window, "_activeReminder") is not null}, " +
+                $"batch={activeBatch.Count}, queue={reminderQueue.Count}, ids={queuedReminderIds.Count}, " +
+                $"reminder={GetField<bool>(window, "_isReminderActive")}, " +
+                $"preview={GetField<bool>(window, "_isPetSizePreviewSessionActive")}, " +
+                $"roam={GetField<bool>(window, "_isEdgeRoaming")}, " +
+                $"phase={GetField<object>(window, "_edgeRoamPhase")}, " +
+                $"angle={GetField<RotateTransform>(window, "PetRoamRotate").Angle:F2}, " +
+                $"bubble={GetField<object>(window, "_bubbleMode")}, " +
+                $"textMatch={reminderMessage.Text == expectedMessage}, " +
+                $"button={acknowledgeButton.Content}, " +
+                $"position=({window.Left:F2},{window.Top:F2}), " +
+                $"target=({workArea.Right - width:F2},{workArea.Bottom - height:F2})");
+
+            var frozenTexts = expectedOrder
+                .Select(item => item.Text)
+                .ToArray();
+            var frozenDueTimes = expectedOrder
+                .Select(item => item.DueAt)
+                .ToArray();
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                expectedOrder[1],
+                "不允许覆盖已展示批次",
+                now.AddHours(1));
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskDeleteRequested",
+                expectedOrder[2]);
+            Assert(scheduledTasks.SequenceEqual(expectedOrder) &&
+                   activeBatch.SequenceEqual(expectedOrder) &&
+                   expectedOrder.Select(item => item.Text)
+                       .SequenceEqual(frozenTexts) &&
+                   expectedOrder.Select(item => item.DueAt)
+                       .SequenceEqual(frozenDueTimes) &&
+                   scheduledStore.Load().Select(item => item.Id)
+                       .SequenceEqual(expectedOrder.Select(item => item.Id)),
+                "进入可见或排队提醒批次后，修改和删除都必须冻结，不能让气泡、队列与磁盘状态分裂");
+
+            reminderMessage.SelectAll();
+            Assert(reminderMessage.SelectedText == expectedMessage,
+                "合并提醒泡泡的全部文本必须支持一次选中复制");
+
+            now = now.AddMinutes(-10);
+            Invoke(window, "ProcessSystemTimeChanged");
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       expectedOrder[0]) &&
+                   activeBatch.SequenceEqual(expectedOrder) &&
+                   queuedReminderIds.SetEquals(
+                       expectedOrder.Select(item => item.Id)) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   reminderMessage.Text == expectedMessage,
+                "系统时间回拨到批次到点前，已经展示的合并提醒不得消失、拆批或重新排序");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            Assert(GetRawField(window, "_activeReminder") is null &&
+                   activeBatch.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   scheduledTasks.Count == 0 &&
+                   scheduledStore.Load().Count == 0 &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   GetField<object>(window, "_bubbleMode").ToString() ==
+                       "None",
+                "一次确认必须原子删除合并批次的全部任务，只保存一次并关闭唯一提醒泡泡");
+        }
+        finally
+        {
+            scheduledTimer.Stop();
+            automaticTimer.Stop();
+            reminderSizeTimer.Stop();
+            GetField<DispatcherTimer>(window, "_petSizePersistTimer").Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            activeBatch.Clear();
+            scheduledStore.Save(scheduledTasks);
+            SetField(window, "_activeReminder", null);
+            SetField(window, "_isReminderActive", false);
+            SetField(window, "_upcomingReminderPreloadPageName", null);
+            SetField(window, "_isEdgeRoaming", false);
+            SetField(
+                window,
+                "_edgeRoamPhase",
+                GetNestedEnum("EdgeRoamPhase", "None"));
+            SetField(window, "_isTransientPetSizeOverride", false);
+            SetField(window, "_isRestoringReminderSize", false);
+            Invoke(window, "HideBubbleVisuals");
+            SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "StopVisualClock");
+            SetField(window, "_activeClip", null);
+            SetField(window, "_activeFrameIndex", -1);
+            SetField(window, "_activeClipStartedTimestamp", 0L);
+            SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+            Invoke(window, "ClearDeferredActiveClipClock");
+            Invoke(window, "ResetPetVisualTransforms");
+            Invoke(window, "ApplyPetSizeScale", originalScale, false, false);
+            SetField(window, "_nowProvider", originalNowProvider);
+            SetField(
+                window,
+                "_automaticAnimationEnabled",
+                originalAutomaticEnabled);
+            if (originalAutomaticEnabled && window.IsVisible)
+            {
+                Invoke(window, "RestartAutomaticCountdown");
+            }
+
+            window.IsHitTestVisible = originalHitTestVisible;
         }
     }
 
@@ -8886,9 +9878,12 @@ internal static class Program
                    todoSource.Contains(
                        "handledEventsToo: true",
                        StringComparison.Ordinal) &&
-                   outsideClickSource.Contains(
-                       "IsWithin(e.OriginalSource as DependencyObject, textBox)",
-                       StringComparison.Ordinal) &&
+                   (outsideClickSource.Contains(
+                        "IsWithin(e.OriginalSource as DependencyObject, textBox)",
+                        StringComparison.Ordinal) ||
+                    outsideClickSource.Contains(
+                        "IsWithin(originalSource, textBox)",
+                        StringComparison.Ordinal)) &&
                    outsideClickSource.Contains(
                        "ScheduleTodoEditAfterOutsideClick()",
                        StringComparison.Ordinal) &&
@@ -11592,10 +12587,10 @@ internal static class Program
         var positionerSource = File.ReadAllText(
             FindWorkspaceFile("OwnedWindowPositioner.cs"));
         var unchangedGuard = positionerSource.IndexOf(
-            "cache._lastLeft == desiredPosition.X",
+            "childRect.Left == desiredPosition.X",
             StringComparison.Ordinal);
         var setWindowPos = positionerSource.IndexOf(
-            "var positioned = SetWindowPos(",
+            "if (!SetWindowPos(",
             StringComparison.Ordinal);
         var tryPositionStart = positionerSource.IndexOf(
             "internal static bool TryPosition(",
@@ -11606,7 +12601,12 @@ internal static class Program
                !positionerSource[tryPositionStart..].Contains(
                    "new WindowInteropHelper(child)",
                    StringComparison.Ordinal) &&
-               positionerSource.Contains("if (monitorChanged)", StringComparison.Ordinal) &&
+               positionerSource.Contains(
+                   "var monitor = MonitorFromPoint(anchorCenter, MonitorDefaultToNearest)",
+                   StringComparison.Ordinal) &&
+               positionerSource.Contains(
+                   "GetWindowRect(cache._childHandle, out var childRect)",
+                   StringComparison.Ordinal) &&
                positionerSource.Contains(
                    "GetWindowRect(cache._childHandle, out var movedChildRect)",
                    StringComparison.Ordinal) &&

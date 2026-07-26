@@ -16,6 +16,10 @@ public partial class TodoWindow : Window
 {
     private static readonly Brush TodoDropIndicatorBrush =
         CreateTodoDropIndicatorBrush();
+    private static readonly string[] ScheduledHourOptions =
+        CreateClockPartOptions(24);
+    private static readonly string[] ScheduledMinuteSecondOptions =
+        CreateClockPartOptions(60);
 
     private bool _settingEdgeRoamingEnabled;
     private bool _settingPetSizeScale;
@@ -47,8 +51,12 @@ public partial class TodoWindow : Window
     private string? _pendingClipboardCopyText;
     private bool _clipboardCopyRetryQueued;
     private ScheduledTaskItem? _editingScheduledTask;
+    private bool _scheduledTaskDraftClockEdited;
+    private bool _updatingScheduledTaskDraftClock;
+    private bool _updatingScheduledTimePickerSelection;
+    private bool _isScheduledDatePickerPopupOpen;
+    private bool _isScheduledTimePickerPopupOpen;
     private bool _tailOnRight = true;
-    private bool _isTransientPopupOpen;
     private bool _allowClose;
     private bool _hasClosed;
 
@@ -93,8 +101,12 @@ public partial class TodoWindow : Window
             new MouseButtonEventHandler(TodoWindow_PreviewMouseDown),
             handledEventsToo: true);
         PreviewKeyDown += TodoWindow_PreviewKeyDown;
+        Deactivated += TodoWindow_TransientPopupDeactivated;
         Closing += TodoWindow_Closing;
         Closed += TodoWindow_Closed;
+        ScheduledHourComboBox.ItemsSource = ScheduledHourOptions;
+        ScheduledMinuteComboBox.ItemsSource = ScheduledMinuteSecondOptions;
+        ScheduledSecondComboBox.ItemsSource = ScheduledMinuteSecondOptions;
         ResetScheduledTaskDraftClock(DateTimeOffset.Now);
     }
 
@@ -103,6 +115,17 @@ public partial class TodoWindow : Window
         var brush = new SolidColorBrush(Color.FromRgb(0x5B, 0x8D, 0xEF));
         brush.Freeze();
         return brush;
+    }
+
+    private static string[] CreateClockPartOptions(int count)
+    {
+        var options = new string[count];
+        for (var value = 0; value < count; value++)
+        {
+            options[value] = value.ToString("00", CultureInfo.InvariantCulture);
+        }
+
+        return options;
     }
 
     public IEnumerable? Todos
@@ -121,7 +144,22 @@ public partial class TodoWindow : Window
 
     public bool IsTodoDragInProgress => _todoDragInProgress;
 
-    public bool IsTransientPopupOpen => _isTransientPopupOpen;
+    public bool IsTransientPopupOpen =>
+        _isScheduledDatePickerPopupOpen ||
+        _isScheduledTimePickerPopupOpen;
+
+    internal void RecoverAfterSystemResume()
+    {
+        CloseScheduledTimePicker();
+        ScheduledDatePicker.IsDropDownOpen = false;
+        WindowState = WindowState.Normal;
+        Width = 292;
+        Height = 378;
+        InvalidateMeasure();
+        InvalidateArrange();
+        InvalidateVisual();
+        UpdateLayout();
+    }
 
     public event Action<string>? AddRequested;
 
@@ -160,6 +198,7 @@ public partial class TodoWindow : Window
 
     public void ShowDefaultTab()
     {
+        CloseScheduledTimePicker();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: false);
     }
@@ -250,6 +289,13 @@ public partial class TodoWindow : Window
 
     private void TodoWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && ScheduledTimePickerPopup.IsOpen)
+        {
+            CloseScheduledTimePicker();
+            e.Handled = true;
+            return;
+        }
+
         // TextBox's built-in Copy command disables itself when the selection
         // is empty before a parent CommandBinding can reliably replace that
         // behavior. Intercept the physical shortcut at the owned-window root:
@@ -410,6 +456,7 @@ public partial class TodoWindow : Window
 
     private void TodoWindow_Closing(object? sender, CancelEventArgs e)
     {
+        CloseScheduledTimePicker();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
 
         if (_allowClose)
@@ -444,7 +491,8 @@ public partial class TodoWindow : Window
         _hasClosed = true;
         _outsideTodoEditCommitPending = false;
         _outsideTodoEditCommitQueued = false;
-        _isTransientPopupOpen = false;
+        _isScheduledDatePickerPopupOpen = false;
+        _isScheduledTimePickerPopupOpen = false;
         if (_petSizeAdjustmentActive)
         {
             EndPetSizeAdjustment();
@@ -537,6 +585,7 @@ public partial class TodoWindow : Window
 
     private void TodoTabButton_Click(object sender, RoutedEventArgs e)
     {
+        CloseScheduledTimePicker();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: true);
     }
@@ -544,6 +593,7 @@ public partial class TodoWindow : Window
     private void ScheduledTaskTabButton_Click(object sender, RoutedEventArgs e)
     {
         CommitTodoEdit();
+        PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset.Now);
         SelectTaskPage(showScheduledTasks: true, focusInput: true);
     }
 
@@ -584,6 +634,20 @@ public partial class TodoWindow : Window
 
     private void ScheduledTimeInput_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key is Key.Space or Key.Down or Key.F4)
+        {
+            OpenScheduledTimePicker();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape && ScheduledTimePickerPopup.IsOpen)
+        {
+            CloseScheduledTimePicker();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key != Key.Enter || IsImeComposing)
         {
             return;
@@ -591,6 +655,159 @@ public partial class TodoWindow : Window
 
         RequestScheduledTaskSubmit();
         e.Handled = true;
+    }
+
+    private void ScheduledTimeInput_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        OpenScheduledTimePicker();
+        e.Handled = true;
+    }
+
+    private void OpenScheduledTimePicker()
+    {
+        if (_hasClosed)
+        {
+            return;
+        }
+
+        SynchronizeScheduledTimePickerSelection();
+        ScheduledTimePickerPopup.IsOpen = true;
+        ScheduledHourComboBox.Focus();
+        Keyboard.Focus(ScheduledHourComboBox);
+    }
+
+    private void CloseScheduledTimePicker()
+    {
+        if (ScheduledTimePickerPopup.IsOpen)
+        {
+            ScheduledTimePickerPopup.IsOpen = false;
+        }
+    }
+
+    private void ScheduledTimePickerPopup_Opened(object sender, EventArgs e)
+    {
+        SetTransientPopupState(
+            isDatePicker: false,
+            isOpen: true);
+    }
+
+    private void ScheduledTimePickerPopup_Closed(object sender, EventArgs e)
+    {
+        SetTransientPopupState(
+            isDatePicker: false,
+            isOpen: false);
+    }
+
+    private void ScheduledTimePartComboBox_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_updatingScheduledTimePickerSelection ||
+            ScheduledHourComboBox.SelectedIndex < 0 ||
+            ScheduledMinuteComboBox.SelectedIndex < 0 ||
+            ScheduledSecondComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        _scheduledTaskDraftClockEdited = true;
+        UpdateScheduledTimeTextFromPicker();
+    }
+
+    private void ScheduledTimePickerNowButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        var now = DateTimeOffset.Now.LocalDateTime;
+        _updatingScheduledTaskDraftClock = true;
+        try
+        {
+            ScheduledDatePicker.SelectedDate = now.Date;
+        }
+        finally
+        {
+            _updatingScheduledTaskDraftClock = false;
+        }
+
+        SetScheduledTimePickerSelection(
+            now.Hour,
+            now.Minute,
+            now.Second,
+            updateText: true);
+        _scheduledTaskDraftClockEdited = true;
+        e.Handled = true;
+    }
+
+    private void ScheduledTimePickerConfirmButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        UpdateScheduledTimeTextFromPicker();
+        CloseScheduledTimePicker();
+        ScheduledTimeInput.Focus();
+        Keyboard.Focus(ScheduledTimeInput);
+        e.Handled = true;
+    }
+
+    private void SynchronizeScheduledTimePickerSelection()
+    {
+        if (!DateTime.TryParseExact(
+                ScheduledTimeInput.Text.Trim(),
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedTime))
+        {
+            parsedTime = DateTimeOffset.Now.LocalDateTime;
+        }
+
+        SetScheduledTimePickerSelection(
+            parsedTime.Hour,
+            parsedTime.Minute,
+            parsedTime.Second,
+            updateText: false);
+    }
+
+    private void SetScheduledTimePickerSelection(
+        int hour,
+        int minute,
+        int second,
+        bool updateText)
+    {
+        _updatingScheduledTimePickerSelection = true;
+        try
+        {
+            ScheduledHourComboBox.SelectedIndex = Math.Clamp(hour, 0, 23);
+            ScheduledMinuteComboBox.SelectedIndex = Math.Clamp(minute, 0, 59);
+            ScheduledSecondComboBox.SelectedIndex = Math.Clamp(second, 0, 59);
+            if (updateText)
+            {
+                UpdateScheduledTimeTextFromPicker();
+            }
+        }
+        finally
+        {
+            _updatingScheduledTimePickerSelection = false;
+        }
+    }
+
+    private void UpdateScheduledTimeTextFromPicker()
+    {
+        if (ScheduledHourComboBox.SelectedIndex < 0 ||
+            ScheduledMinuteComboBox.SelectedIndex < 0 ||
+            ScheduledSecondComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        ScheduledTimeInput.Text = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:00}:{1:00}:{2:00}",
+            ScheduledHourComboBox.SelectedIndex,
+            ScheduledMinuteComboBox.SelectedIndex,
+            ScheduledSecondComboBox.SelectedIndex);
     }
 
     private void RequestScheduledTaskSubmit()
@@ -759,28 +976,69 @@ public partial class TodoWindow : Window
         object sender,
         SelectionChangedEventArgs e)
     {
+        if (!_updatingScheduledTaskDraftClock)
+        {
+            _scheduledTaskDraftClockEdited = true;
+        }
+
         ClearScheduledTaskValidation();
     }
 
     private void ScheduledDatePicker_CalendarOpened(object sender, RoutedEventArgs e)
     {
-        _isTransientPopupOpen = true;
+        CloseScheduledTimePicker();
+        SetTransientPopupState(
+            isDatePicker: true,
+            isOpen: true);
     }
 
     private void ScheduledDatePicker_CalendarClosed(object sender, RoutedEventArgs e)
     {
-        if (!_isTransientPopupOpen)
+        SetTransientPopupState(
+            isDatePicker: true,
+            isOpen: false);
+    }
+
+    private void SetTransientPopupState(bool isDatePicker, bool isOpen)
+    {
+        var wasOpen = IsTransientPopupOpen;
+        if (isDatePicker)
+        {
+            _isScheduledDatePickerPopupOpen = isOpen;
+        }
+        else
+        {
+            _isScheduledTimePickerPopupOpen = isOpen;
+        }
+
+        if (wasOpen && !IsTransientPopupOpen)
+        {
+            TransientInteractionCompleted?.Invoke();
+        }
+    }
+
+    private void TodoWindow_TransientPopupDeactivated(
+        object? sender,
+        EventArgs e)
+    {
+        CloseScheduledTimePicker();
+    }
+
+    private void PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset now)
+    {
+        if (_editingScheduledTask is not null ||
+            !string.IsNullOrWhiteSpace(ScheduledTaskInput.Text) ||
+            _scheduledTaskDraftClockEdited)
         {
             return;
         }
 
-        _isTransientPopupOpen = false;
-        TransientInteractionCompleted?.Invoke();
+        ResetScheduledTaskDraftClock(now);
     }
 
     private void ResetScheduledTaskDraftClock(DateTimeOffset now)
     {
-        var suggested = now.LocalDateTime.AddMinutes(5);
+        var suggested = now.LocalDateTime;
         suggested = new DateTime(
             suggested.Year,
             suggested.Month,
@@ -789,10 +1047,24 @@ public partial class TodoWindow : Window
             suggested.Minute,
             suggested.Second,
             DateTimeKind.Unspecified);
-        ScheduledDatePicker.SelectedDate = suggested.Date;
-        ScheduledTimeInput.Text = suggested.ToString(
-            "HH:mm:ss",
-            CultureInfo.InvariantCulture);
+        _updatingScheduledTaskDraftClock = true;
+        try
+        {
+            ScheduledDatePicker.SelectedDate = suggested.Date;
+            ScheduledTimeInput.Text = suggested.ToString(
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture);
+            SetScheduledTimePickerSelection(
+                suggested.Hour,
+                suggested.Minute,
+                suggested.Second,
+                updateText: false);
+            _scheduledTaskDraftClockEdited = false;
+        }
+        finally
+        {
+            _updatingScheduledTaskDraftClock = false;
+        }
     }
 
     private void ClearScheduledTaskValidation()
@@ -811,12 +1083,14 @@ public partial class TodoWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
+        CloseScheduledTimePicker();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e)
     {
+        CloseScheduledTimePicker();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         ExitRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -1064,9 +1338,18 @@ public partial class TodoWindow : Window
 
     private void TodoWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
+        var originalSource = e.OriginalSource as DependencyObject;
+        if (ScheduledTimePickerPopup.IsOpen &&
+            !IsWithin(originalSource, ScheduledTimePickerHost) &&
+            (ScheduledTimePickerPopup.Child is not DependencyObject popupChild ||
+             !IsWithin(originalSource, popupChild)))
+        {
+            CloseScheduledTimePicker();
+        }
+
         var textBox = _editingTodoTextBox;
         if (textBox is null ||
-            IsWithin(e.OriginalSource as DependencyObject, textBox))
+            IsWithin(originalSource, textBox))
         {
             return;
         }
