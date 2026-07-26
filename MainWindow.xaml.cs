@@ -41,6 +41,8 @@ public partial class MainWindow : Window
     // adjacent in-between frames and made an otherwise smooth path pulse.
     private const double EdgeRoamPoseFramesPerSecond = 48;
     private const int EdgeRoamClosestPointSamples = 256;
+    private const double SnoreBubbleMinimumScale = 1;
+    private const double SnoreBubbleMaximumScale = 1.58;
     private const int DisplayPixelWidth = 399;
     private const int DisplayPixelHeight = 509;
     private const string SpriteAtlasManifestPath = "Assets/luban-sprite-pages.json";
@@ -103,6 +105,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgeRoamMaximumClockGap =
         TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SnoreBubbleCycleDuration =
+        TimeSpan.FromSeconds(2.4);
     private static readonly TimeSpan MaximumReminderWakeInterval =
         TimeSpan.FromHours(12);
     private static readonly TimeSpan ReminderSpritePreloadLeadTime =
@@ -256,6 +260,9 @@ public partial class MainWindow : Window
     private bool? _petSizeTodoChildOnLeft;
     private bool _automaticAnimationEnabled;
     private bool _isPillowBreathing;
+    private bool _isSnoreBubbleAnimating;
+    private long _snoreBubbleAnimationStartedTimestamp;
+    private double _snoreBubbleCurrentScale = SnoreBubbleMinimumScale;
     private bool _isClosing;
     private bool _suppressTodoWindowDeactivate;
     private bool _displaySettingsSubscribed;
@@ -1170,6 +1177,7 @@ public partial class MainWindow : Window
         Left = Math.Max(workArea.Left, workArea.Right - ActualWidth - ScreenEdgeMargin);
         Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight - ScreenEdgeMargin);
         _automaticAnimationEnabled = true;
+        RefreshSnoreBubbleAnimationState();
         ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInitialDelay);
         ProcessScheduledTasksAt(_nowProvider());
         RestartAutomaticCountdown();
@@ -2535,6 +2543,30 @@ public partial class MainWindow : Window
         }
 
         ResetPetVisualTransforms();
+        Point initialPosition;
+        Point initialLookAhead;
+        if (_edgeRoamApproachLength > 0)
+        {
+            initialPosition = _edgeRoamStartPoint;
+            initialLookAhead = GetEdgeRoamConnectionPoint(
+                _edgeRoamStartPoint,
+                _edgeRoamRouteStartPoint,
+                startTangent: default,
+                endTangent: _edgeRoamRouteTangent * _edgeRoamApproachLength,
+                progress: GetEdgeRoamConnectionLookAhead(
+                    _edgeRoamApproachLength));
+        }
+        else
+        {
+            var radius = GetEdgeRoamCornerRadius(_edgeRoamRouteBounds);
+            initialPosition = _edgeRoamRouteStartPoint;
+            initialLookAhead = GetEdgeRoamRoutePoint(
+                _edgeRoamRouteBounds,
+                radius,
+                _edgeRoamRouteStartDistance + _edgeRoamDirection * 2);
+        }
+
+        UpdateEdgeRoamFacing(initialPosition, initialLookAhead);
         _nextFrameBlendDuration = TimeSpan.Zero;
         ShowStableFrame(_roamFlightFrames[0]);
         UpdateVisualClockSubscription();
@@ -2820,32 +2852,50 @@ public partial class MainWindow : Window
 
     private void UpdateEdgeRoamFacing(Point position, Point lookAhead)
     {
+        _edgeRoamFacingScaleX = ResolveEdgeRoamFacingScaleX(
+            position,
+            lookAhead,
+            _edgeRoamRouteBounds,
+            GetEdgeRoamCornerRadius(_edgeRoamRouteBounds),
+            _edgeRoamFacingScaleX);
+
+        PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
+        PetFacingScale.ScaleY = 1;
+    }
+
+    private static double ResolveEdgeRoamFacingScaleX(
+        Point position,
+        Point lookAhead,
+        Rect routeBounds,
+        double radius,
+        double currentScaleX)
+    {
         var deltaX = lookAhead.X - position.X;
         var deltaY = lookAhead.Y - position.Y;
         if (Math.Abs(deltaY) > Math.Abs(deltaX) * 1.2 &&
             Math.Abs(deltaY) > 0.01)
         {
-            var radius = GetEdgeRoamCornerRadius(_edgeRoamRouteBounds);
-            if (position.X <= _edgeRoamRouteBounds.Left + radius * 0.55)
+            if (position.X <= routeBounds.Left + radius * 0.55)
             {
-                // On the left edge the panda looks right, into the screen.
-                _edgeRoamFacingScaleX = 1;
+                // The authored panda faces left at ScaleX=1. On the left edge
+                // mirror it so Luban and the panda look into the screen.
+                return -1;
             }
-            else if (position.X >=
-                     _edgeRoamRouteBounds.Right - radius * 0.55)
+
+            if (position.X >= routeBounds.Right - radius * 0.55)
             {
-                // On the right edge the panda looks left, into the screen.
-                _edgeRoamFacingScaleX = -1;
+                // The unmirrored source already faces into the screen here.
+                return 1;
             }
         }
         else if (Math.Abs(deltaX) > Math.Abs(deltaY) * 1.2 &&
             Math.Abs(deltaX) > 0.01)
         {
-            _edgeRoamFacingScaleX = deltaX > 0 ? 1 : -1;
+            // The source faces left, so rightward travel must be mirrored.
+            return deltaX > 0 ? -1 : 1;
         }
 
-        PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
-        PetFacingScale.ScaleY = 1;
+        return currentScaleX < 0 ? -1 : 1;
     }
 
     private void ApplyEdgeRoamingPosition(double logicalLeft, double logicalTop)
@@ -3065,8 +3115,7 @@ public partial class MainWindow : Window
 
         if (_isPillowBreathing)
         {
-            _automaticTimer.Stop();
-            _isPillowBreathing = false;
+            StopPillowBreathing();
             RestartAutomaticCountdown();
             return;
         }
@@ -3153,22 +3202,85 @@ public partial class MainWindow : Window
     {
         StopPillowBreathing();
         _isPillowBreathing = true;
-        // Idle already depicts Luban sleeping on a pillow. Reuse the existing
-        // one-shot timer for the five-second idle slot instead of creating two
-        // no-op WPF scale animations. This keeps the compositor asleep and
-        // avoids periodic allocations without changing any visible pixels.
+        // This timer reserves one explicit five-second rest slot in the
+        // shuffled activity bag. The independent snore bubble is driven by the
+        // absolute composition clock throughout every stable idle period.
         _automaticTimer.Interval = PillowAnimationDuration;
         _automaticTimer.Start();
+        RefreshSnoreBubbleAnimationState();
     }
 
     private void StopPillowBreathing()
     {
         _isPillowBreathing = false;
         _automaticTimer.Stop();
-        PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        PetScale.ScaleX = 1;
-        PetScale.ScaleY = 1;
+        RefreshSnoreBubbleAnimationState();
+    }
+
+    private void RefreshSnoreBubbleAnimationState()
+    {
+        var shouldAnimate = IsLoaded &&
+                            !_isClosing &&
+                            _currentSpriteFrame is SpriteFrame currentFrame &&
+                            currentFrame == _idleFrame &&
+                            _activeClip is null &&
+                            !_isReminderActive &&
+                            !_isEdgeRoaming &&
+                            _edgeDock == EdgeDock.None;
+        if (shouldAnimate == _isSnoreBubbleAnimating)
+        {
+            return;
+        }
+
+        _isSnoreBubbleAnimating = shouldAnimate;
+        _snoreBubbleAnimationStartedTimestamp = shouldAnimate
+            ? Stopwatch.GetTimestamp()
+            : 0;
+        _snoreBubbleCurrentScale = SnoreBubbleMinimumScale;
+        SnoreBubbleScale.ScaleX = SnoreBubbleMinimumScale;
+        SnoreBubbleScale.ScaleY = SnoreBubbleMinimumScale;
+        SnoreBubbleHost.Opacity = shouldAnimate ? 1 : 0;
+        UpdateVisualClockSubscription();
+    }
+
+    private void AdvanceSnoreBubble(long timestamp)
+    {
+        if (!_isSnoreBubbleAnimating ||
+            _snoreBubbleAnimationStartedTimestamp <= 0)
+        {
+            return;
+        }
+
+        var elapsedSeconds = Math.Max(
+            0,
+            (timestamp - _snoreBubbleAnimationStartedTimestamp) /
+            (double)Stopwatch.Frequency);
+        var scale = GetSnoreBubbleScale(elapsedSeconds);
+        if (Math.Abs(scale - _snoreBubbleCurrentScale) <= 0.0001)
+        {
+            return;
+        }
+
+        _snoreBubbleCurrentScale = scale;
+        SnoreBubbleScale.ScaleX = scale;
+        SnoreBubbleScale.ScaleY = scale;
+    }
+
+    private static double GetSnoreBubbleScale(double elapsedSeconds)
+    {
+        var cycleSeconds = SnoreBubbleCycleDuration.TotalSeconds;
+        if (!double.IsFinite(elapsedSeconds) ||
+            elapsedSeconds <= 0 ||
+            cycleSeconds <= 0)
+        {
+            return SnoreBubbleMinimumScale;
+        }
+
+        var phase = elapsedSeconds / cycleSeconds;
+        phase -= Math.Floor(phase);
+        var pulse = 0.5 - 0.5 * Math.Cos(phase * Math.Tau);
+        return SnoreBubbleMinimumScale +
+               (SnoreBubbleMaximumScale - SnoreBubbleMinimumScale) * pulse;
     }
 
     private void AdvanceActiveClip(long timestamp)
@@ -3343,6 +3455,7 @@ public partial class MainWindow : Window
             _activeClipStartedTimestamp = 0;
             _activeFrameDeadlineTimestamp = 0;
             ClearDeferredActiveClipClock();
+            RefreshSnoreBubbleAnimationState();
             LogInfo("定时提醒播报动作完成，保持举喇叭姿势");
             RequestIdleSpritePageTrim();
             UpdateVisualClockSubscription();
@@ -3360,6 +3473,7 @@ public partial class MainWindow : Window
         _activeClipStartedTimestamp = 0;
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
+        RefreshSnoreBubbleAnimationState();
         LogInfo(
             $"动作完成：{clip.ActionName}，实际耗时 {elapsedMilliseconds:F1} ms");
         if (_bubbleMode == BubbleMode.Cute)
@@ -3466,6 +3580,7 @@ public partial class MainWindow : Window
             DiscardSupersededPendingSpriteFrame(frame);
 
             _nextFrameBlendDuration = null;
+            RefreshSnoreBubbleAnimationState();
             return;
         }
 
@@ -3560,6 +3675,7 @@ public partial class MainWindow : Window
         }
 
         _currentSpriteFrame = frame;
+        RefreshSnoreBubbleAnimationState();
     }
 
     private static bool IsEdgeSpriteFrame(SpriteFrame frame) =>
@@ -3830,6 +3946,7 @@ public partial class MainWindow : Window
             var timestamp = Stopwatch.GetTimestamp();
             TryShowPendingSpriteFrameAt(timestamp);
             AdvancePetSizeCompositionFrame(timestamp);
+            AdvanceSnoreBubble(timestamp);
 
             if (_activeClip is not null)
             {
@@ -3876,6 +3993,7 @@ public partial class MainWindow : Window
                          (_isPetSizeAdjustmentActive ||
                           _petSizeTargetUpdatePending ||
                            _isPetSizeTransitioning ||
+                           _isSnoreBubbleAnimating ||
                            _activeClip is not null ||
                             _edgeDock != EdgeDock.None ||
                            _isEdgeRoaming ||

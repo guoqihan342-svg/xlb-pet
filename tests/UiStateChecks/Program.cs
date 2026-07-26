@@ -224,6 +224,8 @@ internal static class Program
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
                 RunCheck(nameof(AssertEdgeRoamingRouteMathContract),
                     AssertEdgeRoamingRouteMathContract);
+                RunCheck(nameof(AssertSnoreBubbleAnimationContract),
+                    () => AssertSnoreBubbleAnimationContract(window));
                 RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
                 RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
@@ -4330,6 +4332,12 @@ internal static class Program
         var advanceRoamTravel = ExtractPrivateMethodSource(
             mainSource,
             "AdvanceEdgeRoamTravel");
+        var startRoamTravel = ExtractPrivateMethodSource(
+            mainSource,
+            "StartEdgeRoamTravel");
+        var resolveRoamFacing = ExtractPrivateMethodSource(
+            mainSource,
+            "ResolveEdgeRoamFacingScaleX");
         var advanceRoamClock = ExtractPrivateMethodSource(
             mainSource,
             "AdvanceEdgeRoamClock");
@@ -4644,6 +4652,18 @@ internal static class Program
                updateClock.Contains("_isEdgeRoaming", StringComparison.Ordinal) &&
                advanceRoaming.Contains(
                    "AdvanceEdgeRoamTravel(timestamp)",
+                   StringComparison.Ordinal) &&
+               startRoamTravel.Contains(
+                   "UpdateEdgeRoamFacing(initialPosition, initialLookAhead)",
+                   StringComparison.Ordinal) &&
+               startRoamTravel.IndexOf(
+                   "UpdateEdgeRoamFacing(initialPosition, initialLookAhead)",
+                   StringComparison.Ordinal) <
+               startRoamTravel.IndexOf(
+                   "ShowStableFrame(_roamFlightFrames[0])",
+                   StringComparison.Ordinal) &&
+               resolveRoamFacing.Contains(
+                   "return deltaX > 0 ? -1 : 1",
                    StringComparison.Ordinal) &&
                advanceRoamTravel.Contains(
                    "AdvanceEdgeRoamClock(timestamp)",
@@ -6397,7 +6417,99 @@ internal static class Program
         AssertClose(completedLap.Y, start.Y, "顺时针整圈必须回到同一逻辑Y");
         AssertClose(reverseLap.X, start.X, "逆时针整圈必须回到同一逻辑X");
         AssertClose(reverseLap.Y, start.Y, "逆时针整圈必须回到同一逻辑Y");
+
+        var topMiddle = new Point(
+            routeBounds.Left + radius + horizontal / 2,
+            routeBounds.Top);
+        var rightMiddle = new Point(
+            routeBounds.Right,
+            routeBounds.Top + radius + vertical / 2);
+        var bottomMiddle = new Point(
+            routeBounds.Left + radius + horizontal / 2,
+            routeBounds.Bottom);
+        var leftMiddle = new Point(
+            routeBounds.Left,
+            routeBounds.Top + radius + vertical / 2);
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                topMiddle,
+                new Point(topMiddle.X + 2, topMiddle.Y),
+                routeBounds,
+                radius),
+            -1,
+            "顶部向右移动时左朝向原画必须镜像");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                topMiddle,
+                new Point(topMiddle.X - 2, topMiddle.Y),
+                routeBounds,
+                radius),
+            1,
+            "顶部向左移动时左朝向原画必须保持原向");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                bottomMiddle,
+                new Point(bottomMiddle.X - 2, bottomMiddle.Y),
+                routeBounds,
+                radius),
+            1,
+            "底部向左移动时左朝向原画必须保持原向");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                bottomMiddle,
+                new Point(bottomMiddle.X + 2, bottomMiddle.Y),
+                routeBounds,
+                radius),
+            -1,
+            "底部向右移动时左朝向原画必须镜像");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                leftMiddle,
+                new Point(leftMiddle.X, leftMiddle.Y - 2),
+                routeBounds,
+                radius),
+            -1,
+            "左侧竖边必须始终朝屏幕内部");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                leftMiddle,
+                new Point(leftMiddle.X, leftMiddle.Y + 2),
+                routeBounds,
+                radius),
+            -1,
+            "左侧反向竖移也必须始终朝屏幕内部");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                rightMiddle,
+                new Point(rightMiddle.X, rightMiddle.Y + 2),
+                routeBounds,
+                radius),
+            1,
+            "右侧竖边必须始终朝屏幕内部");
+        AssertClose(
+            ResolveProductionEdgeRoamFacing(
+                rightMiddle,
+                new Point(rightMiddle.X, rightMiddle.Y - 2),
+                routeBounds,
+                radius),
+            1,
+            "右侧反向竖移也必须始终朝屏幕内部");
     }
+
+    private static double ResolveProductionEdgeRoamFacing(
+        Point position,
+        Point lookAhead,
+        Rect routeBounds,
+        double radius) =>
+        (double)(InvokeStatic(
+            typeof(MainWindow),
+            "ResolveEdgeRoamFacingScaleX",
+            position,
+            lookAhead,
+            routeBounds,
+            radius,
+            1d) ?? throw new InvalidOperationException(
+            "生产绕屏朝向函数未返回缩放值"));
 
     private static void AssertExactEdgeContactContract()
     {
@@ -6660,6 +6772,213 @@ internal static class Program
                !automaticTimer.IsEnabled &&
                !petScale.HasAnimatedProperties,
             "停止枕头待机占位后必须关闭automaticTimer且不遗留WPF动画");
+    }
+
+    private static void AssertSnoreBubbleAnimationContract(MainWindow window)
+    {
+        if (!window.IsVisible)
+        {
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+        }
+
+        var xaml = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml"));
+        var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var rendering = ExtractPrivateMethodSource(
+            mainSource,
+            "VisualClock_Rendering");
+        var updateClock = ExtractPrivateMethodSource(
+            mainSource,
+            "UpdateVisualClockSubscription");
+        var advanceBubble = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceSnoreBubble");
+        var calculateScale = ExtractPrivateMethodSource(
+            mainSource,
+            "GetSnoreBubbleScale");
+        Assert(
+            xaml.Contains("x:Name=\"SnoreBubbleHost\"", StringComparison.Ordinal) &&
+            xaml.Contains("x:Name=\"SnoreBubbleScale\"", StringComparison.Ordinal) &&
+            xaml.Contains("RenderTransformOrigin=\"0.88,0.52\"", StringComparison.Ordinal) &&
+            rendering.Contains("AdvanceSnoreBubble(timestamp)", StringComparison.Ordinal) &&
+            updateClock.Contains("_isSnoreBubbleAnimating", StringComparison.Ordinal) &&
+            calculateScale.Contains("Math.Cos", StringComparison.Ordinal) &&
+            !advanceBubble.Contains("DispatcherTimer", StringComparison.Ordinal) &&
+            !advanceBubble.Contains("BeginAnimation", StringComparison.Ordinal) &&
+            !advanceBubble.Contains("AppLogger", StringComparison.Ordinal) &&
+            !advanceBubble.Contains("LogInfo", StringComparison.Ordinal) &&
+            !advanceBubble.Contains(".Width", StringComparison.Ordinal) &&
+            !advanceBubble.Contains(".Height", StringComparison.Ordinal) &&
+            !advanceBubble.Contains("new ", StringComparison.Ordinal),
+            "呼噜泡泡必须使用独立图层和CompositionTarget绝对时钟，只改ScaleTransform且渲染帧零分配");
+
+        var cycle = (TimeSpan)(typeof(MainWindow).GetField(
+                "SnoreBubbleCycleDuration",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var minimum = (double)(typeof(MainWindow).GetField(
+                "SnoreBubbleMinimumScale",
+                StaticFlags)!.GetValue(null) ?? 0d);
+        var maximum = (double)(typeof(MainWindow).GetField(
+                "SnoreBubbleMaximumScale",
+                StaticFlags)!.GetValue(null) ?? 0d);
+        Assert(cycle > TimeSpan.Zero &&
+               minimum >= 1 &&
+               maximum > minimum,
+            "覆盖原鼻泡的独立图层必须从原大小平滑放大后再缩回");
+
+        var samples = new[]
+        {
+            GetProductionSnoreBubbleScale(0),
+            GetProductionSnoreBubbleScale(cycle.TotalSeconds * 0.25),
+            GetProductionSnoreBubbleScale(cycle.TotalSeconds * 0.5),
+            GetProductionSnoreBubbleScale(cycle.TotalSeconds * 0.75),
+            GetProductionSnoreBubbleScale(cycle.TotalSeconds)
+        };
+        AssertClose(samples[0], minimum, "呼噜泡泡周期起点");
+        AssertClose(samples[1], minimum + (maximum - minimum) / 2,
+            "呼噜泡泡四分之一周期");
+        AssertClose(samples[2], maximum, "呼噜泡泡半周期最大值");
+        AssertClose(samples[3], samples[1], "呼噜泡泡四分之三周期");
+        AssertClose(samples[4], minimum, "呼噜泡泡周期首尾连续");
+
+        foreach (var refreshRate in new[] { 59d, 60d, 120d, 144d })
+        {
+            const double absoluteTime = 0.731;
+            var direct = GetProductionSnoreBubbleScale(absoluteTime);
+            var sampledFrame = Math.Floor(absoluteTime * refreshRate);
+            var resumedAtAbsoluteTime = sampledFrame / refreshRate +
+                                        (absoluteTime - sampledFrame / refreshRate);
+            AssertClose(
+                GetProductionSnoreBubbleScale(resumedAtAbsoluteTime),
+                direct,
+                $"{refreshRate:F0}Hz相同绝对时间必须得到相同泡泡大小");
+        }
+
+        var beforeGap = GetProductionSnoreBubbleScale(0.9);
+        var afterGap = GetProductionSnoreBubbleScale(1.15);
+        Assert(Math.Abs(afterGap - beforeGap) > 0.001,
+            "250ms阻塞后必须直接定位到新的绝对时钟大小，不能停留或补播积压帧");
+
+        Invoke(window, "RefreshSnoreBubbleAnimationState");
+        var petScale = GetField<ScaleTransform>(window, "PetScale");
+        var bubbleScale = GetField<ScaleTransform>(window, "SnoreBubbleScale");
+        var bubbleHost = GetField<FrameworkElement>(window, "SnoreBubbleHost");
+        Assert(GetField<bool>(window, "_isSnoreBubbleAnimating") &&
+               bubbleHost.Opacity > 0.99 &&
+               !petScale.HasAnimatedProperties &&
+               Math.Abs(petScale.ScaleX - 1) < 0.000001 &&
+               Math.Abs(petScale.ScaleY - 1) < 0.000001,
+            "稳定待机时必须只让鼻泡持续呼吸，人物和枕头尺寸保持完全不变");
+
+        var viewport = GetField<FrameworkElement>(window, "PetFrameViewport");
+        bubbleScale.ScaleX = minimum;
+        bubbleScale.ScaleY = minimum;
+        var minimumPixels = RenderPetViewport(viewport);
+        bubbleScale.ScaleX = maximum;
+        bubbleScale.ScaleY = maximum;
+        var maximumPixels = RenderPetViewport(viewport);
+        var difference = FindPbgraDifferenceBounds(
+            minimumPixels,
+            maximumPixels,
+            RenderPixelWidth,
+            RenderPixelHeight);
+        Assert(difference.PixelCount >= 100 &&
+               difference.Left >= 85 &&
+               difference.Right <= 185 &&
+               difference.Top >= 335 &&
+               difference.Bottom <= 440,
+            $"泡泡最小/最大实渲染差异必须只落在鼻尖附近，实际 " +
+            $"{difference.Left},{difference.Top}-{difference.Right},{difference.Bottom}，" +
+            $"{difference.PixelCount} pixels");
+
+        var startTimestamp = GetField<long>(
+            window,
+            "_snoreBubbleAnimationStartedTimestamp");
+        Invoke(
+            window,
+            "AdvanceSnoreBubble",
+            startTimestamp + StopwatchTicksFromMilliseconds(
+                cycle.TotalMilliseconds / 2));
+        AssertClose(bubbleScale.ScaleX, maximum, "实际泡泡图层半周期ScaleX");
+        AssertClose(bubbleScale.ScaleY, maximum, "实际泡泡图层半周期ScaleY");
+
+        SetField(window, "_isEdgeRoaming", true);
+        Invoke(window, "RefreshSnoreBubbleAnimationState");
+        Assert(!GetField<bool>(window, "_isSnoreBubbleAnimating") &&
+               bubbleHost.Opacity == 0 &&
+               Math.Abs(bubbleScale.ScaleX - minimum) < 0.000001 &&
+               Math.Abs(bubbleScale.ScaleY - minimum) < 0.000001,
+            "离开待机进入绕屏时必须原子隐藏并复位泡泡层");
+        SetField(window, "_isEdgeRoaming", false);
+        Invoke(window, "RefreshSnoreBubbleAnimationState");
+        Assert(GetField<bool>(window, "_isSnoreBubbleAnimating") &&
+               bubbleHost.Opacity > 0.99,
+            "回到稳定待机后泡泡必须重新从最小尺寸开始呼吸");
+    }
+
+    private static double GetProductionSnoreBubbleScale(double elapsedSeconds) =>
+        (double)(InvokeStatic(
+            typeof(MainWindow),
+            "GetSnoreBubbleScale",
+            elapsedSeconds) ?? throw new InvalidOperationException(
+            "生产呼噜泡泡函数未返回缩放值"));
+
+    private static byte[] RenderPetViewport(FrameworkElement viewport)
+    {
+        viewport.UpdateLayout();
+        var bitmap = new RenderTargetBitmap(
+            RenderPixelWidth,
+            RenderPixelHeight,
+            96d * RenderPixelWidth / LogicalPetWidth,
+            96d * RenderPixelHeight / LogicalPetHeight,
+            PixelFormats.Pbgra32);
+        bitmap.Render(viewport);
+        var pixels = new byte[RenderPixelWidth * RenderPixelHeight * 4];
+        bitmap.CopyPixels(
+            pixels,
+            RenderPixelWidth * 4,
+            offset: 0);
+        return pixels;
+    }
+
+    private static PixelDifferenceBounds FindPbgraDifferenceBounds(
+        byte[] first,
+        byte[] second,
+        int width,
+        int height)
+    {
+        Assert(first.Length == second.Length &&
+               first.Length == width * height * 4,
+            "Pbgra实渲染差异缓冲尺寸必须一致");
+        var left = width;
+        var top = height;
+        var right = -1;
+        var bottom = -1;
+        var pixelCount = 0;
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var offset = (y * width + x) * 4;
+                var difference =
+                    Math.Abs(first[offset] - second[offset]) +
+                    Math.Abs(first[offset + 1] - second[offset + 1]) +
+                    Math.Abs(first[offset + 2] - second[offset + 2]) +
+                    Math.Abs(first[offset + 3] - second[offset + 3]);
+                if (difference <= 8)
+                {
+                    continue;
+                }
+
+                pixelCount++;
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+
+        return new PixelDifferenceBounds(left, top, right, bottom, pixelCount);
     }
 
     private static int[] DrainActivityBag(MainWindow window, int count)
@@ -10952,9 +11271,11 @@ internal static class Program
                markDragActive > stopPillowBeforeDrag &&
                stopPillowBreathing.Contains("_isPillowBreathing = false", StringComparison.Ordinal) &&
                stopPillowBreathing.Contains("_automaticTimer.Stop()", StringComparison.Ordinal) &&
-               stopPillowBreathing.Contains("PetScale.ScaleX = 1", StringComparison.Ordinal) &&
-               stopPillowBreathing.Contains("PetScale.ScaleY = 1", StringComparison.Ordinal),
-            "鼠标按下必须先停止枕头占位并清理timer/缩放，再进入拖动状态，避免GC门禁永久忙");
+               stopPillowBreathing.Contains(
+                   "RefreshSnoreBubbleAnimationState()",
+                   StringComparison.Ordinal) &&
+               !stopPillowBreathing.Contains("PetScale.", StringComparison.Ordinal),
+            "鼠标按下必须先停止枕头占位并清理timer，再进入拖动状态；鼻泡独立层不得改动人物缩放");
         Assert(observeNaturalSpritePageCollection.Contains(
                    "generation <= _lastObservedSpritePageCollectionGeneration",
                    StringComparison.Ordinal) &&
@@ -11702,6 +12023,13 @@ internal static class Program
             throw new InvalidOperationException(message);
         }
     }
+
+    private readonly record struct PixelDifferenceBounds(
+        int Left,
+        int Top,
+        int Right,
+        int Bottom,
+        int PixelCount);
 
     private sealed record EdgeCase(string Edge, Rect NearBounds, Rect TouchingBounds);
 

@@ -258,6 +258,43 @@
                                         AlignmentY="Top" />
                         </Rectangle.Fill>
                     </Rectangle>
+                    <Grid x:Name="SnoreBubbleHost"
+                          Width="17"
+                          Height="16"
+                          Canvas.Left="59"
+                          Canvas.Top="177"
+                          IsHitTestVisible="False"
+                          Opacity="0"
+                          RenderTransformOrigin="0.88,0.52"
+                          SnapsToDevicePixels="False">
+                        <Grid.RenderTransform>
+                            <ScaleTransform x:Name="SnoreBubbleScale"
+                                            ScaleX="1"
+                                            ScaleY="1" />
+                        </Grid.RenderTransform>
+                        <Ellipse Stroke="#B8D2D9"
+                                 StrokeThickness="0.7">
+                            <Ellipse.Fill>
+                                <RadialGradientBrush Center="0.34,0.30"
+                                                     GradientOrigin="0.25,0.22"
+                                                     RadiusX="0.78"
+                                                     RadiusY="0.78">
+                                    <GradientStop Offset="0"
+                                                  Color="#FFFFFFFF" />
+                                    <GradientStop Offset="0.58"
+                                                  Color="#FFF1F8FA" />
+                                    <GradientStop Offset="1"
+                                                  Color="#FFD9E9ED" />
+                                </RadialGradientBrush>
+                            </Ellipse.Fill>
+                        </Ellipse>
+                        <Ellipse Width="4.2"
+                                 Height="3.4"
+                                 Margin="3.2,2.7,0,0"
+                                 HorizontalAlignment="Left"
+                                 VerticalAlignment="Top"
+                                 Fill="#E8FFFFFF" />
+                    </Grid>
                 </Canvas>
 
             </Grid>
