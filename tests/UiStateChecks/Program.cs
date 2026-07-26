@@ -146,6 +146,8 @@ internal static class Program
                         AssertExactEdgeContactContract);
                     RunCheck(nameof(AssertSupportedEdgeDockIntegration),
                         () => AssertSupportedEdgeDockIntegration(window));
+                    RunCheck(nameof(AssertTodoClosePreservesEdgePeek),
+                        () => AssertTodoClosePreservesEdgePeek(window));
                     return 0;
                 }
 
@@ -247,6 +249,8 @@ internal static class Program
                 RunCheck(nameof(AssertSnoreBubbleAnimationContract),
                     () => AssertSnoreBubbleAnimationContract(window));
                 RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
+                RunCheck(nameof(AssertTodoClosePreservesEdgePeek),
+                    () => AssertTodoClosePreservesEdgePeek(window));
                 RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
@@ -7109,6 +7113,109 @@ internal static class Program
         window.Top = safeTop;
     }
 
+    private static void AssertTodoClosePreservesEdgePeek(MainWindow window)
+    {
+        if (!window.IsVisible)
+        {
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+        }
+
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var originalSuppressDeactivate =
+            GetField<bool>(window, "_suppressTodoWindowDeactivate");
+        var originalLeft = window.Left;
+        var originalTop = window.Top;
+        var processOutsideClose = ExtractPrivateMethodSource(
+            File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs")),
+            "ProcessOutsideTodoClose");
+        Assert(processOutsideClose.Contains(
+                "SetBubbleMode(BubbleMode.None)",
+                StringComparison.Ordinal),
+            "外部点击收起必须继续汇入统一的 Todo→None 状态切换，不能绕过待办提交与隐藏逻辑");
+
+        try
+        {
+            SetField(window, "_suppressTodoWindowDeactivate", true);
+            Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "ExitEdgePeek", false, true);
+
+            foreach (var edge in new[] { "Left", "Right", "Bottom" })
+            {
+                var edgeFrames = edge is "Left" or "Right"
+                    ? GetField<Array>(window, "_edgeLeftFrames")
+                    : GetField<Array>(window, "_edgeBottomFrames");
+                var restFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
+
+                Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                Assert(todoWindow.IsVisible &&
+                       GetField<object>(window, "_bubbleMode").ToString() == "Todo",
+                    $"{edge} 吸附回归的前置条件必须真实打开待办窗口");
+
+                // Opening Todo can trim an unprotected edge page after earlier
+                // cache-pressure checks. Pin the exact entry pose only after
+                // the panel has completed that state transition.
+                PrimeSpritePageForFrame(window, restFrame);
+                Invoke(window, "EnterEdgePeek", GetNestedEnum("EdgeDock", edge));
+                var deadlineBeforeClose =
+                    GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
+                Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
+                       deadlineBeforeClose > Stopwatch.GetTimestamp() &&
+                       deadlineBeforeClose != long.MaxValue &&
+                       GetRawField(window, "_activeClip") is null &&
+                       Equals(GetRawField(window, "_currentSpriteFrame"), restFrame),
+                    $"待办打开时进入 {edge} 吸附必须把视觉所有权交给有效的边缘动画");
+
+                // ProcessOutsideTodoClose、关闭按钮、Alt+F4 和右键切换最终
+                // 都调用这一状态切换。直接验证共用终点可避免 CI 焦点时序噪声。
+                Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
+                PumpDispatcher(TimeSpan.FromMilliseconds(10));
+
+                var preservedDeadline =
+                    GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
+                var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
+                Assert(!todoWindow.IsVisible &&
+                       GetField<object>(window, "_bubbleMode").ToString() == "None" &&
+                       GetField<object>(window, "_edgeDock").ToString() == edge &&
+                       preservedDeadline > 0 &&
+                       preservedDeadline != long.MaxValue &&
+                       GetRawField(window, "_activeClip") is null &&
+                       GetField<long>(window, "_activeFrameDeadlineTimestamp") == 0 &&
+                       edgeFrames.Cast<object>().Contains(
+                           GetRawField(window, "_currentSpriteFrame")) &&
+                       GetField<bool>(window, "_isVisualClockSubscribed") &&
+                       !GetField<DispatcherTimer>(window, "_automaticTimer").IsEnabled &&
+                       Math.Abs(
+                           facingScale.ScaleX - (edge == "Right" ? -1 : 1)) <=
+                       0.000001,
+                    $"点击外部收起待办后必须保留 {edge} 吸附、朝向、边缘帧和视觉时钟，不能播放 todo-close 回待机");
+
+                Invoke(window, "AdvanceEdgePeek", preservedDeadline);
+                Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
+                       GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
+                       preservedDeadline &&
+                       edgeFrames.Cast<object>().Contains(
+                           GetRawField(window, "_currentSpriteFrame")),
+                    $"收起待办后 {edge} 边缘动画必须继续推进，不能只留下僵死的吸附枚举");
+
+                Invoke(window, "ExitEdgePeek", false, true);
+            }
+        }
+        finally
+        {
+            Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "ExitEdgePeek", false, true);
+            SetField(
+                window,
+                "_suppressTodoWindowDeactivate",
+                originalSuppressDeactivate);
+            window.Left = originalLeft;
+            window.Top = originalTop;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        }
+    }
+
     private static void AssertWindowBoundaryDockActivation(
         MainWindow window,
         Type monitorType)
@@ -8081,10 +8188,21 @@ internal static class Program
                 "Alt+F4/系统关闭待办窗口时应取消销毁并安全隐藏");
             Assert(GetField<object>(window, "_bubbleMode").ToString() == "None",
                 "Alt+F4 收起后 MainWindow 的 BubbleMode 必须同步为 None");
-            Assert(GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName") == "todo-close",
-                "收起 Todo 应启动专用平滑回待机过渡");
-            Assert(GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == 0,
-                "Todo 收起过渡与边缘探头绝对时间轴不得并行写画面");
+            var preservedTodoEdgeDeadline =
+                GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
+            Assert(GetRawField(window, "_activeClip") is null &&
+                   GetField<object>(window, "_edgeDock").ToString() == "Left" &&
+                   preservedTodoEdgeDeadline > 0 &&
+                   preservedTodoEdgeDeadline != long.MaxValue &&
+                   todoEdgeFrames.Cast<object>().Contains(
+                       GetField<object>(window, "_currentSpriteFrame")) &&
+                   GetField<bool>(window, "_isVisualClockSubscribed"),
+                "已吸附时收起 Todo 只能隐藏面板，必须保留边缘探头状态、帧和绝对时钟");
+            Invoke(window, "AdvanceEdgePeek", preservedTodoEdgeDeadline);
+            Assert(GetField<object>(window, "_edgeDock").ToString() == "Left" &&
+                   GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
+                   preservedTodoEdgeDeadline,
+                "已吸附时收起 Todo 后边缘探头必须继续推进，不能回到待机或停在僵死帧");
 
             Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
@@ -8092,6 +8210,8 @@ internal static class Program
                 "Alt+F4 收起后应能再次复用同一个 TodoWindow 成功打开");
             Assert(ReferenceEquals(todoWindow.Owner, window),
                 "重新打开后 Owned Window 关系必须保持");
+            Assert(GetField<object>(window, "_edgeDock").ToString() == "None",
+                "吸附中重新打开 Todo 时仍应由思考姿势接管画面并主动退出边缘探头");
             Assert(!GetField<Popup>(window, "BubblePopup").IsOpen,
                 "重新打开 TodoWindow 时旧 BubblePopup 仍不得显示");
 

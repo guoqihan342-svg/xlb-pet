@@ -6518,6 +6518,16 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
+        if (_edgeDock != EdgeDock.None)
+        {
+            // The Todo window and the pet pose have independent ownership after
+            // a drag reaches a screen edge. Closing the panel must not replace
+            // the active edge-peek sequence with the standing-to-idle Todo exit.
+            AppLogger.Info("待办已收起，保留当前屏幕边缘探头状态");
+            UpdateVisualClockSubscription();
+            return;
+        }
+
         var exitStartIndex = 0;
         if (ReferenceEquals(_activeClip, _todoEnterClip) && _activeFrameIndex >= 0)
         {
