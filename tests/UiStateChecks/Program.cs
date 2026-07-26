@@ -140,6 +140,15 @@ internal static class Program
                     "_queuedReminderIds").Clear();
                 GetField<DispatcherTimer>(window, "_scheduledTaskTimer").Stop();
 
+                if (args.Contains("--edge-dock-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertExactEdgeContactContract),
+                        AssertExactEdgeContactContract);
+                    RunCheck(nameof(AssertSupportedEdgeDockIntegration),
+                        () => AssertSupportedEdgeDockIntegration(window));
+                    return 0;
+                }
+
                 if (args.Contains("--resident-cache-only", StringComparer.OrdinalIgnoreCase))
                 {
                     RunCheck(nameof(AssertResidentSpritePageWarmupContract),
@@ -6698,19 +6707,48 @@ internal static class Program
     private static void AssertExactEdgeContactContract()
     {
         var workArea = new Rect(0, 0, 1920, 1080);
+        var activationDistance = (double)(typeof(MainWindow).GetField(
+                "EdgeDockActivationDistance",
+                StaticFlags)!.GetValue(null) ?? double.NaN);
         const double width = 190;
         const double height = 242;
         const double safeX = 500;
         const double safeY = 300;
+        AssertClose(
+            activationDistance,
+            12,
+            "手动边缘吸附必须提供 12 DIP 的可命中磁吸区，不能退回 ±1 DIP 的像素窄带");
 
         var cases = new[]
         {
-            new EdgeCase("Left", new Rect(1.1, safeY, width, height),
-                new Rect(1.0, safeY, width, height)),
-            new EdgeCase("Right", new Rect(workArea.Right - width - 1.1, safeY, width, height),
-                new Rect(workArea.Right - width - 1.0, safeY, width, height)),
-            new EdgeCase("Bottom", new Rect(safeX, workArea.Bottom - height - 1.1, width, height),
-                new Rect(safeX, workArea.Bottom - height - 1.0, width, height))
+            new EdgeCase(
+                "Left",
+                new Rect(activationDistance + 0.1, safeY, width, height),
+                new Rect(activationDistance, safeY, width, height)),
+            new EdgeCase(
+                "Right",
+                new Rect(
+                    workArea.Right - width - activationDistance - 0.1,
+                    safeY,
+                    width,
+                    height),
+                new Rect(
+                    workArea.Right - width - activationDistance,
+                    safeY,
+                    width,
+                    height)),
+            new EdgeCase(
+                "Bottom",
+                new Rect(
+                    safeX,
+                    workArea.Bottom - height - activationDistance - 0.1,
+                    width,
+                    height),
+                new Rect(
+                    safeX,
+                    workArea.Bottom - height - activationDistance,
+                    width,
+                    height))
         };
 
         foreach (var edgeCase in cases)
@@ -6720,35 +6758,92 @@ internal static class Program
                 "FindTouchedEdge",
                 workArea,
                 edgeCase.NearBounds,
-                1d)!;
+                activationDistance)!;
             Assert(near.ToString() == "None",
-                $"{edgeCase.Edge} 距边界 1.1 DIP 时不得提前吸附");
+                $"{edgeCase.Edge} 超出 12 DIP 磁吸区后不得提前吸附");
 
             var touching = InvokeStatic(
                 typeof(MainWindow),
                 "FindTouchedEdge",
                 workArea,
                 edgeCase.TouchingBounds,
-                1d)!;
+                activationDistance)!;
             Assert(touching.ToString() == edgeCase.Edge,
-                $"{edgeCase.Edge} 距边界 1.0 DIP 时必须吸附");
+                $"{edgeCase.Edge} 进入 12 DIP 磁吸区时必须稳定吸附");
         }
 
-        var overlappingLeft = InvokeStatic(
+        var crossedLeft = InvokeStatic(
             typeof(MainWindow),
             "FindTouchedEdge",
             workArea,
-            new Rect(-0.75, safeY, width, height),
-            1d)!;
-        var tooFarAcrossLeft = InvokeStatic(
+            new Rect(-20, safeY, width, height),
+            activationDistance)!;
+        var fullyOutsideLeft = InvokeStatic(
             typeof(MainWindow),
             "FindTouchedEdge",
             workArea,
-            new Rect(-1.25, safeY, width, height),
-            1d)!;
-        Assert(overlappingLeft.ToString() == "Left" &&
-               tooFarAcrossLeft.ToString() == "None",
-            "可见像素边界允许 1 DIP 内的轻微负间隙，但越过 1 DIP 后不得错误吸附");
+            new Rect(-width - 0.1, safeY, width, height),
+            activationDistance)!;
+        var exactlyOutsideLeft = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(-width, safeY, width, height),
+            activationDistance)!;
+        var crossedRight = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(workArea.Right - width + 20, safeY, width, height),
+            activationDistance)!;
+        var crossedBottom = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(
+                safeX,
+                workArea.Bottom - height + 20,
+                width,
+                height),
+            activationDistance)!;
+        var fullyOutsideBottom = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(safeX, workArea.Bottom + 0.1, width, height),
+            activationDistance)!;
+        var exactlyOutsideBottom = InvokeStatic(
+            typeof(MainWindow),
+            "FindTouchedEdge",
+            workArea,
+            new Rect(safeX, workArea.Bottom, width, height),
+            activationDistance)!;
+        Assert(crossedLeft.ToString() == "Left" &&
+               crossedRight.ToString() == "Right" &&
+               crossedBottom.ToString() == "Bottom" &&
+               fullyOutsideLeft.ToString() == "None" &&
+               exactlyOutsideLeft.ToString() == "None" &&
+               fullyOutsideBottom.ToString() == "None" &&
+               exactlyOutsideBottom.ToString() == "None",
+            "快速拖动越过外边缘后仍必须吸附，但人物已经完全离开工作区时不得错误夹回");
+
+        var sharedSeamCornerCandidates = ((IEnumerable)InvokeStatic(
+                typeof(MainWindow),
+                "FindTouchedEdges",
+                workArea,
+                new Rect(
+                    workArea.Right - width - 1,
+                    workArea.Bottom - height - 5,
+                    width,
+                    height),
+                activationDistance)!)
+            .Cast<object>()
+            .Select(candidate => candidate.ToString())
+            .ToArray();
+        Assert(sharedSeamCornerCandidates.Length >= 2 &&
+               sharedSeamCornerCandidates[0] == "Right" &&
+               sharedSeamCornerCandidates[1] == "Bottom",
+            "双屏共享右缝比底边更近时必须保留 Bottom 作为后备外边缘候选");
 
         var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
         var updateDock = ExtractPrivateMethodSource(
@@ -6757,6 +6852,12 @@ internal static class Program
         var visibleContact = ExtractPrivateMethodSource(
             mainSource,
             "GetPetContactBounds");
+        var findTouchedEdge = ExtractPrivateMethodSource(
+            mainSource,
+            "FindTouchedEdge");
+        var findTouchedEdges = ExtractPrivateMethodSource(
+            mainSource,
+            "FindTouchedEdges");
         var monitorSource = File.ReadAllText(
             FindWorkspaceFile("MonitorWorkArea.cs"));
         var externalEdge = ExtractPrivateMethodSource(
@@ -6766,7 +6867,28 @@ internal static class Program
                    "GetPetContactBounds(windowBounds)",
                    StringComparison.Ordinal) &&
                updateDock.Contains(
+                   "EdgeDockActivationDistance",
+                   StringComparison.Ordinal) &&
+               updateDock.Contains(
+                   "foreach (var candidate in FindTouchedEdges(",
+                   StringComparison.Ordinal) &&
+               updateDock.Contains(
                    "IsExternalWorkAreaEdgeAt(",
+                   StringComparison.Ordinal) &&
+               updateDock.Contains(
+                   "continue;",
+                   StringComparison.Ordinal) &&
+               findTouchedEdges.Contains(
+                   "candidate.Gap <= activationDistance",
+                   StringComparison.Ordinal) &&
+               findTouchedEdges.Contains(
+                   "candidate.StillVisible",
+                   StringComparison.Ordinal) &&
+               !findTouchedEdges.Contains(
+                   "Math.Abs(candidate.Gap) <= activationDistance",
+                   StringComparison.Ordinal) &&
+               findTouchedEdge.Contains(
+                   ".DefaultIfEmpty(EdgeDock.None)",
                    StringComparison.Ordinal) &&
                visibleContact.Contains(
                    "frame.DestinationX",
@@ -6790,7 +6912,7 @@ internal static class Program
             "FindTouchedEdge",
             workArea,
             new Rect(safeX, 0, width, height),
-            1d)!;
+            activationDistance)!;
         Assert(topCenter.ToString() == "None",
             "顶部中心即使完全接触屏幕边缘也不得吸附或进入探头状态");
 
@@ -6799,16 +6921,36 @@ internal static class Program
             "FindTouchedEdge",
             workArea,
             new Rect(0, 0, width, height),
-            1d)!;
+            activationDistance)!;
         var topRightCorner = InvokeStatic(
             typeof(MainWindow),
             "FindTouchedEdge",
             workArea,
             new Rect(workArea.Right - width, 0, width, height),
-            1d)!;
+            activationDistance)!;
         Assert(topLeftCorner.ToString() == "Left" &&
                topRightCorner.ToString() == "Right",
             "顶部左右角仍应分别保留左、右吸附");
+
+        var dragMoveSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseMove");
+        var dragMoveCall = dragMoveSource.IndexOf(
+            "DragMove();",
+            StringComparison.Ordinal);
+        var dragMoveCatch = dragMoveSource.IndexOf(
+            "catch (InvalidOperationException)",
+            StringComparison.Ordinal);
+        var finalDockCheck = dragMoveSource.IndexOf(
+            "UpdateEdgeDockAfterDrag();",
+            StringComparison.Ordinal);
+        Assert(dragMoveCall >= 0 &&
+               dragMoveCatch > dragMoveCall &&
+               finalDockCheck > dragMoveCatch &&
+               dragMoveSource.Contains(
+                   "finally",
+                   StringComparison.Ordinal),
+            "系统 DragMove 快速松手或异常返回后仍必须在统一结束路径补做边缘吸附判定");
     }
 
     private static void AssertSupportedEdgeDockIntegration(MainWindow window)
@@ -6843,6 +6985,7 @@ internal static class Program
         var monitorType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.MonitorWorkArea",
             throwOnError: true)!;
+        AssertWindowBoundaryDockActivation(window, monitorType);
         var workArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
         var width = window.ActualWidth;
         var height = window.ActualHeight;
@@ -6964,6 +7107,126 @@ internal static class Program
                    StringComparison.Ordinal),
             "拖到顶部中心松手后必须保持普通状态，不得吸附、换帧或请求edge-top分页");
         window.Top = safeTop;
+    }
+
+    private static void AssertWindowBoundaryDockActivation(
+        MainWindow window,
+        Type monitorType)
+    {
+        var originalScale = GetField<double>(window, "_petSizeScale");
+        var originalLeft = window.Left;
+        var originalTop = window.Top;
+        var edgeLeftFrames = GetField<Array>(window, "_edgeLeftFrames");
+        var edgeBottomFrames = GetField<Array>(window, "_edgeBottomFrames");
+        PrimeSpritePageForFrame(
+            window,
+            edgeLeftFrames.GetValue(edgeLeftFrames.Length - 1)!);
+        PrimeSpritePageForFrame(
+            window,
+            edgeBottomFrames.GetValue(edgeBottomFrames.Length - 1)!);
+
+        try
+        {
+            foreach (var scale in new[] { 0.75d, 1d, 1.25d, 1.4d })
+            {
+                Invoke(window, "ApplyPetSizeScale", scale, false, false);
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                window.UpdateLayout();
+                var workArea = (Rect)InvokeStatic(
+                    monitorType,
+                    "GetForWindow",
+                    window)!;
+                var width = window.ActualWidth;
+                var height = window.ActualHeight;
+                var safeLeft =
+                    workArea.Left + Math.Max(20, (workArea.Width - width) / 2);
+                var safeTop =
+                    workArea.Top + Math.Max(20, (workArea.Height - height) / 2);
+
+                foreach (var edge in new[] { "Left", "Right", "Bottom" })
+                {
+                    Invoke(window, "ExitEdgePeek", false, true);
+                    window.Left = edge switch
+                    {
+                        "Left" => workArea.Left,
+                        "Right" => workArea.Right - width,
+                        _ => safeLeft
+                    };
+                    window.Top = edge == "Bottom"
+                        ? workArea.Bottom - height
+                        : safeTop;
+                    PumpDispatcher(TimeSpan.FromMilliseconds(10));
+
+                    var contactBounds = (Rect)Invoke(
+                        window,
+                        "GetPetContactBounds",
+                        new Rect(window.Left, window.Top, width, height))!;
+                    var visibleGap = edge switch
+                    {
+                        "Left" => contactBounds.Left - workArea.Left,
+                        "Right" => workArea.Right - contactBounds.Right,
+                        _ => workArea.Bottom - contactBounds.Bottom
+                    };
+                    Assert(visibleGap > 1 && visibleGap <= 12,
+                        $"{scale:P0} 桌宠的 {edge} 可见边距应复现旧版超过 1 DIP、" +
+                        $"但落在 12 DIP 磁吸区内的真实窗口贴边场景；gap={visibleGap:F3}");
+
+                    Invoke(window, "UpdateEdgeDockAfterDrag");
+                    var snappedToBoundary = edge switch
+                    {
+                        "Left" => Math.Abs(window.Left - workArea.Left) <= 0.5,
+                        "Right" => Math.Abs(
+                            window.Left + window.ActualWidth -
+                            workArea.Right) <= 0.5,
+                        _ => Math.Abs(
+                            window.Top + window.ActualHeight -
+                            workArea.Bottom) <= 0.5
+                    };
+                    Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
+                           snappedToBoundary,
+                        $"{scale:P0} 桌宠 HWND 自然贴住 {edge} 边缘时必须吸附，" +
+                        $"不能要求用户精确拖出屏幕 2～4 DIP");
+                }
+
+                var overshoot = Math.Min(40, Math.Min(width, height) / 3);
+                foreach (var edge in new[] { "Left", "Right", "Bottom" })
+                {
+                    Invoke(window, "ExitEdgePeek", false, true);
+                    window.Left = edge switch
+                    {
+                        "Left" => workArea.Left - overshoot,
+                        "Right" => workArea.Right - width + overshoot,
+                        _ => safeLeft
+                    };
+                    window.Top = edge == "Bottom"
+                        ? workArea.Bottom - height + overshoot
+                        : safeTop;
+                    PumpDispatcher(TimeSpan.FromMilliseconds(10));
+                    Invoke(window, "UpdateEdgeDockAfterDrag");
+                    var snappedToBoundary = edge switch
+                    {
+                        "Left" => Math.Abs(window.Left - workArea.Left) <= 0.5,
+                        "Right" => Math.Abs(
+                            window.Left + window.ActualWidth -
+                            workArea.Right) <= 0.5,
+                        _ => Math.Abs(
+                            window.Top + window.ActualHeight -
+                            workArea.Bottom) <= 0.5
+                    };
+                    Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
+                           snappedToBoundary,
+                        $"{scale:P0} 桌宠快速越过 {edge} 外边缘后仍必须吸附并夹回准确边界");
+                }
+            }
+        }
+        finally
+        {
+            Invoke(window, "ExitEdgePeek", false, true);
+            Invoke(window, "ApplyPetSizeScale", originalScale, false, false);
+            window.Left = originalLeft;
+            window.Top = originalTop;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        }
     }
 
     private static void AssertAutomaticDeadlineContract(MainWindow window)

@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private const double ReminderBubbleHeight = 148;
     private const double ScreenEdgeMargin = 12;
     private const double EdgeContactTolerance = 1;
+    private const double EdgeDockActivationDistance = 12;
     // Code-only roaming tuning. Position is evaluated from the absolute visual
     // clock on every monitor refresh; these values do not create a UI slider.
     private const double EdgeRoamBaseSpeedDipsPerSecond = 160;
@@ -1832,16 +1833,24 @@ public partial class MainWindow : Window
         try
         {
             DragMove();
-            UpdateEdgeDockAfterDrag();
         }
         catch (InvalidOperationException)
         {
-            // 鼠标在系统接管拖动前已经松开时，无需处理。
+            // 快速松手可能发生在 WPF 把拖动交给系统之前。无论系统拖动
+            // 是否正常返回，都用最终窗口位置补做一次边缘吸附判定。
+            AppLogger.Info("系统拖动提前结束，正在补做边缘吸附判定");
         }
         finally
         {
-            _dragInteractionActive = false;
-            RestartAutomaticCountdown();
+            try
+            {
+                UpdateEdgeDockAfterDrag();
+            }
+            finally
+            {
+                _dragInteractionActive = false;
+                RestartAutomaticCountdown();
+            }
         }
 
         e.Handled = true;
@@ -1925,30 +1934,35 @@ public partial class MainWindow : Window
             ActualWidth > 0 ? ActualWidth : Width,
             ActualHeight > 0 ? ActualHeight : Height);
         var contactBounds = GetPetContactBounds(windowBounds);
-        var touchedEdge = FindTouchedEdge(
-            workArea,
-            contactBounds,
-            EdgeContactTolerance);
-        if (touchedEdge == EdgeDock.None)
+        var touchedEdge = EdgeDock.None;
+        foreach (var candidate in FindTouchedEdges(
+                     workArea,
+                     contactBounds,
+                     EdgeDockActivationDistance))
         {
-            RestartAutomaticCountdown();
-            return;
+            var screenEdge = candidate switch
+            {
+                EdgeDock.Left => MonitorWorkArea.ScreenEdge.Left,
+                EdgeDock.Right => MonitorWorkArea.ScreenEdge.Right,
+                EdgeDock.Bottom => MonitorWorkArea.ScreenEdge.Bottom,
+                _ => throw new ArgumentOutOfRangeException()
+            };
+            var orthogonalContact = candidate == EdgeDock.Bottom
+                ? contactBounds.Left + contactBounds.Width / 2
+                : contactBounds.Top + contactBounds.Height / 2;
+            if (!MonitorWorkArea.IsExternalWorkAreaEdgeAt(
+                    this,
+                    screenEdge,
+                    orthogonalContact))
+            {
+                continue;
+            }
+
+            touchedEdge = candidate;
+            break;
         }
 
-        var screenEdge = touchedEdge switch
-        {
-            EdgeDock.Left => MonitorWorkArea.ScreenEdge.Left,
-            EdgeDock.Right => MonitorWorkArea.ScreenEdge.Right,
-            EdgeDock.Bottom => MonitorWorkArea.ScreenEdge.Bottom,
-            _ => throw new ArgumentOutOfRangeException()
-        };
-        var orthogonalContact = touchedEdge == EdgeDock.Bottom
-            ? contactBounds.Left + contactBounds.Width / 2
-            : contactBounds.Top + contactBounds.Height / 2;
-        if (!MonitorWorkArea.IsExternalWorkAreaEdgeAt(
-                this,
-                screenEdge,
-                orthogonalContact))
+        if (touchedEdge == EdgeDock.None)
         {
             RestartAutomaticCountdown();
             return;
@@ -2020,24 +2034,46 @@ public partial class MainWindow : Window
     private static EdgeDock FindTouchedEdge(
         Rect workArea,
         Rect windowBounds,
-        double tolerance)
+        double activationDistance) =>
+        FindTouchedEdges(workArea, windowBounds, activationDistance)
+            .DefaultIfEmpty(EdgeDock.None)
+            .First();
+
+    private static IEnumerable<EdgeDock> FindTouchedEdges(
+        Rect workArea,
+        Rect windowBounds,
+        double activationDistance)
     {
-        var candidates = new (EdgeDock Dock, double Gap)[]
+        var overlapsVertically =
+            windowBounds.Bottom > workArea.Top &&
+            windowBounds.Top < workArea.Bottom;
+        var overlapsHorizontally =
+            windowBounds.Right > workArea.Left &&
+            windowBounds.Left < workArea.Right;
+        var candidates = new (EdgeDock Dock, double Gap, bool StillVisible)[]
         {
-            (EdgeDock.Left, windowBounds.Left - workArea.Left),
-            (EdgeDock.Right, workArea.Right - windowBounds.Right),
-            (EdgeDock.Bottom, workArea.Bottom - windowBounds.Bottom)
+            (
+                EdgeDock.Left,
+                windowBounds.Left - workArea.Left,
+                overlapsVertically && windowBounds.Right > workArea.Left),
+            (
+                EdgeDock.Right,
+                workArea.Right - windowBounds.Right,
+                overlapsVertically && windowBounds.Left < workArea.Right),
+            (
+                EdgeDock.Bottom,
+                workArea.Bottom - windowBounds.Bottom,
+                overlapsHorizontally && windowBounds.Top < workArea.Bottom)
         };
 
         return candidates
             .Where(candidate =>
+                candidate.StillVisible &&
                 double.IsFinite(candidate.Gap) &&
-                Math.Abs(candidate.Gap) <= tolerance)
+                candidate.Gap <= activationDistance)
             .OrderBy(candidate => Math.Abs(candidate.Gap))
             .ThenBy(candidate => (int)candidate.Dock)
-            .Select(candidate => candidate.Dock)
-            .DefaultIfEmpty(EdgeDock.None)
-            .First();
+            .Select(candidate => candidate.Dock);
     }
 
     private void EnterEdgePeek(EdgeDock dock)
