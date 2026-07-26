@@ -990,6 +990,158 @@ def opaque_black_metrics(paths: list[Path]) -> dict[str, float | int]:
     }
 
 
+def luban_eye_pair_metrics(
+    path: Path,
+) -> tuple[
+    tuple[int, int, int],
+    tuple[int, int, int],
+]:
+    """Measure Luban's two dark eye regions relative to the blue cap brim."""
+
+    with Image.open(path) as opened:
+        image = opened.convert("RGBA")
+    rgba = np.asarray(image, dtype=np.uint8)
+    brim = installer.get_blue_brim_box(image)
+    brim_width = brim[2] - brim[0]
+    face_center_x = (brim[0] + brim[2]) / 2 - brim_width * 0.08
+    predicted_y = brim[3] + brim_width * 0.12
+    predicted_xs = (
+        face_center_x - brim_width * 0.20,
+        face_center_x + brim_width * 0.20,
+    )
+    dark = (
+        (rgba[..., 3] >= 160)
+        & (rgba[..., 0] < 125)
+        & (rgba[..., 1] < 95)
+        & (rgba[..., 2] < 85)
+    )
+
+    measured: list[tuple[int, int, int]] = []
+    for predicted_x in predicted_xs:
+        left = max(0, round(predicted_x - brim_width * 0.16))
+        right = min(image.width, round(predicted_x + brim_width * 0.16))
+        top = max(0, round(predicted_y - brim_width * 0.22))
+        bottom = min(
+            image.height,
+            round(predicted_y + brim_width * 0.22),
+        )
+        local_mask = dark[top:bottom, left:right]
+        candidates: list[
+            tuple[float, int, int, int, int]
+        ] = []
+        for component in find_alpha_components(local_mask):
+            indexes = np.asarray(component, dtype=np.int64)
+            local_width = local_mask.shape[1]
+            y_indexes = indexes // local_width
+            x_indexes = indexes % local_width
+            box_width = int(x_indexes.max() - x_indexes.min() + 1)
+            box_height = int(y_indexes.max() - y_indexes.min() + 1)
+            center_x = left + float(x_indexes.mean())
+            center_y = top + float(y_indexes.mean())
+            area = len(component)
+            if (
+                area >= 18
+                and box_width >= 5
+                and box_height >= 8
+                and box_width <= brim_width * 0.28
+                and box_height <= brim_width * 0.34
+            ):
+                distance = math.hypot(
+                    center_x - predicted_x,
+                    center_y - predicted_y,
+                )
+                candidates.append(
+                    (
+                        distance,
+                        -area,
+                        box_width,
+                        box_height,
+                        area,
+                    )
+                )
+        if not candidates:
+            raise AssertionError(
+                f"{path.name} does not contain a detectable Luban eye "
+                f"near ({predicted_x:.1f}, {predicted_y:.1f})"
+            )
+        _, _, width, height, area = min(candidates)
+        measured.append((width, height, area))
+
+    return measured[0], measured[1]
+
+
+def assert_luban_eye_symmetry(
+    paths: list[Path],
+    label: str,
+    *,
+    skipped_frames: set[int],
+    minimum_width_ratio: float,
+    minimum_height_ratio: float,
+    minimum_area_ratio: float,
+) -> dict[str, float | int]:
+    """Fail the build when one open eye is visibly smaller than the other."""
+
+    worst_width_ratio = 1.0
+    worst_height_ratio = 1.0
+    worst_area_ratio = 1.0
+    worst_width_frame = 0
+    worst_height_frame = 0
+    worst_area_frame = 0
+    checked_frames = 0
+    for frame_number, path in enumerate(paths, start=1):
+        if frame_number in skipped_frames:
+            continue
+        left, right = luban_eye_pair_metrics(path)
+        width_ratio = min(left[0], right[0]) / max(left[0], right[0])
+        height_ratio = min(left[1], right[1]) / max(
+            left[1],
+            right[1],
+        )
+        area_ratio = math.sqrt(
+            min(left[2], right[2]) / max(left[2], right[2])
+        )
+        checked_frames += 1
+        if width_ratio < worst_width_ratio:
+            worst_width_ratio = width_ratio
+            worst_width_frame = frame_number
+        if height_ratio < worst_height_ratio:
+            worst_height_ratio = height_ratio
+            worst_height_frame = frame_number
+        if area_ratio < worst_area_ratio:
+            worst_area_ratio = area_ratio
+            worst_area_frame = frame_number
+        if (
+            width_ratio < minimum_width_ratio
+            or height_ratio < minimum_height_ratio
+            or area_ratio < minimum_area_ratio
+        ):
+            raise AssertionError(
+                f"{label} frame {frame_number:03d} has unequal Luban "
+                f"eyes: left={left}, right={right}, "
+                f"width={width_ratio:.3f}, height={height_ratio:.3f}, "
+                f"area={area_ratio:.3f}; minimums are "
+                f"{minimum_width_ratio:.3f}/"
+                f"{minimum_height_ratio:.3f}/"
+                f"{minimum_area_ratio:.3f}"
+            )
+
+    if checked_frames < max(1, round(len(paths) * 0.70)):
+        raise AssertionError(
+            f"{label} checked only {checked_frames}/{len(paths)} open-eye "
+            "frames"
+        )
+    return {
+        "checked_frames": checked_frames,
+        "skipped_frames": len(skipped_frames),
+        "minimum_width_ratio": worst_width_ratio,
+        "minimum_width_frame": worst_width_frame,
+        "minimum_height_ratio": worst_height_ratio,
+        "minimum_height_frame": worst_height_frame,
+        "minimum_area_ratio": worst_area_ratio,
+        "minimum_area_frame": worst_area_frame,
+    }
+
+
 def strong_brim_candidates(
     path: Path,
 ) -> list[tuple[float, tuple[float, float]]]:
@@ -1261,7 +1413,7 @@ def main() -> None:
 
     primary_keys, primary_component_metrics = split_registered_sheet(
         source_directory
-        / "roam-panda-v2-luban-eyes-primary-16-alpha.png",
+        / "roam-panda-v3-balanced-luban-eyes-primary-16-alpha.png",
         "primary",
     )
     secondary_keys: list[Path] = []
@@ -1271,16 +1423,37 @@ def main() -> None:
     if args.include_wave:
         secondary_keys, secondary_component_metrics = split_registered_sheet(
             source_directory
-            / "roam-panda-v2-luban-eyes-secondary-16-alpha.png",
+            / "roam-panda-v3-balanced-luban-eyes-secondary-16-alpha.png",
             "secondary",
         )
     registration_metrics = register_loop_key_sequences(
         primary_keys,
         secondary_keys or None,
     )
+    eye_symmetry_metrics = {
+        "primary_keys": assert_luban_eye_symmetry(
+            primary_keys,
+            "primary keys",
+            skipped_frames={7},
+            minimum_width_ratio=0.79,
+            minimum_height_ratio=0.83,
+            minimum_area_ratio=0.84,
+        )
+    }
+    if secondary_keys:
+        eye_symmetry_metrics["secondary_keys"] = (
+            assert_luban_eye_symmetry(
+                secondary_keys,
+                "secondary keys",
+                skipped_frames={7},
+                minimum_width_ratio=0.79,
+                minimum_height_ratio=0.83,
+                minimum_area_ratio=0.84,
+            )
+        )
     generated_boarding_keys, boarding_component_metrics = split_registered_sheet(
         source_directory
-        / "roam-panda-v2-luban-eyes-boarding-16-alpha.png",
+        / "roam-panda-v3-balanced-luban-eyes-boarding-16-alpha.png",
         "boarding",
     )
     # Keys 5..8 contain two disconnected characters. Register Luban without
@@ -1297,12 +1470,28 @@ def main() -> None:
         label="roam-flight",
         asset_prefix="luban-roam-flight",
     )
+    eye_symmetry_metrics["flight_64"] = assert_luban_eye_symmetry(
+        flight,
+        "roam flight",
+        skipped_frames=set(range(22, 29)),
+        minimum_width_ratio=0.76,
+        minimum_height_ratio=0.78,
+        minimum_area_ratio=0.80,
+    )
     wave: list[Path] = []
     if args.include_wave:
         wave = emit_dense_loop(
             secondary_keys,
             label="roam-wave",
             asset_prefix="luban-roam-wave",
+        )
+        eye_symmetry_metrics["wave_64"] = assert_luban_eye_symmetry(
+            wave,
+            "roam wave",
+            skipped_frames=set(range(22, 29)),
+            minimum_width_ratio=0.76,
+            minimum_height_ratio=0.78,
+            minimum_area_ratio=0.80,
         )
     else:
         remove_runtime_sequence("luban-roam-wave")
@@ -1456,6 +1645,19 @@ def main() -> None:
             f"seam {values['seam_px']:.3f}px "
             f"({values['seam_dip']:.3f} DIP)"
             for name, values in brim_metrics.items()
+        ),
+        flush=True,
+    )
+    print(
+        "Luban eye symmetry: "
+        + ", ".join(
+            f"{name}=width {values['minimum_width_ratio']:.3f}"
+            f"@{int(values['minimum_width_frame']):03d}/"
+            f"height {values['minimum_height_ratio']:.3f}"
+            f"@{int(values['minimum_height_frame']):03d}/"
+            f"area {values['minimum_area_ratio']:.3f}"
+            f"@{int(values['minimum_area_frame']):03d}"
+            for name, values in eye_symmetry_metrics.items()
         ),
         flush=True,
     )

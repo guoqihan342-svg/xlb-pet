@@ -4486,13 +4486,22 @@ internal static class Program
                    "bamboo",
                    StringComparison.OrdinalIgnoreCase) &&
                roamAssetBuilderSource.Contains(
-                   "roam-panda-v2-luban-eyes-primary-16-alpha.png",
+                   "roam-panda-v3-balanced-luban-eyes-primary-16-alpha.png",
                    StringComparison.Ordinal) &&
                roamAssetBuilderSource.Contains(
-                   "roam-panda-v2-luban-eyes-boarding-16-alpha.png",
+                   "roam-panda-v3-balanced-luban-eyes-boarding-16-alpha.png",
                    StringComparison.Ordinal) &&
                roamAssetBuilderSource.Contains(
-                   "roam-panda-v2-luban-eyes-secondary-16-alpha.png",
+                   "roam-panda-v3-balanced-luban-eyes-secondary-16-alpha.png",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "assert_luban_eye_symmetry",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "minimum_width_ratio=0.79",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "skipped_frames=set(range(22, 29))",
                    StringComparison.Ordinal) &&
                roamAssetBuilderSource.Contains(
                    "len(pixel_hashes) != len(paths)",

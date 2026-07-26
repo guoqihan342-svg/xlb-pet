@@ -50,7 +50,7 @@
 ## 动画与内存
 
 - `pic` 文件夹中的 9 张原图全部保留：`小鲁班2.png` 用作趴枕头打呼噜待机，7 张对应现有点击动作；`小鲁班4.png` 仅作为原始参考图保留，跑步动作移除后不再参与运行时动画和图集。
-- 最终起身、动作、循环和熊猫坐骑巡游序列采用可变长度编号帧。`Assets\luban-roam-boarding-001.png` 起的登乘序列与 `Assets\luban-roam-flight-001.png` 起的连续主循环都至少 48 帧且每帧姿势不同：开始巡游正放 boarding，停止巡游倒放同一序列，随后才回到待机。`roam-wave` 只是可选的可爱补充，可以不加载或不播放，不能按固定 7 秒硬切打断 flight 主循环。构建器按磁盘资源动态分配 `roam-boarding`、`roam-flight` 及可选 `roam-wave` 分页；最终逻辑帧数、页内帧数和分页数以 `Assets\luban-sprite-pages.json` 的 `sourceFrameCount`、`pageFrameCount` 和 `pages` 为准，不在代码或文档中写死最终图集总数。
+- 最终起身、动作、循环和熊猫坐骑巡游序列采用可变长度编号帧。`Assets\luban-roam-boarding-001.png` 起的登乘序列与 `Assets\luban-roam-flight-001.png` 起的连续主循环都至少 48 帧且每帧姿势不同：开始巡游正放 boarding，停止巡游倒放同一序列，随后才回到待机。熊猫坐骑上的小鲁班使用统一宽高、虹膜和高光比例的成对大眼创作源；构建器会检查 16 个开眼关键姿势与最终 64 帧主循环，只要一只眼被单独放大或缩小就直接停止构建，闭眼区间单独排除。熊猫眼睛、熊猫轮廓和透明通道不参与这项修饰。`roam-wave` 只是可选的可爱补充，可以不加载或不播放，不能按固定 7 秒硬切打断 flight 主循环。构建器按磁盘资源动态分配 `roam-boarding`、`roam-flight` 及可选 `roam-wave` 分页；最终逻辑帧数、页内帧数和分页数以 `Assets\luban-sprite-pages.json` 的 `sourceFrameCount`、`pageFrameCount` 和 `pages` 为准，不在代码或文档中写死最终图集总数。
 - 精灵以 `399×509` 高密度像素渲染，对应 `190×242` 逻辑显示基准。即使 Windows 使用 150% DPI 且桌宠大小调到 140%，仍有足够的源像素，不需要把低清小图放大；所有姿势使用统一逻辑边界和基线，避免动画中的缩放抖动。
 - 枕头使用独立的静态透明层，人物待机和起身帧只更新人物本身。这样枕头不会随每一帧反复淡入淡出，也不会把枕头边缘的 Alpha 波动表现成光纹。
 - 图集清单使用 `version: 4`、`compression: "brotli"` 契约。运行时资源是无损 Brotli 压缩的 Pbgra32 分页（`*.pbgra.br`）；默认构建不保存约 `115.6 MiB` 的派生分页预览 PNG，每一页解码后不超过清单声明的 24 MiB 上限。
