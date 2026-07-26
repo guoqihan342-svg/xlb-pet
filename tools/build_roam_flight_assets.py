@@ -1260,7 +1260,8 @@ def main() -> None:
     source_directory = args.source_directory.resolve()
 
     primary_keys, primary_component_metrics = split_registered_sheet(
-        source_directory / "roam-panda-v1-primary-16-alpha.png",
+        source_directory
+        / "roam-panda-v2-luban-eyes-primary-16-alpha.png",
         "primary",
     )
     secondary_keys: list[Path] = []
@@ -1269,7 +1270,8 @@ def main() -> None:
     ] = []
     if args.include_wave:
         secondary_keys, secondary_component_metrics = split_registered_sheet(
-            source_directory / "roam-panda-v1-secondary-16-alpha.png",
+            source_directory
+            / "roam-panda-v2-luban-eyes-secondary-16-alpha.png",
             "secondary",
         )
     registration_metrics = register_loop_key_sequences(
@@ -1277,7 +1279,8 @@ def main() -> None:
         secondary_keys or None,
     )
     generated_boarding_keys, boarding_component_metrics = split_registered_sheet(
-        source_directory / "roam-panda-v1-boarding-16-alpha.png",
+        source_directory
+        / "roam-panda-v2-luban-eyes-boarding-16-alpha.png",
         "boarding",
     )
     # Keys 5..8 contain two disconnected characters. Register Luban without

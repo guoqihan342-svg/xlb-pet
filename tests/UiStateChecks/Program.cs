@@ -4486,6 +4486,15 @@ internal static class Program
                    "bamboo",
                    StringComparison.OrdinalIgnoreCase) &&
                roamAssetBuilderSource.Contains(
+                   "roam-panda-v2-luban-eyes-primary-16-alpha.png",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "roam-panda-v2-luban-eyes-boarding-16-alpha.png",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
+                   "roam-panda-v2-luban-eyes-secondary-16-alpha.png",
+                   StringComparison.Ordinal) &&
+               roamAssetBuilderSource.Contains(
                    "len(pixel_hashes) != len(paths)",
                    StringComparison.Ordinal) &&
                atlasMotionQaSource.Contains(
