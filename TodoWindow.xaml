@@ -71,6 +71,8 @@
                                 <Border x:Name="TabBorder"
                                         Padding="9,5"
                                         Background="Transparent"
+                                        BorderBrush="Transparent"
+                                        BorderThickness="1"
                                         CornerRadius="10">
                                     <TextBlock HorizontalAlignment="Center"
                                                VerticalAlignment="Center"
@@ -96,9 +98,6 @@
                                         <Setter TargetName="TabBorder"
                                                 Property="BorderBrush"
                                                 Value="#8CB4F4" />
-                                        <Setter TargetName="TabBorder"
-                                                Property="BorderThickness"
-                                                Value="1" />
                                     </Trigger>
                                 </ControlTemplate.Triggers>
                             </ControlTemplate>
@@ -124,6 +123,8 @@
                                 <Border x:Name="TabBorder"
                                         Padding="9,5"
                                         Background="Transparent"
+                                        BorderBrush="Transparent"
+                                        BorderThickness="1"
                                         CornerRadius="10">
                                     <TextBlock HorizontalAlignment="Center"
                                                VerticalAlignment="Center"
@@ -149,9 +150,6 @@
                                         <Setter TargetName="TabBorder"
                                                 Property="BorderBrush"
                                                 Value="#EDB77C" />
-                                        <Setter TargetName="TabBorder"
-                                                Property="BorderThickness"
-                                                Value="1" />
                                     </Trigger>
                                 </ControlTemplate.Triggers>
                             </ControlTemplate>
@@ -221,10 +219,15 @@
                         </ListBox.ItemsPanel>
                         <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Margin="0,0,0,1"
+                                    <Border x:Name="TodoRowBorder"
+                                            Margin="0,0,0,1"
                                             Padding="7,2"
                                             MaxHeight="41"
-                                            CornerRadius="8">
+                                            CornerRadius="8"
+                                            Tag="{Binding}"
+                                            MouseEnter="TaskRow_MouseEnter"
+                                            MouseLeave="TaskRow_MouseLeave"
+                                            Unloaded="TaskRow_Unloaded">
                                         <Border.Style>
                                             <Style TargetType="Border">
                                                 <Setter Property="Background" Value="#F6F7F9" />
@@ -279,28 +282,17 @@
                                                      FontFamily="Microsoft YaHei"
                                                      FontSize="13"
                                                      HorizontalScrollBarVisibility="Disabled"
-                                                     MaxLength="80"
+                                                     MaxLength="5000"
                                                      MaxLines="2"
                                                      MinLines="1"
                                                      Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=Explicit}"
                                                      TextWrapping="Wrap"
                                                      VerticalScrollBarVisibility="Hidden"
-                                                     ToolTipService.InitialShowDelay="300"
-                                                     ToolTipService.ShowDuration="30000"
                                                      DataContextChanged="TodoEditTextBox_DataContextChanged"
                                                      LostKeyboardFocus="TodoEditTextBox_LostKeyboardFocus"
                                                      TextChanged="TodoEditTextBox_TextChanged"
                                                      Unloaded="TodoEditTextBox_Unloaded"
                                                      PreviewKeyDown="TodoEditTextBox_PreviewKeyDown">
-                                                <TextBox.ToolTip>
-                                                    <ToolTip MaxWidth="360"
-                                                             Padding="8">
-                                                        <TextBlock MaxWidth="344"
-                                                                   FontFamily="Microsoft YaHei"
-                                                                   Text="{Binding Text}"
-                                                                   TextWrapping="Wrap" />
-                                                    </ToolTip>
-                                                </TextBox.ToolTip>
                                                 <TextBox.Style>
                                                     <Style TargetType="TextBox">
                                                         <Setter Property="Padding" Value="0" />
@@ -409,7 +401,7 @@
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
                                  InputMethod.IsInputMethodEnabled="True"
-                                 MaxLength="80"
+                                 MaxLength="5000"
                                  ToolTip="输入待办事项，按回车添加"
                                  PreviewKeyDown="TodoInput_PreviewKeyDown" />
                         <Button Grid.Column="1"
@@ -426,7 +418,7 @@
                 <Grid x:Name="ScheduledTaskPage"
                       Grid.Row="1"
                       Margin="0,8,0,0"
-                      Visibility="Collapsed">
+                      Visibility="Hidden">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="38" />
@@ -460,10 +452,15 @@
                             </ListBox.ItemsPanel>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Margin="0,0,0,2"
+                                    <Border x:Name="ScheduledTaskRowBorder"
+                                            Margin="0,0,0,2"
                                             Padding="7,4"
                                             MaxHeight="54"
-                                            CornerRadius="9">
+                                            CornerRadius="9"
+                                            Tag="{Binding}"
+                                            MouseEnter="TaskRow_MouseEnter"
+                                            MouseLeave="TaskRow_MouseLeave"
+                                            Unloaded="TaskRow_Unloaded">
                                         <Border.Style>
                                             <Style TargetType="Border">
                                                 <Setter Property="Background" Value="#FFF8EF" />
@@ -505,20 +502,10 @@
                                                          IsReadOnly="True"
                                                          IsReadOnlyCaretVisible="False"
                                                          MaxHeight="30"
+                                                         MaxLength="5000"
                                                          MaxLines="2"
                                                          Text="{Binding Text}"
-                                                         TextWrapping="Wrap"
-                                                         ToolTipService.InitialShowDelay="300"
-                                                         ToolTipService.ShowDuration="30000">
-                                                    <TextBox.ToolTip>
-                                                        <ToolTip MaxWidth="360" Padding="8">
-                                                            <TextBlock MaxWidth="344"
-                                                                       FontFamily="Microsoft YaHei"
-                                                                       Text="{Binding Text}"
-                                                                       TextWrapping="Wrap" />
-                                                        </ToolTip>
-                                                    </TextBox.ToolTip>
-                                                </TextBox>
+                                                         TextWrapping="Wrap" />
                                             </Grid>
                                             <Button x:Name="ScheduledTaskEditButton"
                                                     Grid.Column="1"
@@ -604,7 +591,7 @@
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
                                  InputMethod.IsInputMethodEnabled="True"
-                                 MaxLength="80"
+                                 MaxLength="5000"
                                  ToolTip="输入提醒内容，按回车设定"
                                  TextChanged="ScheduledTaskInput_TextChanged"
                                  PreviewKeyDown="ScheduledTaskInput_PreviewKeyDown" />
@@ -653,66 +640,58 @@
                                     VerticalAlignment="Center"
                                     IsEnabled="{Binding IsChecked, ElementName=ScheduledRepeatToggle}"
                                     Orientation="Horizontal">
-                            <TextBox x:Name="ScheduledRepeatDaysInput"
-                                     Width="34"
-                                     Height="24"
-                                     Padding="2,1"
-                                     VerticalContentAlignment="Center"
-                                     AutomationProperties.Name="循环间隔天数"
-                                     BorderBrush="#E4C8AA"
-                                     FontFamily="Microsoft YaHei"
-                                     FontSize="11"
-                                     MaxLength="3"
-                                     Text="0"
-                                     TextAlignment="Center"
-                                     TextChanged="ScheduledRepeatInput_TextChanged"
-                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
-                            <TextBlock Margin="2,0,4,0"
+                            <TextBlock Margin="0,0,4,0"
                                        VerticalAlignment="Center"
                                        FontFamily="Microsoft YaHei"
                                        FontSize="11"
                                        Foreground="#725B49"
-                                       Text="天" />
-                            <TextBox x:Name="ScheduledRepeatHoursInput"
-                                     Width="28"
+                                       Text="每" />
+                            <TextBox x:Name="ScheduledRepeatCountInput"
+                                     Width="48"
                                      Height="24"
                                      Padding="2,1"
                                      VerticalContentAlignment="Center"
-                                     AutomationProperties.Name="循环间隔小时数"
+                                     AutomationProperties.Name="循环间隔数值"
                                      BorderBrush="#E4C8AA"
                                      FontFamily="Microsoft YaHei"
                                      FontSize="11"
-                                     MaxLength="2"
+                                     MaxLength="7"
                                      Text="1"
                                      TextAlignment="Center"
                                      TextChanged="ScheduledRepeatInput_TextChanged"
                                      PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
-                            <TextBlock Margin="2,0,4,0"
+                            <ComboBox x:Name="ScheduledRepeatUnitComboBox"
+                                      Width="62"
+                                      Height="25"
+                                      Margin="4,0,0,0"
+                                      Padding="5,1"
+                                      VerticalContentAlignment="Center"
+                                      AutomationProperties.Name="循环间隔单位"
+                                      Background="#FFFFF8EE"
+                                      BorderBrush="#E4C8AA"
+                                      FontFamily="Microsoft YaHei"
+                                      FontSize="11"
+                                      Foreground="#725B49"
+                                      SelectionChanged="ScheduledRepeatUnitComboBox_SelectionChanged"
+                                      DropDownOpened="ScheduledRepeatUnitComboBox_DropDownOpened"
+                                      DropDownClosed="ScheduledRepeatUnitComboBox_DropDownClosed"
+                                      PreviewKeyDown="ScheduledRepeatUnitComboBox_PreviewKeyDown">
+                                <ComboBox.ItemContainerStyle>
+                                    <Style TargetType="{x:Type ComboBoxItem}">
+                                        <EventSetter Event="PreviewMouseLeftButtonDown"
+                                                     Handler="ScheduledRepeatUnitItem_PreviewMouseLeftButtonDown" />
+                                        <Setter Property="FontFamily" Value="Microsoft YaHei" />
+                                        <Setter Property="FontSize" Value="11" />
+                                        <Setter Property="Padding" Value="6,3" />
+                                    </Style>
+                                </ComboBox.ItemContainerStyle>
+                            </ComboBox>
+                            <TextBlock Margin="5,0,0,0"
                                        VerticalAlignment="Center"
                                        FontFamily="Microsoft YaHei"
                                        FontSize="11"
                                        Foreground="#725B49"
-                                       Text="时" />
-                            <TextBox x:Name="ScheduledRepeatMinutesInput"
-                                     Width="28"
-                                     Height="24"
-                                     Padding="2,1"
-                                     VerticalContentAlignment="Center"
-                                     AutomationProperties.Name="循环间隔分钟数"
-                                     BorderBrush="#E4C8AA"
-                                     FontFamily="Microsoft YaHei"
-                                     FontSize="11"
-                                     MaxLength="2"
-                                     Text="0"
-                                     TextAlignment="Center"
-                                     TextChanged="ScheduledRepeatInput_TextChanged"
-                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
-                            <TextBlock Margin="2,0,0,0"
-                                       VerticalAlignment="Center"
-                                       FontFamily="Microsoft YaHei"
-                                       FontSize="11"
-                                       Foreground="#725B49"
-                                       Text="分" />
+                                       Text="提醒" />
                         </StackPanel>
                     </Grid>
 
@@ -1241,6 +1220,7 @@
                                     BorderBrush="#EAB777"
                                     BorderThickness="1"
                                     CornerRadius="15"
+                                    PreviewMouseDown="ScheduledTimePickerPopup_PreviewMouseDown"
                                     PreviewKeyDown="ScheduledTimePickerPopup_PreviewKeyDown"
                                     SnapsToDevicePixels="True">
                                 <Border.Effect>
@@ -1457,7 +1437,9 @@
                                                   Grid.Column="0"
                                                   AutomationProperties.Name="提醒小时"
                                                   Style="{StaticResource ScheduledTimePartComboBoxStyle}"
+                                                  DropDownOpened="ScheduledTimePartComboBox_DropDownOpened"
                                                   DropDownClosed="ScheduledTimePartComboBox_DropDownClosed"
+                                                  PreviewKeyDown="ScheduledTimePartComboBox_PreviewKeyDown"
                                                   SelectionChanged="ScheduledTimePartComboBox_SelectionChanged" />
                                         <TextBlock Grid.Column="1"
                                                    HorizontalAlignment="Center"
@@ -1471,7 +1453,9 @@
                                                   Grid.Column="2"
                                                   AutomationProperties.Name="提醒分钟"
                                                   Style="{StaticResource ScheduledTimePartComboBoxStyle}"
+                                                  DropDownOpened="ScheduledTimePartComboBox_DropDownOpened"
                                                   DropDownClosed="ScheduledTimePartComboBox_DropDownClosed"
+                                                  PreviewKeyDown="ScheduledTimePartComboBox_PreviewKeyDown"
                                                   SelectionChanged="ScheduledTimePartComboBox_SelectionChanged" />
                                         <TextBlock Grid.Column="3"
                                                    HorizontalAlignment="Center"
@@ -1485,7 +1469,9 @@
                                                   Grid.Column="4"
                                                   AutomationProperties.Name="提醒秒"
                                                   Style="{StaticResource ScheduledTimePartComboBoxStyle}"
+                                                  DropDownOpened="ScheduledTimePartComboBox_DropDownOpened"
                                                   DropDownClosed="ScheduledTimePartComboBox_DropDownClosed"
+                                                  PreviewKeyDown="ScheduledTimePartComboBox_PreviewKeyDown"
                                                   SelectionChanged="ScheduledTimePartComboBox_SelectionChanged" />
                                     </Grid>
                                     <Grid Grid.Row="3" Margin="0,6,0,0">
@@ -1593,6 +1579,16 @@
                                    FontSize="10.5"
                                    Foreground="#C65353"
                                    TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="ScheduledRepeatRulePreviewText"
+                                   Grid.Column="0"
+                                   Height="18"
+                                   VerticalAlignment="Bottom"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="10.5"
+                                   Foreground="#A26D43"
+                                   IsHitTestVisible="False"
+                                   TextTrimming="CharacterEllipsis"
+                                   Visibility="Collapsed" />
                         <Button x:Name="ScheduledTaskEditCancelButton"
                                 Grid.Column="1"
                                 MinWidth="31"
@@ -1702,5 +1698,69 @@
                      Stroke="#D8DEE8"
                      StrokeThickness="1" />
         </Grid>
+
+        <Popup x:Name="TaskFullTextPopup"
+               AllowsTransparency="True"
+               HorizontalOffset="12"
+               Placement="MousePoint"
+               PopupAnimation="Fade"
+               StaysOpen="True"
+               Opened="TaskFullTextPopup_Opened"
+               Closed="TaskFullTextPopup_Closed">
+            <Border Width="320"
+                    MaxHeight="228"
+                    Padding="11,9,11,10"
+                    Background="#FFFEFEFF"
+                    BorderBrush="#C9DCF7"
+                    BorderThickness="1"
+                    CornerRadius="13"
+                    MouseEnter="TaskFullTextPopup_MouseEnter"
+                    MouseLeave="TaskFullTextPopup_MouseLeave">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="14"
+                                      Direction="270"
+                                      Opacity="0.18"
+                                      ShadowDepth="3"
+                                      Color="#5B6B86" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="22" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="18" />
+                    </Grid.RowDefinitions>
+                    <TextBlock x:Name="TaskFullTextTitle"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="11.5"
+                               FontWeight="SemiBold"
+                               Foreground="#5B78A4"
+                               Text="完整内容 · 可选择复制" />
+                    <TextBox x:Name="TaskFullTextPreviewTextBox"
+                             Grid.Row="1"
+                             MinHeight="40"
+                             MaxHeight="170"
+                             Padding="7,5"
+                             Background="White"
+                             BorderBrush="#DFE9F7"
+                             BorderThickness="1"
+                             Cursor="IBeam"
+                             FontFamily="Microsoft YaHei"
+                             FontSize="12.5"
+                             Foreground="#303744"
+                             IsReadOnly="True"
+                             IsReadOnlyCaretVisible="True"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" />
+                    <TextBlock x:Name="TaskFullTextCountText"
+                               Grid.Row="2"
+                               Margin="1,2,1,0"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Bottom"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="10"
+                               Foreground="#98A5B8" />
+                </Grid>
+            </Border>
+        </Popup>
     </Grid>
 </Window>

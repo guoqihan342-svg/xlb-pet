@@ -127,6 +127,11 @@ internal static class OwnedWindowPositioner
             if (childRect.Left == desiredPosition.X &&
                 childRect.Top == desiredPosition.Y)
             {
+                childIsOnLeft = IsChildActuallyOnLeft(
+                    childRect.Left,
+                    cache._childWidth,
+                    anchorLeft,
+                    anchorRight);
                 cache._lastLeft = childRect.Left;
                 cache._lastTop = childRect.Top;
                 cache._hasLastPosition = true;
@@ -190,6 +195,11 @@ internal static class OwnedWindowPositioner
                 return false;
             }
 
+            childIsOnLeft = IsChildActuallyOnLeft(
+                correctedPosition.X,
+                cache._childWidth,
+                anchorLeft,
+                anchorRight);
             cache._lastLeft = correctedPosition.X;
             cache._lastTop = correctedPosition.Y;
             cache._hasLastPosition = true;
@@ -224,6 +234,17 @@ internal static class OwnedWindowPositioner
             X = Math.Clamp(desiredLeft, workArea.Left, maximumLeft),
             Y = Math.Clamp(desiredTop, workArea.Top, maximumTop)
         };
+    }
+
+    private static bool IsChildActuallyOnLeft(
+        int childLeft,
+        int childWidth,
+        int anchorLeft,
+        int anchorRight)
+    {
+        var childCenter = childLeft + childWidth / 2d;
+        var anchorCenter = (anchorLeft + anchorRight) / 2d;
+        return childCenter <= anchorCenter;
     }
 
     [DllImport("user32.dll")]

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LubanDesktopPet;
 
@@ -110,7 +111,8 @@ public sealed class ScheduledTaskStore
                     item.Text,
                     item.DueAt,
                     item.CreatedAt,
-                    item.RepeatInterval?.Ticks))
+                    item.RepeatInterval?.Ticks,
+                    ToRecord(item.RepeatRule)))
                 .ToArray();
             var json = JsonSerializer.Serialize(records, JsonOptions);
 
@@ -168,7 +170,8 @@ public sealed class ScheduledTaskStore
             RepeatInterval = NormalizeRepeatInterval(
                 record.RepeatIntervalTicks is { } ticks && ticks > 0
                     ? TimeSpan.FromTicks(ticks)
-                    : null)
+                    : null),
+            RepeatRule = ToRule(record.RepeatRule)
         };
     }
 
@@ -193,13 +196,19 @@ public sealed class ScheduledTaskStore
             var createdAt = item.CreatedAt == default
                 ? dueAt
                 : item.CreatedAt;
+            var repeatInterval = NormalizeRepeatInterval(item.RepeatInterval);
+            var repeatRule = NormalizeRepeatRule(
+                item.RepeatRule,
+                dueAt,
+                ref repeatInterval);
             normalized.Add(new ScheduledTaskItem
             {
                 Id = item.Id,
                 Text = item.Text.Trim(),
                 DueAt = dueAt,
                 CreatedAt = createdAt,
-                RepeatInterval = NormalizeRepeatInterval(item.RepeatInterval)
+                RepeatInterval = repeatInterval,
+                RepeatRule = repeatRule
             });
         }
 
@@ -235,10 +244,88 @@ public sealed class ScheduledTaskStore
         }
     }
 
+    private static ScheduledRepeatRule? NormalizeRepeatRule(
+        ScheduledRepeatRule? rule,
+        DateTimeOffset dueAt,
+        ref TimeSpan? repeatInterval)
+    {
+        if (rule is null ||
+            !ScheduledRepeatSchedule.TryValidateForDueAt(
+                rule,
+                dueAt,
+                out var ruleInterval))
+        {
+            return null;
+        }
+
+        if (repeatInterval is { } legacyInterval &&
+            legacyInterval != ruleInterval)
+        {
+            return null;
+        }
+
+        repeatInterval = ruleInterval;
+        return ScheduledRepeatSchedule.NormalizeForStorage(rule);
+    }
+
+    private static ScheduledRepeatRule? ToRule(
+        ScheduledRepeatRuleRecord? record)
+    {
+        if (record is null ||
+            !Enum.TryParse<ScheduledRepeatUnit>(
+                record.Unit,
+                ignoreCase: true,
+                out var unit))
+        {
+            return null;
+        }
+
+        return new ScheduledRepeatRule
+        {
+            Version = record.Version,
+            Unit = unit,
+            Every = record.Every,
+            TimeZoneId = record.TimeZoneId ?? string.Empty,
+            AnchorLocal = DateTime.SpecifyKind(
+                record.AnchorLocal,
+                DateTimeKind.Unspecified),
+            NextOrdinal = record.NextOrdinal
+        };
+    }
+
+    private static ScheduledRepeatRuleRecord? ToRecord(
+        ScheduledRepeatRule? rule)
+    {
+        if (rule is null)
+        {
+            return null;
+        }
+
+        return new ScheduledRepeatRuleRecord(
+            rule.Version,
+            rule.Unit.ToString().ToLowerInvariant(),
+            rule.Every,
+            rule.TimeZoneId,
+            DateTime.SpecifyKind(
+                rule.AnchorLocal,
+                DateTimeKind.Unspecified),
+            rule.NextOrdinal);
+    }
+
     private sealed record ScheduledTaskRecord(
         Guid Id,
         string? Text,
         DateTimeOffset DueAt,
         DateTimeOffset CreatedAt,
-        long? RepeatIntervalTicks = null);
+        long? RepeatIntervalTicks = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        ScheduledRepeatRuleRecord? RepeatRule = null);
+
+    private sealed record ScheduledRepeatRuleRecord(
+        int Version,
+        string? Unit,
+        int Every,
+        string? TimeZoneId,
+        DateTime AnchorLocal,
+        long NextOrdinal);
 }

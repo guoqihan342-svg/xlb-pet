@@ -64,6 +64,8 @@ public partial class MainWindow : Window
     private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
+    private const int CuteCleanSmoothFrameCount = 56;
+    private const int WaveCleanSmoothFrameCount = 40;
     private const double PetSizeSpringAngularFrequency = 28;
     private const double MaximumPetSizeVelocity = 4;
     private static readonly TimeSpan MotionFrameInterval =
@@ -71,6 +73,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgePeekMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
+    private static readonly TimeSpan StableReactionEndpointHoldDuration =
+        TimeSpan.FromMilliseconds(625);
     private static readonly long VisualFrameDeadlineToleranceTicks =
         ToCharacterAnimationTicks(TimeSpan.FromMilliseconds(2));
     private static readonly long EdgeVisualFrameDeadlineToleranceTicks =
@@ -102,6 +106,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan EdgeRoamMaximumClockGap =
+        TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan EdgeRoamDisembarkStraightenDuration =
         TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan PillowAnimationDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SnoreBubbleCycleDuration =
@@ -234,6 +240,7 @@ public partial class MainWindow : Window
     private double _edgeRoamLogicalTop;
     private double _edgeRoamFacingScaleX = 1;
     private double _edgeRoamRotationDegrees;
+    private double _edgeRoamDisembarkStartRotationDegrees;
     private long _edgeRoamStartedTimestamp;
     private long _edgeRoamLastRenderingTimestamp;
     private long _nextEdgeRoamDueTimestamp;
@@ -746,18 +753,24 @@ public partial class MainWindow : Window
 
     private AnimationClip CreateMotionClip(string message, string actionName)
     {
-        var timeline = BuildActionTimeline(actionName);
+        var profile = ResolveMotionClipProfile(actionName);
+        var timeline = BuildActionTimeline(actionName, profile.SmoothFrameCount);
         var loopFrames = _actionLoopFrames[actionName];
         var frames = new List<AnimationFrame>(
             (timeline.Frames.Length - 1) * 2 +
-            loopFrames.Length * ActionLoopCycleCount);
+            loopFrames.Length * profile.LoopCycleCount);
         for (var timelineIndex = 1;
              timelineIndex < timeline.Frames.Length;
              timelineIndex++)
         {
+            var holdDuration =
+                timelineIndex == timeline.Frames.Length - 1 &&
+                profile.EndpointHoldDuration > TimeSpan.Zero
+                    ? profile.EndpointHoldDuration
+                    : MotionFrameInterval;
             frames.Add(new AnimationFrame(
                 timeline.Frames[timelineIndex],
-                MotionFrameInterval,
+                holdDuration,
                 timeline.Names[timelineIndex]));
         }
 
@@ -765,7 +778,7 @@ public partial class MainWindow : Window
         // first frame resident on the action page. It is a prefetch target, not
         // the loop endpoint or the moment at which the action is considered done.
         var actionFrameIndex = timeline.ActionStartIndex - 1;
-        for (var cycle = 0; cycle < ActionLoopCycleCount; cycle++)
+        for (var cycle = 0; cycle < profile.LoopCycleCount; cycle++)
         {
             foreach (var loopFrame in loopFrames)
             {
@@ -787,6 +800,38 @@ public partial class MainWindow : Window
         }
 
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
+    }
+
+    private MotionClipProfile ResolveMotionClipProfile(string actionName)
+    {
+        var availableSmoothFrameCount = _actionSmoothFrames[actionName].Length;
+        var profile = actionName switch
+        {
+            "cute" => new MotionClipProfile(
+                CuteCleanSmoothFrameCount,
+                LoopCycleCount: 0,
+                EndpointHoldDuration: StableReactionEndpointHoldDuration),
+            "wave" => new MotionClipProfile(
+                WaveCleanSmoothFrameCount,
+                LoopCycleCount: 0,
+                EndpointHoldDuration: StableReactionEndpointHoldDuration),
+            _ => new MotionClipProfile(
+                availableSmoothFrameCount,
+                ActionLoopCycleCount,
+                EndpointHoldDuration: TimeSpan.Zero)
+        };
+
+        if (profile.SmoothFrameCount <= 0 ||
+            profile.SmoothFrameCount > availableSmoothFrameCount ||
+            profile.LoopCycleCount < 0)
+        {
+            throw new InvalidOperationException(
+                $"Invalid motion profile for '{actionName}': " +
+                $"smooth={profile.SmoothFrameCount}/{availableSmoothFrameCount}, " +
+                $"loops={profile.LoopCycleCount}.");
+        }
+
+        return profile;
     }
 
     private AnimationClip CreateTodoExitClip()
@@ -868,10 +913,23 @@ public partial class MainWindow : Window
             ActionFrameIndex: 0);
     }
 
-    private ActionTimeline BuildActionTimeline(string actionName)
+    private ActionTimeline BuildActionTimeline(
+        string actionName,
+        int? actionFrameCount = null)
     {
         var actionFrames = _actionSmoothFrames[actionName];
-        var frames = new List<SpriteFrame>(1 + _wakeFrames.Length + actionFrames.Length);
+        var selectedActionFrameCount = actionFrameCount ?? actionFrames.Length;
+        if (selectedActionFrameCount <= 0 ||
+            selectedActionFrameCount > actionFrames.Length)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(actionFrameCount),
+                selectedActionFrameCount,
+                $"Action '{actionName}' has {actionFrames.Length} smooth frames.");
+        }
+
+        var frames = new List<SpriteFrame>(
+            1 + _wakeFrames.Length + selectedActionFrameCount);
         var names = new List<string>(frames.Capacity);
 
         void Add(SpriteFrame frame)
@@ -887,9 +945,11 @@ public partial class MainWindow : Window
         }
 
         var actionStartIndex = frames.Count;
-        foreach (var actionFrame in actionFrames)
+        for (var actionFrameIndex = 0;
+             actionFrameIndex < selectedActionFrameCount;
+             actionFrameIndex++)
         {
-            Add(actionFrame);
+            Add(actionFrames[actionFrameIndex]);
         }
 
         return new ActionTimeline(
@@ -1648,8 +1708,14 @@ public partial class MainWindow : Window
         var maximumLeft = Math.Max(workArea.Left, workArea.Right - bubbleWidth);
         var maximumTop = Math.Max(workArea.Top, workArea.Bottom - bubbleHeight);
 
-        _todoWindow.SetTailOnRight(canPlaceOnLeft);
-        _todoWindow.Left = Math.Clamp(desiredLeft, workArea.Left, maximumLeft);
+        var actualLeft = Math.Clamp(
+            desiredLeft,
+            workArea.Left,
+            maximumLeft);
+        _todoWindow.SetTailOnRight(
+            actualLeft + bubbleWidth / 2 <=
+            (petLeft + petRight) / 2);
+        _todoWindow.Left = actualLeft;
         _todoWindow.Top = Math.Clamp(desiredTop, workArea.Top, maximumTop);
     }
 
@@ -2660,6 +2726,7 @@ public partial class MainWindow : Window
         _edgeRoamRouteTangent = default;
         _edgeRoamFacingScaleX = 1;
         _edgeRoamRotationDegrees = 0;
+        _edgeRoamDisembarkStartRotationDegrees = 0;
         CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
         if (wasRoaming)
         {
@@ -2722,6 +2789,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        var disembarkStartRotationDegrees =
+            reverse && double.IsFinite(_edgeRoamRotationDegrees)
+                ? Math.Clamp(_edgeRoamRotationDegrees, -90, 90)
+                : 0;
         var wasForwardBoarding =
             _edgeRoamPhase == EdgeRoamPhase.Boarding &&
             !_edgeRoamBoardingReverse;
@@ -2753,15 +2824,20 @@ public partial class MainWindow : Window
         if (!reverse)
         {
             ResetPetVisualTransforms();
+            _edgeRoamDisembarkStartRotationDegrees = 0;
         }
         else
         {
-            // Keep the final travel facing while the authored boarding poses
-            // play backwards. Resetting ScaleX here made a left-facing panda
-            // flip for one composition just before dismounting.
+            // Keep the complete final travel transform for the first reverse
+            // boarding pose, then straighten it smoothly. Clearing Angle here
+            // made a vertical-edge stop snap from +/-90 to 0 in one frame.
             PetFacingScale.ScaleY = 1;
-            _edgeRoamRotationDegrees = 0;
-            PetRoamRotate.Angle = 0;
+            _edgeRoamDisembarkStartRotationDegrees =
+                disembarkStartRotationDegrees;
+            _edgeRoamRotationDegrees =
+                disembarkStartRotationDegrees;
+            PetRoamRotate.Angle =
+                disembarkStartRotationDegrees;
         }
         _nextFrameBlendDuration = TimeSpan.Zero;
         ShowStableFrame(
@@ -2813,6 +2889,15 @@ public partial class MainWindow : Window
         }
 
         var elapsedSeconds = AdvanceEdgeRoamClock(timestamp);
+        if (_edgeRoamBoardingReverse)
+        {
+            _edgeRoamRotationDegrees =
+                ResolveEdgeRoamDisembarkRotationDegrees(
+                    _edgeRoamDisembarkStartRotationDegrees,
+                    elapsedSeconds);
+            PetRoamRotate.Angle = _edgeRoamRotationDegrees;
+        }
+
         var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
         var frameStep = (int)Math.Floor(elapsedSeconds * poseSpeed);
         var frameStepCount = _edgeRoamBoardingReverse
@@ -2845,6 +2930,34 @@ public partial class MainWindow : Window
         }
 
         StartEdgeRoamTravel(timestamp);
+    }
+
+    private static double ResolveEdgeRoamDisembarkRotationDegrees(
+        double startRotationDegrees,
+        double elapsedSeconds)
+    {
+        if (!double.IsFinite(startRotationDegrees))
+        {
+            return 0;
+        }
+
+        var durationSeconds =
+            EdgeRoamDisembarkStraightenDuration.TotalSeconds;
+        if (!double.IsFinite(elapsedSeconds) ||
+            elapsedSeconds <= 0 ||
+            durationSeconds <= 0)
+        {
+            return Math.Clamp(startRotationDegrees, -90, 90);
+        }
+
+        var progress = Math.Clamp(
+            elapsedSeconds / durationSeconds,
+            0,
+            1);
+        var easedProgress =
+            progress * progress * (3 - 2 * progress);
+        return Math.Clamp(startRotationDegrees, -90, 90) *
+               (1 - easedProgress);
     }
 
     private void StartEdgeRoamTravel(long timestamp)
@@ -3181,21 +3294,78 @@ public partial class MainWindow : Window
 
     private void UpdateEdgeRoamFacing(Point position, Point lookAhead)
     {
-        _edgeRoamFacingScaleX = ResolveEdgeRoamFacingScaleX(
+        var orientation = ResolveEdgeRoamOrientation(
             position,
             lookAhead,
             _edgeRoamRouteBounds,
-            GetEdgeRoamCornerRadius(_edgeRoamRouteBounds),
-            _edgeRoamFacingScaleX);
-        _edgeRoamRotationDegrees = ResolveEdgeRoamRotationDegrees(
-            position,
-            lookAhead,
             _edgeRoamFacingScaleX,
             _edgeRoamRotationDegrees);
+        _edgeRoamFacingScaleX = orientation.ScaleX;
+        _edgeRoamRotationDegrees = orientation.RotationDegrees;
 
         PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
         PetFacingScale.ScaleY = 1;
         PetRoamRotate.Angle = _edgeRoamRotationDegrees;
+    }
+
+    private static EdgeRoamOrientation ResolveEdgeRoamOrientation(
+        Point position,
+        Point lookAhead,
+        Rect routeBounds,
+        double currentScaleX,
+        double currentRotationDegrees)
+    {
+        var deltaX = lookAhead.X - position.X;
+        var deltaY = lookAhead.Y - position.Y;
+        if (!double.IsFinite(deltaX) ||
+            !double.IsFinite(deltaY) ||
+            Math.Abs(deltaX) + Math.Abs(deltaY) <= 0.01)
+        {
+            return new EdgeRoamOrientation(
+                currentScaleX < 0 ? -1 : 1,
+                double.IsFinite(currentRotationDegrees)
+                    ? Math.Clamp(currentRotationDegrees, -90, 90)
+                    : 0);
+        }
+
+        // The source mount heading is H=(-1,0), while Luban's authored up axis
+        // is U=(0,-1). On a vertical edge H must follow the motion and U must
+        // point into the screen. That yields:
+        // left:  angle=+90, up ScaleX=+1 / down ScaleX=-1
+        // right: angle=-90, up ScaleX=-1 / down ScaleX=+1.
+        // On rounded corners, derive a continuous angle from the tangent's
+        // vertical weight instead of holding the previous angle until a 1.2x
+        // dominance threshold and then snapping by 90 degrees.
+        var absoluteX = Math.Abs(deltaX);
+        var absoluteY = Math.Abs(deltaY);
+        var verticalWeight =
+            absoluteY / (absoluteX + absoluteY);
+        var easedVerticalWeight =
+            verticalWeight * verticalWeight *
+            (3 - 2 * verticalWeight);
+        var routeCenterX =
+            routeBounds.Left + routeBounds.Width / 2;
+        var verticalEdgeAngle =
+            position.X <= routeCenterX ? 90d : -90d;
+        var rotationDegrees =
+            verticalEdgeAngle * easedVerticalWeight;
+
+        // Of the two possible horizontal mirrors, choose the one whose
+        // transformed authored heading has the larger dot product with the
+        // current motion tangent. Ties retain the previous mirror so the
+        // diagonal midpoint cannot chatter between signs.
+        var radians = rotationDegrees * Math.PI / 180;
+        var mirroredHeadingX = Math.Cos(radians);
+        var mirroredHeadingY = Math.Sin(radians);
+        var mirroredAlignment =
+            mirroredHeadingX * deltaX +
+            mirroredHeadingY * deltaY;
+        var resolvedScaleX = Math.Abs(mirroredAlignment) <= 0.0001
+            ? currentScaleX < 0 ? -1 : 1
+            : mirroredAlignment > 0 ? -1 : 1;
+        return new EdgeRoamOrientation(
+            resolvedScaleX,
+            rotationDegrees);
     }
 
     private static double ResolveEdgeRoamFacingScaleX(
@@ -3205,64 +3375,27 @@ public partial class MainWindow : Window
         double radius,
         double currentScaleX)
     {
-        var deltaX = lookAhead.X - position.X;
-        var deltaY = lookAhead.Y - position.Y;
-        if (Math.Abs(deltaY) > Math.Abs(deltaX) * 1.2 &&
-            Math.Abs(deltaY) > 0.01)
-        {
-            if (position.X <= routeBounds.Left + radius * 0.55)
-            {
-                // The authored panda faces left at ScaleX=1. On the left edge
-                // mirror it so Luban and the panda look into the screen.
-                return -1;
-            }
-
-            if (position.X >= routeBounds.Right - radius * 0.55)
-            {
-                // The unmirrored source already faces into the screen here.
-                return 1;
-            }
-        }
-        else if (Math.Abs(deltaX) > Math.Abs(deltaY) * 1.2 &&
-            Math.Abs(deltaX) > 0.01)
-        {
-            // The source faces left, so rightward travel must be mirrored.
-            return deltaX > 0 ? -1 : 1;
-        }
-
-        return currentScaleX < 0 ? -1 : 1;
+        _ = radius;
+        return ResolveEdgeRoamOrientation(
+            position,
+            lookAhead,
+            routeBounds,
+            currentScaleX,
+            currentRotationDegrees: 0).ScaleX;
     }
 
     private static double ResolveEdgeRoamRotationDegrees(
         Point position,
         Point lookAhead,
-        double facingScaleX,
-        double currentRotationDegrees)
-    {
-        var deltaX = lookAhead.X - position.X;
-        var deltaY = lookAhead.Y - position.Y;
-        if (Math.Abs(deltaY) > Math.Abs(deltaX) * 1.2 &&
-            Math.Abs(deltaY) > 0.01)
-        {
-            var facesMirrored = facingScaleX < 0;
-            if (deltaY < 0)
-            {
-                return facesMirrored ? -90 : 90;
-            }
-
-            return facesMirrored ? 90 : -90;
-        }
-
-        if (Math.Abs(deltaX) > Math.Abs(deltaY) * 1.2 &&
-            Math.Abs(deltaX) > 0.01)
-        {
-            return 0;
-        }
-
-        return double.IsFinite(currentRotationDegrees)
-            ? Math.Clamp(currentRotationDegrees, -90, 90)
-            : 0;
-    }
+        Rect routeBounds,
+        double currentScaleX,
+        double currentRotationDegrees) =>
+        ResolveEdgeRoamOrientation(
+            position,
+            lookAhead,
+            routeBounds,
+            currentScaleX,
+            currentRotationDegrees).RotationDegrees;
 
     private void ApplyEdgeRoamingPosition(double logicalLeft, double logicalTop)
     {
@@ -5315,30 +5448,28 @@ public partial class MainWindow : Window
             return false;
         }
 
-        // The old decoded pixels are still valid. Bake the currently visible
-        // mirror/offset into that fixed buffer before clearing WPF transforms,
-        // then leave the exact last stable picture on screen without requesting
-        // another cold page from inside the recovery path.
-        BakeCurrentPetVisualTransformIntoDisplayFrame();
         if (failedCurrentEdge)
         {
+            // The old decoded pixels are still valid. Bake the currently
+            // visible edge transform once before clearing it.
+            BakeCurrentPetVisualTransformIntoDisplayFrame();
             ExitEdgePeek(
                 restartAutomaticCountdown: false,
                 restoreIdleFrame: false);
         }
         if (failedRoamingPage)
         {
+            // A failed boarding page cannot play a reverse exit. Stop
+            // immediately so the normal fallback path cannot bake an already
+            // transformed roam frame a second time.
             StopEdgeRoaming(
                 scheduleNext: true,
                 restoreIdleFrame: true,
-                interrupted: true);
+                interrupted: true,
+                immediate: true);
         }
 
-        var reverseRoamExitActive =
-            failedRoamingPage &&
-            _isEdgeRoaming &&
-            _edgeRoamPhase == EdgeRoamPhase.Disembarking;
-        if (!reverseRoamExitActive)
+        if (!failedRoamingPage)
         {
             ResetPetVisualTransforms();
         }
@@ -6725,6 +6856,7 @@ public partial class MainWindow : Window
     {
         _edgeRoamFacingScaleX = 1;
         _edgeRoamRotationDegrees = 0;
+        _edgeRoamDisembarkStartRotationDegrees = 0;
         PetFacingScale.ScaleX = 1;
         PetFacingScale.ScaleY = 1;
         PetRoamRotate.Angle = 0;
@@ -7754,7 +7886,8 @@ public partial class MainWindow : Window
     private void TodoWindow_ScheduledTaskAddRequested(
         string text,
         DateTimeOffset dueAt,
-        TimeSpan? repeatInterval)
+        TimeSpan? repeatInterval,
+        ScheduledRepeatRule? repeatRule)
     {
         var normalizedText = text.Trim();
         if (normalizedText.Length == 0)
@@ -7770,7 +7903,8 @@ public partial class MainWindow : Window
             DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt),
             CreatedAt = now,
             RepeatInterval =
-                ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval)
+                ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval),
+            RepeatRule = repeatRule
         };
         InsertScheduledTaskSorted(item);
         SaveScheduledTasks();
@@ -7802,7 +7936,8 @@ public partial class MainWindow : Window
         ScheduledTaskItem item,
         string text,
         DateTimeOffset dueAt,
-        TimeSpan? repeatInterval)
+        TimeSpan? repeatInterval,
+        ScheduledRepeatRule? repeatRule)
     {
         if (_queuedReminderIds.Contains(item.Id))
         {
@@ -7822,6 +7957,7 @@ public partial class MainWindow : Window
         item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt);
         item.RepeatInterval =
             ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval);
+        item.RepeatRule = repeatRule;
         InsertScheduledTaskSorted(item);
 
         var now = _nowProvider();
@@ -8076,6 +8212,30 @@ public partial class MainWindow : Window
             _queuedReminderIds.Remove(item.Id);
             _reminderMissedOccurrenceCounts.Remove(item.Id);
             _scheduledTasks.Remove(item);
+            if (item.RepeatRule is { } repeatRule &&
+                ScheduledRepeatSchedule.TryEvaluate(
+                    repeatRule,
+                    item.DueAt,
+                    now,
+                    out var evaluation))
+            {
+                if (evaluation.NextDueAt is { } ruleNextDueAt &&
+                    evaluation.NextOrdinal is { } ruleNextOrdinal)
+                {
+                    item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(
+                        ruleNextDueAt);
+                    item.RepeatRule = repeatRule with
+                    {
+                        NextOrdinal = ruleNextOrdinal
+                    };
+                    InsertScheduledTaskSorted(item);
+                    continue;
+                }
+
+                SuspendExhaustedScheduledTask(item);
+                continue;
+            }
+
             if (item.RepeatInterval is not { } repeatInterval)
             {
                 continue;
@@ -8110,6 +8270,20 @@ public partial class MainWindow : Window
         RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
         ScheduleNextReminderAt(now);
         AppLogger.Info($"定时任务已批量确认：{acknowledged.Length} 条");
+    }
+
+    private void SuspendExhaustedScheduledTask(ScheduledTaskItem item)
+    {
+        var maximumWholeSecond =
+            DateTimeOffset.MaxValue.AddTicks(
+                -(DateTimeOffset.MaxValue.Ticks %
+                  TimeSpan.TicksPerSecond));
+        item.DueAt = maximumWholeSecond;
+        item.RepeatInterval = null;
+        item.RepeatRule = null;
+        InsertScheduledTaskSorted(item);
+        AppLogger.Info(
+            $"循环定时任务已到日期上限并暂停，任务仍保留：{item.Id}");
     }
 
     private static string FormatReminderMessageLine(
@@ -8154,6 +8328,16 @@ public partial class MainWindow : Window
         ScheduledTaskItem item,
         DateTimeOffset now)
     {
+        if (item.RepeatRule is { } repeatRule &&
+            ScheduledRepeatSchedule.TryEvaluate(
+                repeatRule,
+                item.DueAt,
+                now,
+                out var evaluation))
+        {
+            return evaluation.DueCount;
+        }
+
         var elapsedTicks =
             now.UtcDateTime.Ticks - item.DueAt.UtcDateTime.Ticks;
         if (elapsedTicks < 0)
@@ -8380,6 +8564,15 @@ public partial class MainWindow : Window
     private readonly record struct PetSizeMotionState(
         double Scale,
         double Velocity);
+
+    private readonly record struct EdgeRoamOrientation(
+        double ScaleX,
+        double RotationDegrees);
+
+    private readonly record struct MotionClipProfile(
+        int SmoothFrameCount,
+        int LoopCycleCount,
+        TimeSpan EndpointHoldDuration);
 
     private sealed record AnimationClip(
         string Message,

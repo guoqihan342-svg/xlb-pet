@@ -18,11 +18,21 @@ public sealed class ScheduledTaskItem
 
     public TimeSpan? RepeatInterval { get; set; }
 
+    public ScheduledRepeatRule? RepeatRule { get; set; }
+
     public bool IsRecurring =>
+        RepeatRule is not null ||
         RepeatInterval is { } interval && interval > TimeSpan.Zero;
 
+    public bool IsLegacyRecurring =>
+        RepeatRule is null &&
+        RepeatInterval is { } interval &&
+        interval > TimeSpan.Zero;
+
     public string RepeatDisplayText =>
-        RepeatInterval is { } interval && interval > TimeSpan.Zero
+        RepeatRule is { } rule
+            ? ScheduledRepeatSchedule.FormatRule(rule)
+            : RepeatInterval is { } interval && interval > TimeSpan.Zero
             ? FormatRepeatInterval(interval)
             : "单次";
 

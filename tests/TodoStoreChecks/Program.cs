@@ -1,5 +1,6 @@
 using LubanDesktopPet;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 
@@ -10,6 +11,7 @@ try
     CheckTodoStore(tempDirectory);
     CheckAppSettingsStore(tempDirectory);
     CheckScheduledTaskStore(tempDirectory);
+    CheckScheduledRepeatRules(tempDirectory);
     Console.WriteLine("TodoStore, AppSettingsStore, and ScheduledTaskStore checks passed.");
 }
 finally
@@ -518,6 +520,500 @@ static void CheckScheduledTaskStore(string tempDirectory)
     Assert(!blockedStore.Save(original), "定时任务保存失败时应返回 false 而不是抛异常");
     Assert(!File.Exists(blockedPath + ".tmp"),
         "定时任务保存失败后应尽量清理临时文件");
+}
+
+static void CheckScheduledRepeatRules(string tempDirectory)
+{
+    var chinaTimeZone = FindAvailableTimeZone(
+        "China Standard Time",
+        "Asia/Shanghai")
+        ?? throw new InvalidOperationException("缺少可用于循环规则测试的中国时区");
+    var anchorLocal = new DateTime(
+        2026,
+        7,
+        28,
+        10,
+        7,
+        45,
+        DateTimeKind.Unspecified);
+    Assert(
+        ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Minute,
+            5,
+            anchorLocal.AddMilliseconds(987),
+            chinaTimeZone,
+            out var minuteRule,
+            out var firstDueAt) &&
+        minuteRule is not null &&
+        minuteRule.Version == ScheduledRepeatRule.CurrentVersion &&
+        minuteRule.Unit == ScheduledRepeatUnit.Minute &&
+        minuteRule.Every == 5 &&
+        minuteRule.TimeZoneId == chinaTimeZone.Id &&
+        minuteRule.AnchorLocal == anchorLocal &&
+        minuteRule.NextOrdinal == 0,
+        "每 5 分钟规则必须以所选整秒本地时间建立 version 1 锚点");
+    Assert(
+        ScheduledRepeatSchedule.TryGetNominalInterval(
+            minuteRule,
+            out var minuteInterval) &&
+        minuteInterval == TimeSpan.FromMinutes(5),
+        "分钟规则必须提供与旧字段兼容的名义 RepeatInterval");
+    Assert(
+        ScheduledRepeatSchedule.TryGetOccurrence(
+            minuteRule,
+            1,
+            out var secondOccurrence) &&
+        TimeZoneInfo.ConvertTime(secondOccurrence, chinaTimeZone).DateTime ==
+            anchorLocal.AddMinutes(5),
+        "分钟规则的下一次 occurrence 必须保持第 45 秒");
+    Assert(
+        ScheduledRepeatSchedule.FormatRule(minuteRule!) ==
+            "每5分钟，第45秒",
+        "分钟规则预览必须明确显示固定秒");
+
+    const long farOrdinal = 20_000_000;
+    Assert(
+        ScheduledRepeatSchedule.TryGetOccurrence(
+            minuteRule,
+            farOrdinal,
+            out var farOccurrence),
+        "长期分钟规则必须仍能直接计算远期 occurrence");
+    var evaluationStopwatch = Stopwatch.StartNew();
+    Assert(
+        ScheduledRepeatSchedule.TryEvaluate(
+            minuteRule,
+            firstDueAt,
+            farOccurrence,
+            out var farEvaluation),
+        "长期离线规则必须能计算漏提醒和下一次 occurrence");
+    evaluationStopwatch.Stop();
+    Assert(
+        farEvaluation.DueCount == farOrdinal + 1 &&
+        farEvaluation.NextOrdinal == farOrdinal + 1 &&
+        farEvaluation.NextDueAt is { } farNextDueAt &&
+        ScheduledRepeatSchedule.TryGetOccurrence(
+            minuteRule,
+            farOrdinal + 1,
+            out var expectedFarNextDueAt) &&
+        farNextDueAt == expectedFarNextDueAt,
+        "对数推进必须一次得到准确 DueCount、NextDueAt 和 NextOrdinal");
+    Assert(
+        evaluationStopwatch.Elapsed < TimeSpan.FromSeconds(5),
+        $"两千万次离线推进必须保持对数级，实际耗时 {evaluationStopwatch.Elapsed}");
+    Assert(
+        ScheduledRepeatSchedule.TryEvaluate(
+            minuteRule,
+            firstDueAt,
+            firstDueAt.AddSeconds(-1),
+            out var notDueEvaluation) &&
+        notDueEvaluation.DueCount == 0 &&
+        notDueEvaluation.NextDueAt == firstDueAt &&
+        notDueEvaluation.NextOrdinal == 0,
+        "尚未到点时必须保留当前 DueAt 和 ordinal，不得提前推进");
+
+    var hourAnchor = new DateTime(
+        2026,
+        7,
+        28,
+        10,
+        15,
+        30,
+        DateTimeKind.Unspecified);
+    Assert(
+        ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Hour,
+            2,
+            hourAnchor,
+            chinaTimeZone,
+            out var hourRule,
+            out _) &&
+        hourRule is not null &&
+        ScheduledRepeatSchedule.FormatRule(hourRule) ==
+            "每2小时，第15分30秒" &&
+        ScheduledRepeatSchedule.TryGetOccurrence(
+            hourRule,
+            1,
+            out var nextHourOccurrence) &&
+        TimeZoneInfo.ConvertTime(nextHourOccurrence, chinaTimeZone).DateTime ==
+            hourAnchor.AddHours(2),
+        "小时规则必须明确并保持所选分秒");
+
+    var dayAnchor = new DateTime(
+        2026,
+        7,
+        28,
+        8,
+        15,
+        30,
+        DateTimeKind.Unspecified);
+    Assert(
+        ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Day,
+            3,
+            dayAnchor,
+            chinaTimeZone,
+            out var dayRule,
+            out _) &&
+        dayRule is not null &&
+        ScheduledRepeatSchedule.FormatRule(dayRule) ==
+            "每3天，08:15:30" &&
+        ScheduledRepeatSchedule.TryGetOccurrence(
+            dayRule,
+            1,
+            out var nextDayOccurrence) &&
+        TimeZoneInfo.ConvertTime(nextDayOccurrence, chinaTimeZone).DateTime ==
+            dayAnchor.AddDays(3),
+        "天规则必须明确并保持所选 HH:mm:ss");
+
+    Assert(
+        !ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Minute,
+            0,
+            anchorLocal,
+            chinaTimeZone,
+            out _,
+            out _) &&
+        !ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Day,
+            1000,
+            anchorLocal,
+            chinaTimeZone,
+            out _,
+            out _),
+        "循环规则必须拒绝零间隔和达到一千天的间隔");
+
+    var rulePath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "versioned-repeat-rules.json");
+    var ruleStore = new ScheduledTaskStore(rulePath);
+    var ruleItem = new ScheduledTaskItem
+    {
+        Id = Guid.Parse("30000000-0000-0000-0000-000000000001"),
+        Text = "版本化分钟循环",
+        DueAt = firstDueAt,
+        CreatedAt = firstDueAt.AddDays(-1),
+        RepeatRule = minuteRule
+    };
+    Assert(ruleStore.Save([ruleItem]),
+        "只提供有效 version 1 rule 时保存层必须补齐兼容 RepeatInterval");
+    var ruleJson = File.ReadAllText(rulePath);
+    Assert(
+        ruleJson.Contains("\"repeatRule\"", StringComparison.Ordinal) &&
+        ruleJson.Contains("\"unit\": \"minute\"", StringComparison.Ordinal) &&
+        ruleJson.Contains("\"anchorLocal\"", StringComparison.Ordinal) &&
+        ruleJson.Contains("\"nextOrdinal\": 0", StringComparison.Ordinal),
+        "version 1 rule 必须使用可读的 camelCase JSON 完整持久化");
+    var ruleReloaded = ruleStore.Load().Single();
+    Assert(
+        ruleReloaded.RepeatRule == minuteRule &&
+        ruleReloaded.RepeatInterval == TimeSpan.FromMinutes(5) &&
+        ruleReloaded.IsRecurring &&
+        !ruleReloaded.IsLegacyRecurring,
+        "version 1 rule、兼容间隔和非 legacy 身份必须完整往返");
+    Assert(
+        ScheduledRepeatSchedule.TryEvaluate(
+            ruleReloaded.RepeatRule,
+            ruleReloaded.DueAt,
+            farOccurrence,
+            out var restartEvaluation) &&
+        restartEvaluation == farEvaluation,
+        "重启重新加载后必须得到完全相同的漏提醒次数和未来触发点");
+
+    var advancedRule = ruleReloaded.RepeatRule! with
+    {
+        NextOrdinal = farEvaluation.NextOrdinal!.Value
+    };
+    ruleReloaded.RepeatRule = advancedRule;
+    ruleReloaded.DueAt = farEvaluation.NextDueAt!.Value;
+    Assert(ruleStore.Save([ruleReloaded]),
+        "确认提醒后必须能原子保存推进后的 DueAt 和 NextOrdinal");
+    var advancedReloaded = ruleStore.Load().Single();
+    Assert(
+        advancedReloaded.RepeatRule?.NextOrdinal ==
+            farEvaluation.NextOrdinal &&
+        advancedReloaded.DueAt == farEvaluation.NextDueAt &&
+        ScheduledRepeatSchedule.TryEvaluate(
+            advancedReloaded.RepeatRule,
+            advancedReloaded.DueAt,
+            farOccurrence,
+            out var afterAdvanceEvaluation) &&
+        afterAdvanceEvaluation.DueCount == 0,
+        "推进状态重启后不得回退到已经确认过的 occurrence");
+
+    var legacyRulePath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "legacy-repeat-without-rule.json");
+    var legacyRuleRecord = new[]
+    {
+        new
+        {
+            Id = Guid.Parse("30000000-0000-0000-0000-000000000002"),
+            Text = "旧版固定九十分钟",
+            DueAt = firstDueAt,
+            CreatedAt = firstDueAt.AddDays(-1),
+            RepeatIntervalTicks = (long?)TimeSpan.FromMinutes(90).Ticks
+        }
+    };
+    File.WriteAllText(
+        legacyRulePath,
+        JsonSerializer.Serialize(legacyRuleRecord));
+    var legacyRuleStore = new ScheduledTaskStore(legacyRulePath);
+    var legacyRuleReloaded = legacyRuleStore.Load().Single();
+    Assert(
+        legacyRuleReloaded.RepeatRule is null &&
+        legacyRuleReloaded.RepeatInterval == TimeSpan.FromMinutes(90) &&
+        legacyRuleReloaded.IsLegacyRecurring,
+        "旧 JSON 缺少 repeatRule 时必须原样走 legacy 固定间隔");
+    Assert(legacyRuleStore.Save([legacyRuleReloaded]),
+        "旧循环任务必须仍可编辑并重新保存");
+    Assert(
+        !File.ReadAllText(legacyRulePath)
+            .Contains("\"repeatRule\"", StringComparison.Ordinal),
+        "未主动升级的旧任务保存后不得伪造 version 1 rule");
+
+    var badRulePath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "invalid-versioned-repeat-rule.json");
+    var badRuleRecords = new object[]
+    {
+        new
+        {
+            Id = Guid.Parse("30000000-0000-0000-0000-000000000003"),
+            Text = "规则与到期时间不一致",
+            DueAt = firstDueAt.AddMinutes(1),
+            CreatedAt = firstDueAt.AddDays(-1),
+            RepeatIntervalTicks = (long?)TimeSpan.FromMinutes(5).Ticks,
+            RepeatRule = new
+            {
+                Version = 1,
+                Unit = "minute",
+                Every = 5,
+                TimeZoneId = chinaTimeZone.Id,
+                AnchorLocal = anchorLocal,
+                NextOrdinal = 0L
+            }
+        },
+        new
+        {
+            Id = Guid.Parse("30000000-0000-0000-0000-000000000004"),
+            Text = "未知规则版本仍保留",
+            DueAt = firstDueAt.AddMinutes(2),
+            CreatedAt = firstDueAt.AddDays(-1),
+            RepeatIntervalTicks = (long?)TimeSpan.FromMinutes(7).Ticks,
+            RepeatRule = new
+            {
+                Version = 99,
+                Unit = "minute",
+                Every = 7,
+                TimeZoneId = chinaTimeZone.Id,
+                AnchorLocal = anchorLocal,
+                NextOrdinal = 0L
+            }
+        },
+        new
+        {
+            Id = Guid.Parse("30000000-0000-0000-0000-000000000005"),
+            Text = "坏规则无旧间隔也不能删任务",
+            DueAt = firstDueAt.AddMinutes(3),
+            CreatedAt = firstDueAt.AddDays(-1),
+            RepeatIntervalTicks = (long?)null,
+            RepeatRule = new
+            {
+                Version = 1,
+                Unit = "week",
+                Every = 1,
+                TimeZoneId = "不存在的时区",
+                AnchorLocal = anchorLocal,
+                NextOrdinal = 0L
+            }
+        }
+    };
+    File.WriteAllText(badRulePath, JsonSerializer.Serialize(badRuleRecords));
+    var badRuleReloaded = new ScheduledTaskStore(badRulePath).Load();
+    Assert(
+        badRuleReloaded.Count == 3 &&
+        badRuleReloaded.All(item => item.RepeatRule is null) &&
+        badRuleReloaded[0].RepeatInterval == TimeSpan.FromMinutes(5) &&
+        badRuleReloaded[1].RepeatInterval == TimeSpan.FromMinutes(7) &&
+        badRuleReloaded[2].RepeatInterval is null,
+        "未知、损坏或与 DueAt 不一致的 rule 必须回退 legacy/单次且绝不能删任务");
+
+    CheckScheduledRepeatDstRules();
+}
+
+static void CheckScheduledRepeatDstRules()
+{
+    var eastern = FindAvailableTimeZone(
+        "Eastern Standard Time",
+        "America/New_York");
+    if (eastern is not null)
+    {
+        var invalidLocal = new DateTime(
+            2026,
+            3,
+            8,
+            2,
+            30,
+            0,
+            DateTimeKind.Unspecified);
+        if (eastern.IsInvalidTime(invalidLocal))
+        {
+            Assert(
+                !ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Day,
+                    1,
+                    invalidLocal,
+                    eastern,
+                    out _,
+                    out _),
+                "首次所选时间处于 Eastern 春季缺口时必须拒绝保存");
+            var easternAnchor = invalidLocal.AddDays(-1);
+            Assert(
+                ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Day,
+                    1,
+                    easternAnchor,
+                    eastern,
+                    out var easternRule,
+                    out var easternFirstDueAt) &&
+                easternRule is not null,
+                "Eastern 每日规则必须能跨越春季缺口");
+            var easternGapOccurrence = default(DateTimeOffset);
+            var easternAfterGapOccurrence = default(DateTimeOffset);
+            Assert(
+                ScheduledRepeatSchedule.TryGetOccurrence(
+                    easternRule!,
+                    1,
+                    out easternGapOccurrence) &&
+                ScheduledRepeatSchedule.TryGetOccurrence(
+                    easternRule,
+                    2,
+                    out easternAfterGapOccurrence),
+                "Eastern 每日规则必须生成缺口当天及下一天 occurrence");
+            var gapLocal =
+                TimeZoneInfo.ConvertTime(easternGapOccurrence, eastern).DateTime;
+            var afterGapLocal =
+                TimeZoneInfo.ConvertTime(easternAfterGapOccurrence, eastern).DateTime;
+            Assert(
+                gapLocal == new DateTime(
+                    2026,
+                    3,
+                    8,
+                    3,
+                    0,
+                    0,
+                    DateTimeKind.Unspecified) &&
+                afterGapLocal == new DateTime(
+                    2026,
+                    3,
+                    9,
+                    2,
+                    30,
+                    0,
+                    DateTimeKind.Unspecified),
+                "不存在的 Eastern 02:30 必须合并到首个有效 03:00，下一天恢复 02:30");
+            Assert(
+                ScheduledRepeatSchedule.TryEvaluate(
+                    easternRule,
+                    easternFirstDueAt,
+                    easternAfterGapOccurrence,
+                    out var easternEvaluation) &&
+                easternEvaluation.DueCount == 3 &&
+                easternEvaluation.NextOrdinal == 3,
+                "跨 Eastern DST 离线推进必须准确统计三个 nominal occurrence");
+        }
+
+        var ambiguousLocal = new DateTime(
+            2026,
+            11,
+            1,
+            1,
+            30,
+            0,
+            DateTimeKind.Unspecified);
+        if (eastern.IsAmbiguousTime(ambiguousLocal))
+        {
+            Assert(
+                ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Day,
+                    1,
+                    ambiguousLocal,
+                    eastern,
+                    out _,
+                    out var ambiguousDueAt) &&
+                ambiguousDueAt.Offset ==
+                    eastern.GetAmbiguousTimeOffsets(ambiguousLocal).Max(),
+                "Eastern 秋季重复的 01:30 必须稳定选择较早实际瞬间且只建一个 occurrence");
+        }
+    }
+
+    var lordHowe = FindAvailableTimeZone(
+        "Lord Howe Standard Time",
+        "Australia/Lord_Howe");
+    if (lordHowe is not null)
+    {
+        var lordHoweInvalidLocal = new DateTime(
+            2026,
+            10,
+            4,
+            2,
+            15,
+            0,
+            DateTimeKind.Unspecified);
+        if (lordHowe.IsInvalidTime(lordHoweInvalidLocal))
+        {
+            var lordHoweAnchor = lordHoweInvalidLocal.AddDays(-1);
+            Assert(
+                ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Day,
+                    1,
+                    lordHoweAnchor,
+                    lordHowe,
+                    out var lordHoweRule,
+                    out _) &&
+                lordHoweRule is not null,
+                "Lord Howe 每日规则必须支持非整小时 DST 缺口");
+            var lordHoweGapOccurrence = default(DateTimeOffset);
+            Assert(
+                ScheduledRepeatSchedule.TryGetOccurrence(
+                    lordHoweRule!,
+                    1,
+                    out lordHoweGapOccurrence),
+                "Lord Howe 每日规则必须生成缺口当天 occurrence");
+            var lordHoweGapLocal =
+                TimeZoneInfo.ConvertTime(
+                    lordHoweGapOccurrence,
+                    lordHowe).DateTime;
+            Assert(
+                lordHoweGapLocal == new DateTime(
+                    2026,
+                    10,
+                    4,
+                    2,
+                    30,
+                    0,
+                    DateTimeKind.Unspecified),
+                "Lord Howe 02:15 必须推进到真实的 30 分钟缺口末端 02:30，不能写死一小时");
+        }
+    }
+}
+
+static TimeZoneInfo? FindAvailableTimeZone(params string[] identifiers)
+{
+    foreach (var identifier in identifiers)
+    {
+        if (ScheduledRepeatSchedule.TryFindTimeZoneById(
+                identifier,
+                out var timeZone))
+        {
+            return timeZone;
+        }
+    }
+
+    return null;
 }
 
 static void Assert(bool condition, string message)

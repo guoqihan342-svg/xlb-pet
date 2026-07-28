@@ -200,6 +200,8 @@ internal static class Program
                         () => AssertSingleBufferPremultipliedBlendContract(window));
                     RunCheck(nameof(AssertColdSpritePageClipClockContract),
                         () => AssertColdSpritePageClipClockContract(window));
+                    RunCheck(nameof(AssertMotionTimelineContract),
+                        () => AssertMotionTimelineContract(window));
                     RunCheck(nameof(AssertAbsoluteTimelineMathContract),
                         () => AssertAbsoluteTimelineMathContract(window));
                     return 0;
@@ -317,6 +319,7 @@ internal static class Program
         {
             AllowsTransparency = false,
             Background = Brushes.White,
+            Height = 650,
             Left = 420,
             ShowInTaskbar = true,
             Title = "小鲁班日期时间选择器预览",
@@ -325,6 +328,12 @@ internal static class Program
             WindowStyle = WindowStyle.SingleBorderWindow,
             ScheduledTasks = new ObservableCollection<ScheduledTaskItem>()
         };
+        if (preview.Content is FrameworkElement previewContent)
+        {
+            previewContent.Height = 378;
+            previewContent.VerticalAlignment = VerticalAlignment.Top;
+        }
+
         Invoke(preview, "SelectTaskPage", true, false);
         preview.AllowApplicationClose();
         application.ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -4072,14 +4081,15 @@ internal static class Program
         foreach (var clip in clips)
         {
             var actionName = GetProperty<string>(clip, "ActionName");
-            var expectedTimelineNames = BuildExpectedActionTimelineNames(actionName);
+            var profile = GetExpectedMotionClipProfile(actionName);
             var expectedMotionNames = BuildExpectedMotionFrameNames(actionName);
+            var expectedDurations = BuildExpectedMotionFrameDurations(actionName);
             var frames = GetClipFrames(clip).Cast<object>().ToArray();
             var actualMotionNames = frames
                 .Select(frame => GetProperty<string>(frame, "Name"))
                 .ToArray();
             Assert(actualMotionNames.SequenceEqual(expectedMotionNames),
-                $"{actionName} 必须按资源名精确播放{wakeFrameCount}帧wake、dense动作、3轮48帧微循环及反向返回");
+                $"{actionName} must follow its motion profile exactly");
             var spriteFrames = GetClipFrames(clip)
                 .Cast<object>()
                 .Select(frame => GetSpriteFrameInfo(GetProperty<object>(frame, "Image")))
@@ -4106,10 +4116,42 @@ internal static class Program
                 .Select(frame => frame.Name)
                 .ToHashSet(StringComparer.Ordinal);
             Assert(actualResourceNames.SetEquals(expectedResourceNames),
-                $"{actionName} 时间轴应完整使用共享 idle、{wakeFrameCount}帧 wake、dense动作与48帧循环资源");
+                $"{actionName} timeline resource set must match its motion profile");
             Assert(frames.Length == expectedMotionNames.Length &&
-                   frames.All(frame => GetFrameDuration(frame) == motionFrameInterval),
-                $"{actionName} 的{expectedMotionNames.Length}帧必须全部使用精确60fps绝对时间间隔");
+                   frames.Select(GetFrameDuration).SequenceEqual(expectedDurations),
+                $"{actionName} frame holds must match the 60fps/profile endpoint contract");
+
+            if (profile.EndpointHoldDuration > TimeSpan.Zero)
+            {
+                var endpointName =
+                    $"luban-{actionName}-smooth-{profile.SmoothFrameCount!.Value:000}.png";
+                var endpointIndices = actualMotionNames
+                    .Select((name, index) => (name, index))
+                    .Where(candidate =>
+                        string.Equals(candidate.name, endpointName, StringComparison.Ordinal))
+                    .Select(candidate => candidate.index)
+                    .ToArray();
+                var excludedSmoothNames = BuildExpectedActionTimelineNames(actionName)
+                    .Where(name => name.StartsWith(
+                        $"luban-{actionName}-smooth-",
+                        StringComparison.Ordinal))
+                    .Skip(profile.SmoothFrameCount.Value)
+                    .ToHashSet(StringComparer.Ordinal);
+                Assert(endpointIndices.Length == 1 &&
+                       GetFrameDuration(frames[endpointIndices[0]]) ==
+                       profile.EndpointHoldDuration,
+                    $"{actionName} clean endpoint must occur once with the authored hold");
+                Assert(actualMotionNames.All(name =>
+                           !name.Contains("-loop-", StringComparison.Ordinal)) &&
+                       actualMotionNames.All(name => !excludedSmoothNames.Contains(name)),
+                    $"{actionName} must never enter loop or excluded artifact frames");
+                var effectiveEndpointHoldMilliseconds = StopwatchTicksToMilliseconds(
+                    ToProductionCharacterAnimationTicks(
+                        GetFrameDuration(frames[endpointIndices[0]])));
+                Assert(effectiveEndpointHoldMilliseconds >= 499.99d,
+                    $"{actionName} endpoint must remain visible for at least 500ms " +
+                    $"after playback scaling, actual={effectiveEndpointHoldMilliseconds:F3}ms");
+            }
             var expectedActionFrameIndex = wakeFrameCount;
             Assert(GetProperty<int>(clip, "ActionFrameIndex") == expectedActionFrameIndex &&
                    actualMotionNames[expectedActionFrameIndex] ==
@@ -4151,7 +4193,9 @@ internal static class Program
             "Todo 入场和收起必须严格互为反序，快速切换时才能映射到同一姿势");
     }
 
-    private static string[] BuildExpectedActionTimelineNames(string actionName)
+    private static string[] BuildExpectedActionTimelineNames(
+        string actionName,
+        int? smoothFrameCount = null)
     {
         var names = new List<string>
         {
@@ -4172,7 +4216,12 @@ internal static class Program
             .ToArray();
         Assert(actionFrames.Length >= 50,
             $"{actionName} must contain at least 50 dense 60fps action frames");
-        names.AddRange(actionFrames);
+        var selectedSmoothFrameCount = smoothFrameCount ?? actionFrames.Length;
+        Assert(selectedSmoothFrameCount > 0 &&
+               selectedSmoothFrameCount <= actionFrames.Length,
+            $"{actionName} requested {selectedSmoothFrameCount} smooth frames, " +
+            $"but only {actionFrames.Length} are available");
+        names.AddRange(actionFrames.Take(selectedSmoothFrameCount));
 
         return names.ToArray();
     }
@@ -4299,14 +4348,17 @@ internal static class Program
 
     private static string[] BuildExpectedMotionFrameNames(string actionName)
     {
-        var timeline = BuildExpectedActionTimelineNames(actionName);
+        var profile = GetExpectedMotionClipProfile(actionName);
+        var timeline = BuildExpectedActionTimelineNames(
+            actionName,
+            profile.SmoothFrameCount);
         var names = new List<string>();
         names.AddRange(timeline.Skip(1));
         var loopNames = Enumerable.Range(1, 48)
             .Select(frameNumber =>
                 $"luban-{actionName}-loop-{frameNumber:000}.png")
             .ToArray();
-        for (var cycle = 0; cycle < 3; cycle++)
+        for (var cycle = 0; cycle < profile.LoopCycleCount; cycle++)
         {
             names.AddRange(loopNames);
         }
@@ -4318,6 +4370,52 @@ internal static class Program
         names.AddRange(timeline.Take(returnStartIndex + 1).Reverse());
         return names.ToArray();
     }
+
+    private static TimeSpan[] BuildExpectedMotionFrameDurations(string actionName)
+    {
+        var profile = GetExpectedMotionClipProfile(actionName);
+        var names = BuildExpectedMotionFrameNames(actionName);
+        var sixtyFpsInterval = TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
+        var durations = Enumerable.Repeat(sixtyFpsInterval, names.Length).ToArray();
+        if (profile.EndpointHoldDuration <= TimeSpan.Zero)
+        {
+            return durations;
+        }
+
+        var endpointName =
+            $"luban-{actionName}-smooth-{profile.SmoothFrameCount!.Value:000}.png";
+        var endpointIndices = names
+            .Select((name, index) => (name, index))
+            .Where(candidate =>
+                string.Equals(candidate.name, endpointName, StringComparison.Ordinal))
+            .Select(candidate => candidate.index)
+            .ToArray();
+        Assert(endpointIndices.Length == 1,
+            $"{actionName} stable endpoint {endpointName} must occur exactly once");
+        durations[endpointIndices[0]] = profile.EndpointHoldDuration;
+        return durations;
+    }
+
+    private static (
+        int? SmoothFrameCount,
+        int LoopCycleCount,
+        TimeSpan EndpointHoldDuration) GetExpectedMotionClipProfile(
+            string actionName) =>
+        actionName switch
+        {
+            "cute" => (
+                SmoothFrameCount: 56,
+                LoopCycleCount: 0,
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(625)),
+            "wave" => (
+                SmoothFrameCount: 40,
+                LoopCycleCount: 0,
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(625)),
+            _ => (
+                SmoothFrameCount: null,
+                LoopCycleCount: 3,
+                EndpointHoldDuration: TimeSpan.Zero)
+        };
 
     private static TimeSpan GetFrameDuration(object frame) =>
         GetProperty<TimeSpan>(frame, "HoldDuration");
@@ -4412,6 +4510,9 @@ internal static class Program
         var resolveRoamFacing = ExtractPrivateMethodSource(
             mainSource,
             "ResolveEdgeRoamFacingScaleX");
+        var resolveRoamOrientation = ExtractPrivateMethodSource(
+            mainSource,
+            "ResolveEdgeRoamOrientation");
         var advanceRoamClock = ExtractPrivateMethodSource(
             mainSource,
             "AdvanceEdgeRoamClock");
@@ -4721,11 +4822,23 @@ internal static class Program
                 startRoamBoarding.Contains(
                     "_roamBoardingFrames[_edgeRoamBoardingStartIndex]",
                     StringComparison.Ordinal) &&
+                startRoamBoarding.Contains(
+                    "_edgeRoamDisembarkStartRotationDegrees",
+                    StringComparison.Ordinal) &&
+                startRoamBoarding.Contains(
+                    "PetRoamRotate.Angle =",
+                    StringComparison.Ordinal) &&
+                !startRoamBoarding.Contains(
+                    "PetRoamRotate.Angle = 0",
+                    StringComparison.Ordinal) &&
                 advanceRoamBoarding.Contains(
                     "? _edgeRoamBoardingStartIndex - frameStep",
                     StringComparison.Ordinal) &&
                 advanceRoamBoarding.Contains(
                     ": frameStep",
+                    StringComparison.Ordinal) &&
+                advanceRoamBoarding.Contains(
+                    "ResolveEdgeRoamDisembarkRotationDegrees(",
                     StringComparison.Ordinal) &&
                !stopRoaming.Contains(
                    "ShowStableFrame(_idleFrame)",
@@ -4758,7 +4871,16 @@ internal static class Program
                    "ShowStableFrame(_roamFlightFrames[0])",
                    StringComparison.Ordinal) &&
                resolveRoamFacing.Contains(
-                   "return deltaX > 0 ? -1 : 1",
+                   "ResolveEdgeRoamOrientation(",
+                   StringComparison.Ordinal) &&
+               resolveRoamOrientation.Contains(
+                   "verticalWeight",
+                   StringComparison.Ordinal) &&
+               resolveRoamOrientation.Contains(
+                   "verticalEdgeAngle",
+                   StringComparison.Ordinal) &&
+               resolveRoamOrientation.Contains(
+                   "mirroredAlignment",
                    StringComparison.Ordinal) &&
                advanceRoamTravel.Contains(
                    "AdvanceEdgeRoamClock(timestamp)",
@@ -4909,9 +5031,10 @@ internal static class Program
                isPageProtected.Contains("_isEdgeRoaming", StringComparison.Ordinal) &&
                isPageProtected.Contains("_roamBoardingFrames", StringComparison.Ordinal) &&
                isPageProtected.Contains("_roamFlightFrames", StringComparison.Ordinal) &&
-               failedPage.Contains("StopEdgeRoaming(", StringComparison.Ordinal),
+               failedPage.Contains("StopEdgeRoaming(", StringComparison.Ordinal) &&
+               failedPage.Contains("immediate: true", StringComparison.Ordinal),
             "巡游活动时不得触发空闲Gen2；缓存只在活动期保护boarding/flight所需分页，" +
-            "冷页失败必须安全停止巡游而不能永久忙等或闪回旧帧");
+            "冷页失败必须立即安全停止巡游而不能永久忙等、重复烘焙或闪回旧帧");
     }
 
     private static void AssertAbsoluteTimelineMathContract(MainWindow window)
@@ -4994,16 +5117,20 @@ internal static class Program
             var effectiveTotalTicks = holdTicks.Aggregate(
                 0L,
                 checked((total, ticks) => total + ticks));
-            var expectedFrameCount = BuildExpectedMotionFrameNames(actionName).Length;
+            var expectedDurations = BuildExpectedMotionFrameDurations(actionName);
+            var expectedFrameCount = expectedDurations.Length;
             var expectedAuthoredDuration = TimeSpan.FromTicks(
-                expectedFrameCount * (TimeSpan.TicksPerSecond / 60));
+                expectedDurations.Sum(duration => duration.Ticks));
+            var expectedEffectiveTotalTicks = expectedDurations
+                .Select(ToProductionCharacterAnimationTicks)
+                .Aggregate(0L, checked((total, ticks) => total + ticks));
             Assert(authoredTotal == expectedAuthoredDuration &&
-                   durations.All(duration => duration == authoredSixtyFpsInterval),
-                $"{actionName} 的{expectedFrameCount}帧必须保留精确60fps基础素材元数据，" +
+                   durations.SequenceEqual(expectedDurations),
+                $"{actionName} 的{expectedFrameCount}帧必须保留动作 profile 的精确时长，" +
                 $"实际 {authoredTotal.TotalSeconds:F3} 秒");
-            Assert(effectiveTotalTicks ==
-                   expectedFrameCount * effectiveMotionFrameTicks,
-                $"{actionName} 的运行时间轴必须逐帧使用生产ToCharacterAnimationTicks缩放");
+            Assert(effectiveTotalTicks == expectedEffectiveTotalTicks,
+                $"{actionName} 的运行时间轴必须逐帧使用生产ToCharacterAnimationTicks缩放，" +
+                "包括稳定末姿势 hold");
 
             var deadlineToleranceTicks = (long)(typeof(MainWindow).GetField(
                     "VisualFrameDeadlineToleranceTicks",
@@ -5056,6 +5183,16 @@ internal static class Program
             window,
             clips[0],
             "reaction-yawn");
+        AssertProductionDiscreteVsyncTimeline(
+            window,
+            clips.Single(clip =>
+                GetProperty<string>(clip, "ActionName") == "cute"),
+            "reaction-cute");
+        AssertProductionDiscreteVsyncTimeline(
+            window,
+            clips.Single(clip =>
+                GetProperty<string>(clip, "ActionName") == "wave"),
+            "reaction-wave");
 
         AssertTodoTransitionTimelineContract(window, source);
     }
@@ -5912,6 +6049,32 @@ internal static class Program
                     $"actual={current.DisplayedFrameIndex}");
             }
 
+            foreach (var longHoldFrameIndex in Enumerable.Range(0, holdTicks.Length)
+                         .Where(index =>
+                             StopwatchTicksToMilliseconds(holdTicks[index]) >= 400d))
+            {
+                var longHoldSamplePositions = firstRun.Samples
+                    .Select((sample, sampleIndex) => (sample, sampleIndex))
+                    .Where(candidate =>
+                        candidate.sample.DisplayedFrameIndex == longHoldFrameIndex)
+                    .Select(candidate => candidate.sampleIndex)
+                    .ToArray();
+                var expectedMinimumSamples = Math.Max(
+                    1,
+                    (int)Math.Floor(
+                        (holdTicks[longHoldFrameIndex] - deadlineToleranceTicks) /
+                        (double)Stopwatch.Frequency * refreshRate) - 1);
+                Assert(longHoldSamplePositions.Length >= expectedMinimumSamples,
+                    $"{label} frame {longHoldFrameIndex} must visibly hold across " +
+                    $"{refreshRate:F0}Hz vsync samples; expected at least " +
+                    $"{expectedMinimumSamples}, actual={longHoldSamplePositions.Length}");
+                Assert(longHoldSamplePositions
+                        .Zip(longHoldSamplePositions.Skip(1),
+                            (previous, current) => current == previous + 1)
+                        .All(isContiguous => isContiguous),
+                    $"{label} frame {longHoldFrameIndex} hold samples must be contiguous");
+            }
+
             var refreshIntervalTicks = (long)Math.Ceiling(
                 Stopwatch.Frequency / refreshRate);
             Assert(firstRun.CompletionElapsedTicks + deadlineToleranceTicks >= totalHoldTicks &&
@@ -6622,8 +6785,8 @@ internal static class Program
                 new Point(leftMiddle.X, leftMiddle.Y - 2),
                 routeBounds,
                 radius),
-            -1,
-            "左侧竖边必须始终朝屏幕内部");
+            1,
+            "左侧向上时必须保持原镜像，使头向跟随运动且人物上方朝屏幕内部");
         AssertClose(
             ResolveProductionEdgeRoamFacing(
                 leftMiddle,
@@ -6631,7 +6794,7 @@ internal static class Program
                 routeBounds,
                 radius),
             -1,
-            "左侧反向竖移也必须始终朝屏幕内部");
+            "左侧向下时必须镜像，使头向跟随运动且人物上方朝屏幕内部");
         AssertClose(
             ResolveProductionEdgeRoamFacing(
                 rightMiddle,
@@ -6639,66 +6802,313 @@ internal static class Program
                 routeBounds,
                 radius),
             1,
-            "右侧竖边必须始终朝屏幕内部");
+            "右侧向下时必须保持原镜像，使头向跟随运动且人物上方朝屏幕内部");
         AssertClose(
             ResolveProductionEdgeRoamFacing(
                 rightMiddle,
                 new Point(rightMiddle.X, rightMiddle.Y - 2),
                 routeBounds,
                 radius),
-            1,
-            "右侧反向竖移也必须始终朝屏幕内部");
+            -1,
+            "右侧向上时必须镜像，使头向跟随运动且人物上方朝屏幕内部");
     }
 
     private static void AssertEdgeRoamRotationContract()
     {
+        var routeBounds = new Rect(-1600, 0, 1600, 960);
+        var radius = (double)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgeRoamCornerRadius",
+            routeBounds)!;
         var left = new Point(-1600, 480);
         var right = new Point(0, 480);
+        var verticalCases = new[]
+        {
+            (
+                Position: left,
+                LookAhead: new Point(left.X, left.Y - 2),
+                ExpectedScaleX: 1d,
+                ExpectedAngle: 90d,
+                ExpectedHeading: new Vector(0, -1),
+                ExpectedUp: new Vector(1, 0),
+                Stage: "左侧向上"),
+            (
+                Position: right,
+                LookAhead: new Point(right.X, right.Y - 2),
+                ExpectedScaleX: -1d,
+                ExpectedAngle: -90d,
+                ExpectedHeading: new Vector(0, -1),
+                ExpectedUp: new Vector(-1, 0),
+                Stage: "右侧向上"),
+            (
+                Position: left,
+                LookAhead: new Point(left.X, left.Y + 2),
+                ExpectedScaleX: -1d,
+                ExpectedAngle: 90d,
+                ExpectedHeading: new Vector(0, 1),
+                ExpectedUp: new Vector(1, 0),
+                Stage: "左侧向下"),
+            (
+                Position: right,
+                LookAhead: new Point(right.X, right.Y + 2),
+                ExpectedScaleX: 1d,
+                ExpectedAngle: -90d,
+                ExpectedHeading: new Vector(0, 1),
+                ExpectedUp: new Vector(-1, 0),
+                Stage: "右侧向下")
+        };
+        foreach (var edgeCase in verticalCases)
+        {
+            var scaleX = ResolveProductionEdgeRoamFacing(
+                edgeCase.Position,
+                edgeCase.LookAhead,
+                routeBounds,
+                radius);
+            var angle = ResolveProductionEdgeRoamRotation(
+                edgeCase.Position,
+                edgeCase.LookAhead,
+                routeBounds,
+                scaleX,
+                0);
+            AssertClose(
+                scaleX,
+                edgeCase.ExpectedScaleX,
+                $"{edgeCase.Stage}镜像符号");
+            AssertClose(
+                angle,
+                edgeCase.ExpectedAngle,
+                $"{edgeCase.Stage}必须使用与镜像组合正确的竖边旋转角");
+            var transformedHeading = TransformAuthoredRoamHeading(
+                scaleX,
+                angle);
+            var transformedUp = TransformAuthoredRoamUp(
+                scaleX,
+                angle);
+            AssertClose(
+                transformedHeading.X,
+                edgeCase.ExpectedHeading.X,
+                $"{edgeCase.Stage}变换后的头向 X");
+            AssertClose(
+                transformedHeading.Y,
+                edgeCase.ExpectedHeading.Y,
+                $"{edgeCase.Stage}变换后的头向 Y 必须指向运动方向");
+            AssertClose(
+                transformedUp.X,
+                edgeCase.ExpectedUp.X,
+                $"{edgeCase.Stage}变换后人物上方 X 必须朝屏幕内部");
+            AssertClose(
+                transformedUp.Y,
+                edgeCase.ExpectedUp.Y,
+                $"{edgeCase.Stage}变换后人物上方 Y");
+        }
+
+        var negativeMonitorOffset = new Vector(-2880, -800);
+        var translatedRouteBounds = new Rect(
+            routeBounds.X + negativeMonitorOffset.X,
+            routeBounds.Y + negativeMonitorOffset.Y,
+            routeBounds.Width,
+            routeBounds.Height);
+        foreach (var edgeCase in verticalCases)
+        {
+            var translatedPosition =
+                edgeCase.Position + negativeMonitorOffset;
+            var translatedLookAhead =
+                edgeCase.LookAhead + negativeMonitorOffset;
+            var scaleX = ResolveProductionEdgeRoamFacing(
+                translatedPosition,
+                translatedLookAhead,
+                translatedRouteBounds,
+                radius);
+            var angle = ResolveProductionEdgeRoamRotation(
+                translatedPosition,
+                translatedLookAhead,
+                translatedRouteBounds,
+                scaleX,
+                -edgeCase.ExpectedAngle);
+            AssertClose(
+                scaleX,
+                edgeCase.ExpectedScaleX,
+                $"{edgeCase.Stage}平移到负坐标副屏后镜像不得变化");
+            AssertClose(
+                angle,
+                edgeCase.ExpectedAngle,
+                $"{edgeCase.Stage}平移到负坐标副屏后角度不得变化");
+            var transformedHeading = TransformAuthoredRoamHeading(
+                scaleX,
+                angle);
+            var transformedUp = TransformAuthoredRoamUp(
+                scaleX,
+                angle);
+            AssertClose(
+                transformedHeading.X,
+                edgeCase.ExpectedHeading.X,
+                $"{edgeCase.Stage}负坐标副屏头向 X");
+            AssertClose(
+                transformedHeading.Y,
+                edgeCase.ExpectedHeading.Y,
+                $"{edgeCase.Stage}负坐标副屏头向 Y");
+            AssertClose(
+                transformedUp.X,
+                edgeCase.ExpectedUp.X,
+                $"{edgeCase.Stage}负坐标副屏人物上方 X");
+            AssertClose(
+                transformedUp.Y,
+                edgeCase.ExpectedUp.Y,
+                $"{edgeCase.Stage}负坐标副屏人物上方 Y");
+        }
+
+        var horizontalCases = new[]
+        {
+            (
+                Position: left,
+                LookAhead: new Point(left.X + 2, left.Y),
+                ScaleX: -1d,
+                ExpectedHeading: new Vector(1, 0),
+                Stage: "向右"),
+            (
+                Position: right,
+                LookAhead: new Point(right.X - 2, right.Y),
+                ScaleX: 1d,
+                ExpectedHeading: new Vector(-1, 0),
+                Stage: "向左")
+        };
+        foreach (var edgeCase in horizontalCases)
+        {
+            var scaleX = ResolveProductionEdgeRoamFacing(
+                edgeCase.Position,
+                edgeCase.LookAhead,
+                routeBounds,
+                radius);
+            var angle = ResolveProductionEdgeRoamRotation(
+                edgeCase.Position,
+                edgeCase.LookAhead,
+                routeBounds,
+                scaleX,
+                90);
+            AssertClose(
+                scaleX,
+                edgeCase.ScaleX,
+                $"{edgeCase.Stage}横向镜像");
+            AssertClose(angle, 0, $"{edgeCase.Stage}横向绕屏必须清零旋转");
+            var transformedHeading = TransformAuthoredRoamHeading(
+                scaleX,
+                angle);
+            AssertClose(
+                transformedHeading.X,
+                edgeCase.ExpectedHeading.X,
+                $"{edgeCase.Stage}横向头向 X");
+            AssertClose(
+                transformedHeading.Y,
+                edgeCase.ExpectedHeading.Y,
+                $"{edgeCase.Stage}横向头向 Y");
+        }
+
+        var leftCorner = new Point(routeBounds.Left + radius, routeBounds.Top);
+        var shallowLeftAngle = ResolveProductionEdgeRoamRotation(
+            leftCorner,
+            leftCorner + new Vector(3, 1),
+            routeBounds,
+            -1,
+            0);
+        var balancedLeftAngle = ResolveProductionEdgeRoamRotation(
+            leftCorner,
+            leftCorner + new Vector(1, 1),
+            routeBounds,
+            -1,
+            shallowLeftAngle);
+        var steepLeftAngle = ResolveProductionEdgeRoamRotation(
+            leftCorner,
+            leftCorner + new Vector(1, 3),
+            routeBounds,
+            -1,
+            balancedLeftAngle);
+        Assert(shallowLeftAngle > 0 &&
+               shallowLeftAngle < balancedLeftAngle &&
+               balancedLeftAngle < steepLeftAngle &&
+               steepLeftAngle < 90,
+            "左侧圆角必须按切线纵向权重连续转向，不能保留旧角度后硬切 90 度");
         AssertClose(
-            ResolveProductionEdgeRoamRotation(
-                left,
-                new Point(left.X, left.Y - 2),
-                -1,
-                0),
-            -90,
-            "左侧向上绕屏时必须旋转 -90 度");
+            balancedLeftAngle,
+            45,
+            "左侧圆角横纵切线等权时必须处于连续转角中点");
+
+        var rightCorner = new Point(routeBounds.Right - radius, routeBounds.Top);
+        var balancedRightAngle = ResolveProductionEdgeRoamRotation(
+            rightCorner,
+            rightCorner + new Vector(1, 1),
+            routeBounds,
+            -1,
+            0);
         AssertClose(
-            ResolveProductionEdgeRoamRotation(
-                right,
-                new Point(right.X, right.Y - 2),
-                1,
-                0),
+            balancedRightAngle,
+            -45,
+            "右侧圆角横纵切线等权时必须连续转到 -45 度");
+
+        var straightenDuration =
+            (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeRoamDisembarkStraightenDuration",
+                StaticFlags)!.GetValue(null) ??
+                throw new InvalidOperationException(
+                    "找不到退场转正时长"));
+        var halfDurationSeconds =
+            straightenDuration.TotalSeconds / 2;
+        AssertClose(
+            ResolveProductionEdgeRoamDisembarkRotation(90, 0),
             90,
-            "右侧向上绕屏时必须旋转 90 度");
+            "竖边退场第一帧必须保留完整旋转，不得直接清零");
         AssertClose(
-            ResolveProductionEdgeRoamRotation(
-                left,
-                new Point(left.X, left.Y + 2),
-                -1,
-                0),
-            90,
-            "左侧向下绕屏时必须旋转 90 度");
+            ResolveProductionEdgeRoamDisembarkRotation(
+                90,
+                halfDurationSeconds),
+            45,
+            "正角竖边退场中点必须平滑转正");
         AssertClose(
-            ResolveProductionEdgeRoamRotation(
-                right,
-                new Point(right.X, right.Y + 2),
-                1,
-                0),
-            -90,
-            "右侧向下绕屏时必须旋转 -90 度");
+            ResolveProductionEdgeRoamDisembarkRotation(
+                -90,
+                halfDurationSeconds),
+            -45,
+            "负角竖边退场中点必须平滑转正");
         AssertClose(
-            ResolveProductionEdgeRoamRotation(
-                left,
-                new Point(left.X + 2, left.Y),
-                -1,
-                90),
+            ResolveProductionEdgeRoamDisembarkRotation(
+                90,
+                straightenDuration.TotalSeconds),
             0,
-            "恢复横向绕屏时必须清零旋转");
+            "竖边退场达到转正时长后必须回到零度");
+    }
+
+    private static Vector TransformAuthoredRoamHeading(
+        double scaleX,
+        double rotationDegrees)
+        => TransformAuthoredRoamVector(
+            new Vector(-1, 0),
+            scaleX,
+            rotationDegrees);
+
+    private static Vector TransformAuthoredRoamUp(
+        double scaleX,
+        double rotationDegrees)
+        => TransformAuthoredRoamVector(
+            new Vector(0, -1),
+            scaleX,
+            rotationDegrees);
+
+    private static Vector TransformAuthoredRoamVector(
+        Vector authoredVector,
+        double scaleX,
+        double rotationDegrees)
+    {
+        var transform = new TransformGroup();
+        transform.Children.Add(new ScaleTransform(scaleX, 1));
+        transform.Children.Add(new RotateTransform(rotationDegrees));
+        var transformed = transform.Value.Transform(authoredVector);
+        transformed.Normalize();
+        return transformed;
     }
 
     private static double ResolveProductionEdgeRoamRotation(
         Point position,
         Point lookAhead,
+        Rect routeBounds,
         double facingScaleX,
         double currentRotationDegrees) =>
         (double)(InvokeStatic(
@@ -6706,9 +7116,20 @@ internal static class Program
             "ResolveEdgeRoamRotationDegrees",
             position,
             lookAhead,
+            routeBounds,
             facingScaleX,
             currentRotationDegrees) ?? throw new InvalidOperationException(
             "生产绕屏旋转函数未返回角度"));
+
+    private static double ResolveProductionEdgeRoamDisembarkRotation(
+        double startRotationDegrees,
+        double elapsedSeconds) =>
+        (double)(InvokeStatic(
+            typeof(MainWindow),
+            "ResolveEdgeRoamDisembarkRotationDegrees",
+            startRotationDegrees,
+            elapsedSeconds) ?? throw new InvalidOperationException(
+            "生产绕屏退场转正函数未返回角度"));
 
     private static double ResolveProductionEdgeRoamFacing(
         Point position,
@@ -8723,15 +9144,15 @@ internal static class Program
             var scheduledRepeatToggle = GetField<CheckBox>(
                 todoWindow,
                 "ScheduledRepeatToggle");
-            var scheduledRepeatDays = GetField<TextBox>(
+            var scheduledRepeatCount = GetField<TextBox>(
                 todoWindow,
-                "ScheduledRepeatDaysInput");
-            var scheduledRepeatHours = GetField<TextBox>(
+                "ScheduledRepeatCountInput");
+            var scheduledRepeatUnit = GetField<ComboBox>(
                 todoWindow,
-                "ScheduledRepeatHoursInput");
-            var scheduledRepeatMinutes = GetField<TextBox>(
+                "ScheduledRepeatUnitComboBox");
+            var scheduledRepeatRulePreview = GetField<TextBlock>(
                 todoWindow,
-                "ScheduledRepeatMinutesInput");
+                "ScheduledRepeatRulePreviewText");
             var scheduledRepeatHint = GetField<TextBlock>(
                 todoWindow,
                 "ScheduledRepeatHintText");
@@ -8748,11 +9169,11 @@ internal static class Program
             Assert(todoTab.IsChecked == true &&
                    scheduledTab.IsChecked != true &&
                    todoPage.Visibility == Visibility.Visible &&
-                   scheduledPage.Visibility == Visibility.Collapsed,
+                   scheduledPage.Visibility == Visibility.Hidden,
                 "TodoWindow 创建后必须默认显示左侧“待办事项”选项卡");
             Assert(ReferenceEquals(scheduledList.ItemsSource, scheduledTasks),
                 "定时任务列表必须直接绑定传入的 ObservableCollection");
-            Assert(scheduledInput.MaxLength == 80 &&
+            Assert(scheduledInput.MaxLength == 5000 &&
                    scheduledTime.MaxLength == 8 &&
                    Equals(scheduledSubmit.Content, "设定") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed &&
@@ -8760,9 +9181,11 @@ internal static class Program
                    scheduledDateInput.IsReadOnly &&
                    !InputMethod.GetIsInputMethodEnabled(scheduledDateInput) &&
                    scheduledRepeatToggle.IsChecked != true &&
-                   scheduledRepeatDays.Text == "0" &&
-                   scheduledRepeatHours.Text == "1" &&
-                   scheduledRepeatMinutes.Text == "0" &&
+                   scheduledRepeatCount.Text == "1" &&
+                   scheduledRepeatUnit.SelectedIndex ==
+                       (int)ScheduledRepeatUnit.Hour &&
+                   scheduledRepeatRulePreview.Visibility ==
+                       Visibility.Collapsed &&
                    scheduledRepeatHint.Visibility == Visibility.Collapsed &&
                    scheduledDatePickerHost.Visibility == Visibility.Visible &&
                    scheduledTimePickerHost.Visibility == Visibility.Visible &&
@@ -8816,7 +9239,7 @@ internal static class Program
             Invoke(todoWindow, "SelectTaskPage", true, false);
             Assert(todoTab.IsChecked != true &&
                    scheduledTab.IsChecked == true &&
-                   todoPage.Visibility == Visibility.Collapsed &&
+                   todoPage.Visibility == Visibility.Hidden &&
                    scheduledPage.Visibility == Visibility.Visible,
                 "点击右侧“定时任务”后必须只显示定时页");
             todoWindow.Show();
@@ -8843,7 +9266,7 @@ internal static class Program
             Assert(todoTab.IsChecked == true &&
                    scheduledTab.IsChecked != true &&
                    todoPage.Visibility == Visibility.Visible &&
-                   scheduledPage.Visibility == Visibility.Collapsed,
+                   scheduledPage.Visibility == Visibility.Hidden,
                 "ShowDefaultTab 必须可重用地恢复默认待办页");
 
             var transientCompletionCount = 0;
@@ -9017,6 +9440,35 @@ internal static class Program
                    scheduledTimePickerPopup.IsOpen &&
                    todoWindow.IsTransientPopupOpen,
                 "勾选循环后仍必须显示首次/下一次日期和时间，且已经打开的时间浮层不能消失");
+            var completionBeforeTimeParts =
+                transientCompletionCount;
+            scheduledRepeatUnit.IsDropDownOpen = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var repeatUnitOption =
+                scheduledRepeatUnit.ItemContainerGenerator
+                    .ContainerFromIndex((int)ScheduledRepeatUnit.Day)
+                    as ComboBoxItem
+                ?? throw new InvalidOperationException(
+                    "循环单位选择器未生成“天”选项");
+            var repeatUnitOptionClick = new MouseButtonEventArgs(
+                Mouse.PrimaryDevice,
+                Environment.TickCount,
+                MouseButton.Left)
+            {
+                RoutedEvent =
+                    UIElement.PreviewMouseLeftButtonDownEvent,
+                Source = repeatUnitOption
+            };
+            repeatUnitOption.RaiseEvent(repeatUnitOptionClick);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(repeatUnitOptionClick.Handled &&
+                   scheduledRepeatUnit.SelectedIndex ==
+                       (int)ScheduledRepeatUnit.Day &&
+                   !scheduledRepeatUnit.IsDropDownOpen &&
+                   scheduledTimePickerPopup.IsOpen &&
+                   transientCompletionCount ==
+                       completionBeforeTimeParts,
+                "切换循环单位只能收起单位下拉，不能关闭正在连续选择的提醒时间窗口");
             foreach (var (picker, selectedIndex) in new[]
                      {
                          (scheduledHourPicker, 11),
@@ -9044,12 +9496,18 @@ internal static class Program
                        picker.SelectedIndex == selectedIndex &&
                        !picker.IsDropDownOpen &&
                        scheduledTimePickerPopup.IsOpen &&
-                       todoWindow.IsTransientPopupOpen,
+                       todoWindow.IsTransientPopupOpen &&
+                       transientCompletionCount ==
+                           completionBeforeTimeParts,
                     "逐一选择时、分、秒并处理完 Dispatcher 消息后，只能关闭当前下拉层，外层时间浮层必须保持打开");
             }
 
             Assert(scheduledTime.Text == "11:22:33",
                 "依次选择时、分、秒后，右侧入口必须完整同步为 11:22:33");
+            scheduledRepeatUnit.IsDropDownOpen = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledRepeatUnit.IsDropDownOpen,
+                "Esc 回归前必须真实打开循环单位下拉");
             var timePickerInputSource =
                 PresentationSource.FromVisual(scheduledHourPicker)
                 ?? throw new InvalidOperationException(
@@ -9068,6 +9526,7 @@ internal static class Program
                    !scheduledHourPicker.IsDropDownOpen &&
                    !scheduledMinutePicker.IsDropDownOpen &&
                    !scheduledSecondPicker.IsDropDownOpen &&
+                   !scheduledRepeatUnit.IsDropDownOpen &&
                    !todoWindow.IsTransientPopupOpen &&
                    transientCompletionCount == 5,
                 "焦点位于独立时间 Popup 时，Esc 仍必须关闭外层和三列下拉并且只通知一次结束");
@@ -9084,6 +9543,73 @@ internal static class Program
             Assert(!scheduledTimePickerPopup.IsOpen &&
                    scheduledTime.Text == "11:22:33",
                 "确定时必须关闭时间浮层并保留刚选好的完整 HH:mm:ss");
+            var repeatPreviewCases = new[]
+            {
+                (
+                    Unit: ScheduledRepeatUnit.Hour,
+                    Every: 1,
+                    Hour: 19,
+                    Minute: 11,
+                    Second: 10,
+                    Expected: "每 1 小时，在第 11 分 10 秒提醒"),
+                (
+                    Unit: ScheduledRepeatUnit.Hour,
+                    Every: 3,
+                    Hour: 19,
+                    Minute: 11,
+                    Second: 10,
+                    Expected: "每 3 小时，在第 11 分 10 秒提醒"),
+                (
+                    Unit: ScheduledRepeatUnit.Day,
+                    Every: 1,
+                    Hour: 11,
+                    Minute: 11,
+                    Second: 11,
+                    Expected: "每 1 天，在 11:11:11 提醒"),
+                (
+                    Unit: ScheduledRepeatUnit.Day,
+                    Every: 4,
+                    Hour: 11,
+                    Minute: 11,
+                    Second: 11,
+                    Expected: "每 4 天，在 11:11:11 提醒"),
+                (
+                    Unit: ScheduledRepeatUnit.Hour,
+                    Every: 1,
+                    Hour: 19,
+                    Minute: 22,
+                    Second: 0,
+                    Expected: "每 1 小时，在第 22 分 00 秒提醒"),
+                (
+                    Unit: ScheduledRepeatUnit.Hour,
+                    Every: 5,
+                    Hour: 19,
+                    Minute: 22,
+                    Second: 0,
+                    Expected: "每 5 小时，在第 22 分 00 秒提醒")
+            };
+            foreach (var previewCase in repeatPreviewCases)
+            {
+                scheduledRepeatUnit.SelectedIndex =
+                    (int)previewCase.Unit;
+                scheduledRepeatCount.Text =
+                    previewCase.Every.ToString(
+                        CultureInfo.InvariantCulture);
+                Invoke(
+                    todoWindow,
+                    "SetScheduledTimePickerSelection",
+                    previewCase.Hour,
+                    previewCase.Minute,
+                    previewCase.Second,
+                    true);
+                Assert(
+                    scheduledRepeatRulePreview.Visibility ==
+                        Visibility.Visible &&
+                    scheduledRepeatRulePreview.Text ==
+                        previewCase.Expected,
+                    $"循环规则预览必须简单直白：{previewCase.Expected}");
+            }
+
             Invoke(todoWindow, "ResetScheduledRepeatDraft");
 
             var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
@@ -9190,12 +9716,18 @@ internal static class Program
             string? requestedText = null;
             DateTimeOffset requestedDueAt = default;
             TimeSpan? requestedRepeatInterval = null;
-            todoWindow.ScheduledTaskAddRequested += (text, dueAt, repeatInterval) =>
+            ScheduledRepeatRule? requestedRepeatRule = null;
+            todoWindow.ScheduledTaskAddRequested += (
+                text,
+                dueAt,
+                repeatInterval,
+                repeatRule) =>
             {
                 requestedCount++;
                 requestedText = text;
                 requestedDueAt = dueAt;
                 requestedRepeatInterval = repeatInterval;
+                requestedRepeatRule = repeatRule;
             };
 
             var futureLocal = DateTime.Now.AddHours(2);
@@ -9229,7 +9761,8 @@ internal static class Program
                    requestedText == "明天带好小喇叭" &&
                    requestedDueAt == expectedDueAt &&
                    requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
-                   requestedRepeatInterval is null,
+                   requestedRepeatInterval is null &&
+                   requestedRepeatRule is null,
                 "定时页应发出去除首尾空白的内容和精确到整秒的本地 DateTimeOffset");
             Assert(scheduledInput.Text.Length == 0 &&
                    GetRawField(todoWindow, "_scheduledDate") is DateTime &&
@@ -9247,10 +9780,7 @@ internal static class Program
                        out _),
                 "成功设定后应清空内容并重置为新的秒级默认时间");
 
-            var requestedRecurringInterval =
-                TimeSpan.FromDays(2) +
-                TimeSpan.FromHours(3) +
-                TimeSpan.FromMinutes(15);
+            var requestedRecurringInterval = TimeSpan.FromHours(3);
             var recurringFirstLocal = DateTime.Now.AddDays(3);
             recurringFirstLocal = new DateTime(
                 recurringFirstLocal.Year,
@@ -9278,13 +9808,17 @@ internal static class Program
                 recurringFirstLocal.Second,
                 true);
             scheduledRepeatToggle.IsChecked = true;
-            scheduledRepeatDays.Text = "2";
-            scheduledRepeatHours.Text = "3";
-            scheduledRepeatMinutes.Text = "15";
+            scheduledRepeatCount.Text = "3";
+            scheduledRepeatUnit.SelectedIndex =
+                (int)ScheduledRepeatUnit.Hour;
             scheduledInput.Text = "  循环检查小喇叭  ";
             Assert(scheduledDatePickerHost.Visibility == Visibility.Visible &&
                    scheduledTimePickerHost.Visibility == Visibility.Visible &&
                    scheduledRepeatHint.Visibility == Visibility.Collapsed &&
+                   scheduledRepeatRulePreview.Visibility ==
+                       Visibility.Visible &&
+                   scheduledRepeatRulePreview.Text ==
+                       "每 3 小时，在第 25 分 36 秒提醒" &&
                    scheduledDateInput.Text == recurringFirstLocal.ToString(
                        "yyyy-MM-dd",
                        CultureInfo.InvariantCulture) &&
@@ -9299,14 +9833,22 @@ internal static class Program
             Assert(requestedCount == 2 &&
                    requestedText == "循环检查小喇叭" &&
                    requestedRepeatInterval == requestedRecurringInterval &&
+                   requestedRepeatRule is
+                   {
+                       Unit: ScheduledRepeatUnit.Hour,
+                       Every: 3,
+                       NextOrdinal: 0
+                   } &&
                    requestedDueAt == expectedRecurringFirstDueAt &&
                    requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0,
                 "新增循环任务必须把用户选择的日期和 HH:mm:ss 作为首次 DueAt，间隔只定义后续提醒");
             Assert(scheduledInput.Text.Length == 0 &&
                    scheduledRepeatToggle.IsChecked != true &&
-                   scheduledRepeatDays.Text == "0" &&
-                   scheduledRepeatHours.Text == "1" &&
-                   scheduledRepeatMinutes.Text == "0" &&
+                   scheduledRepeatCount.Text == "1" &&
+                   scheduledRepeatUnit.SelectedIndex ==
+                       (int)ScheduledRepeatUnit.Hour &&
+                   scheduledRepeatRulePreview.Visibility ==
+                       Visibility.Collapsed &&
                    scheduledDatePickerHost.Visibility == Visibility.Visible &&
                    scheduledTimePickerHost.Visibility == Visibility.Visible &&
                    scheduledRepeatHint.Visibility == Visibility.Collapsed,
@@ -9355,24 +9897,52 @@ internal static class Program
             string? requestedEditText = null;
             DateTimeOffset requestedEditDueAt = default;
             TimeSpan? requestedEditRepeatInterval = null;
+            ScheduledRepeatRule? requestedEditRepeatRule = null;
             todoWindow.ScheduledTaskEditRequested += (
                 item,
                 text,
                 dueAt,
-                repeatInterval) =>
+                repeatInterval,
+                repeatRule) =>
             {
                 editRequestedCount++;
                 requestedEditItem = item;
                 requestedEditText = text;
                 requestedEditDueAt = dueAt;
                 requestedEditRepeatInterval = repeatInterval;
+                requestedEditRepeatRule = repeatRule;
             };
 
             Invoke(
                 todoWindow,
                 "ScheduledTaskEditButton_Click",
                 editButton,
-                new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    editButton));
+            var taskTextEditor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var taskTextEditorInput = GetField<TextBox>(
+                taskTextEditor,
+                "EditorTextBox");
+            Assert(taskTextEditor.IsVisible,
+                "点击定时任务铅笔必须显示白色编辑框");
+            Assert(ReferenceEquals(taskTextEditor.Owner, todoWindow),
+                "定时任务白色编辑框必须由待办面板拥有");
+            Assert(
+                Math.Abs(taskTextEditor.Width - 6 * 96 / 2.54) <= 1 &&
+                Math.Abs(taskTextEditor.Height - 3.708 * 96 / 2.54) <= 1,
+                $"定时任务白色编辑框初始大小必须为6cm×3.708cm，实际为{taskTextEditor.Width:F3}×{taskTextEditor.Height:F3} DIP");
+            Assert(taskTextEditor.ResizeMode == ResizeMode.CanResize,
+                "定时任务白色编辑框必须支持拖动缩放");
+            Assert(
+                taskTextEditorInput.MaxLength == 5000 &&
+                taskTextEditorInput.AcceptsReturn,
+                "定时任务白色编辑框必须支持多行且最多5000字");
+            taskTextEditor.CloseWithoutSaving();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Invoke(todoWindow, "BeginScheduledTaskFormEdit", editItem);
             Assert(ReferenceEquals(
                    GetRawField(todoWindow, "_editingScheduledTask"),
                        editItem) &&
@@ -9454,9 +10024,8 @@ internal static class Program
 
             Invoke(
                 todoWindow,
-                "ScheduledTaskEditButton_Click",
-                editButton,
-                new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
+                "BeginScheduledTaskFormEdit",
+                editItem);
             scheduledInput.Text = "这一版应该被取消";
             Invoke(
                 todoWindow,
@@ -9476,9 +10045,8 @@ internal static class Program
 
             Invoke(
                 todoWindow,
-                "ScheduledTaskEditButton_Click",
-                editButton,
-                new RoutedEventArgs(ButtonBase.ClickEvent, editButton));
+                "BeginScheduledTaskFormEdit",
+                editItem);
             var pastLocal = DateTime.Now.AddMinutes(-5);
             pastLocal = new DateTime(
                 pastLocal.Year,
@@ -9534,19 +10102,16 @@ internal static class Program
             var recurringEditButton = new Button { Tag = recurringEditItem };
             Invoke(
                 todoWindow,
-                "ScheduledTaskEditButton_Click",
-                recurringEditButton,
-                new RoutedEventArgs(
-                    ButtonBase.ClickEvent,
-                    recurringEditButton));
+                "BeginScheduledTaskFormEdit",
+                recurringEditItem);
             Assert(ReferenceEquals(
                        GetRawField(todoWindow, "_editingScheduledTask"),
                        recurringEditItem) &&
                    scheduledInput.Text == recurringEditItem.Text &&
                    scheduledRepeatToggle.IsChecked == true &&
-                   scheduledRepeatDays.Text == "1" &&
-                   scheduledRepeatHours.Text == "2" &&
-                   scheduledRepeatMinutes.Text == "30" &&
+                   scheduledRepeatCount.Text == "1590" &&
+                   scheduledRepeatUnit.SelectedIndex ==
+                       (int)ScheduledRepeatUnit.Minute &&
                    scheduledDatePickerHost.Visibility == Visibility.Visible &&
                    scheduledTimePickerHost.Visibility == Visibility.Visible &&
                    scheduledRepeatHint.Visibility == Visibility.Collapsed &&
@@ -9571,17 +10136,14 @@ internal static class Program
 
             Invoke(
                 todoWindow,
-                "ScheduledTaskEditButton_Click",
-                recurringEditButton,
-                new RoutedEventArgs(
-                    ButtonBase.ClickEvent,
-                    recurringEditButton));
+                "BeginScheduledTaskFormEdit",
+                recurringEditItem);
             var changedRecurringInterval =
-                TimeSpan.FromHours(4) + TimeSpan.FromMinutes(5);
+                TimeSpan.FromHours(4);
             scheduledInput.Text = "循环任务修改周期";
-            scheduledRepeatDays.Text = "0";
-            scheduledRepeatHours.Text = "4";
-            scheduledRepeatMinutes.Text = "5";
+            scheduledRepeatCount.Text = "4";
+            scheduledRepeatUnit.SelectedIndex =
+                (int)ScheduledRepeatUnit.Hour;
             Invoke(todoWindow, "RequestScheduledTaskSubmit");
             Assert(editRequestedCount == 3 &&
                    ReferenceEquals(
@@ -9589,17 +10151,20 @@ internal static class Program
                        recurringEditItem) &&
                    requestedEditText == "循环任务修改周期" &&
                    requestedEditRepeatInterval == changedRecurringInterval &&
+                   requestedEditRepeatRule is
+                   {
+                       Unit: ScheduledRepeatUnit.Hour,
+                       Every: 4,
+                       NextOrdinal: 0
+                   } &&
                    requestedEditDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
                    requestedEditDueAt == recurringEditDueAt,
                 "循环任务只修改间隔时必须保留已经选择的下一次 DueAt，不能从保存时刻偷偷重新计时");
 
             Invoke(
                 todoWindow,
-                "ScheduledTaskEditButton_Click",
-                recurringEditButton,
-                new RoutedEventArgs(
-                    ButtonBase.ClickEvent,
-                    recurringEditButton));
+                "BeginScheduledTaskFormEdit",
+                recurringEditItem);
             var selectedNextLocal = DateTime.Now.AddDays(7);
             selectedNextLocal = new DateTime(
                 selectedNextLocal.Year,
@@ -9640,6 +10205,67 @@ internal static class Program
                    requestedEditDueAt == expectedSelectedNextDueAt,
                 "循环任务修改下一次日期和 HH:mm:ss 时，必须把该精确选择作为新的 DueAt");
 
+            var preservedRuleAnchor = DateTime.Now.AddDays(14);
+            preservedRuleAnchor = new DateTime(
+                preservedRuleAnchor.Year,
+                preservedRuleAnchor.Month,
+                preservedRuleAnchor.Day,
+                9,
+                11,
+                10,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(preservedRuleAnchor))
+            {
+                preservedRuleAnchor = preservedRuleAnchor.AddHours(1);
+            }
+
+            Assert(
+                ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Hour,
+                    3,
+                    preservedRuleAnchor,
+                    TimeZoneInfo.Local,
+                    out var basePreservedRule,
+                    out _),
+                "非零序号循环任务回归必须先创建有效规则");
+            var preservedRule =
+                (basePreservedRule ??
+                 throw new InvalidOperationException(
+                     "循环规则创建成功后不得返回空规则")) with
+                {
+                    NextOrdinal = 7
+                };
+            Assert(
+                ScheduledRepeatSchedule.TryGetOccurrence(
+                    preservedRule,
+                    preservedRule.NextOrdinal,
+                    out var preservedRuleDueAt),
+                "非零序号循环任务回归必须能解析当前到期时间");
+            var ruleEditItem = new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "保留循环进度",
+                DueAt = preservedRuleDueAt,
+                CreatedAt = DateTimeOffset.Now,
+                RepeatInterval = TimeSpan.FromHours(3),
+                RepeatRule = preservedRule
+            };
+            scheduledTasks.Add(ruleEditItem);
+            Invoke(
+                todoWindow,
+                "BeginScheduledTaskFormEdit",
+                ruleEditItem);
+            scheduledInput.Text = "  只修改循环任务文案  ";
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            Assert(editRequestedCount == 5 &&
+                   ReferenceEquals(requestedEditItem, ruleEditItem) &&
+                   requestedEditText == "只修改循环任务文案" &&
+                   requestedEditDueAt == preservedRuleDueAt &&
+                   requestedEditRepeatInterval == TimeSpan.FromHours(3) &&
+                   requestedEditRepeatRule == preservedRule &&
+                   requestedEditRepeatRule?.NextOrdinal == 7,
+                "只修改循环任务文案必须原样保留 DueAt、规则和 NextOrdinal，不能让重启后的循环进度归零");
+
             var deleteItem = new ScheduledTaskItem
             {
                 Text = "可删除的定时任务",
@@ -9656,6 +10282,42 @@ internal static class Program
                 new RoutedEventArgs());
             Assert(ReferenceEquals(requestedDelete, deleteItem),
                 "定时任务删除按钮必须传回当前绑定实例");
+
+            var imeFallbackAcceptedCount = 0;
+            string? imeFallbackAcceptedText = null;
+            var imeFallbackEditor = new TaskTextEditWindow(
+                "输入法失活回归",
+                "  输入法最终文字  ",
+                showAdvancedEdit: false)
+            {
+                Left = -10000,
+                Top = -10000,
+                ShowActivated = false
+            };
+            imeFallbackEditor.TextAccepted += text =>
+            {
+                imeFallbackAcceptedCount++;
+                imeFallbackAcceptedText = text;
+            };
+            SetField(imeFallbackEditor, "_isImeComposing", true);
+            imeFallbackEditor.Show();
+            todoWindow.Activate();
+            todoTab.Focus();
+            Keyboard.Focus(todoTab);
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Invoke(
+                imeFallbackEditor,
+                "TaskTextEditWindow_Deactivated",
+                imeFallbackEditor,
+                EventArgs.Empty);
+            Dispatcher.CurrentDispatcher.Invoke(
+                DispatcherPriority.ContextIdle,
+                new Action(() => { }));
+            Assert(imeFallbackAcceptedCount == 1 &&
+                   imeFallbackAcceptedText == "输入法最终文字" &&
+                   !imeFallbackEditor.IsVisible,
+                $"白色编辑窗在输入法组合期间失活时，必须等到 ContextIdle 后只保存一次；即使输入法取消组合且不发 committed 事件也不能挂住。实际 count={imeFallbackAcceptedCount}, text={imeFallbackAcceptedText ?? "<null>"}, visible={imeFallbackEditor.IsVisible}, active={imeFallbackEditor.IsActive}, focus={imeFallbackEditor.IsKeyboardFocusWithin}, composing={GetField<bool>(imeFallbackEditor, "_isImeComposing")}, pending={GetField<bool>(imeFallbackEditor, "_commitAfterImeDeactivationPending")}");
+            imeFallbackEditor.CloseWithoutSaving();
         }
         finally
         {
@@ -9741,6 +10403,7 @@ internal static class Program
                 moving,
                 "  改到更早并修正文案  ",
                 now.AddSeconds(10).AddMilliseconds(875),
+                null,
                 null);
             Assert(scheduledTasks.SequenceEqual([moving, first, middle]) &&
                    moving.Id == movingId &&
@@ -9765,7 +10428,8 @@ internal static class Program
                 moving,
                 "改到更晚",
                 now.AddSeconds(50).AddMilliseconds(499),
-                editedRepeatInterval);
+                editedRepeatInterval,
+                null);
             Assert(scheduledTasks.SequenceEqual([first, middle, moving]) &&
                    moving.Id == movingId &&
                    moving.CreatedAt == movingCreatedAt &&
@@ -9827,6 +10491,7 @@ internal static class Program
                 active,
                 "不允许覆盖正在显示的内容",
                 now.AddMinutes(10),
+                null,
                 null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
@@ -9850,6 +10515,7 @@ internal static class Program
                 queuedFirst,
                 "  排队任务延后  ",
                 now.AddSeconds(30).AddMilliseconds(900),
+                null,
                 null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
@@ -9873,6 +10539,7 @@ internal static class Program
                 queuedFirst,
                 "排队任务提前",
                 now.AddSeconds(-1),
+                null,
                 null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
@@ -10210,6 +10877,7 @@ internal static class Program
                 expectedOrder[1],
                 "不允许覆盖已展示批次",
                 now.AddHours(1),
+                null,
                 null);
             Invoke(
                 window,
@@ -10567,12 +11235,14 @@ internal static class Program
                 "TodoWindow_ScheduledTaskAddRequested",
                 "同秒提醒甲",
                 dueAt,
+                null,
                 null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "同秒提醒乙",
                 dueAt,
+                null,
                 null);
             Assert(scheduledTasks.Count == 2 &&
                    scheduledTasks.All(item => item.DueAt == dueAt) &&
@@ -10838,6 +11508,7 @@ internal static class Program
                 "TodoWindow_ScheduledTaskAddRequested",
                 "应用恢复后的逾期提醒",
                 currentNow.AddSeconds(-5),
+                null,
                 null);
             var overdueActive = GetField<ScheduledTaskItem>(
                 window,
@@ -10874,12 +11545,14 @@ internal static class Program
                 "TodoWindow_ScheduledTaskAddRequested",
                 "回拨提醒甲",
                 rewindDueAt,
+                null,
                 null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "回拨提醒乙",
                 rewindDueAt,
+                null,
                 null);
             var rewindOrder = scheduledTasks.ToArray();
             Assert(rewindOrder.Length == 2,
@@ -11520,6 +12193,8 @@ internal static class Program
                 "列表可视区域必须完整显示前五行");
 
             var input = GetField<TextBox>(todoWindow, "TodoInput");
+            Assert(input.MaxLength == 5000,
+                "待办输入框必须允许单项最多5000字");
             input.Text = "输入框无选区也应复制全文";
             input.Select(0, 0);
             Assert((bool)Invoke(todoWindow, "CanCopyFromTextBox", input)! &&
@@ -11599,6 +12274,7 @@ internal static class Program
                    longItemTextBox.Focusable &&
                    longItemTextBox.Cursor == Cursors.IBeam &&
                    longItemTextBox.TextWrapping == TextWrapping.Wrap &&
+                   longItemTextBox.MaxLength == 5000 &&
                    longItemTextBox.MaxLines == 2 &&
                    longItemTextBox.MaxHeight <= 36.5 &&
                    longItemTextBox.VerticalScrollBarVisibility == ScrollBarVisibility.Hidden &&
@@ -11617,28 +12293,50 @@ internal static class Program
                 $"{longItemContainer.ActualHeight:F1}, listWidth={itemsControl.ActualWidth:F1}");
             Assert(string.Equals(longItemTextBox.Text, longTodoText, StringComparison.Ordinal),
                 "长待办只读 TextBox 必须显示完整绑定文本而不是截断数据");
-            var longItemToolTip = longItemTextBox.ToolTip as ToolTip
-                ?? throw new InvalidOperationException("长待办必须提供全文 ToolTip");
-            var longItemToolTipText = longItemToolTip.Content as TextBlock
-                ?? throw new InvalidOperationException("长待办 ToolTip 必须使用可换行文字");
-            var toolTipTextBinding = System.Windows.Data.BindingOperations.GetBinding(
-                longItemToolTipText,
-                TextBlock.TextProperty);
-            Assert(longItemToolTip.MaxWidth <= 360.5 &&
-                   longItemToolTipText.TextWrapping == TextWrapping.Wrap &&
+            Invoke(
+                todoWindow,
+                "TaskRow_MouseEnter",
+                longItemRowBorder,
+                new MouseEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var taskFullTextPopup = GetField<Popup>(
+                todoWindow,
+                "TaskFullTextPopup");
+            var taskFullTextPreview = GetField<TextBox>(
+                todoWindow,
+                "TaskFullTextPreviewTextBox");
+            Assert(taskFullTextPopup.IsOpen &&
+                   taskFullTextPreview.IsReadOnly &&
+                   taskFullTextPreview.IsReadOnlyCaretVisible &&
+                   taskFullTextPreview.TextWrapping ==
+                       TextWrapping.Wrap &&
+                   taskFullTextPreview.VerticalScrollBarVisibility ==
+                       ScrollBarVisibility.Auto &&
                    string.Equals(
-                       longItemTextBox.FontFamily.Source,
+                       taskFullTextPreview.Text,
+                       longTodoText,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       taskFullTextPreview.FontFamily.Source,
                        "Microsoft YaHei",
-                       StringComparison.OrdinalIgnoreCase) &&
+                       StringComparison.OrdinalIgnoreCase),
+                "悬停待办行必须显示可滚动、可选中复制的完整文字浮层，不能再使用无法进入的普通 ToolTip");
+            taskFullTextPreview.Select(3, 10);
+            Assert((bool)Invoke(
+                       todoWindow,
+                       "CanCopyFromTextBox",
+                       taskFullTextPreview)! &&
                    string.Equals(
-                       longItemToolTipText.FontFamily.Source,
-                       "Microsoft YaHei",
-                       StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(
-                       toolTipTextBinding?.Path?.Path,
-                       "Text",
+                       (string?)Invoke(
+                           todoWindow,
+                           "GetCopyText",
+                           taskFullTextPreview),
+                       taskFullTextPreview.SelectedText,
                        StringComparison.Ordinal),
-                "长待办 ToolTip 必须限宽并自动换行显示全文");
+                "全文浮层中的文字必须支持选择并由 Ctrl+C 精确复制选中内容");
+            Invoke(todoWindow, "CloseTaskFullTextPreview");
             longItemTextBox.Select(0, 0);
             Assert(!(bool)Invoke(todoWindow, "CanCopyFromTextBox", longItemTextBox)!,
                 "列表只读文字无选区时不得误复制整条待办");
@@ -11672,6 +12370,29 @@ internal static class Program
                 editedCount++;
                 lastEditedItem = item;
             };
+
+            Invoke(
+                todoWindow,
+                "EditButton_Click",
+                longItemEditButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    longItemEditButton));
+            var todoTextEditor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var todoTextEditorInput = GetField<TextBox>(
+                todoTextEditor,
+                "EditorTextBox");
+            Assert(todoTextEditor.IsVisible &&
+                   ReferenceEquals(todoTextEditor.Owner, todoWindow) &&
+                   Math.Abs(todoTextEditor.Width - 6 * 96 / 2.54) <= 1 &&
+                   Math.Abs(todoTextEditor.Height - 3.708 * 96 / 2.54) <= 1 &&
+                   todoTextEditor.ResizeMode == ResizeMode.CanResize &&
+                   todoTextEditorInput.MaxLength == 5000,
+                "点击待办铅笔必须打开初始6cm×3.708cm、可拖动缩放且最多5000字的白色可爱编辑框");
+            todoTextEditor.CloseWithoutSaving();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
 
             Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
             Assert(!longItemTextBox.IsReadOnly && longItemTextBox.IsKeyboardFocusWithin,
@@ -13983,6 +14704,33 @@ internal static class Program
                    "cache._childWidth = movedChildRect.Right - movedChildRect.Left",
                    StringComparison.Ordinal),
             "待办窗口目标物理像素未变时必须跳过SetWindowPos");
+        var ownedWindowPositionerType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.OwnedWindowPositioner",
+            throwOnError: true)!;
+        Assert((bool)InvokeStatic(
+                   ownedWindowPositionerType,
+                   "IsChildActuallyOnLeft",
+                   300,
+                   280,
+                   600,
+                   790)! &&
+               !(bool)InvokeStatic(
+                   ownedWindowPositionerType,
+                   "IsChildActuallyOnLeft",
+                   800,
+                   280,
+                   600,
+                   790)! &&
+               positionerSource.Contains(
+                   "childIsOnLeft = IsChildActuallyOnLeft",
+                   StringComparison.Ordinal) &&
+               ExtractPrivateMethodSource(
+                       mainSource,
+                       "UpdateTodoWindowPosition")
+                   .Contains(
+                       "actualLeft + bubbleWidth / 2",
+                       StringComparison.Ordinal),
+            "待办气泡箭头必须按最终实际窗口中心相对宠物中心决定左右，不能沿用拖动中已失效的候选边");
         var prepareEnvelope = ExtractPrivateMethodSource(
             mainSource,
             "PreparePetSizePreviewEnvelope");
