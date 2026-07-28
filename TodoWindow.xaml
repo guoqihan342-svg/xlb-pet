@@ -430,6 +430,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="38" />
+                        <RowDefinition Height="28" />
                         <RowDefinition Height="36" />
                         <RowDefinition Height="18" />
                     </Grid.RowDefinitions>
@@ -489,7 +490,9 @@
                                                            FontSize="10.5"
                                                            FontWeight="SemiBold"
                                                            Foreground="#C87534"
-                                                           Text="{Binding DueAtDisplayText}" />
+                                                           Text="{Binding DueAtDisplayText}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding DueAtDisplayText}" />
                                                 <TextBox Grid.Row="1"
                                                          MinWidth="0"
                                                          Padding="0"
@@ -626,7 +629,93 @@
                         </TextBlock>
                     </Grid>
 
-                    <Grid Grid.Row="2" Margin="0,4,0,0">
+                    <Grid Grid.Row="2"
+                          Margin="1,2,1,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="64" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="ScheduledRepeatToggle"
+                                  Grid.Column="0"
+                                  VerticalAlignment="Center"
+                                  AutomationProperties.Name="循环提醒"
+                                  Content="循环"
+                                  Cursor="Hand"
+                                  FontFamily="Microsoft YaHei"
+                                  FontSize="11.5"
+                                  Foreground="#725B49"
+                                  ToolTip="按固定的天、小时、分钟循环提醒"
+                                  Checked="ScheduledRepeatToggle_Changed"
+                                  Unchecked="ScheduledRepeatToggle_Changed" />
+                        <StackPanel Grid.Column="1"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    IsEnabled="{Binding IsChecked, ElementName=ScheduledRepeatToggle}"
+                                    Orientation="Horizontal">
+                            <TextBox x:Name="ScheduledRepeatDaysInput"
+                                     Width="34"
+                                     Height="24"
+                                     Padding="2,1"
+                                     VerticalContentAlignment="Center"
+                                     AutomationProperties.Name="循环间隔天数"
+                                     BorderBrush="#E4C8AA"
+                                     FontFamily="Microsoft YaHei"
+                                     FontSize="11"
+                                     MaxLength="3"
+                                     Text="0"
+                                     TextAlignment="Center"
+                                     TextChanged="ScheduledRepeatInput_TextChanged"
+                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
+                            <TextBlock Margin="2,0,4,0"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Microsoft YaHei"
+                                       FontSize="11"
+                                       Foreground="#725B49"
+                                       Text="天" />
+                            <TextBox x:Name="ScheduledRepeatHoursInput"
+                                     Width="28"
+                                     Height="24"
+                                     Padding="2,1"
+                                     VerticalContentAlignment="Center"
+                                     AutomationProperties.Name="循环间隔小时数"
+                                     BorderBrush="#E4C8AA"
+                                     FontFamily="Microsoft YaHei"
+                                     FontSize="11"
+                                     MaxLength="2"
+                                     Text="1"
+                                     TextAlignment="Center"
+                                     TextChanged="ScheduledRepeatInput_TextChanged"
+                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
+                            <TextBlock Margin="2,0,4,0"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Microsoft YaHei"
+                                       FontSize="11"
+                                       Foreground="#725B49"
+                                       Text="时" />
+                            <TextBox x:Name="ScheduledRepeatMinutesInput"
+                                     Width="28"
+                                     Height="24"
+                                     Padding="2,1"
+                                     VerticalContentAlignment="Center"
+                                     AutomationProperties.Name="循环间隔分钟数"
+                                     BorderBrush="#E4C8AA"
+                                     FontFamily="Microsoft YaHei"
+                                     FontSize="11"
+                                     MaxLength="2"
+                                     Text="0"
+                                     TextAlignment="Center"
+                                     TextChanged="ScheduledRepeatInput_TextChanged"
+                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
+                            <TextBlock Margin="2,0,0,0"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Microsoft YaHei"
+                                       FontSize="11"
+                                       Foreground="#725B49"
+                                       Text="分" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Grid.Row="3" Margin="0,4,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="102" />
                             <ColumnDefinition Width="4" />
@@ -634,6 +723,16 @@
                             <ColumnDefinition Width="4" />
                             <ColumnDefinition Width="48" />
                         </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="ScheduledRepeatHintText"
+                                   Grid.Column="0"
+                                   Grid.ColumnSpan="3"
+                                   Margin="6,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="11"
+                                   Foreground="#A26D43"
+                                   Text="保存后按间隔首次提醒"
+                                   Visibility="Collapsed" />
                         <Border x:Name="ScheduledDatePickerHost"
                                 Grid.Column="0"
                                 Height="30"
@@ -1476,7 +1575,7 @@
                                 Click="ScheduledTaskAddButton_Click" />
                     </Grid>
 
-                    <Grid Grid.Row="3">
+                    <Grid Grid.Row="4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
@@ -1510,20 +1609,40 @@
                     </Grid>
                 </Grid>
 
-                <CheckBox x:Name="EdgeRoamingToggle"
-                          Grid.Row="2"
-                          HorizontalAlignment="Left"
-                          VerticalAlignment="Center"
-                          AutomationProperties.Name="绕屏动画"
-                          Content="绕屏动画"
-                          Cursor="Hand"
-                          FontFamily="Microsoft YaHei"
-                          FontSize="12"
-                          Foreground="#515966"
-                          IsChecked="True"
-                          ToolTip="控制小鲁班是否自动绕着屏幕移动"
-                          Checked="EdgeRoamingToggle_Changed"
-                          Unchecked="EdgeRoamingToggle_Changed" />
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <CheckBox x:Name="EdgeRoamingToggle"
+                              Grid.Column="0"
+                              HorizontalAlignment="Left"
+                              VerticalAlignment="Center"
+                              AutomationProperties.Name="绕屏动画"
+                              Content="绕屏动画"
+                              Cursor="Hand"
+                              FontFamily="Microsoft YaHei"
+                              FontSize="12"
+                              Foreground="#515966"
+                              IsChecked="True"
+                              ToolTip="控制小鲁班是否自动绕着屏幕移动"
+                              Checked="EdgeRoamingToggle_Changed"
+                              Unchecked="EdgeRoamingToggle_Changed" />
+                    <CheckBox x:Name="StartupToggle"
+                              Grid.Column="1"
+                              HorizontalAlignment="Left"
+                              VerticalAlignment="Center"
+                              AutomationProperties.Name="开机自启"
+                              Content="开机自启"
+                              Cursor="Hand"
+                              FontFamily="Microsoft YaHei"
+                              FontSize="12"
+                              Foreground="#515966"
+                              IsChecked="False"
+                              ToolTip="登录 Windows 后自动启动小鲁班"
+                              Checked="StartupToggle_Changed"
+                              Unchecked="StartupToggle_Changed" />
+                </Grid>
 
                 <Grid Grid.Row="3" Margin="0,2,0,4">
                     <Grid.ColumnDefinitions>

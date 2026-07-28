@@ -10,6 +10,9 @@ namespace LubanDesktopPet;
 
 public sealed class ScheduledTaskStore
 {
+    internal static readonly TimeSpan MaximumRepeatInterval =
+        TimeSpan.FromDays(1000);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -106,7 +109,8 @@ public sealed class ScheduledTaskStore
                     item.Id,
                     item.Text,
                     item.DueAt,
-                    item.CreatedAt))
+                    item.CreatedAt,
+                    item.RepeatInterval?.Ticks))
                 .ToArray();
             var json = JsonSerializer.Serialize(records, JsonOptions);
 
@@ -132,6 +136,22 @@ public sealed class ScheduledTaskStore
             : value.AddTicks(-remainingTicks);
     }
 
+    internal static TimeSpan? NormalizeRepeatInterval(TimeSpan? value)
+    {
+        if (value is not { } interval ||
+            interval < TimeSpan.FromMinutes(1) ||
+            interval >= MaximumRepeatInterval)
+        {
+            return null;
+        }
+
+        var wholeMinuteTicks =
+            interval.Ticks - interval.Ticks % TimeSpan.TicksPerMinute;
+        return wholeMinuteTicks >= TimeSpan.TicksPerMinute
+            ? TimeSpan.FromTicks(wholeMinuteTicks)
+            : null;
+    }
+
     private static ScheduledTaskItem? ToItem(ScheduledTaskRecord? record)
     {
         if (record is null)
@@ -144,7 +164,11 @@ public sealed class ScheduledTaskStore
             Id = record.Id,
             Text = record.Text ?? string.Empty,
             DueAt = record.DueAt,
-            CreatedAt = record.CreatedAt
+            CreatedAt = record.CreatedAt,
+            RepeatInterval = NormalizeRepeatInterval(
+                record.RepeatIntervalTicks is { } ticks && ticks > 0
+                    ? TimeSpan.FromTicks(ticks)
+                    : null)
         };
     }
 
@@ -174,7 +198,8 @@ public sealed class ScheduledTaskStore
                 Id = item.Id,
                 Text = item.Text.Trim(),
                 DueAt = dueAt,
-                CreatedAt = createdAt
+                CreatedAt = createdAt,
+                RepeatInterval = NormalizeRepeatInterval(item.RepeatInterval)
             });
         }
 
@@ -214,5 +239,6 @@ public sealed class ScheduledTaskStore
         Guid Id,
         string? Text,
         DateTimeOffset DueAt,
-        DateTimeOffset CreatedAt);
+        DateTimeOffset CreatedAt,
+        long? RepeatIntervalTicks = null);
 }

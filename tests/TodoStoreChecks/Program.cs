@@ -284,6 +284,95 @@ static void CheckScheduledTaskStore(string tempDirectory)
         loaded[1].DueTimeDisplayText ==
             localDueAt.ToString("HH:mm:ss", chineseCulture),
         "定时任务应提供可直接用于 UI 绑定的中文本地日期和秒级时间");
+
+    var recurringPath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "recurring-scheduled-tasks.json");
+    var recurringStore = new ScheduledTaskStore(recurringPath);
+    var expectedRepeatInterval =
+        TimeSpan.FromDays(1) + TimeSpan.FromHours(2) + TimeSpan.FromMinutes(3);
+    var recurringItem = new ScheduledTaskItem
+    {
+        Id = Guid.Parse("20000000-0000-0000-0000-000000000001"),
+        Text = "循环提醒",
+        DueAt = dueAt.AddDays(1),
+        CreatedAt = createdAt,
+        RepeatInterval = expectedRepeatInterval
+    };
+    Assert(recurringStore.Save([recurringItem]),
+        "1 天 2 小时 3 分钟的循环间隔应保存成功");
+    var recurringReloaded = recurringStore.Load();
+    Assert(recurringReloaded.Count == 1 &&
+           recurringReloaded[0].RepeatInterval == expectedRepeatInterval &&
+           recurringReloaded[0].IsRecurring,
+        "1 天 2 小时 3 分钟的循环间隔必须完整往返");
+    Assert(
+        recurringReloaded[0].RepeatDisplayText == "每1天2小时3分钟" &&
+        recurringReloaded[0].DueAtDisplayText.Contains(
+            "每1天2小时3分钟",
+            StringComparison.Ordinal) &&
+        recurringReloaded[0].DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal),
+        "循环任务的显示文字应包含完整间隔和下次提醒提示");
+
+    var legacyPath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "legacy-scheduled-tasks.json");
+    var legacyStore = new ScheduledTaskStore(legacyPath);
+    var legacyRecord = new[]
+    {
+        new
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000002"),
+            Text = "旧版单次提醒",
+            DueAt = dueAt.AddDays(2),
+            CreatedAt = createdAt
+        }
+    };
+    File.WriteAllText(legacyPath, JsonSerializer.Serialize(legacyRecord));
+    var legacyReloaded = legacyStore.Load();
+    Assert(legacyReloaded.Count == 1 &&
+           legacyReloaded[0].RepeatInterval is null &&
+           !legacyReloaded[0].IsRecurring,
+        "旧版 JSON 缺少循环间隔字段时必须兼容为单次提醒");
+    Assert(legacyReloaded[0].RepeatDisplayText == "单次",
+        "旧版单次任务的显示文字应明确为单次");
+
+    var invalidRepeatPath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "invalid-repeat-scheduled-tasks.json");
+    var invalidRepeatStore = new ScheduledTaskStore(invalidRepeatPath);
+    var invalidRepeatItems = new[]
+    {
+        new ScheduledTaskItem
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000003"),
+            Text = "不足一分钟",
+            DueAt = dueAt.AddDays(3),
+            CreatedAt = createdAt,
+            RepeatInterval = TimeSpan.FromSeconds(59)
+        },
+        new ScheduledTaskItem
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000004"),
+            Text = "达到一千天",
+            DueAt = dueAt.AddDays(4),
+            CreatedAt = createdAt,
+            RepeatInterval = TimeSpan.FromDays(1000)
+        }
+    };
+    Assert(invalidRepeatStore.Save(invalidRepeatItems),
+        "非法循环间隔不应阻止任务保存");
+    var invalidRepeatReloaded = invalidRepeatStore.Load();
+    Assert(invalidRepeatReloaded.Count == 2 &&
+           invalidRepeatReloaded.All(item =>
+               item.RepeatInterval is null && !item.IsRecurring),
+        "不足 1 分钟及达到 1000 天的循环间隔都必须归一为 null");
+
     Assert(store.Save(loaded.Reverse()), "定时任务应能原子覆盖旧文件");
     var overwritten = store.Load();
     Assert(overwritten.Count == 4 &&

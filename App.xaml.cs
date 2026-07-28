@@ -39,9 +39,38 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         AppLogger.Info($"应用启动，版本 {typeof(App).Assembly.GetName().Version}");
+        AppLogger.Info(
+            e.Args.Any(argument =>
+                string.Equals(
+                    argument,
+                    "--autostart",
+                    StringComparison.OrdinalIgnoreCase))
+                ? "启动来源：Windows 开机自启"
+                : "启动来源：手动启动");
         base.OnStartup(e);
 
         var mainWindow = new MainWindow();
+        try
+        {
+            if (StartupRegistration.TryCreateForCurrentProcess(
+                    out var startupRegistration,
+                    out var startupError) &&
+                startupRegistration is not null)
+            {
+                mainWindow.ConfigureStartupRegistration(startupRegistration);
+            }
+            else
+            {
+                AppLogger.Info($"开机自启功能初始化失败：{startupError}");
+            }
+        }
+        catch (Exception exception)
+        {
+            // Autostart is optional. Never prevent the desktop pet from
+            // launching because the current host cannot access its Run key.
+            AppLogger.Error("开机自启功能初始化异常", exception);
+        }
+
         MainWindow = mainWindow;
         mainWindow.Show();
     }

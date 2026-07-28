@@ -91,6 +91,19 @@ internal static class Program
                 return 0;
             }
 
+            if (args.Contains("--startup-only", StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(nameof(AssertStartupRegistrationContract),
+                    AssertStartupRegistrationContract);
+                return 0;
+            }
+
+            if (args.Contains("--todo-cut-only", StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
+                return 0;
+            }
+
             if (args.Contains("--roam-source-only", StringComparer.OrdinalIgnoreCase))
             {
                 RunCheck(nameof(AssertEdgeRoamingSourceContract),
@@ -104,6 +117,8 @@ internal static class Program
 
             RunCheck(nameof(AssertEdgeRoamingSourceContract),
                 AssertEdgeRoamingSourceContract);
+            RunCheck(nameof(AssertStartupRegistrationContract),
+                AssertStartupRegistrationContract);
 
             var settingsDirectory = Path.Combine(
                 Path.GetTempPath(),
@@ -207,6 +222,7 @@ internal static class Program
                     RunCheck(nameof(AssertOwnedTodoWindowContract),
                         () => AssertOwnedTodoWindowContract(window));
                     RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                    RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
                     RunCheck(nameof(AssertScheduledTaskTabContract),
                         AssertScheduledTaskTabContract);
                     RunCheck(nameof(AssertTodoReorderPersistenceContract),
@@ -256,6 +272,7 @@ internal static class Program
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
                 RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
                 RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
                 RunCheck(nameof(AssertScheduledTaskTabContract),
                     AssertScheduledTaskTabContract);
                 RunCheck(nameof(AssertTodoReorderPersistenceContract),
@@ -8313,6 +8330,307 @@ internal static class Program
         }
     }
 
+    private static void AssertStartupRegistrationContract()
+    {
+        var startupType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.StartupRegistration",
+            throwOnError: true)!;
+        var constructor = startupType.GetConstructor(
+            InstanceFlags,
+            binder: null,
+            [
+                typeof(string),
+                typeof(Func<string>),
+                typeof(Action<string>),
+                typeof(Action)
+            ],
+            modifiers: null) ??
+            throw new InvalidOperationException(
+                "StartupRegistration 必须提供委托后端构造函数以便无注册表测试");
+        var tryReadAndRepair = startupType.GetMethod(
+            "TryReadAndRepair",
+            InstanceFlags) ??
+            throw new InvalidOperationException(
+                "StartupRegistration 缺少 TryReadAndRepair");
+        var trySetEnabled = startupType.GetMethod(
+            "TrySetEnabled",
+            InstanceFlags) ??
+            throw new InvalidOperationException(
+                "StartupRegistration 缺少 TrySetEnabled");
+        var buildLaunchCommand = startupType.GetMethod(
+            "BuildLaunchCommand",
+            StaticFlags) ??
+            throw new InvalidOperationException(
+                "StartupRegistration 缺少 BuildLaunchCommand");
+
+        var executablePath = Path.Combine(
+            Path.GetTempPath(),
+            "小鲁班 desktop",
+            "LubanDesktopPet.exe");
+        var expectedCommand = (string)(buildLaunchCommand.Invoke(
+            null,
+            [executablePath, null]) ??
+            throw new InvalidOperationException("开机启动命令不能为空"));
+        Assert(expectedCommand ==
+               $"\"{Path.GetFullPath(executablePath)}\" --autostart",
+            "开机启动命令必须完整引用可执行文件路径并附加 --autostart");
+
+        string? storedValue = null;
+        var readCount = 0;
+        var writeCount = 0;
+        var deleteCount = 0;
+        Func<string?> readValue = () =>
+        {
+            readCount++;
+            return storedValue;
+        };
+        Action<string> writeValue = value =>
+        {
+            writeCount++;
+            storedValue = value;
+        };
+        Action deleteValue = () =>
+        {
+            deleteCount++;
+            storedValue = null;
+        };
+        var registration = constructor.Invoke(
+            [expectedCommand, readValue, writeValue, deleteValue]);
+
+        object?[] readArguments = [false, null];
+        Assert((bool)(tryReadAndRepair.Invoke(
+                   registration,
+                   readArguments) ?? false) &&
+               readArguments[0] is false &&
+               readArguments[1] is null &&
+               readCount == 1 &&
+               writeCount == 0 &&
+               deleteCount == 0,
+            "委托后端无启动项时必须只读取一次并报告关闭，绝不能访问或写入真实注册表");
+
+        storedValue = "\"C:\\旧目录\\LubanDesktopPet.exe\" --autostart";
+        readArguments = [false, null];
+        Assert((bool)(tryReadAndRepair.Invoke(
+                   registration,
+                   readArguments) ?? false) &&
+               readArguments[0] is true &&
+               readArguments[1] is null &&
+               storedValue == expectedCommand &&
+               writeCount == 1,
+            "发现旧路径时必须通过注入的写委托修复，并重新读取验证");
+
+        storedValue = null;
+        object?[] setArguments = [true, false, null];
+        Assert((bool)(trySetEnabled.Invoke(
+                   registration,
+                   setArguments) ?? false) &&
+               setArguments[1] is true &&
+               setArguments[2] is null &&
+               storedValue == expectedCommand,
+            "开启自启必须写入精确命令并通过假后端回读验证");
+        setArguments = [false, true, null];
+        Assert((bool)(trySetEnabled.Invoke(
+                   registration,
+                   setArguments) ?? false) &&
+               setArguments[1] is false &&
+               setArguments[2] is null &&
+               storedValue is null &&
+               deleteCount == 1,
+            "关闭自启必须通过假后端删除并验证最终状态");
+
+        storedValue = "legacy-command";
+        var corruptExpectedWrite = true;
+        Action<string> failingWriteValue = value =>
+        {
+            if (corruptExpectedWrite &&
+                string.Equals(value, expectedCommand, StringComparison.Ordinal))
+            {
+                storedValue = "corrupt-command";
+                return;
+            }
+
+            storedValue = value;
+        };
+        var failingRegistration = constructor.Invoke(
+            [
+                expectedCommand,
+                (Func<string?>)(() => storedValue),
+                failingWriteValue,
+                (Action)(() => storedValue = null)
+            ]);
+        setArguments = [true, false, null];
+        Assert(!(bool)(trySetEnabled.Invoke(
+                    failingRegistration,
+                    setArguments) ?? true) &&
+               setArguments[1] is true &&
+               setArguments[2] is string error &&
+               error.Contains("校验失败", StringComparison.Ordinal) &&
+               storedValue == "legacy-command",
+            "假后端写后校验失败时必须恢复原值，并报告恢复后的真实启用状态");
+        corruptExpectedWrite = false;
+    }
+
+    private static void AssertTodoCutContract()
+    {
+        var todoWindow = new TodoWindow
+        {
+            Left = -10000,
+            Top = -10000,
+            ShowActivated = false
+        };
+        try
+        {
+            todoWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var input = GetField<TextBox>(todoWindow, "TodoInput");
+
+            input.Text = "甲乙丙";
+            input.Select(0, 1);
+            Assert((bool)(Invoke(
+                       todoWindow,
+                       "TryCutSelectedText",
+                       input) ?? false),
+                "TodoInput 选中首字符时必须由原子剪切路径处理");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(input.Text == "乙丙" &&
+                   input.SelectionStart == 0 &&
+                   input.SelectionLength == 0 &&
+                   Clipboard.GetText() == "甲",
+                "TodoInput 首字符 Ctrl+X 必须复制“甲”、删除一次并把光标稳定放回索引0");
+
+            input.Text = "甲乙丙";
+            input.Select(0, 0);
+            Assert(!(bool)(Invoke(
+                        todoWindow,
+                        "TryCutSelectedText",
+                        input) ?? true) &&
+                   input.Text == "甲乙丙" &&
+                   input.SelectionLength == 0,
+                "TodoInput 无选区 Ctrl+X 必须无操作，不能沿用 Ctrl+C 的复制全文契约");
+
+            var previewKeySource = ExtractPrivateMethodSource(
+                File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs")),
+                "TodoWindow_PreviewKeyDown");
+            var handledIndex = previewKeySource.IndexOf(
+                "e.Handled = true",
+                StringComparison.Ordinal);
+            var imeGuardIndex = previewKeySource.IndexOf(
+                "if (!IsImeComposing)",
+                StringComparison.Ordinal);
+            var cutIndex = previewKeySource.IndexOf(
+                "TryCutSelectedText(cutTextBox)",
+                StringComparison.Ordinal);
+            Assert(previewKeySource.Contains(
+                       "Keyboard.Modifiers == ModifierKeys.Control",
+                       StringComparison.Ordinal) &&
+                   handledIndex >= 0 &&
+                   imeGuardIndex > handledIndex &&
+                   cutIndex > imeGuardIndex,
+                "Ctrl+X 必须只匹配标准 Control+X，并在 IME 组合态判断前先标记 Handled，防止原生 Cut 继续删字");
+
+            input.Text = "甲乙丙";
+            input.Select(0, 1);
+            InvokeStatic(
+                typeof(TodoWindow),
+                "RemovePendingCutSelection",
+                input,
+                "甲乙丙",
+                0,
+                1,
+                "甲",
+                true);
+            Assert(input.Text == "乙丙" &&
+                   input.SelectionStart == 0 &&
+                   input.SelectionLength == 0,
+                "延迟剪切快照完全匹配时必须只删除原选区一次");
+
+            input.Text = "甲乙丙丁";
+            input.Select(0, 1);
+            InvokeStatic(
+                typeof(TodoWindow),
+                "RemovePendingCutSelection",
+                input,
+                "甲乙丙",
+                0,
+                1,
+                "甲",
+                true);
+            Assert(input.Text == "甲乙丙丁" &&
+                   input.SelectionStart == 0 &&
+                   input.SelectionLength == 1,
+                "延迟重试前全文已变化时必须放弃旧剪切，不能删除新输入");
+
+            input.Text = "甲乙丙";
+            input.Select(1, 1);
+            InvokeStatic(
+                typeof(TodoWindow),
+                "RemovePendingCutSelection",
+                input,
+                "甲乙丙",
+                0,
+                1,
+                "甲",
+                true);
+            Assert(input.Text == "甲乙丙" &&
+                   input.SelectionStart == 1 &&
+                   input.SelectionLength == 1,
+                "延迟重试前选区已变化时必须放弃旧剪切");
+
+            input.Text = "甲乙丙";
+            input.Select(0, 1);
+            SetField(todoWindow, "_pendingClipboardCutText", "甲");
+            SetField(todoWindow, "_pendingClipboardCutSnapshot", "甲乙丙");
+            SetField(todoWindow, "_pendingClipboardCutTextBox", input);
+            SetField(todoWindow, "_pendingClipboardCutSelectionStart", 0);
+            SetField(todoWindow, "_pendingClipboardCutSelectionLength", 1);
+            input.Text = "甲乙丙丁";
+            input.Select(0, 1);
+            Invoke(todoWindow, "RetryClipboardCopy");
+            Assert(input.Text == "甲乙丙丁" &&
+                   input.SelectionStart == 0 &&
+                   input.SelectionLength == 1 &&
+                   GetRawField(todoWindow, "_pendingClipboardCutText") is null &&
+                   GetRawField(todoWindow, "_pendingClipboardCutTextBox") is null,
+                "真实延迟重试必须经过快照校验并清空一次性状态，不能在用户继续输入后删错字符");
+
+            var item = new TodoItem { Text = "甲乙丙" };
+            todoWindow.Todos = new ObservableCollection<TodoItem> { item };
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var list = GetField<ListBox>(todoWindow, "TodoItemsControl");
+            var container = list.ItemContainerGenerator.ContainerFromIndex(0)
+                as DependencyObject ??
+                throw new InvalidOperationException("剪切回归找不到待办列表行");
+            var editor = FindVisualDescendant<TextBox>(container) ??
+                throw new InvalidOperationException("剪切回归找不到待办行 TextBox");
+            Assert(editor.IsReadOnly &&
+                   !(bool)(Invoke(
+                       todoWindow,
+                       "IsEditableTextSource",
+                       editor) ?? true),
+                "只读待办行不得进入自定义 Ctrl+X 路径");
+
+            Invoke(todoWindow, "BeginTodoEdit", editor, item);
+            editor.Text = "甲乙丙";
+            editor.Select(0, 1);
+            Assert(!editor.IsReadOnly &&
+                   (bool)(Invoke(
+                       todoWindow,
+                       "TryCutSelectedText",
+                       editor) ?? false),
+                "只有进入行内编辑后，待办行才允许 Ctrl+X");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(editor.Text == "乙丙" &&
+                   GetField<string>(
+                       todoWindow,
+                       "_editingTodoDraftText") == "乙丙",
+                "行内首字符剪切必须同步更新待办编辑草稿，供 Enter 或外点准确保存");
+        }
+        finally
+        {
+            todoWindow.CloseForApplication();
+        }
+    }
+
     private static void AssertScheduledTaskTabContract()
     {
         var type = typeof(TodoWindow);
@@ -8402,6 +8720,21 @@ internal static class Program
             var scheduledSecondPicker = GetField<ComboBox>(
                 todoWindow,
                 "ScheduledSecondComboBox");
+            var scheduledRepeatToggle = GetField<CheckBox>(
+                todoWindow,
+                "ScheduledRepeatToggle");
+            var scheduledRepeatDays = GetField<TextBox>(
+                todoWindow,
+                "ScheduledRepeatDaysInput");
+            var scheduledRepeatHours = GetField<TextBox>(
+                todoWindow,
+                "ScheduledRepeatHoursInput");
+            var scheduledRepeatMinutes = GetField<TextBox>(
+                todoWindow,
+                "ScheduledRepeatMinutesInput");
+            var scheduledRepeatHint = GetField<TextBlock>(
+                todoWindow,
+                "ScheduledRepeatHintText");
             var scheduledSubmit = GetField<Button>(
                 todoWindow,
                 "ScheduledTaskSubmitButton");
@@ -8426,13 +8759,20 @@ internal static class Program
                    GetRawField(todoWindow, "_scheduledDate") is DateTime &&
                    scheduledDateInput.IsReadOnly &&
                    !InputMethod.GetIsInputMethodEnabled(scheduledDateInput) &&
+                   scheduledRepeatToggle.IsChecked != true &&
+                   scheduledRepeatDays.Text == "0" &&
+                   scheduledRepeatHours.Text == "1" &&
+                   scheduledRepeatMinutes.Text == "0" &&
+                   scheduledRepeatHint.Visibility == Visibility.Collapsed &&
+                   scheduledDatePickerHost.Visibility == Visibility.Visible &&
+                   scheduledTimePickerHost.Visibility == Visibility.Visible &&
                    DateTime.TryParseExact(
                        scheduledTime.Text,
                        "HH:mm:ss",
                        CultureInfo.InvariantCulture,
                        DateTimeStyles.None,
                        out _),
-                "定时页必须同时提供只读自定义日期入口和 HH:mm:ss 秒级时间控件");
+                "定时页必须默认提供单次日期和 HH:mm:ss 秒级时间；循环编辑器默认关闭并预填1小时");
             Assert(string.IsNullOrEmpty(validationText.Text),
                 "定时任务初始状态不应显示错误提示");
 
@@ -8813,11 +9153,13 @@ internal static class Program
             var requestedCount = 0;
             string? requestedText = null;
             DateTimeOffset requestedDueAt = default;
-            todoWindow.ScheduledTaskAddRequested += (text, dueAt) =>
+            TimeSpan? requestedRepeatInterval = null;
+            todoWindow.ScheduledTaskAddRequested += (text, dueAt, repeatInterval) =>
             {
                 requestedCount++;
                 requestedText = text;
                 requestedDueAt = dueAt;
+                requestedRepeatInterval = repeatInterval;
             };
 
             var futureLocal = DateTime.Now.AddHours(2);
@@ -8850,7 +9192,8 @@ internal static class Program
             Assert(requestedCount == 1 &&
                    requestedText == "明天带好小喇叭" &&
                    requestedDueAt == expectedDueAt &&
-                   requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0,
+                   requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
+                   requestedRepeatInterval is null,
                 "定时页应发出去除首尾空白的内容和精确到整秒的本地 DateTimeOffset");
             Assert(scheduledInput.Text.Length == 0 &&
                    GetRawField(todoWindow, "_scheduledDate") is DateTime &&
@@ -8867,6 +9210,43 @@ internal static class Program
                        DateTimeStyles.None,
                        out _),
                 "成功设定后应清空内容并重置为新的秒级默认时间");
+
+            var requestedRecurringInterval =
+                TimeSpan.FromDays(2) +
+                TimeSpan.FromHours(3) +
+                TimeSpan.FromMinutes(15);
+            scheduledRepeatToggle.IsChecked = true;
+            scheduledRepeatDays.Text = "2";
+            scheduledRepeatHours.Text = "3";
+            scheduledRepeatMinutes.Text = "15";
+            scheduledInput.Text = "  循环检查小喇叭  ";
+            Assert(scheduledDatePickerHost.Visibility == Visibility.Collapsed &&
+                   scheduledTimePickerHost.Visibility == Visibility.Collapsed &&
+                   scheduledRepeatHint.Visibility == Visibility.Visible,
+                "勾选循环后必须收起单次日期时间入口，并显示“保存后按间隔首次提醒”提示");
+            var recurringSubmitStartedAt = DateTimeOffset.Now;
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            var recurringSubmitCompletedAt = DateTimeOffset.Now;
+            Assert(requestedCount == 2 &&
+                   requestedText == "循环检查小喇叭" &&
+                   requestedRepeatInterval == requestedRecurringInterval &&
+                   requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
+                   requestedDueAt >=
+                       recurringSubmitStartedAt
+                           .Add(requestedRecurringInterval)
+                           .AddSeconds(-1) &&
+                   requestedDueAt <=
+                       recurringSubmitCompletedAt.Add(requestedRecurringInterval),
+                "新增循环任务必须传出规范化间隔，并从保存时刻计算整秒首次到期时间");
+            Assert(scheduledInput.Text.Length == 0 &&
+                   scheduledRepeatToggle.IsChecked != true &&
+                   scheduledRepeatDays.Text == "0" &&
+                   scheduledRepeatHours.Text == "1" &&
+                   scheduledRepeatMinutes.Text == "0" &&
+                   scheduledDatePickerHost.Visibility == Visibility.Visible &&
+                   scheduledTimePickerHost.Visibility == Visibility.Visible &&
+                   scheduledRepeatHint.Visibility == Visibility.Collapsed,
+                "循环任务新增成功后必须安全恢复默认单次草稿，避免下一条被误设为循环");
 
             var editLocal = DateTime.Now.AddHours(4);
             editLocal = new DateTime(
@@ -8910,12 +9290,18 @@ internal static class Program
             ScheduledTaskItem? requestedEditItem = null;
             string? requestedEditText = null;
             DateTimeOffset requestedEditDueAt = default;
-            todoWindow.ScheduledTaskEditRequested += (item, text, dueAt) =>
+            TimeSpan? requestedEditRepeatInterval = null;
+            todoWindow.ScheduledTaskEditRequested += (
+                item,
+                text,
+                dueAt,
+                repeatInterval) =>
             {
                 editRequestedCount++;
                 requestedEditItem = item;
                 requestedEditText = text;
                 requestedEditDueAt = dueAt;
+                requestedEditRepeatInterval = repeatInterval;
             };
 
             Invoke(
@@ -8995,6 +9381,7 @@ internal static class Program
                    ReferenceEquals(requestedEditItem, editItem) &&
                    requestedEditText == "修改后的定时任务" &&
                    requestedEditDueAt == expectedEditedDueAt &&
+                   requestedEditRepeatInterval is null &&
                    committedScheduledEnter.Handled &&
                    GetRawField(todoWindow, "_editingScheduledTask") is null &&
                    Equals(scheduledSubmit.Content, "设定") &&
@@ -9061,6 +9448,89 @@ internal static class Program
                    scheduledInput.Text.Length == 0 &&
                    editRequestedCount == 1,
                 "切回默认待办页必须取消未提交的定时任务修改，不能静默保存草稿");
+
+            var recurringEditDueAt = DateTimeOffset.Now.AddDays(5);
+            recurringEditDueAt = recurringEditDueAt.AddTicks(
+                -(recurringEditDueAt.Ticks % TimeSpan.TicksPerSecond));
+            var recurringEditInterval =
+                TimeSpan.FromDays(1) +
+                TimeSpan.FromHours(2) +
+                TimeSpan.FromMinutes(30);
+            var recurringEditItem = new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "要修改的循环任务",
+                DueAt = recurringEditDueAt,
+                CreatedAt = DateTimeOffset.Now.AddMinutes(-3),
+                RepeatInterval = recurringEditInterval
+            };
+            scheduledTasks.Add(recurringEditItem);
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            var recurringEditButton = new Button { Tag = recurringEditItem };
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditButton_Click",
+                recurringEditButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    recurringEditButton));
+            Assert(ReferenceEquals(
+                       GetRawField(todoWindow, "_editingScheduledTask"),
+                       recurringEditItem) &&
+                   scheduledInput.Text == recurringEditItem.Text &&
+                   scheduledRepeatToggle.IsChecked == true &&
+                   scheduledRepeatDays.Text == "1" &&
+                   scheduledRepeatHours.Text == "2" &&
+                   scheduledRepeatMinutes.Text == "30" &&
+                   scheduledDatePickerHost.Visibility == Visibility.Collapsed &&
+                   scheduledTimePickerHost.Visibility == Visibility.Collapsed &&
+                   scheduledRepeatHint.Visibility == Visibility.Visible &&
+                   GetRawField(
+                       todoWindow,
+                       "_scheduledRepeatDraftEdited") is false,
+                "点击循环任务铅笔必须回填循环模式、天时分和下一次时间，且初始草稿不得误标为已改周期");
+
+            scheduledInput.Text = "  循环任务只改文案  ";
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            Assert(editRequestedCount == 2 &&
+                   ReferenceEquals(
+                       requestedEditItem,
+                       recurringEditItem) &&
+                   requestedEditText == "循环任务只改文案" &&
+                   requestedEditDueAt == recurringEditDueAt &&
+                   requestedEditRepeatInterval == recurringEditInterval,
+                "循环任务只修改文案时必须保留原下一次到期时间和周期，重启后不能重新计时");
+
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditButton_Click",
+                recurringEditButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    recurringEditButton));
+            var changedRecurringInterval =
+                TimeSpan.FromHours(4) + TimeSpan.FromMinutes(5);
+            scheduledInput.Text = "循环任务修改周期";
+            scheduledRepeatDays.Text = "0";
+            scheduledRepeatHours.Text = "4";
+            scheduledRepeatMinutes.Text = "5";
+            var recurringEditStartedAt = DateTimeOffset.Now;
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            var recurringEditCompletedAt = DateTimeOffset.Now;
+            Assert(editRequestedCount == 3 &&
+                   ReferenceEquals(
+                       requestedEditItem,
+                       recurringEditItem) &&
+                   requestedEditText == "循环任务修改周期" &&
+                   requestedEditRepeatInterval == changedRecurringInterval &&
+                   requestedEditDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
+                   requestedEditDueAt >=
+                       recurringEditStartedAt
+                           .Add(changedRecurringInterval)
+                           .AddSeconds(-1) &&
+                   requestedEditDueAt <=
+                       recurringEditCompletedAt.Add(changedRecurringInterval),
+                "循环任务修改天时分后必须从保存时重新计算整秒下一次到期时间");
 
             var deleteItem = new ScheduledTaskItem
             {
@@ -9162,7 +9632,8 @@ internal static class Program
                 "TodoWindow_ScheduledTaskEditRequested",
                 moving,
                 "  改到更早并修正文案  ",
-                now.AddSeconds(10).AddMilliseconds(875));
+                now.AddSeconds(10).AddMilliseconds(875),
+                null);
             Assert(scheduledTasks.SequenceEqual([moving, first, middle]) &&
                    moving.Id == movingId &&
                    moving.CreatedAt == movingCreatedAt &&
@@ -9176,22 +9647,30 @@ internal static class Program
                 "编辑到更早时间必须保留 Id/CreatedAt、Trim并归一到整秒，" +
                 "同时重排内存/磁盘并重新对准到期前2秒预热点");
 
+            var editedRepeatInterval =
+                TimeSpan.FromDays(2) +
+                TimeSpan.FromHours(3) +
+                TimeSpan.FromMinutes(15);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskEditRequested",
                 moving,
                 "改到更晚",
-                now.AddSeconds(50).AddMilliseconds(499));
+                now.AddSeconds(50).AddMilliseconds(499),
+                editedRepeatInterval);
             Assert(scheduledTasks.SequenceEqual([first, middle, moving]) &&
                    moving.Id == movingId &&
                    moving.CreatedAt == movingCreatedAt &&
                    moving.DueAt == now.AddSeconds(50) &&
+                   moving.RepeatInterval == editedRepeatInterval &&
                    scheduledStore.Load().Select(item => item.Id)
-                       .SequenceEqual([first.Id, middle.Id, moving.Id]) &&
+                        .SequenceEqual([first.Id, middle.Id, moving.Id]) &&
+                   scheduledStore.Load().Single(item => item.Id == moving.Id)
+                       .RepeatInterval == editedRepeatInterval &&
                    scheduledTimer.IsEnabled &&
                    Math.Abs((scheduledTimer.Interval - TimeSpan.FromSeconds(18))
                        .TotalMilliseconds) < 1,
-                "编辑到更晚时间必须移动到正确位置并把调度器切回最早任务的预热点");
+                "编辑到更晚循环时间必须持久化周期、移动到正确位置并把调度器切回最早任务的预热点");
 
             scheduledTimer.Stop();
             scheduledTasks.Clear();
@@ -9239,7 +9718,8 @@ internal static class Program
                 "TodoWindow_ScheduledTaskEditRequested",
                 active,
                 "不允许覆盖正在显示的内容",
-                now.AddMinutes(10));
+                now.AddMinutes(10),
+                null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
                        active) &&
@@ -9261,7 +9741,8 @@ internal static class Program
                 "TodoWindow_ScheduledTaskEditRequested",
                 queuedFirst,
                 "  排队任务延后  ",
-                now.AddSeconds(30).AddMilliseconds(900));
+                now.AddSeconds(30).AddMilliseconds(900),
+                null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
                        active) &&
@@ -9283,7 +9764,8 @@ internal static class Program
                 "TodoWindow_ScheduledTaskEditRequested",
                 queuedFirst,
                 "排队任务提前",
-                now.AddSeconds(-1));
+                now.AddSeconds(-1),
+                null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
                        active) &&
@@ -9387,8 +9869,14 @@ internal static class Program
                refreshSource.Contains(
                    "Environment.NewLine",
                    StringComparison.Ordinal) &&
-               refreshSource.Contains(
+               mainSource.Contains(
                    "M月d日 HH:mm:ss",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "_reminderMissedOccurrenceCounts.TryAdd(",
+                   StringComparison.Ordinal) &&
+               refreshSource.Contains(
+                   "_reminderMissedOccurrenceCounts.GetValueOrDefault(",
                    StringComparison.Ordinal) &&
                refreshSource.Contains(
                    "_activeReminderBatch.RemoveAll(",
@@ -9413,6 +9901,9 @@ internal static class Program
                    StringComparison.Ordinal) &&
                acknowledgeSource.Contains(
                    "foreach (var item in acknowledged)",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "_reminderMissedOccurrenceCounts.Remove(item.Id)",
                    StringComparison.Ordinal) &&
                acknowledgeSource.Contains(
                    "SaveScheduledTasks()",
@@ -9610,7 +10101,8 @@ internal static class Program
                 "TodoWindow_ScheduledTaskEditRequested",
                 expectedOrder[1],
                 "不允许覆盖已展示批次",
-                now.AddHours(1));
+                now.AddHours(1),
+                null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskDeleteRequested",
@@ -9654,6 +10146,63 @@ internal static class Program
                    GetField<object>(window, "_bubbleMode").ToString() ==
                        "None",
                 "一次确认必须原子删除合并批次的全部任务，只保存一次并关闭唯一提醒泡泡");
+
+            now = new DateTimeOffset(
+                2032,
+                6,
+                10,
+                12,
+                0,
+                0,
+                TimeSpan.FromHours(8));
+            var recurringInterval = TimeSpan.FromHours(6);
+            var missedRecurringDueAt = now.AddHours(-55);
+            var missedRecurring = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "42000000-0000-0000-0000-000000000001"),
+                Text = "重启后继续的循环提醒",
+                DueAt = missedRecurringDueAt,
+                CreatedAt = missedRecurringDueAt.AddDays(-1),
+                RepeatInterval = recurringInterval
+            };
+            Invoke(window, "InsertScheduledTaskSorted", missedRecurring);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "漏提醒循环回归必须先把原锚点和周期持久化");
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       missedRecurring) &&
+                   activeBatch.SequenceEqual([missedRecurring]) &&
+                   reminderMessage.Text.Contains(
+                       "每6小时",
+                       StringComparison.Ordinal) &&
+                   reminderMessage.Text.Contains(
+                       "已错过 10 次",
+                       StringComparison.Ordinal),
+                "重启加载到逾期循环任务时必须只弹一次，并显示从原锚点计算的漏提醒次数");
+
+            var expectedNextDueAt =
+                missedRecurringDueAt.AddHours(60);
+            Invoke(window, "AcknowledgeActiveReminder");
+            var persistedRecurring = scheduledStore.Load().Single();
+            Assert(scheduledTasks.Count == 1 &&
+                   ReferenceEquals(scheduledTasks[0], missedRecurring) &&
+                   missedRecurring.DueAt == expectedNextDueAt &&
+                   missedRecurring.DueAt > now &&
+                   missedRecurring.RepeatInterval == recurringInterval &&
+                   persistedRecurring.Id == missedRecurring.Id &&
+                   persistedRecurring.DueAt == expectedNextDueAt &&
+                   persistedRecurring.RepeatInterval == recurringInterval &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   activeBatch.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   scheduledTimer.IsEnabled,
+                "确认漏提醒后必须从原到期锚点一次跨过全部遗漏周期，持久化首个未来时间且不补播历史提醒");
         }
         finally
         {
@@ -9909,12 +10458,14 @@ internal static class Program
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "同秒提醒甲",
-                dueAt);
+                dueAt,
+                null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "同秒提醒乙",
-                dueAt);
+                dueAt,
+                null);
             Assert(scheduledTasks.Count == 2 &&
                    scheduledTasks.All(item => item.DueAt == dueAt) &&
                    GetRawField(window, "_activeReminder") is null &&
@@ -10178,7 +10729,8 @@ internal static class Program
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "应用恢复后的逾期提醒",
-                currentNow.AddSeconds(-5));
+                currentNow.AddSeconds(-5),
+                null);
             var overdueActive = GetField<ScheduledTaskItem>(
                 window,
                 "_activeReminder");
@@ -10213,12 +10765,14 @@ internal static class Program
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "回拨提醒甲",
-                rewindDueAt);
+                rewindDueAt,
+                null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "回拨提醒乙",
-                rewindDueAt);
+                rewindDueAt,
+                null);
             var rewindOrder = scheduledTasks.ToArray();
             Assert(rewindOrder.Length == 2,
                 "系统时间回拨回归必须准备两条同秒任务");

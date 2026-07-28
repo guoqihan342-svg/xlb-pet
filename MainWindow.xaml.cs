@@ -110,6 +110,8 @@ public partial class MainWindow : Window
         TimeSpan.FromHours(12);
     private static readonly TimeSpan ReminderSpritePreloadLeadTime =
         TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan MissedReminderGracePeriod =
+        TimeSpan.FromSeconds(5);
     private static readonly string[] ActionNames =
     [
         "yawn", "cry", "cute", "like", "eat", "wave", "think"
@@ -167,8 +169,12 @@ public partial class MainWindow : Window
     private readonly TodoStore _todoStore = TodoStore.CreateDefault();
     private readonly ObservableCollection<ScheduledTaskItem> _scheduledTasks = new();
     private ScheduledTaskStore _scheduledTaskStore = ScheduledTaskStore.CreateDefault();
+    private StartupRegistration? _startupRegistration;
     private readonly Queue<ScheduledTaskItem> _reminderQueue = new();
     private readonly HashSet<Guid> _queuedReminderIds = new();
+    // "Missed" means occurrences that elapsed before the reminder was first
+    // presented. Time spent reading an already visible bubble is not counted.
+    private readonly Dictionary<Guid, long> _reminderMissedOccurrenceCounts = new();
     private readonly List<ScheduledTaskItem> _activeReminderBatch = [];
     private readonly AppSettingsStore _settingsStore = AppSettingsStore.CreateDefault();
     private readonly TodoWindow _todoWindow;
@@ -484,6 +490,7 @@ public partial class MainWindow : Window
         _todoWindow.PetSizeAdjustmentCompleted += TodoWindow_PetSizeAdjustmentCompleted;
         _todoWindow.EdgeRoamingEnabledChanged +=
             TodoWindow_EdgeRoamingEnabledChanged;
+        _todoWindow.StartupEnabledChanged += TodoWindow_StartupEnabledChanged;
         _todoWindow.CloseRequested += TodoWindow_CloseRequested;
         _todoWindow.ExitRequested += TodoWindow_ExitRequested;
         _todoWindow.ImeCompositionChanged += TodoWindow_ImeCompositionChanged;
@@ -531,6 +538,26 @@ public partial class MainWindow : Window
         AppLogger.Info(
             $"渲染管线：{DisplayPixelWidth}×{DisplayPixelHeight} 固定完整帧，" +
             "单缓冲预乘 Alpha 淡化，活动过渡跟随屏幕刷新率");
+    }
+
+    internal void ConfigureStartupRegistration(StartupRegistration registration)
+    {
+        _startupRegistration = registration ??
+            throw new ArgumentNullException(nameof(registration));
+        if (registration.TryReadAndRepair(
+                out var enabled,
+                out var error))
+        {
+            _todoWindow.SetStartupEnabled(enabled);
+            AppLogger.Info(
+                $"开机自启状态已读取：{(enabled ? "已开启" : "已关闭")}");
+            return;
+        }
+
+        _todoWindow.SetStartupEnabled(
+            enabled,
+            $"开机自启状态读取或修复失败：{error}");
+        AppLogger.Info($"开机自启状态读取或修复失败：{error}");
     }
 
     private static void LogInfo(string message)
@@ -1759,6 +1786,7 @@ public partial class MainWindow : Window
         _activeReminderBatch.Clear();
         _reminderQueue.Clear();
         _queuedReminderIds.Clear();
+        _reminderMissedOccurrenceCounts.Clear();
         _edgeDock = EdgeDock.None;
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
@@ -6827,6 +6855,34 @@ public partial class MainWindow : Window
         AppLogger.Info($"绕屏动画：{(enabled ? "开启" : "关闭")}");
     }
 
+    private void TodoWindow_StartupEnabledChanged(bool enabled)
+    {
+        if (_startupRegistration is null)
+        {
+            _todoWindow.SetStartupEnabled(
+                enabled: false,
+                "当前运行方式无法设置开机自启");
+            AppLogger.Info("忽略开机自启修改：当前运行方式不可用");
+            return;
+        }
+
+        if (_startupRegistration.TrySetEnabled(
+                enabled,
+                out var actualEnabled,
+                out var error))
+        {
+            _todoWindow.SetStartupEnabled(actualEnabled);
+            AppLogger.Info(
+                $"开机自启已{(actualEnabled ? "开启" : "关闭")}");
+            return;
+        }
+
+        _todoWindow.SetStartupEnabled(
+            actualEnabled,
+            $"开机自启设置失败：{error}");
+        AppLogger.Info($"开机自启设置失败：{error}");
+    }
+
     private void TodoWindow_PetSizeAdjustmentStarted()
     {
         if (_isTransientPetSizeOverride)
@@ -7697,7 +7753,8 @@ public partial class MainWindow : Window
 
     private void TodoWindow_ScheduledTaskAddRequested(
         string text,
-        DateTimeOffset dueAt)
+        DateTimeOffset dueAt,
+        TimeSpan? repeatInterval)
     {
         var normalizedText = text.Trim();
         if (normalizedText.Length == 0)
@@ -7711,13 +7768,16 @@ public partial class MainWindow : Window
             Id = Guid.NewGuid(),
             Text = normalizedText,
             DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt),
-            CreatedAt = now
+            CreatedAt = now,
+            RepeatInterval =
+                ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval)
         };
         InsertScheduledTaskSorted(item);
         SaveScheduledTasks();
         ProcessScheduledTasksAt(now);
         AppLogger.Info(
             $"新增定时任务：{item.Id}，触发时间 {item.DueAt:O}，" +
+            $"循环：{item.RepeatDisplayText}，" +
             $"当前数量：{_scheduledTasks.Count}");
     }
 
@@ -7741,7 +7801,8 @@ public partial class MainWindow : Window
     private void TodoWindow_ScheduledTaskEditRequested(
         ScheduledTaskItem item,
         string text,
-        DateTimeOffset dueAt)
+        DateTimeOffset dueAt,
+        TimeSpan? repeatInterval)
     {
         if (_queuedReminderIds.Contains(item.Id))
         {
@@ -7759,6 +7820,8 @@ public partial class MainWindow : Window
         _scheduledTasks.RemoveAt(existingIndex);
         item.Text = normalizedText;
         item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt);
+        item.RepeatInterval =
+            ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval);
         InsertScheduledTaskSorted(item);
 
         var now = _nowProvider();
@@ -7766,6 +7829,7 @@ public partial class MainWindow : Window
         ProcessScheduledTasksAt(now);
         AppLogger.Info(
             $"修改定时任务：{item.Id}，触发时间 {item.DueAt:O}，" +
+            $"循环：{item.RepeatDisplayText}，" +
             $"排序位置 {_scheduledTasks.IndexOf(item) + 1}/{_scheduledTasks.Count}");
     }
 
@@ -7854,6 +7918,7 @@ public partial class MainWindow : Window
             {
                 _activeReminder = null;
                 _activeReminderBatch.Clear();
+                _reminderMissedOccurrenceCounts.Clear();
             }
         }
 
@@ -7888,6 +7953,7 @@ public partial class MainWindow : Window
 
             AppLogger.Info(
                 $"定时任务触发：{item.Id}，计划时间 {item.DueAt:O}，" +
+                $"错过 {CalculateMissedOccurrenceCount(item, now)} 次，" +
                 $"延迟 {Math.Max(0, (now - item.DueAt).TotalSeconds):F1} 秒");
             return true;
         }
@@ -7918,9 +7984,22 @@ public partial class MainWindow : Window
         }
 
         _activeReminderBatch.Sort(CompareScheduledTasks);
+        var activeIds = _activeReminderBatch
+            .Select(item => item.Id)
+            .ToHashSet();
+        foreach (var staleId in _reminderMissedOccurrenceCounts.Keys
+                     .Where(id => !activeIds.Contains(id))
+                     .ToArray())
+        {
+            _reminderMissedOccurrenceCounts.Remove(staleId);
+        }
+
         foreach (var item in _activeReminderBatch)
         {
             _queuedReminderIds.Add(item.Id);
+            _reminderMissedOccurrenceCounts.TryAdd(
+                item.Id,
+                CalculateMissedOccurrenceCount(item, now));
         }
 
         ReminderTitleText.Text = _activeReminderBatch.Count == 1
@@ -7929,7 +8008,10 @@ public partial class MainWindow : Window
         ReminderMessageText.Text = string.Join(
             Environment.NewLine,
             _activeReminderBatch.Select(item =>
-                $"{item.DueAt.ToLocalTime():M月d日 HH:mm:ss}  {item.Text}"));
+                FormatReminderMessageLine(
+                    item,
+                    _reminderMissedOccurrenceCounts.GetValueOrDefault(
+                        item.Id))));
         ReminderMessageText.Select(0, 0);
         ReminderAcknowledgeButton.Content = _activeReminderBatch.Count == 1
             ? "知道啦"
@@ -7983,6 +8065,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        var now = _nowProvider();
         var acknowledged = _activeReminderBatch.Count > 0
             ? _activeReminderBatch.ToArray()
             : [_activeReminder];
@@ -7991,12 +8074,30 @@ public partial class MainWindow : Window
         foreach (var item in acknowledged)
         {
             _queuedReminderIds.Remove(item.Id);
+            _reminderMissedOccurrenceCounts.Remove(item.Id);
             _scheduledTasks.Remove(item);
+            if (item.RepeatInterval is not { } repeatInterval)
+            {
+                continue;
+            }
+
+            var nextDueAt = CalculateNextRecurringDueAt(
+                item.DueAt,
+                repeatInterval,
+                now);
+            if (nextDueAt is null)
+            {
+                AppLogger.Info(
+                    $"循环定时任务无法继续推进，已移除：{item.Id}");
+                continue;
+            }
+
+            item.DueAt = nextDueAt.Value;
+            InsertScheduledTaskSorted(item);
         }
         _reminderQueue.Clear();
         SaveScheduledTasks();
 
-        var now = _nowProvider();
         RebuildReminderQueueAt(now);
         if (ShowNextQueuedReminderAt(now))
         {
@@ -8009,6 +8110,94 @@ public partial class MainWindow : Window
         RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
         ScheduleNextReminderAt(now);
         AppLogger.Info($"定时任务已批量确认：{acknowledged.Length} 条");
+    }
+
+    private static string FormatReminderMessageLine(
+        ScheduledTaskItem item,
+        DateTimeOffset now)
+    {
+        return FormatReminderMessageLine(
+            item,
+            CalculateMissedOccurrenceCount(item, now));
+    }
+
+    private static string FormatReminderMessageLine(
+        ScheduledTaskItem item,
+        long missedCount)
+    {
+        var repeatText = item.IsRecurring
+            ? $" · {item.RepeatDisplayText}"
+            : string.Empty;
+        var missedText = missedCount > 0
+            ? $"（已错过 {missedCount} 次）"
+            : string.Empty;
+        return
+            $"{item.DueAt.ToLocalTime():M月d日 HH:mm:ss}{repeatText}  " +
+            $"{item.Text}{missedText}";
+    }
+
+    private static long CalculateMissedOccurrenceCount(
+        ScheduledTaskItem item,
+        DateTimeOffset now)
+    {
+        var elapsedTicks =
+            now.UtcDateTime.Ticks - item.DueAt.UtcDateTime.Ticks;
+        if (elapsedTicks <= MissedReminderGracePeriod.Ticks)
+        {
+            return 0;
+        }
+
+        return CalculateDueOccurrenceCount(item, now);
+    }
+
+    private static long CalculateDueOccurrenceCount(
+        ScheduledTaskItem item,
+        DateTimeOffset now)
+    {
+        var elapsedTicks =
+            now.UtcDateTime.Ticks - item.DueAt.UtcDateTime.Ticks;
+        if (elapsedTicks < 0)
+        {
+            return 0;
+        }
+
+        var repeatInterval =
+            ScheduledTaskStore.NormalizeRepeatInterval(item.RepeatInterval);
+        return repeatInterval is { } interval
+            ? 1L + elapsedTicks / interval.Ticks
+            : 1L;
+    }
+
+    private static DateTimeOffset? CalculateNextRecurringDueAt(
+        DateTimeOffset dueAt,
+        TimeSpan repeatInterval,
+        DateTimeOffset now)
+    {
+        var normalizedInterval =
+            ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval);
+        if (normalizedInterval is not { } interval)
+        {
+            return null;
+        }
+
+        try
+        {
+            var elapsedTicks =
+                now.UtcDateTime.Ticks - dueAt.UtcDateTime.Ticks;
+            var steps = elapsedTicks >= 0
+                ? checked(elapsedTicks / interval.Ticks + 1)
+                : 1;
+            return ScheduledTaskStore.NormalizeToWholeSecond(
+                dueAt.AddTicks(checked(steps * interval.Ticks)));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+        catch (OverflowException)
+        {
+            return null;
+        }
     }
 
     private void ScheduleNextReminderAt(DateTimeOffset now)

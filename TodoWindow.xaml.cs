@@ -23,6 +23,7 @@ public partial class TodoWindow : Window
         CreateClockPartOptions(60);
 
     private bool _settingEdgeRoamingEnabled;
+    private bool _settingStartupEnabled;
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
     private bool _petSizeScaleNotificationQueued;
@@ -50,12 +51,19 @@ public partial class TodoWindow : Window
     private ScrollViewer? _todoScrollViewer;
     private long _lastTodoAutoScrollTimestamp;
     private string? _pendingClipboardCopyText;
+    private string? _pendingClipboardCutText;
+    private string? _pendingClipboardCutSnapshot;
+    private TextBox? _pendingClipboardCutTextBox;
+    private int _pendingClipboardCutSelectionStart;
+    private int _pendingClipboardCutSelectionLength;
     private bool _clipboardCopyRetryQueued;
     private ScheduledTaskItem? _editingScheduledTask;
     private DateTime? _scheduledDate;
     private DateTime _displayedScheduledCalendarMonth;
     private bool _scheduledTaskDraftClockEdited;
     private bool _updatingScheduledTaskDraftClock;
+    private bool _scheduledRepeatDraftEdited;
+    private bool _updatingScheduledRepeatDraft;
     private bool _updatingScheduledTimePickerSelection;
     private bool _switchingScheduledPickerPopup;
     private bool _isScheduledDatePickerPopupOpen;
@@ -112,6 +120,7 @@ public partial class TodoWindow : Window
         ScheduledMinuteComboBox.ItemsSource = ScheduledMinuteSecondOptions;
         ScheduledSecondComboBox.ItemsSource = ScheduledMinuteSecondOptions;
         ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+        ResetScheduledRepeatDraft();
     }
 
     private static Brush CreateTodoDropIndicatorBrush()
@@ -195,9 +204,10 @@ public partial class TodoWindow : Window
 
     public event Action<TodoItem>? DeleteRequested;
 
-    public event Action<string, DateTimeOffset>? ScheduledTaskAddRequested;
+    public event Action<string, DateTimeOffset, TimeSpan?>?
+        ScheduledTaskAddRequested;
 
-    public event Action<ScheduledTaskItem, string, DateTimeOffset>?
+    public event Action<ScheduledTaskItem, string, DateTimeOffset, TimeSpan?>?
         ScheduledTaskEditRequested;
 
     public event Action<ScheduledTaskItem>? ScheduledTaskDeleteRequested;
@@ -205,6 +215,8 @@ public partial class TodoWindow : Window
     public event Action? TransientInteractionCompleted;
 
     public event Action<bool>? EdgeRoamingEnabledChanged;
+
+    public event Action<bool>? StartupEnabledChanged;
 
     public event Action<double>? PetSizeScaleChanged;
 
@@ -324,6 +336,20 @@ public partial class TodoWindow : Window
             return;
         }
 
+        if (e.Key == Key.X &&
+            Keyboard.Modifiers == ModifierKeys.Control &&
+            Keyboard.FocusedElement is TextBox cutTextBox &&
+            IsEditableTextSource(cutTextBox))
+        {
+            e.Handled = true;
+            if (!IsImeComposing)
+            {
+                TryCutSelectedText(cutTextBox);
+            }
+
+            return;
+        }
+
         // TextBox's built-in Copy command disables itself when the selection
         // is empty before a parent CommandBinding can reliably replace that
         // behavior. Intercept the physical shortcut at the owned-window root:
@@ -346,6 +372,88 @@ public partial class TodoWindow : Window
         CopyTextToClipboard(text);
         e.Handled = true;
     }
+
+    private bool TryCutSelectedText(TextBox textBox)
+    {
+        if (textBox.IsReadOnly ||
+            textBox.SelectionLength <= 0 ||
+            !IsEditableTextSource(textBox))
+        {
+            return false;
+        }
+
+        var selectionStart = textBox.SelectionStart;
+        var selectionLength = textBox.SelectionLength;
+        var textSnapshot = textBox.Text;
+        var selectedText = textBox.SelectedText;
+        if (selectedText.Length == 0)
+        {
+            return false;
+        }
+
+        CancelPendingClipboardCut();
+        _pendingClipboardCopyText = null;
+
+        // WPF's routed Cut command can intermittently lose the selection that
+        // begins at index zero while TSF focus state settles. Capture the
+        // selection before touching the clipboard, then remove exactly that
+        // range and restore a deterministic caret position.
+        if (TryCopyTextToClipboard(selectedText))
+        {
+            RemovePendingCutSelection(
+                textBox,
+                textSnapshot,
+                selectionStart,
+                selectionLength,
+                selectedText,
+                requireSelectionMatch: false);
+        }
+        else
+        {
+            _pendingClipboardCutText = selectedText;
+            _pendingClipboardCutSnapshot = textSnapshot;
+            _pendingClipboardCutTextBox = textBox;
+            _pendingClipboardCutSelectionStart = selectionStart;
+            _pendingClipboardCutSelectionLength = selectionLength;
+            QueueClipboardRetry();
+        }
+
+        return true;
+    }
+
+    private static void RemovePendingCutSelection(
+        TextBox textBox,
+        string textSnapshot,
+        int selectionStart,
+        int selectionLength,
+        string selectedText,
+        bool requireSelectionMatch)
+    {
+        if (textBox.IsReadOnly ||
+            !string.Equals(textBox.Text, textSnapshot, StringComparison.Ordinal) ||
+            selectionStart < 0 ||
+            selectionLength <= 0 ||
+            selectionStart > textSnapshot.Length - selectionLength ||
+            !string.Equals(
+                textSnapshot.Substring(selectionStart, selectionLength),
+                selectedText,
+                StringComparison.Ordinal) ||
+            (requireSelectionMatch &&
+             (textBox.SelectionStart != selectionStart ||
+              textBox.SelectionLength != selectionLength)))
+        {
+            return;
+        }
+
+        textBox.Select(selectionStart, selectionLength);
+        textBox.SelectedText = string.Empty;
+        textBox.Select(selectionStart, 0);
+    }
+
+    private bool IsEditableTextSource(TextBox textBox) =>
+        ReferenceEquals(textBox, TodoInput) ||
+        ReferenceEquals(textBox, ScheduledTaskInput) ||
+        ReferenceEquals(textBox, _editingTodoTextBox);
 
     private bool IsCopySource(TextBox textBox) =>
         ReferenceEquals(textBox, TodoInput) ||
@@ -373,29 +481,86 @@ public partial class TodoWindow : Window
 
     private void CopyTextToClipboard(string text)
     {
+        CancelPendingClipboardCut();
+        if (TryCopyTextToClipboard(text))
+        {
+            return;
+        }
+
+        _pendingClipboardCopyText = text;
+        QueueClipboardRetry();
+    }
+
+    private void CancelPendingClipboardCut()
+    {
+        _pendingClipboardCutText = null;
+        _pendingClipboardCutSnapshot = null;
+        _pendingClipboardCutTextBox = null;
+        _pendingClipboardCutSelectionStart = 0;
+        _pendingClipboardCutSelectionLength = 0;
+    }
+
+    private bool TryCopyTextToClipboard(string text)
+    {
         try
         {
             Clipboard.SetDataObject(text, true);
             _pendingClipboardCopyText = null;
+            return true;
         }
         catch (ExternalException)
         {
-            _pendingClipboardCopyText = text;
-            if (_clipboardCopyRetryQueued)
-            {
-                return;
-            }
-
-            _clipboardCopyRetryQueued = true;
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.Background,
-                _retryClipboardCopyAction);
+            return false;
         }
+    }
+
+    private void QueueClipboardRetry()
+    {
+        if (_clipboardCopyRetryQueued)
+        {
+            return;
+        }
+
+        _clipboardCopyRetryQueued = true;
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            _retryClipboardCopyAction);
     }
 
     private void RetryClipboardCopy()
     {
         _clipboardCopyRetryQueued = false;
+        var cutText = _pendingClipboardCutText;
+        var cutSnapshot = _pendingClipboardCutSnapshot;
+        var cutTextBox = _pendingClipboardCutTextBox;
+        var cutSelectionStart = _pendingClipboardCutSelectionStart;
+        var cutSelectionLength = _pendingClipboardCutSelectionLength;
+        CancelPendingClipboardCut();
+        if (!string.IsNullOrEmpty(cutText))
+        {
+            try
+            {
+                Clipboard.SetDataObject(cutText, true);
+                if (cutTextBox is not null &&
+                    cutSnapshot is not null &&
+                    ReferenceEquals(Keyboard.FocusedElement, cutTextBox))
+                {
+                    RemovePendingCutSelection(
+                        cutTextBox,
+                        cutSnapshot,
+                        cutSelectionStart,
+                        cutSelectionLength,
+                        cutText,
+                        requireSelectionMatch: true);
+                }
+            }
+            catch (ExternalException)
+            {
+                // A single deferred retry is enough. Keep the original text
+                // and selection intact if the clipboard is still unavailable.
+            }
+        }
+
         var text = _pendingClipboardCopyText;
         _pendingClipboardCopyText = null;
         if (string.IsNullOrEmpty(text))
@@ -424,6 +589,22 @@ public partial class TodoWindow : Window
         finally
         {
             _settingEdgeRoamingEnabled = false;
+        }
+    }
+
+    public void SetStartupEnabled(bool enabled, string? statusMessage = null)
+    {
+        _settingStartupEnabled = true;
+        try
+        {
+            StartupToggle.IsChecked = enabled;
+            StartupToggle.ToolTip = string.IsNullOrWhiteSpace(statusMessage)
+                ? "登录 Windows 后自动启动小鲁班"
+                : statusMessage;
+        }
+        finally
+        {
+            _settingStartupEnabled = false;
         }
     }
 
@@ -517,6 +698,8 @@ public partial class TodoWindow : Window
     private void TodoWindow_Closed(object? sender, EventArgs e)
     {
         _hasClosed = true;
+        _pendingClipboardCopyText = null;
+        CancelPendingClipboardCut();
         _outsideTodoEditCommitPending = false;
         _outsideTodoEditCommitQueued = false;
         _isScheduledDatePickerPopupOpen = false;
@@ -1125,21 +1308,29 @@ public partial class TodoWindow : Window
 
     private void RequestScheduledTaskSubmit()
     {
-        if (!TryReadScheduledTaskDraft(out var text, out var dueAt))
+        if (!TryReadScheduledTaskDraft(
+                out var text,
+                out var dueAt,
+                out var repeatInterval))
         {
             return;
         }
 
         if (_editingScheduledTask is { } item)
         {
-            ScheduledTaskEditRequested?.Invoke(item, text, dueAt);
+            ScheduledTaskEditRequested?.Invoke(
+                item,
+                text,
+                dueAt,
+                repeatInterval);
             CancelScheduledTaskEdit(resetDraft: true, focusInput: true);
             return;
         }
 
-        ScheduledTaskAddRequested?.Invoke(text, dueAt);
+        ScheduledTaskAddRequested?.Invoke(text, dueAt, repeatInterval);
         ScheduledTaskInput.Clear();
         ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+        ResetScheduledRepeatDraft();
         SetScheduledTaskValidation(string.Empty);
         ScheduledTaskInput.Focus();
     }
@@ -1149,15 +1340,37 @@ public partial class TodoWindow : Window
 
     private bool TryReadScheduledTaskDraft(
         out string text,
-        out DateTimeOffset dueAt)
+        out DateTimeOffset dueAt,
+        out TimeSpan? repeatInterval)
     {
         dueAt = default;
+        repeatInterval = null;
         text = ScheduledTaskInput.Text.Trim();
         if (text.Length == 0)
         {
             SetScheduledTaskValidation("先写下要提醒的事情哦");
             ScheduledTaskInput.Focus();
             return false;
+        }
+
+        if (ScheduledRepeatToggle.IsChecked == true)
+        {
+            if (!TryReadScheduledRepeatInterval(out var interval))
+            {
+                return false;
+            }
+
+            repeatInterval = interval;
+            dueAt = _editingScheduledTask is
+                    {
+                        IsRecurring: true
+                    } editingItem &&
+                    !_scheduledRepeatDraftEdited &&
+                    editingItem.RepeatInterval == repeatInterval
+                ? editingItem.DueAt
+                : ScheduledTaskStore.NormalizeToWholeSecond(
+                    DateTimeOffset.Now.Add(interval));
+            return true;
         }
 
         if (_scheduledDate is not { } selectedDate)
@@ -1204,6 +1417,49 @@ public partial class TodoWindow : Window
         return true;
     }
 
+    private bool TryReadScheduledRepeatInterval(out TimeSpan interval)
+    {
+        interval = default;
+        if (!int.TryParse(
+                ScheduledRepeatDaysInput.Text.Trim(),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var days) ||
+            !int.TryParse(
+                ScheduledRepeatHoursInput.Text.Trim(),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var hours) ||
+            !int.TryParse(
+                ScheduledRepeatMinutesInput.Text.Trim(),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var minutes) ||
+            days is < 0 or > 999 ||
+            hours is < 0 or > 23 ||
+            minutes is < 0 or > 59)
+        {
+            SetScheduledTaskValidation(
+                "循环间隔：天 0-999、小时 0-23、分钟 0-59");
+            ScheduledRepeatDaysInput.Focus();
+            ScheduledRepeatDaysInput.SelectAll();
+            return false;
+        }
+
+        interval = TimeSpan.FromDays(days) +
+                   TimeSpan.FromHours(hours) +
+                   TimeSpan.FromMinutes(minutes);
+        if (interval < TimeSpan.FromMinutes(1))
+        {
+            SetScheduledTaskValidation("循环间隔至少要 1 分钟哦");
+            ScheduledRepeatMinutesInput.Focus();
+            ScheduledRepeatMinutesInput.SelectAll();
+            return false;
+        }
+
+        return true;
+    }
+
     private void ScheduledTaskEditButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: ScheduledTaskItem item })
@@ -1218,6 +1474,7 @@ public partial class TodoWindow : Window
         ScheduledTimeInput.Text = localDueAt.ToString(
             "HH:mm:ss",
             CultureInfo.InvariantCulture);
+        SetScheduledRepeatDraft(item.RepeatInterval);
         ScheduledTaskSubmitButton.Content = "保存";
         ScheduledTaskSubmitButton.ToolTip = "保存定时任务修改";
         ScheduledTaskEditCancelButton.Visibility = Visibility.Visible;
@@ -1253,6 +1510,7 @@ public partial class TodoWindow : Window
         {
             ScheduledTaskInput.Clear();
             ResetScheduledTaskDraftClock(DateTimeOffset.Now);
+            ResetScheduledRepeatDraft();
         }
 
         if (focusInput && IsVisible && !_hasClosed)
@@ -1283,6 +1541,93 @@ public partial class TodoWindow : Window
     private void ScheduledTimeInput_TextChanged(object sender, TextChangedEventArgs e)
     {
         ClearScheduledTaskValidation();
+    }
+
+    private void ScheduledRepeatToggle_Changed(
+        object sender,
+        RoutedEventArgs e)
+    {
+        UpdateScheduledRepeatEditorVisibility();
+        if (!_updatingScheduledRepeatDraft)
+        {
+            _scheduledRepeatDraftEdited = true;
+            ClearScheduledTaskValidation();
+        }
+    }
+
+    private void ScheduledRepeatInput_TextChanged(
+        object sender,
+        TextChangedEventArgs e)
+    {
+        if (!_updatingScheduledRepeatDraft)
+        {
+            _scheduledRepeatDraftEdited = true;
+            ClearScheduledTaskValidation();
+        }
+    }
+
+    private void ScheduledRepeatInput_PreviewTextInput(
+        object sender,
+        TextCompositionEventArgs e)
+    {
+        e.Handled = e.Text.Any(character => !char.IsDigit(character));
+    }
+
+    private void SetScheduledRepeatDraft(TimeSpan? repeatInterval)
+    {
+        var normalized = ScheduledTaskStore.NormalizeRepeatInterval(
+            repeatInterval);
+        var totalMinutes = normalized is { } value
+            ? (long)value.TotalMinutes
+            : 60L;
+        _updatingScheduledRepeatDraft = true;
+        try
+        {
+            ScheduledRepeatToggle.IsChecked = normalized is not null;
+            ScheduledRepeatDaysInput.Text =
+                (totalMinutes / (24 * 60)).ToString(
+                    CultureInfo.InvariantCulture);
+            ScheduledRepeatHoursInput.Text =
+                (totalMinutes / 60 % 24).ToString(
+                    CultureInfo.InvariantCulture);
+            ScheduledRepeatMinutesInput.Text =
+                (totalMinutes % 60).ToString(
+                    CultureInfo.InvariantCulture);
+            UpdateScheduledRepeatEditorVisibility();
+            _scheduledRepeatDraftEdited = false;
+        }
+        finally
+        {
+            _updatingScheduledRepeatDraft = false;
+        }
+    }
+
+    private void ResetScheduledRepeatDraft() =>
+        SetScheduledRepeatDraft(repeatInterval: null);
+
+    private void UpdateScheduledRepeatEditorVisibility()
+    {
+        if (ScheduledDatePickerHost is null ||
+            ScheduledTimePickerHost is null ||
+            ScheduledRepeatHintText is null)
+        {
+            return;
+        }
+
+        var recurring = ScheduledRepeatToggle.IsChecked == true;
+        ScheduledDatePickerHost.Visibility = recurring
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        ScheduledTimePickerHost.Visibility = recurring
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        ScheduledRepeatHintText.Visibility = recurring
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (recurring)
+        {
+            CloseScheduledPickers();
+        }
     }
 
     private void SetTransientPopupState(bool isDatePicker, bool isOpen)
@@ -2236,6 +2581,14 @@ public partial class TodoWindow : Window
         {
             EdgeRoamingEnabledChanged?.Invoke(
                 EdgeRoamingToggle.IsChecked == true);
+        }
+    }
+
+    private void StartupToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_settingStartupEnabled)
+        {
+            StartupEnabledChanged?.Invoke(StartupToggle.IsChecked == true);
         }
     }
 
