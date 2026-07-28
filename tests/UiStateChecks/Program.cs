@@ -9009,6 +9009,14 @@ internal static class Program
             Invoke(todoWindow, "ResetScheduledTaskDraftClock", exactNow);
             Invoke(todoWindow, "OpenScheduledTimePicker");
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            scheduledRepeatToggle.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledDatePickerHost.Visibility == Visibility.Visible &&
+                   scheduledTimePickerHost.Visibility == Visibility.Visible &&
+                   scheduledRepeatHint.Visibility == Visibility.Collapsed &&
+                   scheduledTimePickerPopup.IsOpen &&
+                   todoWindow.IsTransientPopupOpen,
+                "勾选循环后仍必须显示首次/下一次日期和时间，且已经打开的时间浮层不能消失");
             foreach (var (picker, selectedIndex) in new[]
                      {
                          (scheduledHourPicker, 11),
@@ -9031,14 +9039,41 @@ internal static class Program
                     Source = option
                 };
                 option.RaiseEvent(optionClick);
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
                 Assert(optionClick.Handled &&
                        picker.SelectedIndex == selectedIndex &&
-                       !picker.IsDropDownOpen,
-                    "点击时分秒下拉值必须显式选中并立即关闭当前下拉层，不能丢焦或无响应");
+                       !picker.IsDropDownOpen &&
+                       scheduledTimePickerPopup.IsOpen &&
+                       todoWindow.IsTransientPopupOpen,
+                    "逐一选择时、分、秒并处理完 Dispatcher 消息后，只能关闭当前下拉层，外层时间浮层必须保持打开");
             }
 
             Assert(scheduledTime.Text == "11:22:33",
                 "依次选择时、分、秒后，右侧入口必须完整同步为 11:22:33");
+            var timePickerInputSource =
+                PresentationSource.FromVisual(scheduledHourPicker)
+                ?? throw new InvalidOperationException(
+                    "时间浮层没有为小时选择器建立输入源");
+            var timePickerEscape = CreateKeyEvent(
+                timePickerInputSource,
+                Key.Escape);
+            Invoke(
+                todoWindow,
+                "ScheduledTimePickerPopup_PreviewKeyDown",
+                scheduledHourPicker,
+                timePickerEscape);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(timePickerEscape.Handled &&
+                   !scheduledTimePickerPopup.IsOpen &&
+                   !scheduledHourPicker.IsDropDownOpen &&
+                   !scheduledMinutePicker.IsDropDownOpen &&
+                   !scheduledSecondPicker.IsDropDownOpen &&
+                   !todoWindow.IsTransientPopupOpen &&
+                   transientCompletionCount == 5,
+                "焦点位于独立时间 Popup 时，Esc 仍必须关闭外层和三列下拉并且只通知一次结束");
+
+            Invoke(todoWindow, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
             var timeConfirmButton = new Button();
             Invoke(
                 todoWindow,
@@ -9049,6 +9084,7 @@ internal static class Program
             Assert(!scheduledTimePickerPopup.IsOpen &&
                    scheduledTime.Text == "11:22:33",
                 "确定时必须关闭时间浮层并保留刚选好的完整 HH:mm:ss");
+            Invoke(todoWindow, "ResetScheduledRepeatDraft");
 
             var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
             var outsideCloseSource = ExtractPrivateMethodSource(
@@ -9215,29 +9251,57 @@ internal static class Program
                 TimeSpan.FromDays(2) +
                 TimeSpan.FromHours(3) +
                 TimeSpan.FromMinutes(15);
+            var recurringFirstLocal = DateTime.Now.AddDays(3);
+            recurringFirstLocal = new DateTime(
+                recurringFirstLocal.Year,
+                recurringFirstLocal.Month,
+                recurringFirstLocal.Day,
+                14,
+                25,
+                36,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(recurringFirstLocal))
+            {
+                recurringFirstLocal = recurringFirstLocal.AddHours(1);
+            }
+
+            Invoke(
+                todoWindow,
+                "SetScheduledDate",
+                recurringFirstLocal.Date,
+                true);
+            Invoke(
+                todoWindow,
+                "SetScheduledTimePickerSelection",
+                recurringFirstLocal.Hour,
+                recurringFirstLocal.Minute,
+                recurringFirstLocal.Second,
+                true);
             scheduledRepeatToggle.IsChecked = true;
             scheduledRepeatDays.Text = "2";
             scheduledRepeatHours.Text = "3";
             scheduledRepeatMinutes.Text = "15";
             scheduledInput.Text = "  循环检查小喇叭  ";
-            Assert(scheduledDatePickerHost.Visibility == Visibility.Collapsed &&
-                   scheduledTimePickerHost.Visibility == Visibility.Collapsed &&
-                   scheduledRepeatHint.Visibility == Visibility.Visible,
-                "勾选循环后必须收起单次日期时间入口，并显示“保存后按间隔首次提醒”提示");
-            var recurringSubmitStartedAt = DateTimeOffset.Now;
+            Assert(scheduledDatePickerHost.Visibility == Visibility.Visible &&
+                   scheduledTimePickerHost.Visibility == Visibility.Visible &&
+                   scheduledRepeatHint.Visibility == Visibility.Collapsed &&
+                   scheduledDateInput.Text == recurringFirstLocal.ToString(
+                       "yyyy-MM-dd",
+                       CultureInfo.InvariantCulture) &&
+                   scheduledTime.Text == recurringFirstLocal.ToString(
+                       "HH:mm:ss",
+                       CultureInfo.InvariantCulture),
+                "勾选循环后必须继续显示并保留用户选择的首次提醒日期和 HH:mm:ss");
             Invoke(todoWindow, "RequestScheduledTaskSubmit");
-            var recurringSubmitCompletedAt = DateTimeOffset.Now;
+            var expectedRecurringFirstDueAt = new DateTimeOffset(
+                recurringFirstLocal,
+                TimeZoneInfo.Local.GetUtcOffset(recurringFirstLocal));
             Assert(requestedCount == 2 &&
                    requestedText == "循环检查小喇叭" &&
                    requestedRepeatInterval == requestedRecurringInterval &&
-                   requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
-                   requestedDueAt >=
-                       recurringSubmitStartedAt
-                           .Add(requestedRecurringInterval)
-                           .AddSeconds(-1) &&
-                   requestedDueAt <=
-                       recurringSubmitCompletedAt.Add(requestedRecurringInterval),
-                "新增循环任务必须传出规范化间隔，并从保存时刻计算整秒首次到期时间");
+                   requestedDueAt == expectedRecurringFirstDueAt &&
+                   requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0,
+                "新增循环任务必须把用户选择的日期和 HH:mm:ss 作为首次 DueAt，间隔只定义后续提醒");
             Assert(scheduledInput.Text.Length == 0 &&
                    scheduledRepeatToggle.IsChecked != true &&
                    scheduledRepeatDays.Text == "0" &&
@@ -9452,6 +9516,7 @@ internal static class Program
             var recurringEditDueAt = DateTimeOffset.Now.AddDays(5);
             recurringEditDueAt = recurringEditDueAt.AddTicks(
                 -(recurringEditDueAt.Ticks % TimeSpan.TicksPerSecond));
+            var recurringEditLocal = recurringEditDueAt.LocalDateTime;
             var recurringEditInterval =
                 TimeSpan.FromDays(1) +
                 TimeSpan.FromHours(2) +
@@ -9482,13 +9547,16 @@ internal static class Program
                    scheduledRepeatDays.Text == "1" &&
                    scheduledRepeatHours.Text == "2" &&
                    scheduledRepeatMinutes.Text == "30" &&
-                   scheduledDatePickerHost.Visibility == Visibility.Collapsed &&
-                   scheduledTimePickerHost.Visibility == Visibility.Collapsed &&
-                   scheduledRepeatHint.Visibility == Visibility.Visible &&
-                   GetRawField(
-                       todoWindow,
-                       "_scheduledRepeatDraftEdited") is false,
-                "点击循环任务铅笔必须回填循环模式、天时分和下一次时间，且初始草稿不得误标为已改周期");
+                   scheduledDatePickerHost.Visibility == Visibility.Visible &&
+                   scheduledTimePickerHost.Visibility == Visibility.Visible &&
+                   scheduledRepeatHint.Visibility == Visibility.Collapsed &&
+                   scheduledDateInput.Text == recurringEditLocal.ToString(
+                       "yyyy-MM-dd",
+                       CultureInfo.InvariantCulture) &&
+                   scheduledTime.Text == recurringEditLocal.ToString(
+                       "HH:mm:ss",
+                       CultureInfo.InvariantCulture),
+                "点击循环任务铅笔必须回填循环模式、天时分和可见的下一次日期时间");
 
             scheduledInput.Text = "  循环任务只改文案  ";
             Invoke(todoWindow, "RequestScheduledTaskSubmit");
@@ -9514,9 +9582,7 @@ internal static class Program
             scheduledRepeatDays.Text = "0";
             scheduledRepeatHours.Text = "4";
             scheduledRepeatMinutes.Text = "5";
-            var recurringEditStartedAt = DateTimeOffset.Now;
             Invoke(todoWindow, "RequestScheduledTaskSubmit");
-            var recurringEditCompletedAt = DateTimeOffset.Now;
             Assert(editRequestedCount == 3 &&
                    ReferenceEquals(
                        requestedEditItem,
@@ -9524,13 +9590,55 @@ internal static class Program
                    requestedEditText == "循环任务修改周期" &&
                    requestedEditRepeatInterval == changedRecurringInterval &&
                    requestedEditDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
-                   requestedEditDueAt >=
-                       recurringEditStartedAt
-                           .Add(changedRecurringInterval)
-                           .AddSeconds(-1) &&
-                   requestedEditDueAt <=
-                       recurringEditCompletedAt.Add(changedRecurringInterval),
-                "循环任务修改天时分后必须从保存时重新计算整秒下一次到期时间");
+                   requestedEditDueAt == recurringEditDueAt,
+                "循环任务只修改间隔时必须保留已经选择的下一次 DueAt，不能从保存时刻偷偷重新计时");
+
+            Invoke(
+                todoWindow,
+                "ScheduledTaskEditButton_Click",
+                recurringEditButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    recurringEditButton));
+            var selectedNextLocal = DateTime.Now.AddDays(7);
+            selectedNextLocal = new DateTime(
+                selectedNextLocal.Year,
+                selectedNextLocal.Month,
+                selectedNextLocal.Day,
+                16,
+                47,
+                28,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(selectedNextLocal))
+            {
+                selectedNextLocal = selectedNextLocal.AddHours(1);
+            }
+
+            scheduledInput.Text = "循环任务修改下次时间";
+            Invoke(
+                todoWindow,
+                "SetScheduledDate",
+                selectedNextLocal.Date,
+                true);
+            Invoke(
+                todoWindow,
+                "SetScheduledTimePickerSelection",
+                selectedNextLocal.Hour,
+                selectedNextLocal.Minute,
+                selectedNextLocal.Second,
+                true);
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            var expectedSelectedNextDueAt = new DateTimeOffset(
+                selectedNextLocal,
+                TimeZoneInfo.Local.GetUtcOffset(selectedNextLocal));
+            Assert(editRequestedCount == 4 &&
+                   ReferenceEquals(
+                       requestedEditItem,
+                       recurringEditItem) &&
+                   requestedEditText == "循环任务修改下次时间" &&
+                   requestedEditRepeatInterval == recurringEditInterval &&
+                   requestedEditDueAt == expectedSelectedNextDueAt,
+                "循环任务修改下一次日期和 HH:mm:ss 时，必须把该精确选择作为新的 DueAt");
 
             var deleteItem = new ScheduledTaskItem
             {

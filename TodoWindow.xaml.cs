@@ -35,6 +35,7 @@ public partial class TodoWindow : Window
     private readonly Action _focusInputAction;
     private readonly Action _focusSelectedPageInputAfterTabAction;
     private readonly Action _retryClipboardCopyAction;
+    private readonly Action _closeScheduledPickersAfterDeactivationAction;
     private TextBox? _imeCompositionOwner;
     private TextBox? _editingTodoTextBox;
     private Button? _editingTodoButton;
@@ -62,7 +63,6 @@ public partial class TodoWindow : Window
     private DateTime _displayedScheduledCalendarMonth;
     private bool _scheduledTaskDraftClockEdited;
     private bool _updatingScheduledTaskDraftClock;
-    private bool _scheduledRepeatDraftEdited;
     private bool _updatingScheduledRepeatDraft;
     private bool _updatingScheduledTimePickerSelection;
     private bool _switchingScheduledPickerPopup;
@@ -85,6 +85,8 @@ public partial class TodoWindow : Window
         _focusSelectedPageInputAfterTabAction =
             FocusSelectedPageInputAfterTabChange;
         _retryClipboardCopyAction = RetryClipboardCopy;
+        _closeScheduledPickersAfterDeactivationAction =
+            CloseScheduledPickersAfterDeactivation;
 
         TextCompositionManager.AddPreviewTextInputStartHandler(
             TodoInput,
@@ -1153,6 +1155,10 @@ public partial class TodoWindow : Window
 
     private void CloseScheduledTimePicker()
     {
+        ScheduledHourComboBox.IsDropDownOpen = false;
+        ScheduledMinuteComboBox.IsDropDownOpen = false;
+        ScheduledSecondComboBox.IsDropDownOpen = false;
+
         if (ScheduledTimePickerPopup.IsOpen)
         {
             ScheduledTimePickerPopup.IsOpen = false;
@@ -1177,6 +1183,19 @@ public partial class TodoWindow : Window
             isOpen: false);
     }
 
+    private void ScheduledTimePickerPopup_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+        {
+            return;
+        }
+
+        CloseScheduledTimePicker();
+        e.Handled = true;
+    }
+
     private void ScheduledTimePartComboBox_SelectionChanged(
         object sender,
         SelectionChangedEventArgs e)
@@ -1191,6 +1210,20 @@ public partial class TodoWindow : Window
 
         _scheduledTaskDraftClockEdited = true;
         UpdateScheduledTimeTextFromPicker();
+    }
+
+    private void ScheduledTimePartComboBox_DropDownClosed(
+        object sender,
+        EventArgs e)
+    {
+        if (!ScheduledTimePickerPopup.IsOpen)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.ContextIdle,
+            _closeScheduledPickersAfterDeactivationAction);
     }
 
     private void ScheduledTimePartItem_PreviewMouseLeftButtonDown(
@@ -1361,16 +1394,6 @@ public partial class TodoWindow : Window
             }
 
             repeatInterval = interval;
-            dueAt = _editingScheduledTask is
-                    {
-                        IsRecurring: true
-                    } editingItem &&
-                    !_scheduledRepeatDraftEdited &&
-                    editingItem.RepeatInterval == repeatInterval
-                ? editingItem.DueAt
-                : ScheduledTaskStore.NormalizeToWholeSecond(
-                    DateTimeOffset.Now.Add(interval));
-            return true;
         }
 
         if (_scheduledDate is not { } selectedDate)
@@ -1550,7 +1573,6 @@ public partial class TodoWindow : Window
         UpdateScheduledRepeatEditorVisibility();
         if (!_updatingScheduledRepeatDraft)
         {
-            _scheduledRepeatDraftEdited = true;
             ClearScheduledTaskValidation();
         }
     }
@@ -1561,7 +1583,6 @@ public partial class TodoWindow : Window
     {
         if (!_updatingScheduledRepeatDraft)
         {
-            _scheduledRepeatDraftEdited = true;
             ClearScheduledTaskValidation();
         }
     }
@@ -1594,7 +1615,6 @@ public partial class TodoWindow : Window
                 (totalMinutes % 60).ToString(
                     CultureInfo.InvariantCulture);
             UpdateScheduledRepeatEditorVisibility();
-            _scheduledRepeatDraftEdited = false;
         }
         finally
         {
@@ -1614,20 +1634,12 @@ public partial class TodoWindow : Window
             return;
         }
 
-        var recurring = ScheduledRepeatToggle.IsChecked == true;
-        ScheduledDatePickerHost.Visibility = recurring
-            ? Visibility.Collapsed
-            : Visibility.Visible;
-        ScheduledTimePickerHost.Visibility = recurring
-            ? Visibility.Collapsed
-            : Visibility.Visible;
-        ScheduledRepeatHintText.Visibility = recurring
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        if (recurring)
-        {
-            CloseScheduledPickers();
-        }
+        // A recurring task still needs an explicit first/next occurrence.
+        // Keep both pickers visible and preserve an already-open time popup;
+        // the interval controls only define occurrences after that anchor.
+        ScheduledDatePickerHost.Visibility = Visibility.Visible;
+        ScheduledTimePickerHost.Visibility = Visibility.Visible;
+        ScheduledRepeatHintText.Visibility = Visibility.Collapsed;
     }
 
     private void SetTransientPopupState(bool isDatePicker, bool isOpen)
@@ -1654,8 +1666,41 @@ public partial class TodoWindow : Window
         object? sender,
         EventArgs e)
     {
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.ContextIdle,
+            _closeScheduledPickersAfterDeactivationAction);
+    }
+
+    private void CloseScheduledPickersAfterDeactivation()
+    {
+        if (_hasClosed ||
+            !IsTransientPopupOpen ||
+            IsActive ||
+            HasScheduledPickerKeyboardFocus() ||
+            IsScheduledTimePartDropDownOpen())
+        {
+            return;
+        }
+
         CloseScheduledPickers();
     }
+
+    private bool HasScheduledPickerKeyboardFocus() =>
+        IsKeyboardFocusWithin ||
+        ScheduledHourComboBox.IsKeyboardFocusWithin ||
+        ScheduledMinuteComboBox.IsKeyboardFocusWithin ||
+        ScheduledSecondComboBox.IsKeyboardFocusWithin ||
+        IsPopupChildKeyboardFocusWithin(ScheduledDatePickerPopup) ||
+        IsPopupChildKeyboardFocusWithin(ScheduledTimePickerPopup);
+
+    private static bool IsPopupChildKeyboardFocusWithin(Popup popup) =>
+        popup.Child is UIElement child &&
+        child.IsKeyboardFocusWithin;
+
+    private bool IsScheduledTimePartDropDownOpen() =>
+        ScheduledHourComboBox.IsDropDownOpen ||
+        ScheduledMinuteComboBox.IsDropDownOpen ||
+        ScheduledSecondComboBox.IsDropDownOpen;
 
     private void PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset now)
     {
@@ -1972,7 +2017,12 @@ public partial class TodoWindow : Window
     private void TodoWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         var originalSource = e.OriginalSource as DependencyObject;
+        var isRepeatEditorInteraction =
+            IsWithin(originalSource, ScheduledRepeatEditor);
+        var isTimePartInteraction =
+            IsScheduledTimePartInteraction(originalSource);
         if (ScheduledDatePickerPopup.IsOpen &&
+            !isRepeatEditorInteraction &&
             ShouldCloseScheduledPickerPopup(
                 originalSource,
                 ScheduledDatePickerHost,
@@ -1983,6 +2033,8 @@ public partial class TodoWindow : Window
         }
 
         if (ScheduledTimePickerPopup.IsOpen &&
+            !isRepeatEditorInteraction &&
+            !isTimePartInteraction &&
             ShouldCloseScheduledPickerPopup(
                 originalSource,
                 ScheduledTimePickerHost,
@@ -2008,6 +2060,28 @@ public partial class TodoWindow : Window
 
         _outsideTodoEditCommitPending = true;
         ScheduleTodoEditAfterOutsideClick();
+    }
+
+    private bool IsScheduledTimePartInteraction(DependencyObject? source)
+    {
+        return IsWithinScheduledTimePartPopup(
+                   source,
+                   ScheduledHourComboBox) ||
+               IsWithinScheduledTimePartPopup(
+                   source,
+                   ScheduledMinuteComboBox) ||
+               IsWithinScheduledTimePartPopup(
+                   source,
+                   ScheduledSecondComboBox);
+    }
+
+    private static bool IsWithinScheduledTimePartPopup(
+        DependencyObject? source,
+        ComboBox comboBox)
+    {
+        return comboBox.Template.FindName("PART_Popup", comboBox) is
+                   Popup { Child: DependencyObject popupChild } &&
+               IsWithin(source, popupChild);
     }
 
     private static bool ShouldCloseScheduledPickerPopup(

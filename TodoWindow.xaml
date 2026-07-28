@@ -629,7 +629,8 @@
                         </TextBlock>
                     </Grid>
 
-                    <Grid Grid.Row="2"
+                    <Grid x:Name="ScheduledRepeatEditor"
+                          Grid.Row="2"
                           Margin="1,2,1,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="64" />
@@ -644,7 +645,7 @@
                                   FontFamily="Microsoft YaHei"
                                   FontSize="11.5"
                                   Foreground="#725B49"
-                                  ToolTip="按固定的天、小时、分钟循环提醒"
+                                  ToolTip="首次按下方所选时间提醒，此后按天、小时、分钟循环"
                                   Checked="ScheduledRepeatToggle_Changed"
                                   Unchecked="ScheduledRepeatToggle_Changed" />
                         <StackPanel Grid.Column="1"
@@ -1240,6 +1241,7 @@
                                     BorderBrush="#EAB777"
                                     BorderThickness="1"
                                     CornerRadius="15"
+                                    PreviewKeyDown="ScheduledTimePickerPopup_PreviewKeyDown"
                                     SnapsToDevicePixels="True">
                                 <Border.Effect>
                                     <DropShadowEffect BlurRadius="15"
@@ -1455,6 +1457,7 @@
                                                   Grid.Column="0"
                                                   AutomationProperties.Name="提醒小时"
                                                   Style="{StaticResource ScheduledTimePartComboBoxStyle}"
+                                                  DropDownClosed="ScheduledTimePartComboBox_DropDownClosed"
                                                   SelectionChanged="ScheduledTimePartComboBox_SelectionChanged" />
                                         <TextBlock Grid.Column="1"
                                                    HorizontalAlignment="Center"
@@ -1468,6 +1471,7 @@
                                                   Grid.Column="2"
                                                   AutomationProperties.Name="提醒分钟"
                                                   Style="{StaticResource ScheduledTimePartComboBoxStyle}"
+                                                  DropDownClosed="ScheduledTimePartComboBox_DropDownClosed"
                                                   SelectionChanged="ScheduledTimePartComboBox_SelectionChanged" />
                                         <TextBlock Grid.Column="3"
                                                    HorizontalAlignment="Center"
@@ -1481,6 +1485,7 @@
                                                   Grid.Column="4"
                                                   AutomationProperties.Name="提醒秒"
                                                   Style="{StaticResource ScheduledTimePartComboBoxStyle}"
+                                                  DropDownClosed="ScheduledTimePartComboBox_DropDownClosed"
                                                   SelectionChanged="ScheduledTimePartComboBox_SelectionChanged" />
                                     </Grid>
                                     <Grid Grid.Row="3" Margin="0,6,0,0">
