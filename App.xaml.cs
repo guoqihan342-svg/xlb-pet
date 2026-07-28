@@ -1,5 +1,4 @@
 using System.Windows;
-using System.Windows.Threading;
 using System.Threading;
 
 namespace LubanDesktopPet;
@@ -11,6 +10,7 @@ public partial class App : Application
 
     private Mutex? _singleInstanceMutex;
     private bool _ownsSingleInstanceMutex;
+    private TrayIconService? _trayIconService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -34,19 +34,6 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        AppLogger.Initialize();
-        DispatcherUnhandledException += App_DispatcherUnhandledException;
-        AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
-        TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
-        AppLogger.Info($"应用启动，版本 {typeof(App).Assembly.GetName().Version}");
-        AppLogger.Info(
-            e.Args.Any(argument =>
-                string.Equals(
-                    argument,
-                    "--autostart",
-                    StringComparison.OrdinalIgnoreCase))
-                ? "启动来源：Windows 开机自启"
-                : "启动来源：手动启动");
         base.OnStartup(e);
 
         var mainWindow = new MainWindow();
@@ -54,46 +41,53 @@ public partial class App : Application
         {
             if (StartupRegistration.TryCreateForCurrentProcess(
                     out var startupRegistration,
-                    out var startupError) &&
+                    out _) &&
                 startupRegistration is not null)
             {
                 mainWindow.ConfigureStartupRegistration(startupRegistration);
             }
-            else
-            {
-                AppLogger.Info($"开机自启功能初始化失败：{startupError}");
-            }
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             // Autostart is optional. Never prevent the desktop pet from
             // launching because the current host cannot access its Run key.
-            AppLogger.Error("开机自启功能初始化异常", exception);
         }
 
         MainWindow = mainWindow;
         mainWindow.Show();
+
+        try
+        {
+            _trayIconService = new TrayIconService();
+            _trayIconService.ExitRequested +=
+                TrayIconService_ExitRequested;
+        }
+        catch (Exception)
+        {
+            // The pet remains fully usable if Explorer or the notification
+            // area is unavailable in the current Windows session.
+            _trayIconService?.Dispose();
+            _trayIconService = null;
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        var loggerStopped = !_ownsSingleInstanceMutex;
         try
         {
-            if (_ownsSingleInstanceMutex)
+            if (_trayIconService is { } trayIconService)
             {
-                AppLogger.Info($"应用退出，代码 {e.ApplicationExitCode}");
-                DispatcherUnhandledException -= App_DispatcherUnhandledException;
-                AppDomain.CurrentDomain.UnhandledException -= CurrentDomain_UnhandledException;
-                TaskScheduler.UnobservedTaskException -= TaskScheduler_UnobservedTaskException;
-                loggerStopped = AppLogger.Shutdown(TimeSpan.FromSeconds(2));
+                trayIconService.ExitRequested -=
+                    TrayIconService_ExitRequested;
+                trayIconService.Dispose();
+                _trayIconService = null;
             }
 
             base.OnExit(e);
         }
         finally
         {
-            if (_ownsSingleInstanceMutex && loggerStopped)
+            if (_ownsSingleInstanceMutex)
             {
                 try
                 {
@@ -107,40 +101,35 @@ public partial class App : Application
                 _ownsSingleInstanceMutex = false;
             }
 
-            if (loggerStopped)
-            {
-                _singleInstanceMutex?.Dispose();
-                _singleInstanceMutex = null;
-            }
+            _singleInstanceMutex?.Dispose();
+            _singleInstanceMutex = null;
         }
     }
 
-    private static void App_DispatcherUnhandledException(
-        object sender,
-        DispatcherUnhandledExceptionEventArgs e)
+    private void TrayIconService_ExitRequested(
+        object? sender,
+        EventArgs e)
     {
-        AppLogger.Error("UI 线程发生未处理异常", e.Exception);
-    }
-
-    private static void CurrentDomain_UnhandledException(
-        object sender,
-        UnhandledExceptionEventArgs e)
-    {
-        if (e.ExceptionObject is Exception exception)
+        if (!Dispatcher.CheckAccess())
         {
-            AppLogger.Error("应用域发生未处理异常", exception);
+            if (!Dispatcher.HasShutdownStarted &&
+                !Dispatcher.HasShutdownFinished)
+            {
+                _ = Dispatcher.BeginInvoke(
+                    new Action(() =>
+                        TrayIconService_ExitRequested(sender, e)));
+            }
+
+            return;
+        }
+
+        if (MainWindow is { } mainWindow)
+        {
+            mainWindow.Close();
         }
         else
         {
-            AppLogger.Info(
-                $"应用域发生未知未处理异常，类型：{e.ExceptionObject.GetType().FullName}");
+            Shutdown();
         }
-    }
-
-    private static void TaskScheduler_UnobservedTaskException(
-        object? sender,
-        UnobservedTaskExceptionEventArgs e)
-    {
-        AppLogger.Error("后台任务发生未观察异常", e.Exception);
     }
 }

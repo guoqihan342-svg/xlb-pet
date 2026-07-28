@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -60,10 +61,14 @@ public partial class MainWindow : Window
     // 123 MiB; 128 MiB keeps one whole roaming presentation resident without
     // permanently retaining an unrelated reminder/edge hot set.
     private const long SpritePageResidentBudgetBytes = 128L * 1024 * 1024;
-    private const long SpritePageIdleResidentTargetBytes = 64L * 1024 * 1024;
+    // Keep the steady idle, Todo/thinking and reminder hot set resident. The
+    // previous 64 MiB target evicted one of those pages after nearly every
+    // interaction and repeatedly allocated/decompressed the same LOH buffers.
+    private const long SpritePageIdleResidentTargetBytes = 104L * 1024 * 1024;
     private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
+    private const int MaximumVisibleReminderOccurrences = 100;
     // The regenerated cute prefix spends the former second-bob frame budget on
     // eight-step interpolation around its one intentional crouch/recovery, and
     // reaches the complete raised-hands/open-smile pose at frame 56.
@@ -77,7 +82,7 @@ public partial class MainWindow : Window
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan StableReactionEndpointHoldDuration =
-        TimeSpan.FromMilliseconds(625);
+        TimeSpan.FromMilliseconds(1875);
     private static readonly long VisualFrameDeadlineToleranceTicks =
         ToCharacterAnimationTicks(TimeSpan.FromMilliseconds(2));
     private static readonly long EdgeVisualFrameDeadlineToleranceTicks =
@@ -88,7 +93,8 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(1d / 58d);
     private static readonly TimeSpan EdgePeekFullyPeekedHold =
         TimeSpan.FromMilliseconds(650);
-    private static readonly TimeSpan EdgePeekRestHold = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan EdgePeekCycleInterval =
+        TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ActionTransitionDuration = TimeSpan.Zero;
     private static readonly TimeSpan PetSizeTransitionDuration = TimeSpan.FromMilliseconds(350);
     private static readonly TimeSpan PetSizePersistDelay = TimeSpan.FromMilliseconds(400);
@@ -128,6 +134,7 @@ public partial class MainWindow : Window
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
         new(StringComparer.Ordinal);
+    private readonly SpritePageBufferPool _spritePageBufferPool = new();
     private readonly LinkedList<string> _residentSpritePageLru = new();
     private readonly HashSet<string> _pinnedSpritePageNames =
         new(StringComparer.Ordinal);
@@ -181,13 +188,17 @@ public partial class MainWindow : Window
     private StartupRegistration? _startupRegistration;
     private readonly Queue<ScheduledTaskItem> _reminderQueue = new();
     private readonly HashSet<Guid> _queuedReminderIds = new();
-    // "Missed" means occurrences that elapsed before the reminder was first
-    // presented. Time spent reading an already visible bubble is not counted.
-    private readonly Dictionary<Guid, long> _reminderMissedOccurrenceCounts = new();
+    // Counts are relative to each task's current DueAt/NextOrdinal. They are
+    // intentionally monotonic while a reminder batch is awaiting
+    // acknowledgement so a system-clock rollback cannot make already
+    // presented occurrences disappear.
+    private readonly Dictionary<Guid, long> _presentedReminderOccurrenceCounts = new();
     private readonly List<ScheduledTaskItem> _activeReminderBatch = [];
+    private readonly List<ReminderOccurrence> _visibleReminderOccurrences = [];
     private readonly AppSettingsStore _settingsStore = AppSettingsStore.CreateDefault();
     private readonly TodoWindow _todoWindow;
     private readonly OwnedWindowPositioner.PositionCache _todoWindowPositionCache;
+    private ReminderWindow? _reminderWindow;
     private readonly Action _processOutsideTodoCloseAction;
     private readonly Action _processTodoWindowPositionUpdateAction;
     private readonly Action _processSystemTimeChangedAction;
@@ -299,6 +310,7 @@ public partial class MainWindow : Window
     private double _reminderRestoreScale = 1;
     private double _reminderFacingScaleX = 1;
     private ScheduledTaskItem? _activeReminder;
+    private long _totalReminderOccurrenceCount;
     private Func<DateTimeOffset> _nowProvider = static () => DateTimeOffset.Now;
     private SpriteFrame? _currentSpriteFrame;
     private Int32Rect? _directDisplayFrameBounds;
@@ -469,12 +481,6 @@ public partial class MainWindow : Window
                 _scheduledTasks.Add(item);
             }
         }
-        else
-        {
-            AppLogger.Info(
-                "定时任务读取失败，本次运行将保护原文件且拒绝覆盖保存");
-        }
-
         _todoWindow = new TodoWindow
         {
             Todos = _todos,
@@ -508,6 +514,7 @@ public partial class MainWindow : Window
         _todoWindow.LostKeyboardFocus += TodoWindow_LostKeyboardFocus;
         _todoWindow.DpiChanged += TodoWindow_DpiChanged;
         _todoWindow.SizeChanged += TodoWindow_SizeChanged;
+        _todoWindow.LocationChanged += TodoWindow_LocationChanged;
         DpiChanged += MainWindow_DpiChanged;
 
         _petSizePersistTimer = new DispatcherTimer
@@ -542,12 +549,6 @@ public partial class MainWindow : Window
             Interval = AutomaticAnimationInterval
         };
         _automaticTimer.Tick += AutomaticTimer_Tick;
-        AppLogger.Info(
-            $"主窗口初始化完成，已加载 {_reactionClips.Length} 组动作补帧，" +
-            $"{_scheduledTasks.Count} 条定时任务");
-        AppLogger.Info(
-            $"渲染管线：{DisplayPixelWidth}×{DisplayPixelHeight} 固定完整帧，" +
-            "单缓冲预乘 Alpha 淡化，活动过渡跟随屏幕刷新率");
     }
 
     internal void ConfigureStartupRegistration(StartupRegistration registration)
@@ -559,23 +560,12 @@ public partial class MainWindow : Window
                 out var error))
         {
             _todoWindow.SetStartupEnabled(enabled);
-            AppLogger.Info(
-                $"开机自启状态已读取：{(enabled ? "已开启" : "已关闭")}");
             return;
         }
 
         _todoWindow.SetStartupEnabled(
             enabled,
             $"开机自启状态读取或修复失败：{error}");
-        AppLogger.Info($"开机自启状态读取或修复失败：{error}");
-    }
-
-    private static void LogInfo(string message)
-    {
-        // AppLogger.Info only publishes to its bounded background queue. State
-        // transitions may allocate their one summary string, but the Rendering
-        // call graph never creates a captured Func/Action or performs disk I/O.
-        AppLogger.Info(message);
     }
 
     private void AddPinnedSpritePageNames(IEnumerable<SpriteFrame> frames)
@@ -1306,7 +1296,6 @@ public partial class MainWindow : Window
         RestartAutomaticCountdown();
         _spritePageWarmupEnabled = true;
         ResumeSpritePageWarmup();
-        AppLogger.Info($"主窗口已显示，位置 ({Left:F0}, {Top:F0})");
     }
 
     private void Window_LocationChanged(object? sender, EventArgs e)
@@ -1342,6 +1331,7 @@ public partial class MainWindow : Window
             }
         }
 
+        RefreshReminderWindowPosition();
         if (!BubblePopup.IsOpen)
         {
             return;
@@ -1358,18 +1348,26 @@ public partial class MainWindow : Window
     {
         _todoWindowPositionCache.InvalidateGeometry();
         QueueTodoWindowPositionUpdate();
+        RefreshReminderWindowPosition();
     }
 
     private void TodoWindow_DpiChanged(object sender, DpiChangedEventArgs e)
     {
         _todoWindowPositionCache.InvalidateGeometry();
         QueueTodoWindowPositionUpdate();
+        RefreshReminderWindowPosition();
     }
 
     private void TodoWindow_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         _todoWindowPositionCache.InvalidateGeometry();
         QueueTodoWindowPositionUpdate();
+        RefreshReminderWindowPosition();
+    }
+
+    private void TodoWindow_LocationChanged(object? sender, EventArgs e)
+    {
+        RefreshReminderWindowPosition();
     }
 
     private void SystemEvents_DisplaySettingsChanged(object? sender, EventArgs e)
@@ -1573,7 +1571,6 @@ public partial class MainWindow : Window
                 }));
         }
 
-        AppLogger.Info("系统解锁或恢复：桌宠、待办窗口和定时任务已重新校准");
     }
 
     private void ProcessSystemTimeChanged()
@@ -1584,7 +1581,6 @@ public partial class MainWindow : Window
         }
 
         ProcessScheduledTasksAt(_nowProvider());
-        AppLogger.Info("系统时间已变化，定时任务触发点已重新校准");
     }
 
     private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -1810,7 +1806,6 @@ public partial class MainWindow : Window
                 SystemEvents_UserPreferenceChanged;
             _userPreferenceChangedSubscribed = false;
         }
-        AppLogger.Info("主窗口正在关闭");
         _automaticAnimationEnabled = false;
         _isEdgeRoaming = false;
         _edgeRoamPhase = EdgeRoamPhase.None;
@@ -1845,6 +1840,7 @@ public partial class MainWindow : Window
         DpiChanged -= MainWindow_DpiChanged;
         _todoWindow.DpiChanged -= TodoWindow_DpiChanged;
         _todoWindow.SizeChanged -= TodoWindow_SizeChanged;
+        _todoWindow.LocationChanged -= TodoWindow_LocationChanged;
         _activeClip = null;
         _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
@@ -1853,9 +1849,11 @@ public partial class MainWindow : Window
         _isReminderActive = false;
         _activeReminder = null;
         _activeReminderBatch.Clear();
+        _visibleReminderOccurrences.Clear();
         _reminderQueue.Clear();
         _queuedReminderIds.Clear();
-        _reminderMissedOccurrenceCounts.Clear();
+        _presentedReminderOccurrenceCounts.Clear();
+        _totalReminderOccurrenceCount = 0;
         _edgeDock = EdgeDock.None;
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
@@ -1863,10 +1861,16 @@ public partial class MainWindow : Window
         _suppressTodoWindowDeactivate = true;
         _todoWindow.Deactivated -= TodoWindow_Deactivated;
         _todoWindow.CloseForApplication();
+        if (_reminderWindow is { } reminderWindow)
+        {
+            reminderWindow.AcknowledgeRequested -=
+                ReminderWindow_AcknowledgeRequested;
+            reminderWindow.CloseForApplication();
+            _reminderWindow = null;
+        }
         SaveTodos();
         SaveScheduledTasks();
         ClearResidentSpritePages();
-        AppLogger.Flush(TimeSpan.FromSeconds(1));
     }
 
     private void PetHost_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1935,7 +1939,6 @@ public partial class MainWindow : Window
         {
             // 快速松手可能发生在 WPF 把拖动交给系统之前。无论系统拖动
             // 是否正常返回，都用最终窗口位置补做一次边缘吸附判定。
-            AppLogger.Info("系统拖动提前结束，正在补做边缘吸附判定");
         }
         finally
         {
@@ -2196,8 +2199,6 @@ public partial class MainWindow : Window
             _edgeDock = EdgeDock.None;
             _edgePeekFrameDeadlineTimestamp = 0;
             RestartAutomaticCountdown();
-            AppLogger.Info(
-                $"边缘探头已跳过：精灵分页不可用 {edgePageName}");
             UpdateVisualClockSubscription();
             return;
         }
@@ -2211,7 +2212,6 @@ public partial class MainWindow : Window
             _activeClipStartedTimestamp = 0;
             _activeFrameDeadlineTimestamp = 0;
             ClearDeferredActiveClipClock();
-            AppLogger.Info($"动作中止：{activeClip.ActionName}，原因：拖到屏幕边缘");
             if (_bubbleMode == BubbleMode.Cute)
             {
                 SetBubbleMode(BubbleMode.None);
@@ -2252,7 +2252,6 @@ public partial class MainWindow : Window
         }
 
         UpdateVisualClockSubscription();
-        AppLogger.Info($"边缘探头开始：{GetEdgeName(dock)}");
     }
 
     private void ExitEdgePeek(
@@ -2264,7 +2263,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        var previousDock = _edgeDock;
         _edgeDock = EdgeDock.None;
         _edgePeekFrameIndex = 0;
         _edgePeekFrameDeadlineTimestamp = 0;
@@ -2286,7 +2284,6 @@ public partial class MainWindow : Window
                 ShowStableFrame(_idleFrame);
             }
         }
-        LogInfo($"边缘探头结束：{GetEdgeName(previousDock)}");
         if (restartAutomaticCountdown)
         {
             RestartAutomaticCountdown();
@@ -2404,8 +2401,31 @@ public partial class MainWindow : Window
         }
 
         return frameIndex == frameCount - 1
-            ? EdgePeekRestHold
+            ? GetEdgePeekRestHoldDuration(frameCount)
             : EdgePeekMotionFrameInterval;
+    }
+
+    private static TimeSpan GetEdgePeekRestHoldDuration(int frameCount)
+    {
+        if (frameCount < 8 || frameCount % 4 != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(frameCount),
+                $"Invalid edge frame count: {frameCount}");
+        }
+
+        var restTicks = checked(
+            EdgePeekCycleInterval.Ticks -
+            EdgePeekFullyPeekedHold.Ticks -
+            (frameCount - 2L) * EdgePeekMotionFrameInterval.Ticks);
+        if (restTicks <= 0)
+        {
+            throw new InvalidOperationException(
+                $"Edge peek cycle {EdgePeekCycleInterval} is too short " +
+                $"for {frameCount} frames.");
+        }
+
+        return TimeSpan.FromTicks(restTicks);
     }
 
     private static long GetEdgePeekCycleDurationTicks(int frameCount)
@@ -2420,7 +2440,7 @@ public partial class MainWindow : Window
         return checked(
             (frameCount - 2L) * ToStopwatchTicks(EdgePeekMotionFrameInterval) +
             ToStopwatchTicks(EdgePeekFullyPeekedHold) +
-            ToStopwatchTicks(EdgePeekRestHold));
+            ToStopwatchTicks(GetEdgePeekRestHoldDuration(frameCount)));
     }
 
     private void StartEdgePeekFrameClockAt(long timestamp)
@@ -2517,8 +2537,6 @@ public partial class MainWindow : Window
             clip.Frames[clip.ActionFrameIndex].Image.PageName,
             urgent: true);
         CuteMessageText.Text = clip.Message;
-        AppLogger.Info(
-            $"动作开始：{clip.ActionName}，触发方式：{(showCuteBubble ? "点击" : "自动")}");
 
         if (showCuteBubble && _bubbleMode != BubbleMode.Todo)
         {
@@ -2631,9 +2649,6 @@ public partial class MainWindow : Window
         StartEdgeRoamBoarding(
             reverse: false,
             timestamp: Stopwatch.GetTimestamp());
-        AppLogger.Info(
-            $"绕屏开始：大头熊猫坐骑巡游，方向={(_edgeRoamDirection > 0 ? "顺时针" : "逆时针")}，" +
-            $"显示器工作区={workArea}");
         return true;
     }
 
@@ -2757,11 +2772,6 @@ public partial class MainWindow : Window
             RequestIdleSpritePageTrim();
             RestartAutomaticCountdown();
             UpdateVisualClockSubscription();
-            // AppLogger only enqueues here; its background writer performs the
-            // disk I/O, so the one completion summary is safe even when the
-            // final dismount frame is advanced by CompositionTarget.Rendering.
-            AppLogger.Info(
-                interrupted ? "绕屏中止：用户交互或系统状态变化" : "绕屏完成：大头熊猫坐骑已平稳返回");
         }
     }
 
@@ -4021,7 +4031,6 @@ public partial class MainWindow : Window
 
         if (ReferenceEquals(clip, _reminderEnterClip) && _isReminderActive)
         {
-            LogInfo("定时提醒举喇叭入场完成，开始播报动作");
             StartReminderHoldAnimation();
             return;
         }
@@ -4034,26 +4043,17 @@ public partial class MainWindow : Window
             _activeFrameDeadlineTimestamp = 0;
             ClearDeferredActiveClipClock();
             RefreshSnoreBubbleAnimationState();
-            LogInfo("定时提醒播报动作完成，保持举喇叭姿势");
             RequestIdleSpritePageTrim();
             UpdateVisualClockSubscription();
             return;
         }
 
-        var elapsedMilliseconds = _activeClipStartedTimestamp > 0
-            ? Math.Max(
-                0,
-                (Stopwatch.GetTimestamp() - _activeClipStartedTimestamp) * 1000d /
-                Stopwatch.Frequency)
-            : 0;
         _activeClip = null;
         _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
         RefreshSnoreBubbleAnimationState();
-        LogInfo(
-            $"动作完成：{clip.ActionName}，实际耗时 {elapsedMilliseconds:F1} ms");
         if (_bubbleMode == BubbleMode.Cute)
         {
             SetBubbleMode(BubbleMode.None);
@@ -5257,7 +5257,7 @@ public partial class MainWindow : Window
                 {
                     if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
                     {
-                        _ = completedTask.Exception;
+                        ReleaseCompletedSpritePageResult(completedTask);
                         cancellation.Dispose();
                         return;
                     }
@@ -5272,7 +5272,7 @@ public partial class MainWindow : Window
                 }
                 catch (InvalidOperationException)
                 {
-                    _ = completedTask.Exception;
+                    ReleaseCompletedSpritePageResult(completedTask);
                     cancellation.Dispose();
                 }
             },
@@ -5297,7 +5297,7 @@ public partial class MainWindow : Window
         cancellation.Dispose();
         if (_isClosing)
         {
-            _ = completedTask.Exception;
+            ReleaseCompletedSpritePageResult(completedTask);
             return;
         }
 
@@ -5317,8 +5317,7 @@ public partial class MainWindow : Window
             _ = completedTask.Exception;
             if (completedTask.IsCompletedSuccessfully)
             {
-                RecordDiscardedSpritePageBytes(
-                    completedTask.Result.Pixels.LongLength);
+                ReturnSpritePageBuffer(completedTask.Result.Pixels);
             }
             StartSpritePagePrefetch();
             ResumeSpritePageWarmup();
@@ -5351,6 +5350,16 @@ public partial class MainWindow : Window
         else
         {
             ResumeSpritePageWarmup();
+        }
+    }
+
+    private void ReleaseCompletedSpritePageResult(
+        Task<SpritePageLoadResult> completedTask)
+    {
+        _ = completedTask.Exception;
+        if (completedTask.IsCompletedSuccessfully)
+        {
+            ReturnSpritePageBuffer(completedTask.Result.Pixels);
         }
     }
 
@@ -5412,8 +5421,6 @@ public partial class MainWindow : Window
 
         StopAnimatedStateForFailedSpritePage(pageName);
 
-        AppLogger.Info(
-            $"Sprite page prefetch failed: {pageName}, {errorMessage}");
         UpdateVisualClockSubscription();
         if (_spritePageWarmupIndex < _spritePageWarmupOrder.Length &&
             string.Equals(
@@ -5531,56 +5538,65 @@ public partial class MainWindow : Window
     {
         var loadStopwatch = Stopwatch.StartNew();
         cancellationToken.ThrowIfCancellationRequested();
-        var decodedPixels = new byte[page.UncompressedByteCount];
-        var stride = checked(page.Width * 4);
-        var readStartedAt = Stopwatch.GetTimestamp();
-        var validationResource = Application.GetResourceStream(
-            CreatePackUri(page.ResourcePath))
-            ?? throw new InvalidOperationException(
-                $"Missing sprite atlas page resource: {page.ResourcePath}");
-        using (validationResource.Stream)
+        var decodedPixels =
+            _spritePageBufferPool.Rent(page.UncompressedByteCount);
+        try
         {
-            ValidateSpriteAtlasPageContentHash(
-                validationResource.Stream,
-                page.CompressedByteCount,
-                page.ResourcePath,
-                page.ContentSha256,
-                cancellationToken);
-        }
+            var stride = checked(page.Width * 4);
+            var readStartedAt = Stopwatch.GetTimestamp();
+            var validationResource = Application.GetResourceStream(
+                CreatePackUri(page.ResourcePath))
+                ?? throw new InvalidOperationException(
+                    $"Missing sprite atlas page resource: {page.ResourcePath}");
+            using (validationResource.Stream)
+            {
+                ValidateSpriteAtlasPageContentHash(
+                    validationResource.Stream,
+                    page.CompressedByteCount,
+                    page.ResourcePath,
+                    page.ContentSha256,
+                    cancellationToken);
+            }
 
-        var readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
-        cancellationToken.ThrowIfCancellationRequested();
-        var decodeResource = Application.GetResourceStream(
-            CreatePackUri(page.ResourcePath))
-            ?? throw new InvalidOperationException(
-                $"Missing sprite atlas page resource: {page.ResourcePath}");
-        using (decodeResource.Stream)
-        using (var brotliStream = new BrotliStream(
-                   decodeResource.Stream,
-                   CompressionMode.Decompress,
-                   leaveOpen: false))
-        {
-            DecodeSpritePageStream(
-                page.ResourcePath,
-                page.Encoding,
-                brotliStream,
-                page.PayloadByteCount,
+            var readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
+            cancellationToken.ThrowIfCancellationRequested();
+            var decodeResource = Application.GetResourceStream(
+                CreatePackUri(page.ResourcePath))
+                ?? throw new InvalidOperationException(
+                    $"Missing sprite atlas page resource: {page.ResourcePath}");
+            using (decodeResource.Stream)
+            using (var brotliStream = new BrotliStream(
+                       decodeResource.Stream,
+                       CompressionMode.Decompress,
+                       leaveOpen: false))
+            {
+                DecodeSpritePageStream(
+                    page.ResourcePath,
+                    page.Encoding,
+                    brotliStream,
+                    page.PayloadByteCount,
+                    decodedPixels,
+                    page.Width,
+                    page.Height,
+                    page.FrameDescriptorValues,
+                    page.DecodedSha256,
+                    cancellationToken);
+            }
+
+            loadStopwatch.Stop();
+            return new SpritePageLoadResult(
                 decodedPixels,
+                stride,
                 page.Width,
                 page.Height,
-                page.FrameDescriptorValues,
-                page.DecodedSha256,
-                cancellationToken);
+                loadStopwatch.Elapsed,
+                readElapsed);
         }
-
-        loadStopwatch.Stop();
-        return new SpritePageLoadResult(
-            decodedPixels,
-            stride,
-            page.Width,
-            page.Height,
-            loadStopwatch.Elapsed,
-            readElapsed);
+        catch
+        {
+            ReturnSpritePageBuffer(decodedPixels);
+            throw;
+        }
     }
 
     private static void ValidateSpriteAtlasPageContentHash(
@@ -5655,7 +5671,7 @@ public partial class MainWindow : Window
             TouchResidentSpritePage(existingPage);
             if (!ReferenceEquals(existingPage.Pixels, result.Pixels))
             {
-                RecordDiscardedSpritePageBytes(result.Pixels.LongLength);
+                ReturnSpritePageBuffer(result.Pixels);
             }
             return;
         }
@@ -5719,26 +5735,6 @@ public partial class MainWindow : Window
             candidate = nextCandidate;
         }
 
-        if (removedPageCount > 0)
-        {
-            AppLogger.Info(
-                $"Sprite cache trimmed: removed {removedPageCount}, " +
-                $"resident {_residentSpritePageBytes / (1024d * 1024d):F1}/" +
-                $"{targetBytes / (1024d * 1024d):F0} MiB target");
-        }
-
-        if (_residentSpritePageBytes > SpritePageResidentBudgetBytes)
-        {
-            // Protection wins over the soft budget: dropping the current,
-            // pending, or active-clip page would create a visible flash. The
-            // next protection release schedules another trim automatically.
-            AppLogger.Info(
-                $"Sprite cache temporarily over budget: " +
-                $"{_residentSpritePageBytes / (1024d * 1024d):F1}/" +
-                $"{SpritePageResidentBudgetBytes / (1024d * 1024d):F0} MiB, " +
-                "all remaining pages are protected");
-        }
-
         ScheduleSpritePageCollectionIfNeeded();
     }
 
@@ -5756,8 +5752,8 @@ public partial class MainWindow : Window
         }
 
         // Clip completion can occur inside CompositionTarget.Rendering. Only
-        // publish a flag there; dictionary/LRU mutation and its summary log run
-        // on the already-created dispatcher timer after composition returns.
+        // publish a flag there; dictionary/LRU mutation runs on the existing
+        // dispatcher timer after composition returns.
         _residentSpritePageTrimPending = true;
         if (!_spritePagePrefetchDispatchTimer.IsEnabled)
         {
@@ -5889,9 +5885,6 @@ public partial class MainWindow : Window
                 _spritePageCollectionPollCount = 0;
                 _lastObservedSpritePageCollectionGeneration =
                     collectionGeneration;
-                AppLogger.Info(
-                    $"Sprite cache idle Gen2 completed: debt " +
-                    $"{_spritePageEvictedBytesSinceCollection / (1024d * 1024d):F1} MiB");
                 ScheduleSpritePageCollectionIfNeeded();
                 return;
             }
@@ -5902,8 +5895,6 @@ public partial class MainWindow : Window
                 _spritePageCollectionInProgress = false;
                 _spritePageCollectionDebtAtRequest = 0;
                 _spritePageCollectionPollCount = 0;
-                AppLogger.Info(
-                    "Sprite cache idle Gen2 was not observed; eviction debt retained");
                 ScheduleSpritePageCollectionIfNeeded();
                 return;
             }
@@ -5956,9 +5947,6 @@ public partial class MainWindow : Window
             GC.CollectionCount(GC.MaxGeneration);
         _spritePageCollectionPollCount = 0;
         _spritePageCollectionInProgress = true;
-        AppLogger.Info(
-            $"Sprite cache idle Gen2 requested: evicted " +
-            $"{_spritePageCollectionDebtAtRequest / (1024d * 1024d):F1} MiB");
 
         _ = Task.Run(static () =>
                 GC.Collect(
@@ -6093,8 +6081,20 @@ public partial class MainWindow : Window
         }
 
         _residentSpritePageBytes -= residentPage.ByteCount;
-        RecordDiscardedSpritePageBytes(residentPage.ByteCount);
+        ReturnSpritePageBuffer(residentPage.Pixels);
         return true;
+    }
+
+    private void ReturnSpritePageBuffer(byte[] pixels)
+    {
+        var discardedBytes =
+            _spritePageBufferPool.ReturnAndGetDiscardedBytes(pixels);
+        if (discardedBytes > 0 &&
+            !_isClosing &&
+            Dispatcher.CheckAccess())
+        {
+            RecordDiscardedSpritePageBytes(discardedBytes);
+        }
     }
 
     private void RecordDiscardedSpritePageBytes(long byteCount)
@@ -6112,6 +6112,12 @@ public partial class MainWindow : Window
 
     private void ClearResidentSpritePages()
     {
+        _spritePagePixels = Array.Empty<byte>();
+        foreach (var residentPage in _residentSpritePages.Values)
+        {
+            ReturnSpritePageBuffer(residentPage.Pixels);
+        }
+
         _residentSpritePages.Clear();
         _residentSpritePageLru.Clear();
         _residentSpritePageBytes = 0;
@@ -6120,7 +6126,7 @@ public partial class MainWindow : Window
         _spritePageCollectionInProgress = false;
         _spritePageCollectionPollCount = 0;
         _spritePageCollectionTimer.Stop();
-        _spritePagePixels = Array.Empty<byte>();
+        _ = _spritePageBufferPool.ClearFreeBuffers();
         _loadedSpritePageName = null;
         _loadedSpritePageStride = 0;
     }
@@ -6136,13 +6142,6 @@ public partial class MainWindow : Window
             _loadedSpritePageStride = result.Stride;
         }
 
-        AppLogger.Info(
-            $"Sprite page {(prefetched ? "prefetched" : "loaded")}: {pageName}, " +
-            $"{result.Width}x{result.Height}, {result.TotalElapsed.TotalMilliseconds:F1} ms " +
-            $"(read {result.ReadElapsed.TotalMilliseconds:F1} ms, decode " +
-            $"{result.TotalElapsed.TotalMilliseconds - result.ReadElapsed.TotalMilliseconds:F1} ms), " +
-            $"cache {_residentSpritePageBytes / (1024d * 1024d):F1}/" +
-            $"{SpritePageResidentBudgetBytes / (1024d * 1024d):F0} MiB");
     }
 
     private static void ReadExactly(
@@ -6560,7 +6559,10 @@ public partial class MainWindow : Window
             StopVisualClock();
         }
 
-        HideBubbleVisuals();
+        var preserveTodoWindow =
+            _todoWindow.IsVisible &&
+            mode is BubbleMode.Todo or BubbleMode.Reminder;
+        HideBubbleVisuals(preserveTodoWindow);
         _bubbleMode = mode;
         ShowBubbleVisuals(mode);
         if (mode == BubbleMode.Todo)
@@ -6571,8 +6573,6 @@ public partial class MainWindow : Window
         {
             EnterReminderVisualState();
         }
-
-        LogInfo($"气泡状态：{previousMode} -> {mode}");
 
         if (mode != BubbleMode.Todo &&
             mode != BubbleMode.Reminder &&
@@ -6614,8 +6614,6 @@ public partial class MainWindow : Window
             _activeClipStartedTimestamp = 0;
             _activeFrameDeadlineTimestamp = 0;
             ClearDeferredActiveClipClock();
-            AppLogger.Info(
-                $"动作中止：{activeClip.ActionName}，原因：打开待办");
         }
         else
         {
@@ -6638,7 +6636,6 @@ public partial class MainWindow : Window
         // double silhouettes and shimmering semi-transparent outlines.
         _nextFrameBlendDuration = TimeSpan.Zero;
         _nextFrameMinimumHold = TimeSpan.Zero;
-        AppLogger.Info("待办打开过渡开始");
         ShowActiveClipFrame(enterStartIndex);
     }
 
@@ -6685,7 +6682,6 @@ public partial class MainWindow : Window
             // The Todo window and the pet pose have independent ownership after
             // a drag reaches a screen edge. Closing the panel must not replace
             // the active edge-peek sequence with the standing-to-idle Todo exit.
-            AppLogger.Info("待办已收起，保留当前屏幕边缘探头状态");
             UpdateVisualClockSubscription();
             return;
         }
@@ -6707,7 +6703,6 @@ public partial class MainWindow : Window
         _activeFrameIndex = exitStartIndex - 1;
         _nextFrameBlendDuration = TimeSpan.Zero;
         _nextFrameMinimumHold = TimeSpan.Zero;
-        AppLogger.Info("待办收起过渡开始");
         ShowActiveClipFrame(exitStartIndex);
     }
 
@@ -6731,8 +6726,6 @@ public partial class MainWindow : Window
 
         if (_activeClip is { } activeClip)
         {
-            AppLogger.Info(
-                $"动作中止：{activeClip.ActionName}，原因：定时任务到点");
         }
 
         _activeClip = null;
@@ -6754,7 +6747,6 @@ public partial class MainWindow : Window
         RequestSpritePagePrefetch(
             _reminderEnterClip.Frames[0].Image.PageName,
             urgent: true);
-        AppLogger.Info("定时提醒举喇叭入场开始");
         ShowActiveClipFrame(0);
     }
 
@@ -6797,62 +6789,17 @@ public partial class MainWindow : Window
         ClearDeferredActiveClipClock();
         _nextFrameBlendDuration = TimeSpan.Zero;
         _nextFrameMinimumHold = TimeSpan.Zero;
-        AppLogger.Info("定时提醒收起过渡开始");
         ShowActiveClipFrame(0);
     }
 
     private void ConfigureReminderBubblePlacement()
     {
-        var workArea = MonitorWorkArea.GetForWindow(this);
-        var petLeft = Left;
-        var petRight = Left + (ActualWidth > 0 ? ActualWidth : Width);
-        var requiredWidth = ReminderBubble.Width + 12;
-        var availableOnLeft = petLeft - workArea.Left;
-        var availableOnRight = workArea.Right - petRight;
-        var placeOnLeft = availableOnLeft >= requiredWidth ||
-                          availableOnLeft >= availableOnRight;
-
-        BubblePopup.Placement = placeOnLeft
-            ? PlacementMode.Left
-            : PlacementMode.Right;
-        BubbleBodyColumn.Width = placeOnLeft
-            ? GridLength.Auto
-            : new GridLength(12);
-        BubbleTailColumn.Width = placeOnLeft
-            ? new GridLength(12)
-            : GridLength.Auto;
-        Grid.SetColumn(BubbleHost, placeOnLeft ? 0 : 1);
-        Grid.SetColumn(BubbleTailHost, placeOnLeft ? 1 : 0);
-        BubbleTailHost.Margin = placeOnLeft
-            ? new Thickness(-1, 0, 0, 0)
-            : new Thickness(0, 0, -1, 0);
-        BubbleTailHost.HorizontalAlignment = placeOnLeft
-            ? HorizontalAlignment.Left
-            : HorizontalAlignment.Right;
-        BubbleTailPolygon.Points = placeOnLeft
-            ? PointCollection.Parse("0,0 12,9 0,18")
-            : PointCollection.Parse("12,0 0,9 12,18");
-        BubbleTailPolygon.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xF2, 0xC9));
-        BubbleTailPolygon.Stroke = new SolidColorBrush(Color.FromRgb(0xE9, 0xAD, 0x3C));
-        _reminderFacingScaleX = placeOnLeft ? 1 : -1;
+        RefreshReminderWindowPosition();
     }
 
     private void RefreshReminderBubbleOffset()
     {
-        if (_bubbleMode != BubbleMode.Reminder || !BubblePopup.IsOpen)
-        {
-            return;
-        }
-
-        var targetHeight = double.IsFinite(Height) && Height > 0
-            ? Height
-            : PetHost.ActualHeight;
-        BubblePopup.VerticalOffset = targetHeight - ReminderBubbleHeight;
-        // Popup owns a separate HWND. Touch the horizontal offset once so WPF
-        // recomputes placement after the pet's one-time maximum-size envelope.
-        var horizontalOffset = BubblePopup.HorizontalOffset;
-        BubblePopup.HorizontalOffset = horizontalOffset + 0.01;
-        BubblePopup.HorizontalOffset = horizontalOffset;
+        RefreshReminderWindowPosition();
     }
 
     private void ResetPetVisualTransforms()
@@ -6869,7 +6816,7 @@ public partial class MainWindow : Window
         PetScale.ScaleY = 1;
     }
 
-    private void HideBubbleVisuals()
+    private void HideBubbleVisuals(bool preserveTodoWindow = false)
     {
         _outsideTodoCloseGeneration++;
         BubblePopup.IsOpen = false;
@@ -6877,19 +6824,38 @@ public partial class MainWindow : Window
         BubbleTailHost.Visibility = Visibility.Collapsed;
         CuteBubble.Visibility = Visibility.Collapsed;
         ReminderBubble.Visibility = Visibility.Collapsed;
-        if (_todoWindow.IsVisible)
+        _reminderWindow?.HideSafely();
+        if (!_isReminderActive)
         {
-            _todoWindow.CommitPendingTodoEdit();
-            var wasDeactivateSuppressed = _suppressTodoWindowDeactivate;
-            _suppressTodoWindowDeactivate = true;
-            try
-            {
-                _todoWindow.Hide();
-            }
-            finally
-            {
-                _suppressTodoWindowDeactivate = wasDeactivateSuppressed;
-            }
+            // A 100-item reminder can own a large combined TextBox string.
+            // Release it as soon as the batch is fully acknowledged; merely
+            // pressing “收起” while the batch is active intentionally keeps it.
+            _reminderWindow?.ClearPresentation();
+        }
+
+        if (!preserveTodoWindow)
+        {
+            HideTodoWindowVisual();
+        }
+    }
+
+    private void HideTodoWindowVisual()
+    {
+        if (!_todoWindow.IsVisible)
+        {
+            return;
+        }
+
+        _todoWindow.CommitPendingTodoEdit();
+        var wasDeactivateSuppressed = _suppressTodoWindowDeactivate;
+        _suppressTodoWindowDeactivate = true;
+        try
+        {
+            _todoWindow.Hide();
+        }
+        finally
+        {
+            _suppressTodoWindowDeactivate = wasDeactivateSuppressed;
         }
     }
 
@@ -6902,32 +6868,24 @@ public partial class MainWindow : Window
 
         if (mode == BubbleMode.Todo)
         {
-            _todoWindow.ShowDefaultTab();
             _todoWindow.SetPetSizeScale(_petSizeScale);
             _todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled);
-            _todoWindow.Opacity = 0;
             if (!_todoWindow.IsVisible)
             {
+                _todoWindow.ShowDefaultTab();
+                _todoWindow.Opacity = 0;
                 _todoWindow.Show();
+                _todoWindow.Opacity = 1;
             }
 
             _todoWindowPositionCache.InvalidateGeometry();
             UpdateTodoWindowPosition();
-            _todoWindow.Opacity = 1;
             return;
         }
 
         if (mode == BubbleMode.Reminder)
         {
-            ConfigureReminderBubblePlacement();
-            var reminderPetHeight = PetHost.ActualHeight > 0
-                ? PetHost.ActualHeight
-                : PetHost.Height;
-            BubblePopup.VerticalOffset = reminderPetHeight - ReminderBubbleHeight;
-            BubbleHost.Visibility = Visibility.Visible;
-            BubbleTailHost.Visibility = Visibility.Visible;
-            ReminderBubble.Visibility = Visibility.Visible;
-            BubblePopup.IsOpen = true;
+            ShowReminderWindow();
             return;
         }
 
@@ -6949,6 +6907,65 @@ public partial class MainWindow : Window
         BubbleTailHost.Visibility = Visibility.Visible;
         CuteBubble.Visibility = Visibility.Visible;
         BubblePopup.IsOpen = true;
+    }
+
+    private ReminderWindow EnsureReminderWindow()
+    {
+        if (_reminderWindow is null)
+        {
+            _reminderWindow = new ReminderWindow();
+            _reminderWindow.AcknowledgeRequested +=
+                ReminderWindow_AcknowledgeRequested;
+        }
+
+        if (IsLoaded && _reminderWindow.Owner is null)
+        {
+            _reminderWindow.Owner = this;
+        }
+
+        return _reminderWindow;
+    }
+
+    private void ShowReminderWindow()
+    {
+        if (!IsVisible)
+        {
+            return;
+        }
+
+        var reminderWindow = EnsureReminderWindow();
+        var anchor = _todoWindow.IsVisible
+            ? (Window)_todoWindow
+            : this;
+        reminderWindow.ShowBeside(anchor);
+
+        var petCenter = Left + (ActualWidth > 0 ? ActualWidth : Width) / 2;
+        var reminderCenter =
+            reminderWindow.Left +
+            (reminderWindow.ActualWidth > 0
+                ? reminderWindow.ActualWidth
+                : reminderWindow.Width) / 2;
+        _reminderFacingScaleX = reminderCenter <= petCenter ? 1 : -1;
+    }
+
+    private void RefreshReminderWindowPosition()
+    {
+        if (_isClosing ||
+            !_isReminderActive ||
+            _bubbleMode != BubbleMode.Reminder ||
+            _reminderWindow?.IsVisible != true)
+        {
+            return;
+        }
+
+        ShowReminderWindow();
+    }
+
+    private void ReminderWindow_AcknowledgeRequested(
+        object? sender,
+        EventArgs e)
+    {
+        AcknowledgeActiveReminder();
     }
 
     private void TodoWindow_PetSizeScaleChanged(double scale)
@@ -6987,7 +7004,6 @@ public partial class MainWindow : Window
 
         SaveSettings();
         RestartAutomaticCountdown();
-        AppLogger.Info($"绕屏动画：{(enabled ? "开启" : "关闭")}");
     }
 
     private void TodoWindow_StartupEnabledChanged(bool enabled)
@@ -6997,7 +7013,6 @@ public partial class MainWindow : Window
             _todoWindow.SetStartupEnabled(
                 enabled: false,
                 "当前运行方式无法设置开机自启");
-            AppLogger.Info("忽略开机自启修改：当前运行方式不可用");
             return;
         }
 
@@ -7007,15 +7022,12 @@ public partial class MainWindow : Window
                 out var error))
         {
             _todoWindow.SetStartupEnabled(actualEnabled);
-            AppLogger.Info(
-                $"开机自启已{(actualEnabled ? "开启" : "关闭")}");
             return;
         }
 
         _todoWindow.SetStartupEnabled(
             actualEnabled,
             $"开机自启设置失败：{error}");
-        AppLogger.Info($"开机自启设置失败：{error}");
     }
 
     private void TodoWindow_PetSizeAdjustmentStarted()
@@ -7626,8 +7638,6 @@ public partial class MainWindow : Window
         _petSizePersistTimer.Stop();
         QueuePetSizeScaleTargetAt(MaximumPetSizeScale, timestamp);
         RefreshReminderBubbleOffset();
-        AppLogger.Info(
-            $"定时提醒临时放大：{_reminderRestoreScale:P1} -> {MaximumPetSizeScale:P1}");
     }
 
     private void RestoreReminderPetSizeAt(long timestamp)
@@ -7672,7 +7682,6 @@ public partial class MainWindow : Window
         _petSizeSettingsDirty = false;
         _petSizeCommitPending = false;
         _petSizePersistTimer.Stop();
-        AppLogger.Info($"定时提醒结束，桌宠大小恢复为 {_reminderRestoreScale:P1}");
         UpdateVisualClockSubscription();
     }
 
@@ -7745,20 +7754,14 @@ public partial class MainWindow : Window
         QueueTodoWindowPositionUpdate();
         UpdateVisualClockSubscription();
 
-        var saved = true;
         if (persist && !_isTransientPetSizeOverride && _petSizeSettingsDirty)
         {
-            saved = SaveSettings();
+            var saved = SaveSettings();
             if (saved)
             {
                 _petSizeSettingsDirty = false;
             }
         }
-
-        AppLogger.Info(
-            $"桌宠大小：{finalScale:P1}，" +
-            $"显示尺寸 {PetWidth * finalScale:F1}×{PetHeight * finalScale:F1} DIP，" +
-            $"设置保存：{saved}");
     }
 
     private void ApplyPetSizeScale(
@@ -7807,10 +7810,6 @@ public partial class MainWindow : Window
         {
             SaveSettings();
         }
-
-        AppLogger.Info(
-            $"桌宠大小：{normalizedScale:P1}，" +
-            $"显示尺寸 {displayedWidth:F1}×{displayedHeight:F1} DIP");
     }
 
     private bool SaveSettings()
@@ -7843,19 +7842,16 @@ public partial class MainWindow : Window
 
         _todos.Add(new TodoItem { Text = text.Trim() });
         SaveTodos();
-        AppLogger.Info($"新增待办，当前数量：{_todos.Count}");
     }
 
     private void TodoWindow_TodoChanged(TodoItem item)
     {
         SaveTodos();
-        AppLogger.Info($"待办完成状态已更新，已完成：{item.IsCompleted}");
     }
 
     private void TodoWindow_TodoEdited(TodoItem item)
     {
         SaveTodos();
-        AppLogger.Info("待办文字已修改");
     }
 
     private void TodoWindow_TodoMoveRequested(TodoItem item, int newIndex)
@@ -7869,7 +7865,6 @@ public partial class MainWindow : Window
 
         _todos.Move(oldIndex, newIndex);
         SaveTodos();
-        AppLogger.Info($"待办顺序已调整：{oldIndex + 1} -> {newIndex + 1}");
     }
 
     private void TodoWindow_TodoDragCompleted()
@@ -7882,7 +7877,6 @@ public partial class MainWindow : Window
         if (_todos.Remove(item))
         {
             SaveTodos();
-            AppLogger.Info($"删除待办，当前数量：{_todos.Count}");
         }
     }
 
@@ -7912,10 +7906,6 @@ public partial class MainWindow : Window
         InsertScheduledTaskSorted(item);
         SaveScheduledTasks();
         ProcessScheduledTasksAt(now);
-        AppLogger.Info(
-            $"新增定时任务：{item.Id}，触发时间 {item.DueAt:O}，" +
-            $"循环：{item.RepeatDisplayText}，" +
-            $"当前数量：{_scheduledTasks.Count}");
     }
 
     private void TodoWindow_ScheduledTaskDeleteRequested(ScheduledTaskItem item)
@@ -7930,8 +7920,6 @@ public partial class MainWindow : Window
             _queuedReminderIds.Remove(item.Id);
             SaveScheduledTasks();
             ScheduleNextReminderAt(_nowProvider());
-            AppLogger.Info(
-                $"删除定时任务：{item.Id}，当前数量：{_scheduledTasks.Count}");
         }
     }
 
@@ -7944,7 +7932,6 @@ public partial class MainWindow : Window
     {
         if (_queuedReminderIds.Contains(item.Id))
         {
-            AppLogger.Info($"忽略正在提示的定时任务修改：{item.Id}");
             return;
         }
 
@@ -7966,10 +7953,6 @@ public partial class MainWindow : Window
         var now = _nowProvider();
         SaveScheduledTasks();
         ProcessScheduledTasksAt(now);
-        AppLogger.Info(
-            $"修改定时任务：{item.Id}，触发时间 {item.DueAt:O}，" +
-            $"循环：{item.RepeatDisplayText}，" +
-            $"排序位置 {_scheduledTasks.IndexOf(item) + 1}/{_scheduledTasks.Count}");
     }
 
     private void TodoWindow_TransientInteractionCompleted()
@@ -8057,15 +8040,29 @@ public partial class MainWindow : Window
             {
                 _activeReminder = null;
                 _activeReminderBatch.Clear();
-                _reminderMissedOccurrenceCounts.Clear();
+                _visibleReminderOccurrences.Clear();
+                _presentedReminderOccurrenceCounts.Clear();
+                _totalReminderOccurrenceCount = 0;
             }
         }
 
         foreach (var item in _scheduledTasks)
         {
-            if (item.DueAt > now)
+            var hasPresentedBacklog =
+                _presentedReminderOccurrenceCounts.GetValueOrDefault(
+                    item.Id) > 0;
+            if (item.DueAt > now && !hasPresentedBacklog)
             {
-                break;
+                // When no carried-forward batch exists, the collection's due
+                // time ordering still gives us the normal fast exit. With a
+                // carried batch we must keep scanning because a later task can
+                // also own already-presented, unacknowledged occurrences.
+                if (_presentedReminderOccurrenceCounts.Count == 0)
+                {
+                    break;
+                }
+
+                continue;
             }
 
             if (_queuedReminderIds.Add(item.Id))
@@ -8089,11 +8086,6 @@ public partial class MainWindow : Window
             _upcomingReminderPreloadPageName = null;
             _activeReminder = item;
             RefreshActiveReminderPresentation(now);
-
-            AppLogger.Info(
-                $"定时任务触发：{item.Id}，计划时间 {item.DueAt:O}，" +
-                $"错过 {CalculateMissedOccurrenceCount(item, now)} 次，" +
-                $"延迟 {Math.Max(0, (now - item.DueAt).TotalSeconds):F1} 秒");
             return true;
         }
 
@@ -8107,6 +8099,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        var hasNewReminderOccurrences = false;
         _activeReminderBatch.RemoveAll(item =>
             !_scheduledTasks.Contains(item));
         if (_activeReminderBatch.All(item => item.Id != activeReminder.Id))
@@ -8126,47 +8119,276 @@ public partial class MainWindow : Window
         var activeIds = _activeReminderBatch
             .Select(item => item.Id)
             .ToHashSet();
-        foreach (var staleId in _reminderMissedOccurrenceCounts.Keys
+        foreach (var staleId in _presentedReminderOccurrenceCounts.Keys
                      .Where(id => !activeIds.Contains(id))
                      .ToArray())
         {
-            _reminderMissedOccurrenceCounts.Remove(staleId);
+            _presentedReminderOccurrenceCounts.Remove(staleId);
         }
+        _visibleReminderOccurrences.RemoveAll(
+            occurrence => !activeIds.Contains(occurrence.TaskId));
+        _totalReminderOccurrenceCount = 0;
 
         foreach (var item in _activeReminderBatch)
         {
             _queuedReminderIds.Add(item.Id);
-            _reminderMissedOccurrenceCounts.TryAdd(
-                item.Id,
-                CalculateMissedOccurrenceCount(item, now));
+            var dueCount = CalculateDueOccurrenceCount(item, now);
+            var observedCount =
+                _presentedReminderOccurrenceCounts.GetValueOrDefault(
+                    item.Id);
+            var previouslyObservedCount = observedCount;
+            observedCount = Math.Max(observedCount, dueCount);
+            hasNewReminderOccurrences |=
+                observedCount > previouslyObservedCount;
+            _presentedReminderOccurrenceCounts[item.Id] = observedCount;
+            _totalReminderOccurrenceCount = SaturatingAdd(
+                _totalReminderOccurrenceCount,
+                observedCount);
+            var visibleCount = _visibleReminderOccurrences.LongCount(
+                occurrence => occurrence.TaskId == item.Id);
+            AppendReminderOccurrences(
+                item,
+                visibleCount,
+                observedCount);
         }
 
-        ReminderTitleText.Text = _activeReminderBatch.Count == 1
-            ? "定时任务到点啦"
-            : $"{_activeReminderBatch.Count} 个定时任务到点啦";
-        ReminderMessageText.Text = string.Join(
-            Environment.NewLine,
-            _activeReminderBatch.Select(item =>
-                FormatReminderMessageLine(
-                    item,
-                    _reminderMissedOccurrenceCounts.GetValueOrDefault(
-                        item.Id))));
-        ReminderMessageText.Select(0, 0);
-        ReminderAcknowledgeButton.Content = _activeReminderBatch.Count == 1
-            ? "知道啦"
-            : $"都知道啦 · {_activeReminderBatch.Count}";
+        UpdateReminderWindowPresentation();
 
         if (_isReminderActive && _bubbleMode == BubbleMode.Reminder)
         {
-            AppLogger.Info(
-                $"定时提醒合并刷新：{_activeReminderBatch.Count} 条，最早延迟 " +
-                $"{Math.Max(0, (now - _activeReminderBatch[0].DueAt).TotalSeconds):F1} 秒");
+            if (hasNewReminderOccurrences)
+            {
+                // “收起” hides only the current presentation. A genuinely new
+                // due occurrence must make the updated stack visible again,
+                // while a repeated poll of the same instant leaves it hidden
+                // and does not restart the shake.
+                ShowReminderWindow();
+                RestartReminderAttentionAnimation();
+            }
+            else
+            {
+                RefreshReminderWindowPosition();
+            }
+
             return;
         }
 
         _isReminderActive = true;
         BeginReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
         SetBubbleMode(BubbleMode.Reminder);
+    }
+
+    private void RestartReminderAttentionAnimation()
+    {
+        if (_isClosing ||
+            !_isReminderActive ||
+            _bubbleMode != BubbleMode.Reminder)
+        {
+            return;
+        }
+
+        // A newly due occurrence must be noticeable even when the previous
+        // reminder is still waiting for acknowledgement. Restarting the
+        // megaphone hold sequence gives one fresh, bounded shake without
+        // rebuilding the window, clearing its message stack, or disturbing an
+        // open Todo/Scheduled editor.
+        StartReminderHoldAnimation();
+    }
+
+    private void AppendReminderOccurrences(
+        ScheduledTaskItem item,
+        long visibleCount,
+        long dueCount)
+    {
+        // Each task contributes at most its next 100 occurrences. The global
+        // trim then keeps the earliest 100 across every task, so confirmation
+        // advances only messages the user could actually read.
+        var lastCandidateOffset = Math.Min(
+            dueCount,
+            SaturatingAdd(
+                visibleCount,
+                MaximumVisibleReminderOccurrences));
+        for (var occurrenceOffset = visibleCount;
+             occurrenceOffset < lastCandidateOffset;
+             occurrenceOffset++)
+        {
+            if (!TryGetReminderOccurrenceDueAt(
+                    item,
+                    occurrenceOffset,
+                    out var dueAt))
+            {
+                continue;
+            }
+
+            _visibleReminderOccurrences.Add(
+                new ReminderOccurrence(
+                    item.Id,
+                    item.CreatedAt,
+                    item.Text,
+                    item.IsRecurring ? item.RepeatDisplayText : string.Empty,
+                    dueAt,
+                    occurrenceOffset));
+        }
+
+        _visibleReminderOccurrences.Sort(CompareReminderOccurrences);
+        if (_visibleReminderOccurrences.Count >
+            MaximumVisibleReminderOccurrences)
+        {
+            _visibleReminderOccurrences.RemoveRange(
+                MaximumVisibleReminderOccurrences,
+                _visibleReminderOccurrences.Count -
+                MaximumVisibleReminderOccurrences);
+        }
+    }
+
+    private static int CompareReminderOccurrences(
+        ReminderOccurrence left,
+        ReminderOccurrence right)
+    {
+        var dueComparison = left.DueAt.UtcDateTime.Ticks.CompareTo(
+            right.DueAt.UtcDateTime.Ticks);
+        if (dueComparison != 0)
+        {
+            return dueComparison;
+        }
+
+        var createdComparison =
+            left.TaskCreatedAt.UtcDateTime.Ticks.CompareTo(
+                right.TaskCreatedAt.UtcDateTime.Ticks);
+        if (createdComparison != 0)
+        {
+            return createdComparison;
+        }
+
+        var taskComparison = left.TaskId.CompareTo(right.TaskId);
+        return taskComparison != 0
+            ? taskComparison
+            : left.OccurrenceOffset.CompareTo(right.OccurrenceOffset);
+    }
+
+    private static bool TryGetReminderOccurrenceDueAt(
+        ScheduledTaskItem item,
+        long occurrenceOffset,
+        out DateTimeOffset dueAt)
+    {
+        dueAt = default;
+        if (occurrenceOffset < 0)
+        {
+            return false;
+        }
+
+        if (item.RepeatRule is { } repeatRule)
+        {
+            try
+            {
+                return ScheduledRepeatSchedule.TryGetOccurrence(
+                    repeatRule,
+                    checked(repeatRule.NextOrdinal + occurrenceOffset),
+                    out dueAt);
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+        }
+
+        if (occurrenceOffset == 0)
+        {
+            dueAt = item.DueAt;
+            return true;
+        }
+
+        var repeatInterval =
+            ScheduledTaskStore.NormalizeRepeatInterval(item.RepeatInterval);
+        if (repeatInterval is not { } interval)
+        {
+            return false;
+        }
+
+        try
+        {
+            dueAt = ScheduledTaskStore.NormalizeToWholeSecond(
+                item.DueAt.AddTicks(
+                    checked(occurrenceOffset * interval.Ticks)));
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private void UpdateReminderWindowPresentation()
+    {
+        var overflowCount = Math.Max(
+            0,
+            _totalReminderOccurrenceCount -
+            _visibleReminderOccurrences.Count);
+        var title = _totalReminderOccurrenceCount == 1
+            ? "定时任务到点啦"
+            : $"{_totalReminderOccurrenceCount} 次提醒待确认";
+        var content = BuildReminderPresentationText(overflowCount);
+        EnsureReminderWindow().SetPresentation(
+            title,
+            content,
+            _visibleReminderOccurrences.Count,
+            overflowCount);
+    }
+
+    private string BuildReminderPresentationText(long overflowCount)
+    {
+        var builder = new StringBuilder(
+            Math.Max(128, _visibleReminderOccurrences.Count * 96));
+        if (overflowCount > 0)
+        {
+            builder.Append("先按时间显示最早的 ")
+                .Append(_visibleReminderOccurrences.Count)
+                .Append(" 条；另有 ")
+                .Append(overflowCount)
+                .AppendLine(" 条会在确认后继续显示。")
+                .AppendLine();
+        }
+
+        for (var index = 0;
+             index < _visibleReminderOccurrences.Count;
+             index++)
+        {
+            var occurrence = _visibleReminderOccurrences[index];
+            builder.Append('•')
+                .Append(' ')
+                .Append(
+                    occurrence.DueAt.ToLocalTime()
+                        .ToString("M月d日 HH:mm:ss"));
+            if (occurrence.RepeatText.Length > 0)
+            {
+                builder.Append(" · ").Append(occurrence.RepeatText);
+            }
+
+            builder.AppendLine()
+                .Append(occurrence.Text);
+            if (index < _visibleReminderOccurrences.Count - 1)
+            {
+                builder.AppendLine().AppendLine();
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static long SaturatingAdd(long left, long right)
+    {
+        if (right <= 0)
+        {
+            return left;
+        }
+
+        return left > long.MaxValue - right
+            ? long.MaxValue
+            : left + right;
     }
 
     private void MovePetToReminderCorner()
@@ -8179,6 +8401,11 @@ public partial class MainWindow : Window
         ExitEdgePeek(
             restartAutomaticCountdown: false,
             restoreIdleFrame: false);
+
+        if (_todoWindow.IsVisible)
+        {
+            return;
+        }
 
         var workArea = MonitorWorkArea.GetForWindow(this);
         var width = ActualWidth > 0 ? ActualWidth : Width;
@@ -8199,66 +8426,53 @@ public partial class MainWindow : Window
 
     private void AcknowledgeActiveReminder()
     {
-        if (_activeReminder is null)
+        if (_activeReminder is null ||
+            _visibleReminderOccurrences.Count == 0)
         {
             return;
         }
 
         var now = _nowProvider();
-        var acknowledged = _activeReminderBatch.Count > 0
-            ? _activeReminderBatch.ToArray()
-            : [_activeReminder];
+        var acknowledgedCounts = _visibleReminderOccurrences
+            .GroupBy(occurrence => occurrence.TaskId)
+            .ToDictionary(group => group.Key, group => group.LongCount());
+        var acknowledgedItems = _activeReminderBatch
+            .Where(item => acknowledgedCounts.ContainsKey(item.Id))
+            .ToArray();
+        var carriedForwardCounts = _activeReminderBatch
+            .ToDictionary(
+                item => item.Id,
+                item => Math.Max(
+                    0,
+                    _presentedReminderOccurrenceCounts.GetValueOrDefault(
+                        item.Id) -
+                    acknowledgedCounts.GetValueOrDefault(item.Id)));
         _activeReminder = null;
         _activeReminderBatch.Clear();
-        foreach (var item in acknowledged)
+        foreach (var item in acknowledgedItems)
         {
             _queuedReminderIds.Remove(item.Id);
-            _reminderMissedOccurrenceCounts.Remove(item.Id);
             _scheduledTasks.Remove(item);
-            if (item.RepeatRule is { } repeatRule &&
-                ScheduledRepeatSchedule.TryEvaluate(
-                    repeatRule,
-                    item.DueAt,
-                    now,
-                    out var evaluation))
-            {
-                if (evaluation.NextDueAt is { } ruleNextDueAt &&
-                    evaluation.NextOrdinal is { } ruleNextOrdinal)
-                {
-                    item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(
-                        ruleNextDueAt);
-                    item.RepeatRule = repeatRule with
-                    {
-                        NextOrdinal = ruleNextOrdinal
-                    };
-                    InsertScheduledTaskSorted(item);
-                    continue;
-                }
-
-                SuspendExhaustedScheduledTask(item);
-                continue;
-            }
-
-            if (item.RepeatInterval is not { } repeatInterval)
-            {
-                continue;
-            }
-
-            var nextDueAt = CalculateNextRecurringDueAt(
-                item.DueAt,
-                repeatInterval,
-                now);
-            if (nextDueAt is null)
-            {
-                AppLogger.Info(
-                    $"循环定时任务无法继续推进，已移除：{item.Id}");
-                continue;
-            }
-
-            item.DueAt = nextDueAt.Value;
-            InsertScheduledTaskSorted(item);
+            AdvanceAcknowledgedScheduledTask(
+                item,
+                acknowledgedCounts[item.Id]);
         }
+
+        _visibleReminderOccurrences.Clear();
+        _presentedReminderOccurrenceCounts.Clear();
+        foreach (var item in _scheduledTasks)
+        {
+            var carriedCount =
+                carriedForwardCounts.GetValueOrDefault(item.Id);
+            if (carriedCount > 0)
+            {
+                _presentedReminderOccurrenceCounts[item.Id] = carriedCount;
+            }
+        }
+
+        _totalReminderOccurrenceCount = 0;
         _reminderQueue.Clear();
+        _queuedReminderIds.Clear();
         SaveScheduledTasks();
 
         RebuildReminderQueueAt(now);
@@ -8269,10 +8483,75 @@ public partial class MainWindow : Window
         }
 
         _isReminderActive = false;
-        SetBubbleMode(BubbleMode.None);
+        SetBubbleMode(
+            _todoWindow.IsVisible
+                ? BubbleMode.Todo
+                : BubbleMode.None);
         RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
         ScheduleNextReminderAt(now);
-        AppLogger.Info($"定时任务已批量确认：{acknowledged.Length} 条");
+    }
+
+    private void AdvanceAcknowledgedScheduledTask(
+        ScheduledTaskItem item,
+        long acknowledgedCount)
+    {
+        if (acknowledgedCount <= 0)
+        {
+            InsertScheduledTaskSorted(item);
+            return;
+        }
+
+        if (item.RepeatRule is { } repeatRule)
+        {
+            try
+            {
+                var nextOrdinal = checked(
+                    repeatRule.NextOrdinal + acknowledgedCount);
+                if (ScheduledRepeatSchedule.TryGetOccurrence(
+                        repeatRule,
+                        nextOrdinal,
+                        out var nextDueAt))
+                {
+                    item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(
+                        nextDueAt);
+                    item.RepeatRule = repeatRule with
+                    {
+                        NextOrdinal = nextOrdinal
+                    };
+                    InsertScheduledTaskSorted(item);
+                    return;
+                }
+            }
+            catch (OverflowException)
+            {
+            }
+
+            SuspendExhaustedScheduledTask(item);
+            return;
+        }
+
+        var repeatInterval =
+            ScheduledTaskStore.NormalizeRepeatInterval(item.RepeatInterval);
+        if (repeatInterval is not { } interval)
+        {
+            return;
+        }
+
+        try
+        {
+            item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(
+                item.DueAt.AddTicks(
+                    checked(acknowledgedCount * interval.Ticks)));
+            InsertScheduledTaskSorted(item);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            SuspendExhaustedScheduledTask(item);
+        }
+        catch (OverflowException)
+        {
+            SuspendExhaustedScheduledTask(item);
+        }
     }
 
     private void SuspendExhaustedScheduledTask(ScheduledTaskItem item)
@@ -8285,8 +8564,6 @@ public partial class MainWindow : Window
         item.RepeatInterval = null;
         item.RepeatRule = null;
         InsertScheduledTaskSorted(item);
-        AppLogger.Info(
-            $"循环定时任务已到日期上限并暂停，任务仍保留：{item.Id}");
     }
 
     private static string FormatReminderMessageLine(
@@ -8395,27 +8672,67 @@ public partial class MainWindow : Window
             return;
         }
 
-        ScheduledTaskItem? next = null;
-        foreach (var item in _scheduledTasks)
-        {
-            if (_queuedReminderIds.Contains(item.Id))
-            {
-                continue;
-            }
-
-            next = item;
-            break;
-        }
-
-        if (next is null)
+        var nextDueAt = FindNextReminderDueAt(now);
+        if (nextDueAt is null)
         {
             ClearUpcomingReminderPreload();
             return;
         }
 
         PreloadUpcomingReminderAt(now);
-        _scheduledTaskTimer.Interval = CalculateReminderWakeDelay(now, next.DueAt);
+        _scheduledTaskTimer.Interval = _isReminderActive
+            ? CalculateReminderProcessingDelay(now, nextDueAt.Value)
+            : CalculateReminderWakeDelay(now, nextDueAt.Value);
         _scheduledTaskTimer.Start();
+    }
+
+    private DateTimeOffset? FindNextReminderDueAt(DateTimeOffset now)
+    {
+        DateTimeOffset? nextDueAt = null;
+        foreach (var item in _scheduledTasks)
+        {
+            DateTimeOffset? candidate;
+            var observedCount =
+                _presentedReminderOccurrenceCounts.GetValueOrDefault(
+                    item.Id);
+            if (observedCount > 0)
+            {
+                candidate = item.IsRecurring &&
+                            TryGetReminderOccurrenceDueAt(
+                                item,
+                                observedCount,
+                                out var nextObservedOccurrence)
+                    ? nextObservedOccurrence
+                    : null;
+            }
+            else if (item.DueAt > now)
+            {
+                candidate = item.DueAt;
+            }
+            else if (item.IsRecurring)
+            {
+                var nextOccurrenceOffset =
+                    CalculateDueOccurrenceCount(item, now);
+                candidate = TryGetReminderOccurrenceDueAt(
+                    item,
+                    nextOccurrenceOffset,
+                    out var nextOccurrence)
+                    ? nextOccurrence
+                    : null;
+            }
+            else
+            {
+                candidate = null;
+            }
+
+            if (candidate is { } dueAt &&
+                (nextDueAt is null || dueAt < nextDueAt.Value))
+            {
+                nextDueAt = dueAt;
+            }
+        }
+
+        return nextDueAt;
     }
 
     private void PreloadUpcomingReminderAt(DateTimeOffset now)
@@ -8425,23 +8742,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        ScheduledTaskItem? next = null;
-        foreach (var item in _scheduledTasks)
-        {
-            if (!_queuedReminderIds.Contains(item.Id))
-            {
-                next = item;
-                break;
-            }
-        }
-
-        if (next is null)
+        var nextDueAt = FindNextReminderDueAt(now);
+        if (nextDueAt is null)
         {
             ClearUpcomingReminderPreload();
             return;
         }
 
-        var remaining = next.DueAt - now;
+        var remaining = nextDueAt.Value - now;
         if (remaining <= TimeSpan.Zero)
         {
             return;
@@ -8495,8 +8803,30 @@ public partial class MainWindow : Window
             : wakeDelay;
     }
 
+    private static TimeSpan CalculateReminderProcessingDelay(
+        DateTimeOffset now,
+        DateTimeOffset nextDueAt)
+    {
+        var remaining = nextDueAt - now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return TimeSpan.FromMilliseconds(1);
+        }
+
+        return remaining > MaximumReminderWakeInterval
+            ? MaximumReminderWakeInterval
+            : remaining;
+    }
+
     private void TodoWindow_CloseRequested(object? sender, EventArgs e)
     {
+        if (_isReminderActive)
+        {
+            HideTodoWindowVisual();
+            RefreshReminderWindowPosition();
+            return;
+        }
+
         SetBubbleMode(BubbleMode.None);
     }
 
@@ -8508,7 +8838,6 @@ public partial class MainWindow : Window
 
     private void TodoWindow_ImeCompositionChanged(bool composing)
     {
-        AppLogger.Info($"微软 TSF 输入组合状态：{(composing ? "开始或更新" : "完成")}");
         if (!composing)
         {
             ScheduleOutsideTodoClose();
@@ -8517,18 +8846,12 @@ public partial class MainWindow : Window
 
     private void SaveTodos()
     {
-        if (!_todoStore.Save(_todos))
-        {
-            AppLogger.Info("待办保存失败，请检查本地应用数据目录权限");
-        }
+        _todoStore.Save(_todos);
     }
 
     private void SaveScheduledTasks()
     {
-        if (!_scheduledTaskStore.Save(_scheduledTasks))
-        {
-            AppLogger.Info("定时任务保存失败，请检查本地应用数据目录权限");
-        }
+        _scheduledTaskStore.Save(_scheduledTasks);
     }
 
     private enum BubbleMode
@@ -8554,6 +8877,14 @@ public partial class MainWindow : Window
         Right,
         Bottom
     }
+
+    private readonly record struct ReminderOccurrence(
+        Guid TaskId,
+        DateTimeOffset TaskCreatedAt,
+        string Text,
+        string RepeatText,
+        DateTimeOffset DueAt,
+        long OccurrenceOffset);
 
     private readonly record struct PetSizeAnchor(
         Rect WorkArea,

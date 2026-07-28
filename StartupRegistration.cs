@@ -136,7 +136,10 @@ internal sealed class StartupRegistration
             error = exception.Message;
             if (valueRead)
             {
-                TryRestore(previousValue);
+                if (!TryRestore(previousValue, out var restoreError))
+                {
+                    error = $"{error}；恢复原设置失败：{restoreError}";
+                }
             }
 
             enabled = TryReadEnabledBestEffort();
@@ -191,7 +194,10 @@ internal sealed class StartupRegistration
         catch (Exception exception) when (IsExpectedFailure(exception))
         {
             error = exception.Message;
-            TryRestore(previousValue);
+            if (!TryRestore(previousValue, out var restoreError))
+            {
+                error = $"{error}；恢复原设置失败：{restoreError}";
+            }
             actualEnabled = TryReadEnabledBestEffort();
             return false;
         }
@@ -210,11 +216,17 @@ internal sealed class StartupRegistration
         return command + " --autostart";
     }
 
-    private void TryRestore(string? previousValue)
+    private bool TryRestore(
+        string? previousValue,
+        out string? error)
     {
+        error = null;
         try
         {
-            if (string.IsNullOrWhiteSpace(previousValue))
+            // Null means that the value did not exist. Empty or whitespace
+            // strings are still real registry data and must be restored byte
+            // for byte instead of being silently converted into "missing".
+            if (previousValue is null)
             {
                 _deleteValue();
             }
@@ -222,10 +234,22 @@ internal sealed class StartupRegistration
             {
                 _writeValue(previousValue);
             }
+
+            var restoredValue = _readValue();
+            if (!string.Equals(
+                    restoredValue,
+                    previousValue,
+                    StringComparison.Ordinal))
+            {
+                throw new IOException("恢复开机自启原设置后校验失败");
+            }
+
+            return true;
         }
         catch (Exception exception) when (IsExpectedFailure(exception))
         {
-            AppLogger.Error("恢复开机自启注册表设置失败", exception);
+            error = exception.Message;
+            return false;
         }
     }
 
@@ -237,7 +261,6 @@ internal sealed class StartupRegistration
         }
         catch (Exception exception) when (IsExpectedFailure(exception))
         {
-            AppLogger.Error("读取开机自启最终状态失败", exception);
             return false;
         }
     }

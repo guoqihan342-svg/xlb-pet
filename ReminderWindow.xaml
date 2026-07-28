@@ -1,0 +1,244 @@
+<Window x:Class="LubanDesktopPet.ReminderWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="小鲁班提醒"
+        Width="372"
+        Height="360"
+        AllowsTransparency="True"
+        Background="Transparent"
+        FontFamily="Microsoft YaHei"
+        ResizeMode="NoResize"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        SizeToContent="Manual"
+        SnapsToDevicePixels="True"
+        Topmost="True"
+        UseLayoutRounding="True"
+        WindowStartupLocation="Manual"
+        WindowStyle="None"
+        Closing="ReminderWindow_Closing"
+        DpiChanged="ReminderWindow_DpiChanged"
+        PreviewKeyDown="ReminderWindow_PreviewKeyDown">
+    <Grid Margin="10">
+        <Border Background="#FFFDFEFF"
+                BorderBrush="#C9DCF7"
+                BorderThickness="1"
+                CornerRadius="20">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="18"
+                                  Color="#58749F"
+                                  Direction="270"
+                                  Opacity="0.24"
+                                  ShadowDepth="4" />
+            </Border.Effect>
+
+            <Grid Margin="16,14,16,15">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="38" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="28" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="32"
+                            Height="32"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center"
+                            Background="#FFF0C86A"
+                            CornerRadius="16">
+                        <Grid>
+                            <Path Width="15"
+                                  Height="16"
+                                  Data="M7.5,1 C5.2,1 3.6,2.8 3.6,5.2 L3.6,8.4 L1.8,11.2 L13.2,11.2 L11.4,8.4 L11.4,5.2 C11.4,2.8 9.8,1 7.5,1 Z M5.7,12.3 C6,13.7 6.6,14.5 7.5,14.5 C8.4,14.5 9,13.7 9.3,12.3"
+                                  Fill="#FFFDF7E7"
+                                  Stretch="Fill"
+                                  Stroke="#B77B2E"
+                                  StrokeLineJoin="Round"
+                                  StrokeThickness="1.15" />
+                        </Grid>
+                    </Border>
+
+                    <StackPanel Grid.Column="1"
+                                Margin="2,0,8,0"
+                                VerticalAlignment="Center">
+                        <TextBlock x:Name="ReminderTitleText"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Foreground="#3F5578"
+                                   Text="小鲁班提醒"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Margin="0,2,0,0"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="10.5"
+                                   Foreground="#8A99AE"
+                                   Text="到时间啦，记得看看这些事情哦" />
+                    </StackPanel>
+
+                    <Button Grid.Column="2"
+                            Width="26"
+                            Height="26"
+                            Padding="0"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            AutomationProperties.Name="收起提醒"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Content="×"
+                            Cursor="Hand"
+                            FontFamily="Microsoft YaHei"
+                            FontSize="17"
+                            Foreground="#94A3B7"
+                            ToolTip="收起"
+                            Click="HideButton_Click">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="CloseBackground"
+                                                    Background="{TemplateBinding Background}"
+                                                    CornerRadius="13">
+                                                <ContentPresenter HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="CloseBackground"
+                                                            Property="Background"
+                                                            Value="#FFF0F3F8" />
+                                                    <Setter Property="Foreground"
+                                                            Value="#5F7392" />
+                                                </Trigger>
+                                                <Trigger Property="IsPressed" Value="True">
+                                                    <Setter TargetName="CloseBackground"
+                                                            Property="Background"
+                                                            Value="#FFE4EBF4" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Grid>
+
+                <Border Grid.Row="1"
+                        Margin="0,11,0,8"
+                        Padding="10,5"
+                        HorizontalAlignment="Left"
+                        Background="#EEF5FF"
+                        CornerRadius="10">
+                    <TextBlock x:Name="ReminderCountText"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="#5577AA"
+                               Text="0 条提醒" />
+                </Border>
+
+                <TextBox x:Name="ReminderContentTextBox"
+                         Grid.Row="2"
+                         MinHeight="78"
+                         Padding="11,9"
+                         AcceptsReturn="True"
+                         AutomationProperties.Name="提醒内容"
+                         Background="#FFF9FBFE"
+                         BorderBrush="#DCE7F5"
+                         BorderThickness="1"
+                         FontFamily="Microsoft YaHei"
+                         FontSize="12.5"
+                         Foreground="#303A4A"
+                         HorizontalScrollBarVisibility="Disabled"
+                         IsInactiveSelectionHighlightEnabled="True"
+                         IsReadOnly="True"
+                         IsReadOnlyCaretVisible="True"
+                         SelectionBrush="#8EBBF4"
+                         TextWrapping="Wrap"
+                         VerticalContentAlignment="Top"
+                         VerticalScrollBarVisibility="Auto" />
+
+                <Grid Grid.Row="3" Margin="0,12,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Margin="2,0,10,0"
+                               VerticalAlignment="Center"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="10"
+                               Foreground="#98A5B7"
+                               Text="内容可选中，按 Ctrl+C 复制" />
+
+                    <Button Grid.Column="1"
+                            MinWidth="92"
+                            Height="34"
+                            Padding="18,0"
+                            AutomationProperties.Name="确认提醒"
+                            Background="#6F9EE8"
+                            BorderBrush="#5D8EDB"
+                            BorderThickness="1"
+                            Content="知道啦"
+                            Cursor="Hand"
+                            FontFamily="Microsoft YaHei"
+                            FontSize="12"
+                            FontWeight="SemiBold"
+                            Foreground="White"
+                            Click="AcknowledgeButton_Click">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Background" Value="#6F9EE8" />
+                                <Setter Property="BorderBrush" Value="#5D8EDB" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="ButtonBackground"
+                                                    Padding="{TemplateBinding Padding}"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="12">
+                                                <ContentPresenter HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="ButtonBackground"
+                                                            Property="Background"
+                                                            Value="#5E90DD" />
+                                                </Trigger>
+                                                <Trigger Property="IsPressed" Value="True">
+                                                    <Setter TargetName="ButtonBackground"
+                                                            Property="Background"
+                                                            Value="#4E7FCB" />
+                                                </Trigger>
+                                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                                    <Setter TargetName="ButtonBackground"
+                                                            Property="BorderBrush"
+                                                            Value="#315FAD" />
+                                                    <Setter TargetName="ButtonBackground"
+                                                            Property="BorderThickness"
+                                                            Value="2" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

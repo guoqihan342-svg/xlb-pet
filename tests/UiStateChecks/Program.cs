@@ -8,6 +8,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Reflection;
 using System.Resources;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Xml.Linq;
 using System.Windows;
@@ -32,7 +33,7 @@ internal static class Program
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
     private const long ExpectedResidentSpritePageBudgetBytes = 128L * 1024L * 1024L;
-    private const long ExpectedIdleSpritePageTargetBytes = 64L * 1024L * 1024L;
+    private const long ExpectedIdleSpritePageTargetBytes = 104L * 1024L * 1024L;
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
     private const BindingFlags StaticFlags =
@@ -72,8 +73,16 @@ internal static class Program
                 return RunScheduledPickerPreview(application);
             }
 
+            if (args.Contains("--todo-preview", StringComparer.OrdinalIgnoreCase))
+            {
+                return RunTodoInteractionPreview(application);
+            }
+
             AssertLoggingContract();
             RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
+            RunCheck(
+                nameof(AssertSpritePageBufferPoolContract),
+                AssertSpritePageBufferPoolContract);
 
             if (args.Contains("--atlas-hash-only", StringComparer.OrdinalIgnoreCase))
             {
@@ -95,6 +104,8 @@ internal static class Program
             {
                 RunCheck(nameof(AssertStartupRegistrationContract),
                     AssertStartupRegistrationContract);
+                RunCheck(nameof(AssertSystemTrayContract),
+                    AssertSystemTrayContract);
                 return 0;
             }
 
@@ -119,6 +130,8 @@ internal static class Program
                 AssertEdgeRoamingSourceContract);
             RunCheck(nameof(AssertStartupRegistrationContract),
                 AssertStartupRegistrationContract);
+            RunCheck(nameof(AssertSystemTrayContract),
+                AssertSystemTrayContract);
 
             var settingsDirectory = Path.Combine(
                 Path.GetTempPath(),
@@ -213,8 +226,8 @@ internal static class Program
                         AssertScheduledTaskTabContract);
                     RunCheck(nameof(AssertScheduledTaskEditContract),
                         () => AssertScheduledTaskEditContract(window));
-                    RunCheck(nameof(AssertScheduledReminderBatchContract),
-                        () => AssertScheduledReminderBatchContract(window));
+                    RunCheck(nameof(AssertScheduledReminderOccurrenceStackContract),
+                        () => AssertScheduledReminderOccurrenceStackContract(window));
                     return 0;
                 }
 
@@ -281,8 +294,8 @@ internal static class Program
                     () => AssertTodoReorderPersistenceContract(window));
                 RunCheck(nameof(AssertScheduledTaskEditContract),
                     () => AssertScheduledTaskEditContract(window));
-                RunCheck(nameof(AssertScheduledReminderBatchContract),
-                    () => AssertScheduledReminderBatchContract(window));
+                RunCheck(nameof(AssertScheduledReminderOccurrenceStackContract),
+                    () => AssertScheduledReminderOccurrenceStackContract(window));
                 RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
             }
             finally
@@ -330,11 +343,48 @@ internal static class Program
         };
         if (preview.Content is FrameworkElement previewContent)
         {
-            previewContent.Height = 378;
+            previewContent.Height = 414;
             previewContent.VerticalAlignment = VerticalAlignment.Top;
         }
 
         Invoke(preview, "SelectTaskPage", true, false);
+        preview.AllowApplicationClose();
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        application.Run(preview);
+        return 0;
+    }
+
+    private static int RunTodoInteractionPreview(Application application)
+    {
+        var preview = new TodoWindow
+        {
+            AllowsTransparency = false,
+            ShowInTaskbar = true,
+            Title = "小鲁班待办交互预览",
+            Left = 620,
+            Top = 220,
+            Topmost = false,
+            WindowStyle = WindowStyle.SingleBorderWindow,
+            Todos = new ObservableCollection<TodoItem>
+            {
+                new()
+                {
+                    Text = string.Concat(Enumerable.Repeat(
+                        "可见两行选择测试：鼠标向下拖动时不能滚进隐藏文字。",
+                        8))
+                },
+                new()
+                {
+                    Text = "第二条待办用于确认悬停框始终优先显示在行左侧。"
+                }
+            }
+        };
+        if (preview.Content is FrameworkElement previewContent)
+        {
+            previewContent.Height = 414;
+            previewContent.VerticalAlignment = VerticalAlignment.Top;
+        }
+
         preview.AllowApplicationClose();
         application.ShutdownMode = ShutdownMode.OnMainWindowClose;
         application.Run(preview);
@@ -823,7 +873,7 @@ internal static class Program
                (long)(typeof(MainWindow).GetField(
                    "SpritePageIdleResidentTargetBytes",
                    StaticFlags)!.GetValue(null) ?? 0L),
-            "保留下来的dispatcher tick必须消费idle trim信号并完成64MiB裁剪");
+            "保留下来的dispatcher tick必须消费idle trim信号并完成104MiB热集裁剪");
         ResetSpritePageCollectionTestState(window);
 
         // A1 -> cold C1: keep A1 visible while C starts decoding in the
@@ -1166,7 +1216,7 @@ internal static class Program
                 StaticFlags)!.GetValue(null) ?? 0L);
         Assert(idleTargetBytes == ExpectedIdleSpritePageTargetBytes &&
                residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
-            "动作结束后的idle常驻目标必须是64MiB，活动软预算必须保持128MiB");
+            "动作结束后的idle热集目标必须是104MiB，活动软预算必须保持128MiB");
 
         var idleFrame = GetField<object>(window, "_idleFrame");
         var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
@@ -1228,27 +1278,61 @@ internal static class Program
         var collectionDebtBefore = GetField<long>(
             window,
             "_spritePageEvictedBytesSinceCollection");
+        var spritePageBufferPool = GetRawField(
+            window,
+            "_spritePageBufferPool")
+            ?? throw new InvalidOperationException(
+                "MainWindow 缺少 sprite 页像素复用池");
+        var poolAllocatedBefore = GetProperty<long>(
+            spritePageBufferPool,
+            "AllocatedBytes");
+        var poolRentedBefore = GetProperty<long>(
+            spritePageBufferPool,
+            "RentedBytes");
+        var poolFreeBefore = GetProperty<long>(
+            spritePageBufferPool,
+            "FreeBytes");
         Assert(residentBytesBefore > idleTargetBytes,
-            "idle回收测试必须先建立超过64MiB的真实解码页缓存压力");
+            "idle回收测试必须先建立超过104MiB的真实解码页缓存压力");
         var protectedPageNames = pinnedPageNames
             .Append(idlePageName)
             .Append(protectedPageName)
             .ToHashSet(StringComparer.Ordinal);
         Assert(protectedPageNames.Sum(pageName =>
                    GetSpritePageByteCount(pageMap, pageName)) <= idleTargetBytes,
-            "永久idle页、当前idle页和pending保护页必须可共同容纳在64MiB目标内");
+            "永久idle页、当前idle页和pending保护页必须可共同容纳在104MiB目标内");
 
         Invoke(window, "TrimResidentSpritePagesToIdleTarget");
         var residentBytesAfter = GetField<long>(
             window,
             "_residentSpritePageBytes");
+        var poolAllocatedAfter = GetProperty<long>(
+            spritePageBufferPool,
+            "AllocatedBytes");
+        var poolRentedAfter = GetProperty<long>(
+            spritePageBufferPool,
+            "RentedBytes");
+        var poolFreeAfter = GetProperty<long>(
+            spritePageBufferPool,
+            "FreeBytes");
+        var returnedResidentBytes =
+            residentBytesBefore - residentBytesAfter;
+        var discardedPoolBytes =
+            poolAllocatedBefore - poolAllocatedAfter;
         Assert(residentBytesAfter <= idleTargetBytes &&
                protectedPageNames.All(residentPages.Contains),
-            "idle回收必须把缓存裁到64MiB以内，且不得丢失永久、当前或pending保护页");
-        Assert(GetField<long>(window, "_spritePageEvictedBytesSinceCollection") ==
-               collectionDebtBefore + residentBytesBefore - residentBytesAfter,
-            "idle回收释放的每个resident字节必须精确累计为Gen2回收债务");
-        AssertResidentSpriteCacheAccounting(window, "64MiB idle回收与保护");
+            "idle回收必须把缓存裁到104MiB以内，且不得丢失永久、当前或pending保护页");
+        Assert(poolRentedBefore - poolRentedAfter ==
+                   returnedResidentBytes &&
+               poolFreeAfter - poolFreeBefore ==
+                   returnedResidentBytes - discardedPoolBytes &&
+               discardedPoolBytes >= 0 &&
+               GetField<long>(
+                   window,
+                   "_spritePageEvictedBytesSinceCollection") ==
+                   collectionDebtBefore + discardedPoolBytes,
+            "idle淘汰必须把resident像素精确归还复用池；只有池为收敛预算真正丢弃的数组才累计Gen2债");
+        AssertResidentSpriteCacheAccounting(window, "104MiB idle回收与保护");
 
         SetField(window, "_pendingSpriteFrame", null);
         SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
@@ -1256,7 +1340,7 @@ internal static class Program
         Assert(GetField<long>(window, "_residentSpritePageBytes") <=
                idleTargetBytes &&
                pinnedPageNames.All(residentPages.Contains),
-            "pending保护释放后的idle重试必须保持64MiB目标与永久idle页");
+            "pending保护释放后的idle重试必须保持104MiB目标与永久idle页");
         ResetSpritePageCollectionTestState(window);
     }
 
@@ -1738,7 +1822,7 @@ internal static class Program
                    StringComparison.Ordinal) &&
                GetField<long>(window, "_residentSpritePageBytes") <=
                idleTargetBytes,
-            "Composition返回后的dispatcher tick必须消费idle trim/失败标志、裁到64MiB并执行终态更新");
+            "Composition返回后的dispatcher tick必须消费idle trim/失败标志、裁到104MiB并执行终态更新");
 
         SetField(window, "_failedSpritePageName", null);
         AssertResidentSpriteCacheAccounting(window, "Rendering延迟缓存变更");
@@ -1933,7 +2017,6 @@ internal static class Program
         var prefetchTask = GetRawField(window, "_spritePagePrefetchTask") as Task;
         var cancellation = GetRawField(window, "_spritePagePrefetchCancellation")
             as CancellationTokenSource;
-        var generation = GetField<int>(window, "_spritePagePrefetchGeneration");
         var desiredPageName = GetRawField(window, "_desiredSpritePageName") as string;
         Assert(prefetchTask is not null && cancellation is not null &&
                string.Equals(desiredPageName, firstPageName, StringComparison.Ordinal),
@@ -1941,16 +2024,10 @@ internal static class Program
         Assert(prefetchTask!.Wait(TimeSpan.FromSeconds(3)),
             "冷页动作分页后台解码必须在3秒内完成");
         prefetchTask.GetAwaiter().GetResult();
-
-        // Publish the completed background task without pumping Rendering so the
-        // clock can be verified against a deterministic, synthetic 250 ms delay.
-        Invoke(
-            window,
-            "CompleteSpritePagePrefetch",
-            desiredPageName!,
-            generation,
-            cancellation!,
-            prefetchTask);
+        // Let the one real dispatcher continuation publish this task. Calling
+        // CompleteSpritePagePrefetch manually as well would consume the same
+        // pooled result twice and make the test—not production—double-return it.
+        WaitForSpritePagePrefetchToSettleWithoutRendering(window);
         var coldDisplayedAt = coldRequestAt + StopwatchTicksFromMilliseconds(250);
         Invoke(window, "TryShowPendingSpriteFrameAt", coldDisplayedAt);
 
@@ -1960,7 +2037,11 @@ internal static class Program
                GetField<int>(window, "_activeFrameIndex") == firstColdFrameIndex &&
                GetField<long>(window, "_activeClipStartedTimestamp") == coldDisplayedAt &&
                GetField<long>(window, "_activeFrameDeadlineTimestamp") == firstDeadline,
-            "冷页即使延迟超过单帧间隔，也必须从目标首帧开始并以实际显示时刻重基准，不能补播跳帧");
+            "冷页即使延迟超过单帧间隔，也必须从目标首帧开始并以实际显示时刻重基准，不能补播跳帧；" +
+            $"current={GetRawField(window, "_currentSpriteFrame")}, expected={firstSpriteFrame}, " +
+            $"index={GetField<int>(window, "_activeFrameIndex")}/{firstColdFrameIndex}, " +
+            $"start={GetField<long>(window, "_activeClipStartedTimestamp")}/{coldDisplayedAt}, " +
+            $"deadline={GetField<long>(window, "_activeFrameDeadlineTimestamp")}/{firstDeadline}");
         var deadlineToleranceTicks = (long)(typeof(MainWindow).GetField(
                 "VisualFrameDeadlineToleranceTicks",
                 StaticFlags)!.GetValue(null) ?? 0L);
@@ -2079,26 +2160,23 @@ internal static class Program
             var edgePrefetchTask = GetRawField(window, "_spritePagePrefetchTask") as Task;
             var edgeCancellation = GetRawField(window, "_spritePagePrefetchCancellation")
                 as CancellationTokenSource;
-            var edgeGeneration = GetField<int>(window, "_spritePagePrefetchGeneration");
             var edgeDesiredPage = GetRawField(window, "_desiredSpritePageName") as string;
             Assert(edgePrefetchTask is not null && edgeCancellation is not null &&
                    string.Equals(edgeDesiredPage, edgePageName, StringComparison.Ordinal) &&
                    edgePrefetchTask.Wait(TimeSpan.FromSeconds(3)),
                 $"冷{edgeContract.PageName}页必须只走后台预取并在3秒内完成");
             edgePrefetchTask!.GetAwaiter().GetResult();
-            Invoke(
-                window,
-                "CompleteSpritePagePrefetch",
-                edgeDesiredPage!,
-                edgeGeneration,
-                edgeCancellation!,
-                edgePrefetchTask);
+            WaitForSpritePagePrefetchToSettleWithoutRendering(window);
 
             var edgeDisplayedAt = StopwatchTicksFromSeconds(20 + edgeContractIndex * 10);
             Invoke(window, "TryShowPendingSpriteFrameAt", edgeDisplayedAt);
+            var edgeRestHold = (TimeSpan)InvokeStatic(
+                typeof(MainWindow),
+                "GetEdgePeekRestHoldDuration",
+                edgeFrames.Length)!;
             var edgeRestDeadline = edgeDisplayedAt +
                                    ToProductionStopwatchTicks(
-                                       TimeSpan.FromMilliseconds(800));
+                                       edgeRestHold);
             Assert(Equals(GetRawField(window, "_currentSpriteFrame"), edgeRestFrame) &&
                     GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex &&
                     GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == edgeRestDeadline &&
@@ -2233,12 +2311,8 @@ internal static class Program
                 StringComparison.Ordinal),
             "真实后台解码Task故障分支必须进入已验证的终止处理路径");
 
-        // Invalidate the dispatcher completion already queued by the manually
-        // published task, then drain it before restoring the shared test window.
-        SetField(
-            window,
-            "_spritePagePrefetchGeneration",
-            GetField<int>(window, "_spritePagePrefetchGeneration") + 1);
+        // Every background result above was published by its single real
+        // dispatcher continuation; only animation state remains to restore.
         SetField(window, "_activeClip", null);
         SetField(window, "_activeFrameIndex", -1);
         SetField(window, "_activeClipStartedTimestamp", 0L);
@@ -4148,9 +4222,11 @@ internal static class Program
                 var effectiveEndpointHoldMilliseconds = StopwatchTicksToMilliseconds(
                     ToProductionCharacterAnimationTicks(
                         GetFrameDuration(frames[endpointIndices[0]])));
-                Assert(effectiveEndpointHoldMilliseconds >= 499.99d,
-                    $"{actionName} endpoint must remain visible for at least 500ms " +
-                    $"after playback scaling, actual={effectiveEndpointHoldMilliseconds:F3}ms");
+                AssertClose(
+                    effectiveEndpointHoldMilliseconds,
+                    1500d,
+                    $"{actionName} endpoint must remain visible for 1500ms " +
+                    "after playback scaling");
             }
             var expectedActionFrameIndex = wakeFrameCount;
             Assert(GetProperty<int>(clip, "ActionFrameIndex") == expectedActionFrameIndex &&
@@ -4315,9 +4391,22 @@ internal static class Program
                 "GetEdgePeekFrameHoldDuration",
                 restIndex,
                 supportedFrameCount)!;
+            var expectedRestHold = TimeSpan.FromTicks(
+                TimeSpan.FromSeconds(10).Ticks -
+                TimeSpan.FromMilliseconds(650).Ticks -
+                (supportedFrameCount - 2L) *
+                (TimeSpan.TicksPerSecond / 60));
+            var cycleTicks = (long)InvokeStatic(
+                typeof(MainWindow),
+                "GetEdgePeekCycleDurationTicks",
+                supportedFrameCount)!;
+            AssertClose(
+                StopwatchTicksToMilliseconds(cycleTicks),
+                10000d,
+                $"{supportedFrameCount} frame edge peek must begin every 10 seconds");
             Assert(normalHold == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
                    fullyPeekedHold == TimeSpan.FromMilliseconds(650) &&
-                   restHold == TimeSpan.FromMilliseconds(800),
+                   restHold == expectedRestHold,
                 $"{supportedFrameCount}帧边缘序列必须动态计算1/2完全探头和末帧休息hold，" +
                 "其余帧保持60fps");
         }
@@ -4406,11 +4495,11 @@ internal static class Program
             "cute" => (
                 SmoothFrameCount: 56,
                 LoopCycleCount: 0,
-                EndpointHoldDuration: TimeSpan.FromMilliseconds(625)),
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875)),
             "wave" => (
                 SmoothFrameCount: 40,
                 LoopCycleCount: 0,
-                EndpointHoldDuration: TimeSpan.FromMilliseconds(625)),
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875)),
             _ => (
                 SmoothFrameCount: null,
                 LoopCycleCount: 3,
@@ -4604,7 +4693,7 @@ internal static class Program
         Assert(readmeSource.Contains("大头熊猫", StringComparison.Ordinal) &&
                readmeSource.Contains("铃铛", StringComparison.Ordinal) &&
                readmeSource.Contains("竹筒", StringComparison.Ordinal) &&
-               mainSource.Contains("熊猫坐骑", StringComparison.Ordinal) &&
+               mainSource.Contains("Assets/luban-roam-boarding-", StringComparison.Ordinal) &&
                !readmeSource.Contains(
                    legacyChineseMountName,
                    StringComparison.Ordinal) &&
@@ -4617,7 +4706,7 @@ internal static class Program
                !atlasMotionQaSource.Contains(
                    legacyEnglishMountPhrase,
                    StringComparison.OrdinalIgnoreCase),
-            "绕屏视觉必须统一为带铃铛和竹筒的大头熊猫坐骑，README、运行日志、" +
+            "绕屏视觉必须统一为带铃铛和竹筒的大头熊猫坐骑，README、运行资源、" +
             "生成器与QA不得残留旧版飞行坐骑描述");
         Assert(setRoamingToggle >= 0 &&
                todoSource[setRoamingToggle..].Contains(
@@ -5065,8 +5154,15 @@ internal static class Program
             ToProductionCharacterAnimationTicks(authoredSixtyFpsInterval);
         var effectiveEdgeFullyPeekedTicks =
             ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(650));
+        var edgeRestHold = (TimeSpan)InvokeStatic(
+            typeof(MainWindow),
+            "GetEdgePeekRestHoldDuration",
+            ExpectedEdgePeekFrameCount)!;
         var effectiveEdgeRestTicks =
-            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(800));
+            ToProductionStopwatchTicks(edgeRestHold);
+        var effectiveReactionEndpointTicks =
+            ToProductionCharacterAnimationTicks(
+                TimeSpan.FromMilliseconds(1875));
         AssertClose(
             StopwatchTicksToMilliseconds(effectiveMotionFrameTicks),
             1000d / 60d / playbackSpeed,
@@ -5077,8 +5173,12 @@ internal static class Program
             "边缘开心探头必须独立保持650ms，不受全局1.25倍点击动作速度影响");
         AssertClose(
             StopwatchTicksToMilliseconds(effectiveEdgeRestTicks),
-            800d,
+            edgeRestHold.TotalMilliseconds,
             "边缘害羞缩回休息必须独立保持800ms，不受全局1.25倍点击动作速度影响");
+        AssertClose(
+            StopwatchTicksToMilliseconds(effectiveReactionEndpointTicks),
+            1500d,
+            "cute and wave endpoints must remain visible one second longer");
         Assert(source.Contains("CompositionTarget.Rendering", StringComparison.Ordinal) &&
                source.Contains("Stopwatch.GetTimestamp", StringComparison.Ordinal),
             "动作、探头与淡化必须由 CompositionTarget.Rendering 和绝对 Stopwatch 时钟驱动");
@@ -5397,6 +5497,10 @@ internal static class Program
             typeof(MainWindow),
             "GetEdgePeekCycleDurationTicks",
             frames.Length)!;
+        AssertClose(
+            StopwatchTicksToMilliseconds(cycleTicks),
+            10000d,
+            "production edge peek cycle must be exactly 10 seconds");
         Assert(cycleTicks == holdTicks.Aggregate(
                    0L,
                    checked((total, ticks) => total + ticks)),
@@ -5564,9 +5668,9 @@ internal static class Program
             Assert(lastTimestamp - startedAt >= StopwatchTicksFromSeconds(60),
                 $"{refreshRate:F2}Hz健康边缘模拟必须覆盖至少60秒");
             var completedCycles = frameZeroTimestamps.Count - 1;
-            Assert(completedCycles >= 20 &&
-                   endpointHoldCounts[fullyPeekedFrameIndex] >= 20 &&
-                   endpointHoldCounts[restingFrameIndex] >= 20,
+            Assert(completedCycles >= 5 &&
+                   endpointHoldCounts[fullyPeekedFrameIndex] >= 5 &&
+                   endpointHoldCounts[restingFrameIndex] >= 5,
                 $"{refreshRate:F2}Hz健康边缘模拟至少应完整覆盖20轮；" +
                 $"cycles={completedCycles}, " +
                 $"hold{fullyPeekedFrameIndex}=" +
@@ -5622,7 +5726,7 @@ internal static class Program
                 frames.Length - 1,
                 checked(startedAt + holdTicks[^1]));
             var maximumVsyncOrdinal = checked(
-                (int)Math.Ceiling(10d * refreshRate));
+                (int)Math.Ceiling(30d * refreshRate));
             for (var vsyncOrdinal = 1;
                  vsyncOrdinal <= maximumVsyncOrdinal;
                  vsyncOrdinal++)
@@ -5693,7 +5797,7 @@ internal static class Program
             var firstFrameTimestamp = -1L;
             var firstFrameVsyncOrdinal = -1;
             for (var vsyncOrdinal = 1;
-                 vsyncOrdinal <= (int)Math.Ceiling(refreshRate);
+                 vsyncOrdinal <= (int)Math.Ceiling(10d * refreshRate);
                  vsyncOrdinal++)
             {
                 var timestamp = checked(
@@ -7403,15 +7507,15 @@ internal static class Program
         var edgeFullyPeekedHold = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgePeekFullyPeekedHold",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
-        var edgeRestHold = (TimeSpan)(typeof(MainWindow).GetField(
-                "EdgePeekRestHold",
+        var edgeCycleInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgePeekCycleInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var edgeBlendDuration = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeFrameBlendDuration",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
         Assert(edgeMotionFrameInterval == TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60) &&
                edgeFullyPeekedHold == TimeSpan.FromMilliseconds(650) &&
-               edgeRestHold == TimeSpan.FromMilliseconds(800) &&
+               edgeCycleInterval == TimeSpan.FromSeconds(10) &&
                edgeBlendDuration == TimeSpan.Zero &&
                typeof(MainWindow).GetField("EdgePeekFrameInterval", StaticFlags) is null &&
                typeof(MainWindow).GetField("_edgePeekFrameDirection", InstanceFlags) is null,
@@ -7441,6 +7545,10 @@ internal static class Program
                 : GetField<Array>(window, "_edgeBottomFrames");
             var restFrameIndex = edgeFrames.Length - 1;
             var fullyPeekedFrameIndex = edgeFrames.Length / 2 - 1;
+            var edgeRestHold = (TimeSpan)InvokeStatic(
+                typeof(MainWindow),
+                "GetEdgePeekRestHoldDuration",
+                edgeFrames.Length)!;
             PrimeSpritePageForFrame(window, edgeFrames.GetValue(restFrameIndex)!);
             window.Left = safeLeft;
             window.Top = safeTop;
@@ -8888,7 +8996,137 @@ internal static class Program
                error.Contains("校验失败", StringComparison.Ordinal) &&
                storedValue == "legacy-command",
             "假后端写后校验失败时必须恢复原值，并报告恢复后的真实启用状态");
+
+        storedValue = string.Empty;
+        setArguments = [true, true, null];
+        Assert(!(bool)(trySetEnabled.Invoke(
+                    failingRegistration,
+                    setArguments) ?? true) &&
+               setArguments[1] is false &&
+               setArguments[2] is string emptyRestoreError &&
+               emptyRestoreError.Contains("校验失败", StringComparison.Ordinal) &&
+               storedValue == string.Empty,
+            "空字符串也是已有注册表原值，设置失败后必须逐字恢复为空字符串，不能误删为不存在");
         corruptExpectedWrite = false;
+
+        storedValue = null;
+        var deniedRegistration = constructor.Invoke(
+            [
+                expectedCommand,
+                (Func<string?>)(() => storedValue),
+                (Action<string>)(_ =>
+                    throw new UnauthorizedAccessException("无权写入测试后端")),
+                (Action)(() =>
+                    throw new UnauthorizedAccessException("无权删除测试后端"))
+            ]);
+        setArguments = [true, true, null];
+        Assert(!(bool)(trySetEnabled.Invoke(
+                    deniedRegistration,
+                    setArguments) ?? true) &&
+               setArguments[1] is false &&
+               setArguments[2] is string permissionError &&
+               permissionError.Contains("无权写入", StringComparison.Ordinal) &&
+               storedValue is null,
+            "注册表权限不足必须被转换为可展示的失败结果，程序不得崩溃或改动原状态");
+    }
+
+    private static void AssertSystemTrayContract()
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var trayType = assembly.GetType(
+            "LubanDesktopPet.TrayIconService",
+            throwOnError: true)!;
+        Assert(typeof(IDisposable).IsAssignableFrom(trayType),
+            "系统托盘服务必须实现 IDisposable，确保退出时立即移除图标");
+        Assert(assembly.GetManifestResourceNames().Contains(
+                   "LubanDesktopPet.Assets.luban-tray.ico",
+                   StringComparer.Ordinal),
+            "小鲁班托盘图标必须作为程序集资源嵌入，发布单个EXE后仍可创建");
+
+        var appSource = File.ReadAllText(FindWorkspaceFile("App.xaml.cs"));
+        var appXaml = File.ReadAllText(FindWorkspaceFile("App.xaml"));
+        var traySource = File.ReadAllText(
+            FindWorkspaceFile("TrayIconService.cs"));
+        var projectSource = File.ReadAllText(
+            FindWorkspaceFile("DesktopPet.csproj"));
+        var startupMethod = appSource;
+        var exitMethod = appSource;
+        var trayExitMethod = ExtractPrivateMethodSource(
+            appSource,
+            "TrayIconService_ExitRequested");
+        var disposeMethod = traySource;
+
+        var mutexAcquisition = startupMethod.IndexOf(
+            "_singleInstanceMutex.WaitOne(0)",
+            StringComparison.Ordinal);
+        var duplicateExit = startupMethod.IndexOf(
+            "if (!_ownsSingleInstanceMutex)",
+            StringComparison.Ordinal);
+        var mainWindowShow = startupMethod.IndexOf(
+            "mainWindow.Show()",
+            StringComparison.Ordinal);
+        var trayCreation = startupMethod.IndexOf(
+            "_trayIconService = new TrayIconService()",
+            StringComparison.Ordinal);
+        Assert(mutexAcquisition >= 0 &&
+               duplicateExit > mutexAcquisition &&
+               mainWindowShow > duplicateExit &&
+               trayCreation > mainWindowShow &&
+               startupMethod.Split(
+                   "new TrayIconService()",
+                   StringSplitOptions.None).Length == 2,
+            "只有取得单实例锁的首个进程才能创建一个托盘图标，重复实例不得闪出图标");
+        Assert(traySource.Contains(
+                   "new ToolStripMenuItem(\"退出小鲁班\")",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "ExitRequested?.Invoke(this, EventArgs.Empty)",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "Visible = true",
+                   StringComparison.Ordinal),
+            "托盘菜单必须提供“退出小鲁班”，点击后只发布正常退出请求");
+        Assert(appXaml.Contains(
+                   "ShutdownMode=\"OnMainWindowClose\"",
+                   StringComparison.Ordinal) &&
+               trayExitMethod.Contains(
+                   "mainWindow.Close()",
+                   StringComparison.Ordinal) &&
+               trayExitMethod.Contains(
+                   "Shutdown()",
+                   StringComparison.Ordinal) &&
+               trayExitMethod.Contains(
+                   "Dispatcher.BeginInvoke",
+                   StringComparison.Ordinal),
+            "托盘退出必须回到WPF UI线程并走 MainWindow.Close；无主窗时才直接 Shutdown");
+        var hideIcon = disposeMethod.IndexOf(
+            "notifyIcon.Visible = false",
+            StringComparison.Ordinal);
+        var disposeIcon = disposeMethod.IndexOf(
+            "notifyIcon.Dispose()",
+            StringComparison.Ordinal);
+        Assert(hideIcon >= 0 &&
+               disposeIcon > hideIcon &&
+               disposeMethod.Contains(
+                   "_exitItem.Click -= ExitItem_Click",
+                   StringComparison.Ordinal) &&
+               exitMethod.Contains(
+                   "trayIconService.ExitRequested -=",
+                   StringComparison.Ordinal) &&
+               exitMethod.Contains(
+                   "trayIconService.Dispose()",
+                   StringComparison.Ordinal) &&
+               exitMethod.Contains(
+                   "_trayIconService = null",
+                   StringComparison.Ordinal),
+            "应用退出必须先解绑事件、隐藏并销毁托盘对象，不能留下幽灵图标或重复回调");
+        Assert(projectSource.Contains(
+                   "Microsoft.WindowsDesktop.App.WindowsForms",
+                   StringComparison.Ordinal) &&
+               projectSource.Contains(
+                   "EmbeddedResource Include=\"Assets\\luban-tray.ico\"",
+                   StringComparison.Ordinal),
+            "项目必须显式引用Windows Forms桌面框架并嵌入托盘ICO资源");
     }
 
     private static void AssertTodoCutContract()
@@ -8929,25 +9167,77 @@ internal static class Program
                    input.SelectionLength == 0,
                 "TodoInput 无选区 Ctrl+X 必须无操作，不能沿用 Ctrl+C 的复制全文契约");
 
+            input.Text = "甲乙丙";
+            input.Select(0, 1);
+            using (HoldClipboardOpenForTest())
+            {
+                Assert(!(bool)(Invoke(
+                            todoWindow,
+                            "TryCutSelectedText",
+                            input) ?? true) &&
+                       input.Text == "甲乙丙" &&
+                       input.SelectionStart == 0 &&
+                       input.SelectionLength == 1,
+                    "剪切时剪贴板被占用必须原样保留全文和首字符选区，不能先删字再异步重试");
+            }
+
             var previewKeySource = ExtractPrivateMethodSource(
                 File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs")),
                 "TodoWindow_PreviewKeyDown");
-            var handledIndex = previewKeySource.IndexOf(
-                "e.Handled = true",
-                StringComparison.Ordinal);
-            var imeGuardIndex = previewKeySource.IndexOf(
-                "if (!IsImeComposing)",
-                StringComparison.Ordinal);
+            var effectiveKeySource = ExtractPrivateMethodSource(
+                File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs")),
+                "GetEffectiveShortcutKey");
+            var tryCutSource = ExtractPrivateMethodSource(
+                File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs")),
+                "TryCutSelectedText");
             var cutIndex = previewKeySource.IndexOf(
                 "TryCutSelectedText(cutTextBox)",
                 StringComparison.Ordinal);
+            var handledIndex = previewKeySource.LastIndexOf(
+                "e.Handled = true",
+                cutIndex,
+                StringComparison.Ordinal);
             Assert(previewKeySource.Contains(
+                       "var effectiveKey = GetEffectiveShortcutKey(e)",
+                       StringComparison.Ordinal) &&
+                   previewKeySource.Contains(
+                       "effectiveKey == Key.X",
+                       StringComparison.Ordinal) &&
+                   previewKeySource.Contains(
                        "Keyboard.Modifiers == ModifierKeys.Control",
                        StringComparison.Ordinal) &&
                    handledIndex >= 0 &&
-                   imeGuardIndex > handledIndex &&
-                   cutIndex > imeGuardIndex,
-                "Ctrl+X 必须只匹配标准 Control+X，并在 IME 组合态判断前先标记 Handled，防止原生 Cut 继续删字");
+                   cutIndex > handledIndex &&
+                   !previewKeySource[..cutIndex].Contains(
+                       "IsImeComposing",
+                       StringComparison.Ordinal) &&
+                   effectiveKeySource.Contains(
+                       "Key.ImeProcessed => e.ImeProcessedKey",
+                       StringComparison.Ordinal) &&
+                   effectiveKeySource.Contains(
+                       "Key.System => e.SystemKey",
+                       StringComparison.Ordinal),
+                "Ctrl+X 必须识别普通、ImeProcessed 和 System 键，并在任何异步让步前同步处理显式选区");
+            Assert(tryCutSource.Contains(
+                       "var textSnapshot = textBox.Text",
+                       StringComparison.Ordinal) &&
+                   tryCutSource.Contains(
+                       "if (!TryCopyTextToClipboard(selectedText))",
+                       StringComparison.Ordinal) &&
+                   tryCutSource.IndexOf(
+                       "if (!TryCopyTextToClipboard(selectedText))",
+                       StringComparison.Ordinal) <
+                   tryCutSource.IndexOf(
+                       "RemovePendingCutSelection(",
+                       StringComparison.Ordinal) &&
+                   !tryCutSource.Contains(
+                       "QueueClipboardRetry",
+                       StringComparison.Ordinal) &&
+                   typeof(TodoWindow).GetFields(InstanceFlags)
+                       .All(field => !field.Name.Contains(
+                           "pendingClipboardCut",
+                           StringComparison.OrdinalIgnoreCase)),
+                "剪切必须先同步写剪贴板、成功后再删选区；失败不得排队延迟删除，也不得保留 pending cut 状态");
 
             input.Text = "甲乙丙";
             input.Select(0, 1);
@@ -8995,24 +9285,7 @@ internal static class Program
             Assert(input.Text == "甲乙丙" &&
                    input.SelectionStart == 1 &&
                    input.SelectionLength == 1,
-                "延迟重试前选区已变化时必须放弃旧剪切");
-
-            input.Text = "甲乙丙";
-            input.Select(0, 1);
-            SetField(todoWindow, "_pendingClipboardCutText", "甲");
-            SetField(todoWindow, "_pendingClipboardCutSnapshot", "甲乙丙");
-            SetField(todoWindow, "_pendingClipboardCutTextBox", input);
-            SetField(todoWindow, "_pendingClipboardCutSelectionStart", 0);
-            SetField(todoWindow, "_pendingClipboardCutSelectionLength", 1);
-            input.Text = "甲乙丙丁";
-            input.Select(0, 1);
-            Invoke(todoWindow, "RetryClipboardCopy");
-            Assert(input.Text == "甲乙丙丁" &&
-                   input.SelectionStart == 0 &&
-                   input.SelectionLength == 1 &&
-                   GetRawField(todoWindow, "_pendingClipboardCutText") is null &&
-                   GetRawField(todoWindow, "_pendingClipboardCutTextBox") is null,
-                "真实延迟重试必须经过快照校验并清空一次性状态，不能在用户继续输入后删错字符");
+                "同步快照删除前选区已变化时必须放弃旧剪切");
 
             var item = new TodoItem { Text = "甲乙丙" };
             todoWindow.Todos = new ObservableCollection<TodoItem> { item };
@@ -9175,7 +9448,7 @@ internal static class Program
                 "定时任务列表必须直接绑定传入的 ObservableCollection");
             Assert(scheduledInput.MaxLength == 5000 &&
                    scheduledTime.MaxLength == 8 &&
-                   Equals(scheduledSubmit.Content, "设定") &&
+                   Equals(scheduledSubmit.Content, "新增") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed &&
                    GetRawField(todoWindow, "_scheduledDate") is DateTime &&
                    scheduledDateInput.IsReadOnly &&
@@ -9230,10 +9503,11 @@ internal static class Program
                        scheduledDatePickerHost) &&
                    scheduledDatePickerPopup.AllowsTransparency &&
                    scheduledDatePickerPopup.StaysOpen &&
-                   ReferenceEquals(
-                       scheduledTimePickerPopup.PlacementTarget,
-                       scheduledTimePickerHost) &&
-                   scheduledTimePickerPopup.AllowsTransparency,
+                    ReferenceEquals(
+                        scheduledTimePickerPopup.PlacementTarget,
+                        scheduledTimePickerHost) &&
+                    scheduledTimePickerPopup.AllowsTransparency &&
+                    scheduledTimePickerPopup.StaysOpen,
                 "定时任务默认值必须精确使用当前本地秒，并通过自定义日期月历和 24/60/60 时间浮层编辑");
 
             Invoke(todoWindow, "SelectTaskPage", true, false);
@@ -9242,6 +9516,39 @@ internal static class Program
                    todoPage.Visibility == Visibility.Hidden &&
                    scheduledPage.Visibility == Visibility.Visible,
                 "点击右侧“定时任务”后必须只显示定时页");
+            var scheduledShortItem = new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "短提醒",
+                DueAt = DateTimeOffset.Now.AddHours(1),
+                CreatedAt = DateTimeOffset.Now
+            };
+            var scheduledLongText = string.Concat(Enumerable.Repeat(
+                "这是一条需要两行之外才能显示完整内容的定时任务。",
+                12));
+            var scheduledLongItem = new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = scheduledLongText,
+                DueAt = DateTimeOffset.Now.AddHours(2),
+                CreatedAt = DateTimeOffset.Now
+            };
+            scheduledTasks.Add(scheduledShortItem);
+            scheduledTasks.Add(scheduledLongItem);
+            scheduledTasks.Add(new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "第三条用于验证默认视口",
+                DueAt = DateTimeOffset.Now.AddHours(3),
+                CreatedAt = DateTimeOffset.Now
+            });
+            scheduledTasks.Add(new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "第四条用于产生滚动范围",
+                DueAt = DateTimeOffset.Now.AddHours(4),
+                CreatedAt = DateTimeOffset.Now
+            });
             todoWindow.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(50));
             todoWindow.UpdateLayout();
@@ -9262,6 +9569,167 @@ internal static class Program
                    scheduledTime.ActualWidth >=
                    formattedTime.WidthIncludingTrailingWhitespace,
                 "日期行必须给 HH:mm:ss 留足宽度，不能被时钟图标或下拉箭头裁掉");
+            var scheduledScrollViewer =
+                FindVisualDescendant<ScrollViewer>(scheduledList)
+                ?? throw new InvalidOperationException(
+                    "定时任务列表找不到内部 ScrollViewer");
+            var scheduledVisibleContainers = Enumerable.Range(0, 3)
+                .Select(index =>
+                    scheduledList.ItemContainerGenerator
+                        .ContainerFromIndex(index))
+                .OfType<FrameworkElement>()
+                .ToArray();
+            Assert(scheduledList.MinHeight >= 168 &&
+                   scheduledList.ActualHeight >= 168 &&
+                   scheduledVisibleContainers.Length == 3 &&
+                   scheduledVisibleContainers.All(container =>
+                   {
+                       var top = container.TranslatePoint(
+                           new Point(0, 0),
+                           scheduledList).Y;
+                       var bottom = container.TranslatePoint(
+                           new Point(0, container.ActualHeight),
+                           scheduledList).Y;
+                       return top >= -0.5 &&
+                              bottom <= scheduledList.ActualHeight + 0.5;
+                   }),
+                $"定时任务页默认必须至少完整容纳三项；list={scheduledList.ActualHeight:F1}, " +
+                $"containers={scheduledVisibleContainers.Length}, heights=" +
+                string.Join(
+                    ",",
+                    scheduledVisibleContainers.Select(container =>
+                        container.ActualHeight.ToString(
+                            "F1",
+                            CultureInfo.InvariantCulture))));
+            Assert(ScrollViewer.GetCanContentScroll(scheduledList) &&
+                   !ScrollViewer.GetIsDeferredScrollingEnabled(scheduledList) &&
+                   ScrollViewer.GetPanningMode(scheduledList) ==
+                       PanningMode.VerticalOnly &&
+                   VirtualizingPanel.GetIsVirtualizing(scheduledList) &&
+                   VirtualizingPanel.GetVirtualizationMode(scheduledList) ==
+                       VirtualizationMode.Recycling &&
+                   VirtualizingPanel.GetScrollUnit(scheduledList) ==
+                       ScrollUnit.Pixel,
+                "定时任务列表必须使用 Pixel + Recycling 即时滚动，滚轮和拖动滑块不得按整项跳动");
+            scheduledScrollViewer.ScrollToVerticalOffset(12.5);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(Math.Abs(scheduledScrollViewer.VerticalOffset - 12.5) <
+                   0.75,
+                $"Pixel 滚动必须保留小数级中间位置，实际 offset={scheduledScrollViewer.VerticalOffset:F2}");
+            var scheduledVerticalScrollBar =
+                FindVisualDescendants<ScrollBar>(scheduledList)
+                    .First(scrollBar =>
+                        scrollBar.Orientation == Orientation.Vertical);
+            AssertTaskListScrollBarVisual(
+                scheduledVerticalScrollBar,
+                "定时任务列表");
+
+            var scheduledShortContainer =
+                scheduledList.ItemContainerGenerator.ContainerFromItem(
+                    scheduledShortItem) as DependencyObject
+                ?? throw new InvalidOperationException(
+                    "短定时任务没有生成可视容器");
+            scheduledScrollViewer.ScrollToTop();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var scheduledLongContainer =
+                scheduledList.ItemContainerGenerator.ContainerFromItem(
+                    scheduledLongItem) as DependencyObject
+                ?? throw new InvalidOperationException(
+                    "长定时任务没有生成可视容器");
+            var scheduledShortRow =
+                FindVisualDescendants<Border>(scheduledShortContainer)
+                    .First(border =>
+                        string.Equals(
+                            border.Name,
+                            "ScheduledTaskRowBorder",
+                            StringComparison.Ordinal));
+            var scheduledLongRow =
+                FindVisualDescendants<Border>(scheduledLongContainer)
+                    .First(border =>
+                        string.Equals(
+                            border.Name,
+                            "ScheduledTaskRowBorder",
+                            StringComparison.Ordinal));
+            var scheduledShortTextBox =
+                FindVisualDescendant<TextBox>(scheduledShortContainer)
+                ?? throw new InvalidOperationException(
+                    "短定时任务行缺少只读文字框");
+            var scheduledLongTextBox =
+                FindVisualDescendant<TextBox>(scheduledLongContainer)
+                ?? throw new InvalidOperationException(
+                    "长定时任务行缺少只读文字框");
+            var scheduledTimeText =
+                FindVisualDescendants<TextBlock>(scheduledShortContainer)
+                    .First(textBlock =>
+                        textBlock.Text ==
+                        scheduledShortItem.DueAtDisplayText);
+            AssertClose(
+                scheduledTimeText.FontSize,
+                11.5,
+                "定时任务时间字体");
+            AssertClose(
+                scheduledShortTextBox.FontSize,
+                13,
+                "定时任务内容字体");
+            Assert(!(bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "IsTaskRowTextClipped",
+                       scheduledShortTextBox,
+                       scheduledShortItem.Text)!,
+                "短定时任务必须被实际识别为完整显示");
+            var taskFullTextPopup = GetField<Popup>(
+                todoWindow,
+                "TaskFullTextPopup");
+            var taskFullTextPreview = GetField<TextBox>(
+                todoWindow,
+                "TaskFullTextPreviewTextBox");
+            Invoke(
+                todoWindow,
+                "TaskRow_MouseEnter",
+                scheduledShortRow,
+                new MouseEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(!taskFullTextPopup.IsOpen,
+                "完整显示的短定时任务悬停时不得弹出全文窗口");
+            Assert((bool)InvokeStatic(
+                       typeof(TodoWindow),
+                       "IsTaskRowTextClipped",
+                       scheduledLongTextBox,
+                       scheduledLongItem.Text)!,
+                "长定时任务测试数据必须被实际识别为裁剪显示");
+            Invoke(
+                todoWindow,
+                "TaskRow_MouseEnter",
+                scheduledLongRow,
+                new MouseEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(taskFullTextPopup.IsOpen &&
+                   taskFullTextPopup.PlacementTarget ==
+                       scheduledLongRow &&
+                   taskFullTextPreview.DataContext ==
+                       scheduledLongItem &&
+                   taskFullTextPreview.Text == scheduledLongText &&
+                   GetField<TextBlock>(
+                       todoWindow,
+                       "TaskFullTextTitle").Text ==
+                       "提醒完整内容 · 可选择复制",
+                "只有实际裁剪的定时任务才可打开左优先全文窗，并显示完整可选择文字");
+            Invoke(todoWindow, "CloseTaskFullTextPreview");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(taskFullTextPopup.PlacementTarget is null &&
+                   taskFullTextPreview.DataContext is null &&
+                   taskFullTextPreview.Text.Length == 0 &&
+                   GetField<bool>(
+                       todoWindow,
+                       "_isTaskFullTextPopupOpen") is false &&
+                   !todoWindow.IsTransientPopupOpen,
+                "关闭定时任务全文窗后必须同步释放长文本、行容器和 transient 状态，不能阻塞后续外点收起");
+            scheduledTasks.Clear();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
             todoWindow.ShowDefaultTab();
             Assert(todoTab.IsChecked == true &&
                    scheduledTab.IsChecked != true &&
@@ -9406,8 +9874,13 @@ internal static class Program
                    scheduledTime.Text == timeBeforeLeapSelection &&
                    GetRawField(todoWindow, "_scheduledTaskDraftClockEdited") is true &&
                    !scheduledDatePickerPopup.IsOpen &&
+                   !todoWindow.IsTransientPopupOpen &&
                    transientCompletionCount == 3,
-                "真实闰日按钮必须选择日期、关闭浮层且不能改动已经选好的时分秒");
+                "真实闰日按钮必须选择日期后收起浮层，且不能改动已经选好的时分秒或重复报告交互结束");
+            Invoke(todoWindow, "CloseScheduledDatePicker");
+            Assert(!scheduledDatePickerPopup.IsOpen &&
+                   transientCompletionCount == 3,
+                "日期选中自动收起后，重复关闭不得再次报告交互结束");
 
             var todayBeforeClick = DateTime.Today;
             var timeBeforeToday = scheduledTime.Text;
@@ -9427,8 +9900,13 @@ internal static class Program
                        CultureInfo.InvariantCulture) &&
                    scheduledTime.Text == timeBeforeToday &&
                    !scheduledDatePickerPopup.IsOpen &&
+                   !todoWindow.IsTransientPopupOpen &&
                    transientCompletionCount == 4,
-                "真实“今天”按钮必须选择本地今天、关闭日期浮层且不能改动时分秒");
+                "真实“今天”按钮必须选择本地今天后收起日期浮层，且不能改动时分秒");
+            Invoke(todoWindow, "CloseScheduledDatePicker");
+            Assert(!scheduledDatePickerPopup.IsOpen &&
+                   transientCompletionCount == 4,
+                "“今天”选择自动收起后，重复关闭不得再次报告交互结束");
             Invoke(todoWindow, "ResetScheduledTaskDraftClock", exactNow);
             Invoke(todoWindow, "OpenScheduledTimePicker");
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
@@ -9442,6 +9920,25 @@ internal static class Program
                 "勾选循环后仍必须显示首次/下一次日期和时间，且已经打开的时间浮层不能消失");
             var completionBeforeTimeParts =
                 transientCompletionCount;
+            scheduledRepeatCount.Text = "7";
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledTimePickerPopup.IsOpen &&
+                   scheduledRepeatCount.Text == "7" &&
+                   transientCompletionCount ==
+                       completionBeforeTimeParts,
+                "在时间窗口中修改循环次数不得关闭外层时间Popup");
+            scheduledRepeatToggle.IsChecked = false;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledTimePickerPopup.IsOpen &&
+                   transientCompletionCount ==
+                       completionBeforeTimeParts,
+                "取消循环勾选也不得把仍在选择的时间窗口收起");
+            scheduledRepeatToggle.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledTimePickerPopup.IsOpen &&
+                   transientCompletionCount ==
+                       completionBeforeTimeParts,
+                "重新勾选循环必须保持当前时间窗口和已选时分秒");
             scheduledRepeatUnit.IsDropDownOpen = true;
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             var repeatUnitOption =
@@ -9543,6 +10040,18 @@ internal static class Program
             Assert(!scheduledTimePickerPopup.IsOpen &&
                    scheduledTime.Text == "11:22:33",
                 "确定时必须关闭时间浮层并保留刚选好的完整 HH:mm:ss");
+            var completionBeforeOutsideClick =
+                transientCompletionCount;
+            Invoke(todoWindow, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledTimePickerPopup.IsOpen,
+                "真实外点回归必须先重新打开时间窗口");
+            RaisePreviewMouseDown(scheduledInput);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(!scheduledTimePickerPopup.IsOpen &&
+                   transientCompletionCount ==
+                       completionBeforeOutsideClick + 1,
+                "点击时间/循环区域之外的真实表单内容必须关闭时间窗口，并且只通知一次交互结束");
             var repeatPreviewCases = new[]
             {
                 (
@@ -9624,6 +10133,24 @@ internal static class Program
             var resetDraftClockSource = ExtractPrivateMethodSource(
                 todoSource,
                 "ResetScheduledTaskDraftClock");
+            var queuePickerOutsideProbeSource = ExtractPrivateMethodSource(
+                todoSource,
+                "QueueScheduledPickerOutsideProbe");
+            var processPickerOutsideProbeSource =
+                ExtractPrivateMethodSource(
+                    todoSource,
+                    "ProcessScheduledPickerOutsideProbe");
+            var isScheduledPickerOpenSource =
+                ExtractPrivateMethodSource(
+                    todoSource,
+                    "IsScheduledPickerOpen");
+            Assert(isScheduledPickerOpenSource.Contains(
+                       "ScheduledDatePickerPopup?.IsOpen == true",
+                       StringComparison.Ordinal) &&
+                   isScheduledPickerOpenSource.Contains(
+                       "ScheduledTimePickerPopup?.IsOpen == true",
+                       StringComparison.Ordinal),
+                "TodoWindow 构造期的 TextChanged 可能早于 Popup 字段初始化；选择器状态检查必须空安全，首次启动不得崩溃");
             Assert(outsideCloseSource.Contains(
                        "_todoWindow.IsTransientPopupOpen",
                        StringComparison.Ordinal) &&
@@ -9637,6 +10164,25 @@ internal static class Program
                        "AddMinutes(",
                        StringComparison.Ordinal),
                 "MainWindow 的外部点击收起判定必须显式保护自定义日期和时间 transient popup");
+            Assert(queuePickerOutsideProbeSource.Contains(
+                       "DispatcherPriority.ApplicationIdle",
+                       StringComparison.Ordinal) &&
+                   processPickerOutsideProbeSource.Contains(
+                       "var currentForegroundWindow = GetForegroundWindow()",
+                       StringComparison.Ordinal) &&
+                   processPickerOutsideProbeSource.Contains(
+                       "WindowFromPoint(currentPointer)",
+                       StringComparison.Ordinal) &&
+                   processPickerOutsideProbeSource.Contains(
+                       "IsKnownScheduledPickerWindow(currentForegroundWindow)",
+                       StringComparison.Ordinal) &&
+                   processPickerOutsideProbeSource.Contains(
+                       "IsPointerOverScheduledPickerSurface()",
+                       StringComparison.Ordinal) &&
+                   processPickerOutsideProbeSource.Contains(
+                       "CloseScheduledPickers()",
+                       StringComparison.Ordinal),
+                "ComboBox子Popup失活后必须等到ApplicationIdle再读取当前HWND和指针；内部切换保活，只有真实外点才关闭");
             var datePopupChild = scheduledDatePickerPopup.Child
                 ?? throw new InvalidOperationException("日期浮层缺少可视子树");
             var timePopupChild = scheduledTimePickerPopup.Child
@@ -9704,6 +10250,43 @@ internal static class Program
                        "x:Name=\"ScheduledDatePickerPopup\"",
                        StringComparison.Ordinal),
                 "日期入口必须彻底摆脱系统 DatePicker，并使用命名的自定义日期浮层");
+            var repeatUnitTemplateStart = todoXaml.IndexOf(
+                "<ComboBox x:Name=\"ScheduledRepeatUnitComboBox\"",
+                StringComparison.Ordinal);
+            var repeatUnitTemplateEnd = repeatUnitTemplateStart >= 0
+                ? todoXaml.IndexOf(
+                    "</ComboBox>",
+                    repeatUnitTemplateStart,
+                    StringComparison.Ordinal)
+                : -1;
+            Assert(repeatUnitTemplateStart >= 0 &&
+                   repeatUnitTemplateEnd > repeatUnitTemplateStart,
+                "循环单位下拉必须存在完整自定义模板");
+            var repeatUnitTemplate = todoXaml[
+                repeatUnitTemplateStart..
+                (repeatUnitTemplateEnd + "</ComboBox>".Length)];
+            Assert(repeatUnitTemplate.Contains(
+                       "x:Name=\"RepeatUnitButtonBorder\"",
+                       StringComparison.Ordinal) &&
+                   repeatUnitTemplate.Contains(
+                       "Background=\"#FFFFF3DF\"",
+                       StringComparison.Ordinal) &&
+                   repeatUnitTemplate.Contains(
+                       "BorderBrush=\"#E8BE89\"",
+                       StringComparison.Ordinal) &&
+                   repeatUnitTemplate.Contains(
+                       "x:Name=\"PART_Popup\"",
+                       StringComparison.Ordinal) &&
+                   repeatUnitTemplate.Contains(
+                       "BorderBrush=\"#EAB777\"",
+                       StringComparison.Ordinal) &&
+                   repeatUnitTemplate.Contains(
+                       "<Trigger Property=\"IsHighlighted\" Value=\"True\">",
+                       StringComparison.Ordinal) &&
+                   repeatUnitTemplate.Contains(
+                       "<Trigger Property=\"IsSelected\" Value=\"True\">",
+                       StringComparison.Ordinal),
+                "分钟/小时/天下拉必须使用与定时任务一致的橘色按钮、Popup、悬停和选中视觉");
             Assert(mainSource.Contains(
                        "_todoWindow.ScheduledTaskEditRequested +=",
                        StringComparison.Ordinal) &&
@@ -9920,31 +10503,124 @@ internal static class Program
                 new RoutedEventArgs(
                     ButtonBase.ClickEvent,
                     editButton));
-            var taskTextEditor = GetField<TaskTextEditWindow>(
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            var scheduledEditor = GetField<ScheduledTaskEditWindow>(
                 todoWindow,
-                "_taskTextEditWindow");
-            var taskTextEditorInput = GetField<TextBox>(
-                taskTextEditor,
-                "EditorTextBox");
-            Assert(taskTextEditor.IsVisible,
-                "点击定时任务铅笔必须显示白色编辑框");
-            Assert(ReferenceEquals(taskTextEditor.Owner, todoWindow),
-                "定时任务白色编辑框必须由待办面板拥有");
-            Assert(
-                Math.Abs(taskTextEditor.Width - 6 * 96 / 2.54) <= 1 &&
-                Math.Abs(taskTextEditor.Height - 3.708 * 96 / 2.54) <= 1,
-                $"定时任务白色编辑框初始大小必须为6cm×3.708cm，实际为{taskTextEditor.Width:F3}×{taskTextEditor.Height:F3} DIP");
-            Assert(taskTextEditor.ResizeMode == ResizeMode.CanResize,
-                "定时任务白色编辑框必须支持拖动缩放");
-            Assert(
-                taskTextEditorInput.MaxLength == 5000 &&
-                taskTextEditorInput.AcceptsReturn,
-                "定时任务白色编辑框必须支持多行且最多5000字");
-            taskTextEditor.CloseWithoutSaving();
+                "_scheduledTaskEditWindow");
+            var scheduledEditorText = GetField<TextBox>(
+                scheduledEditor,
+                "TaskTextBox");
+            var scheduledEditorDate = GetField<DatePicker>(
+                scheduledEditor,
+                "DueDatePicker");
+            var scheduledEditorHour = GetField<ComboBox>(
+                scheduledEditor,
+                "HourComboBox");
+            var scheduledEditorMinute = GetField<ComboBox>(
+                scheduledEditor,
+                "MinuteComboBox");
+            var scheduledEditorSecond = GetField<ComboBox>(
+                scheduledEditor,
+                "SecondComboBox");
+            var scheduledEditorRepeatToggle = GetField<CheckBox>(
+                scheduledEditor,
+                "RepeatToggle");
+            var scheduledEditorRepeatCount = GetField<TextBox>(
+                scheduledEditor,
+                "RepeatCountTextBox");
+            var scheduledEditorRepeatUnit = GetField<ComboBox>(
+                scheduledEditor,
+                "RepeatUnitComboBox");
+            Assert(scheduledEditor.IsVisible &&
+                   ReferenceEquals(scheduledEditor.Owner, todoWindow) &&
+                   ReferenceEquals(scheduledEditor.Item, editItem) &&
+                   scheduledEditor.Width == 378 &&
+                   scheduledEditor.Height == 208 &&
+                   scheduledEditor.ResizeMode == ResizeMode.NoResize &&
+                   scheduledEditor.FontFamily.Source == "Microsoft YaHei" &&
+                   scheduledEditor.Title == "修改定时任务" &&
+                   scheduledEditorText.Text == editItem.Text &&
+                   scheduledEditorDate.SelectedDate == editLocal.Date &&
+                   scheduledEditorHour.SelectedIndex == editLocal.Hour &&
+                   scheduledEditorMinute.SelectedIndex == editLocal.Minute &&
+                   scheduledEditorSecond.SelectedIndex == editLocal.Second &&
+                   scheduledEditorRepeatToggle.IsChecked != true &&
+                   GetRawField(todoWindow, "_editingScheduledTask") is null &&
+                   scheduledInput.Text.Length == 0 &&
+                   Equals(scheduledSubmit.Content, "新增") &&
+                   scheduledEditCancel.Visibility == Visibility.Collapsed &&
+                   todoWindow.IsTransientPopupOpen,
+                "点击定时任务铅笔必须打开独立 378×208 DIP 橘色 Owned Window，并在同一外窗回填正文、日期、时分秒和循环；新增表单不得被改写");
+
+            scheduledEditorHour.IsDropDownOpen = true;
+            Invoke(
+                scheduledEditor,
+                "ScheduledTaskEditWindow_Deactivated",
+                scheduledEditor,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledEditor.IsVisible &&
+                   GetRawField(scheduledEditor, "_internalPopupOpen") is true,
+                "编辑窗内部时分秒或循环下拉打开时，即使收到失活通知也不得把修改窗口自动保存关闭");
+            scheduledEditorHour.IsDropDownOpen = false;
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
-            Invoke(todoWindow, "BeginScheduledTaskFormEdit", editItem);
+
+            var externalSavedLocal = DateTime.Now.AddDays(3);
+            externalSavedLocal = new DateTime(
+                externalSavedLocal.Year,
+                externalSavedLocal.Month,
+                externalSavedLocal.Day,
+                17,
+                26,
+                39,
+                DateTimeKind.Unspecified);
+            while (TimeZoneInfo.Local.IsInvalidTime(externalSavedLocal))
+            {
+                externalSavedLocal = externalSavedLocal.AddHours(1);
+            }
+
+            scheduledEditorText.Text = "  独立窗口修改完成  ";
+            scheduledEditorDate.SelectedDate = externalSavedLocal.Date;
+            scheduledEditorHour.SelectedIndex = externalSavedLocal.Hour;
+            scheduledEditorMinute.SelectedIndex = externalSavedLocal.Minute;
+            scheduledEditorSecond.SelectedIndex = externalSavedLocal.Second;
+            scheduledEditorRepeatToggle.IsChecked = true;
+            scheduledEditorRepeatCount.Text = "2";
+            scheduledEditorRepeatUnit.SelectedIndex =
+                (int)ScheduledRepeatUnit.Day;
+            Assert(scheduledEditor.SaveAndClose(),
+                "独立定时任务编辑窗的“确定修改”必须能一次保存正文、日期、时分秒和循环");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var expectedExternalDueAt = new DateTimeOffset(
+                externalSavedLocal,
+                TimeZoneInfo.Local.GetUtcOffset(externalSavedLocal));
+            Assert(editRequestedCount == 1 &&
+                   ReferenceEquals(requestedEditItem, editItem) &&
+                   requestedEditText == "独立窗口修改完成" &&
+                   requestedEditDueAt == expectedExternalDueAt &&
+                   requestedEditRepeatInterval == TimeSpan.FromDays(2) &&
+                   requestedEditRepeatRule is
+                   {
+                       Unit: ScheduledRepeatUnit.Day,
+                       Every: 2,
+                       NextOrdinal: 0
+                   } &&
+                   GetRawField(todoWindow, "_scheduledTaskEditWindow") is null &&
+                   !todoWindow.IsTransientPopupOpen,
+                "独立编辑窗提交必须传回同一个 ScheduledTaskItem，并精确保留秒级时间和循环调度数据");
+
+            editRequestedCount = 0;
+            requestedEditItem = null;
+            requestedEditText = null;
+            requestedEditDueAt = default;
+            requestedEditRepeatInterval = null;
+            requestedEditRepeatRule = null;
+            Invoke(
+                todoWindow,
+                "BeginScheduledTaskFormEdit",
+                editItem);
             Assert(ReferenceEquals(
-                   GetRawField(todoWindow, "_editingScheduledTask"),
+                       GetRawField(todoWindow, "_editingScheduledTask"),
                        editItem) &&
                    scheduledInput.Text == editItem.Text &&
                    GetRawField(todoWindow, "_scheduledDate") is DateTime editingDate &&
@@ -9955,9 +10631,10 @@ internal static class Program
                    scheduledTime.Text == editLocal.ToString(
                        "HH:mm:ss",
                        CultureInfo.InvariantCulture) &&
-                   Equals(scheduledSubmit.Content, "保存") &&
+                   scheduledRepeatToggle.IsChecked != true &&
+                   Equals(scheduledSubmit.Content, "确定修改") &&
                    scheduledEditCancel.Visibility == Visibility.Visible,
-                "点击铅笔后必须回填原内容、本地日期和秒级时间，并切换到可取消的保存状态");
+                "兼容编辑草稿入口仍须完整回填原任务，避免旧状态恢复路径丢失调度数据");
 
             var savedLocal = DateTime.Now.AddHours(6);
             savedLocal = new DateTime(
@@ -9982,6 +10659,10 @@ internal static class Program
             scheduledTime.Text = savedLocal.ToString(
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture);
+            scheduledRepeatToggle.IsChecked = true;
+            scheduledRepeatCount.Text = "2";
+            scheduledRepeatUnit.SelectedIndex =
+                (int)ScheduledRepeatUnit.Day;
             var scheduledInputSource = PresentationSource.FromVisual(scheduledInput)
                 ?? throw new InvalidOperationException("定时任务输入框未建立输入源");
             Invoke(todoWindow, "SetImeComposing", true);
@@ -10015,12 +10696,18 @@ internal static class Program
                    ReferenceEquals(requestedEditItem, editItem) &&
                    requestedEditText == "修改后的定时任务" &&
                    requestedEditDueAt == expectedEditedDueAt &&
-                   requestedEditRepeatInterval is null &&
+                   requestedEditRepeatInterval == TimeSpan.FromDays(2) &&
+                   requestedEditRepeatRule is
+                   {
+                       Unit: ScheduledRepeatUnit.Day,
+                       Every: 2,
+                       NextOrdinal: 0
+                   } &&
                    committedScheduledEnter.Handled &&
                    GetRawField(todoWindow, "_editingScheduledTask") is null &&
-                   Equals(scheduledSubmit.Content, "设定") &&
+                   Equals(scheduledSubmit.Content, "新增") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed,
-                "定时任务编辑 Enter 必须只提交一次、Trim 内容、保留整秒时间并恢复新增状态");
+                "同一次定时修改必须只提交一次，同时保存内容、日期、HH:mm:ss和循环规则，再恢复新增状态");
 
             Invoke(
                 todoWindow,
@@ -10039,7 +10726,7 @@ internal static class Program
                        TimeZoneInfo.Local.GetUtcOffset(editLocal)) &&
                    scheduledInput.Text.Length == 0 &&
                    GetRawField(todoWindow, "_editingScheduledTask") is null &&
-                   Equals(scheduledSubmit.Content, "设定") &&
+                   Equals(scheduledSubmit.Content, "新增") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed,
                 "取消修改不得触发保存或改动原任务，并必须清空草稿、恢复新增状态");
 
@@ -10566,6 +11253,432 @@ internal static class Program
             SetField(window, "_activeReminder", null);
             SetField(window, "_isReminderActive", false);
             SetField(window, "_nowProvider", originalNowProvider);
+        }
+    }
+
+    private static void AssertScheduledReminderOccurrenceStackContract(
+        MainWindow window)
+    {
+        var scheduledTasks =
+            GetField<ObservableCollection<ScheduledTaskItem>>(
+                window,
+                "_scheduledTasks");
+        var reminderQueue =
+            GetField<Queue<ScheduledTaskItem>>(
+                window,
+                "_reminderQueue");
+        var queuedReminderIds =
+            GetField<HashSet<Guid>>(
+                window,
+                "_queuedReminderIds");
+        var activeBatch =
+            GetField<List<ScheduledTaskItem>>(
+                window,
+                "_activeReminderBatch");
+        var visibleOccurrences =
+            (IList)GetRawField(
+                window,
+                "_visibleReminderOccurrences")!;
+        var observedCounts =
+            (IDictionary)GetRawField(
+                window,
+                "_presentedReminderOccurrenceCounts")!;
+        var scheduledStore =
+            GetField<ScheduledTaskStore>(
+                window,
+                "_scheduledTaskStore");
+        var scheduledTimer =
+            GetField<DispatcherTimer>(
+                window,
+                "_scheduledTaskTimer");
+        var automaticTimer =
+            GetField<DispatcherTimer>(
+                window,
+                "_automaticTimer");
+        var reminderSizeTimer =
+            GetField<DispatcherTimer>(
+                window,
+                "_reminderSizeCommitTimer");
+        var todoWindow =
+            GetField<TodoWindow>(window, "_todoWindow");
+        var originalNowProvider =
+            GetField<Func<DateTimeOffset>>(window, "_nowProvider");
+        var originalAutomaticEnabled =
+            GetField<bool>(window, "_automaticAnimationEnabled");
+        var originalScale = GetField<double>(window, "_petSizeScale");
+        var originalHitTestVisible = window.IsHitTestVisible;
+        var now = new DateTimeOffset(
+            2032,
+            6,
+            7,
+            8,
+            9,
+            10,
+            TimeSpan.FromHours(8));
+        var firstDueAt = now;
+        Func<DateTimeOffset> controlledNow = () => now;
+
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        var reminderSource = File.ReadAllText(
+            FindWorkspaceFile("ReminderWindow.xaml.cs"));
+        var reminderXaml = File.ReadAllText(
+            FindWorkspaceFile("ReminderWindow.xaml"));
+        var scheduleSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ScheduleNextReminderAt");
+        var acknowledgeSource = ExtractPrivateMethodSource(
+            mainSource,
+            "AcknowledgeActiveReminder");
+        var refreshActiveReminderSource = ExtractPrivateMethodSource(
+            mainSource,
+            "RefreshActiveReminderPresentation");
+        var restartReminderAttentionSource = ExtractPrivateMethodSource(
+            mainSource,
+            "RestartReminderAttentionAnimation");
+        Assert(mainSource.Contains(
+                   "MaximumVisibleReminderOccurrences = 100",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "_visibleReminderOccurrences",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "_presentedReminderOccurrenceCounts",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "TryGetReminderOccurrenceDueAt(",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "ScheduledRepeatSchedule.TryGetOccurrence(",
+                   StringComparison.Ordinal) &&
+               scheduleSource.Contains(
+                   "FindNextReminderDueAt(now)",
+                   StringComparison.Ordinal) &&
+               !scheduleSource.Contains(
+                   "_queuedReminderIds",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "GroupBy(occurrence => occurrence.TaskId)",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "AdvanceAcknowledgedScheduledTask(",
+                   StringComparison.Ordinal) &&
+               acknowledgeSource.Contains(
+                   "carriedForwardCounts",
+                   StringComparison.Ordinal) &&
+               refreshActiveReminderSource.Contains(
+                   "hasNewReminderOccurrences",
+                   StringComparison.Ordinal) &&
+               refreshActiveReminderSource.Contains(
+                   "RestartReminderAttentionAnimation()",
+                   StringComparison.Ordinal) &&
+               restartReminderAttentionSource.Contains(
+                   "StartReminderHoldAnimation()",
+                   StringComparison.Ordinal) &&
+               reminderSource.Contains(
+                   "ShowBeside(Window anchor)",
+                   StringComparison.Ordinal) &&
+               reminderSource.Contains(
+                   "usableHeight",
+                   StringComparison.Ordinal) &&
+               reminderSource.Contains(
+                   "Math.Min(_preferredHeight, usableHeight)",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "ShowActivated=\"False\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Split(
+                   "<TextBox ",
+                   StringSplitOptions.None).Length == 2,
+            "提醒必须按 occurrence 建模、未确认时继续布下一次定时器，" +
+            "并在单个轻量窗口内最多显示100条");
+
+        scheduledTimer.Stop();
+        automaticTimer.Stop();
+        reminderSizeTimer.Stop();
+        scheduledTasks.Clear();
+        reminderQueue.Clear();
+        queuedReminderIds.Clear();
+        activeBatch.Clear();
+        visibleOccurrences.Clear();
+        observedCounts.Clear();
+        SetField(window, "_activeReminder", null);
+        SetField(window, "_isReminderActive", false);
+        SetField(window, "_totalReminderOccurrenceCount", 0L);
+        SetField(window, "_upcomingReminderPreloadPageName", null);
+        SetField(window, "_nowProvider", controlledNow);
+        SetField(window, "_automaticAnimationEnabled", false);
+        window.IsHitTestVisible = false;
+
+        try
+        {
+            if (!window.IsVisible)
+            {
+                window.Show();
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            }
+
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "Todo"));
+            Invoke(
+                todoWindow,
+                "SelectTaskPage",
+                true,
+                false);
+            var scheduledInput =
+                GetField<TextBox>(
+                    todoWindow,
+                    "ScheduledTaskInput");
+            scheduledInput.Text = "正在编辑，提醒不得关闭或清空";
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(todoWindow.IsVisible,
+                "提醒共存测试必须先显示定时任务面板");
+
+            var petLeftBeforeReminder = window.Left;
+            var petTopBeforeReminder = window.Top;
+            var recurring = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "43000000-0000-0000-0000-000000000001"),
+                Text = "循环堆叠提醒",
+                DueAt = firstDueAt,
+                CreatedAt = firstDueAt.AddDays(-1),
+                RepeatInterval = TimeSpan.FromMinutes(1)
+            };
+            Invoke(window, "InsertScheduledTaskSorted", recurring);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "循环堆叠测试数据必须先持久化");
+
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            var reminderWindow =
+                (ReminderWindow?)GetRawField(
+                    window,
+                    "_reminderWindow");
+            Assert(reminderWindow?.IsVisible == true &&
+                   todoWindow.IsVisible &&
+                   scheduledInput.Text ==
+                   "正在编辑，提醒不得关闭或清空" &&
+                   Math.Abs(window.Left - petLeftBeforeReminder) <= 1 &&
+                   Math.Abs(window.Top - petTopBeforeReminder) <= 1 &&
+                   visibleOccurrences.Count == 1 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 1,
+                "面板打开时到点提醒必须显示在旁边，不能关闭面板、清空草稿或把桌宠搬走");
+
+            var todoBounds = new Rect(
+                todoWindow.Left,
+                todoWindow.Top,
+                todoWindow.ActualWidth,
+                todoWindow.ActualHeight);
+            var reminderBounds = new Rect(
+                reminderWindow!.Left,
+                reminderWindow.Top,
+                reminderWindow.ActualWidth,
+                reminderWindow.ActualHeight);
+            var reminderWorkArea =
+                (Rect)InvokeStatic(
+                    typeof(MainWindow).Assembly.GetType(
+                        "LubanDesktopPet.MonitorWorkArea",
+                        throwOnError: true)!,
+                    "GetForWindow",
+                    todoWindow)!;
+            Assert(!todoBounds.IntersectsWith(reminderBounds) &&
+                   reminderBounds.Left >= reminderWorkArea.Left - 1 &&
+                   reminderBounds.Top >= reminderWorkArea.Top - 1 &&
+                   reminderBounds.Right <= reminderWorkArea.Right + 1 &&
+                   reminderBounds.Bottom <= reminderWorkArea.Bottom + 1,
+                "提醒窗口必须位于任务面板旁边且完整留在同一显示器工作区");
+
+            var reminderHoldFrames =
+                GetField<Array>(window, "_reminderHoldFrames");
+            PrimeSpritePageForFrame(
+                window,
+                reminderHoldFrames.GetValue(0)!);
+            now = firstDueAt.AddMinutes(1);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            var reminderHoldClip =
+                GetRawField(window, "_reminderHoldClip");
+            Assert(visibleOccurrences.Count == 2 &&
+                   ReferenceEquals(
+                       GetRawField(window, "_activeClip"),
+                       reminderHoldClip) &&
+                   GetField<int>(window, "_activeFrameIndex") == 0 &&
+                   todoWindow.IsVisible &&
+                   scheduledInput.Text ==
+                       "正在编辑，提醒不得关闭或清空",
+                "提醒仍显示时新到一次必须追加第二条，并从喇叭保持序列首帧重新摇一次；Todo草稿不得受影响");
+
+            var replayTimestamp = Stopwatch.GetTimestamp();
+            Invoke(
+                window,
+                "TryStartDeferredActiveClipClockAt",
+                replayTimestamp);
+            Assert(GetField<long>(
+                       window,
+                       "_activeClipStartedTimestamp") ==
+                   replayTimestamp,
+                "新 occurrence 的喇叭重摇必须能建立一条新的绝对时间轴");
+            var replayFrameIndex =
+                GetField<int>(window, "_activeFrameIndex");
+            var replayDeadline =
+                GetField<long>(
+                    window,
+                    "_activeFrameDeadlineTimestamp");
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Assert(visibleOccurrences.Count == 2 &&
+                   ReferenceEquals(
+                       GetRawField(window, "_activeClip"),
+                       reminderHoldClip) &&
+                   GetField<long>(
+                       window,
+                       "_activeClipStartedTimestamp") ==
+                       replayTimestamp &&
+                   GetField<long>(
+                       window,
+                       "_activeFrameDeadlineTimestamp") ==
+                       replayDeadline &&
+                   GetField<int>(
+                       window,
+                       "_activeFrameIndex") ==
+                       replayFrameIndex,
+                "同一 now 重复 Process 不得重复追加消息、重置喇叭时间轴或再次抖动");
+
+            now = firstDueAt.AddMinutes(2);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            var reminderTextBox =
+                GetField<TextBox>(
+                    reminderWindow,
+                    "ReminderContentTextBox");
+            Assert(visibleOccurrences.Count == 3 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 3 &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 3,
+                "未确认的一分钟循环任务在三次到点后必须按时间堆叠3条，同一时间重复处理不得重复");
+
+            var stackedDueTimes = visibleOccurrences
+                .Cast<object>()
+                .Select(occurrence =>
+                    GetProperty<DateTimeOffset>(
+                        occurrence,
+                        "DueAt"))
+                .ToArray();
+            Assert(stackedDueTimes.SequenceEqual(
+                       new[]
+                       {
+                           firstDueAt,
+                           firstDueAt.AddMinutes(1),
+                           firstDueAt.AddMinutes(2)
+                       }),
+                "循环提醒必须按每次计划时间严格升序堆叠");
+
+            now = firstDueAt.AddMinutes(105);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            var countText =
+                GetField<TextBlock>(
+                    reminderWindow,
+                    "ReminderCountText").Text;
+            Assert(visibleOccurrences.Count == 100 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 106 &&
+                   countText.Contains("另有 6 条", StringComparison.Ordinal) &&
+                   GetProperty<DateTimeOffset>(
+                       visibleOccurrences[0]!,
+                       "DueAt") == firstDueAt &&
+                   GetProperty<DateTimeOffset>(
+                       visibleOccurrences[99]!,
+                       "DueAt") == firstDueAt.AddMinutes(99),
+                "前跳105分钟必须保留最早100条完整消息，并明确显示另外6条，不能忙循环或丢提醒");
+
+            now = firstDueAt.AddMinutes(4);
+            Invoke(window, "AcknowledgeActiveReminder");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(GetField<bool>(window, "_isReminderActive") &&
+                   visibleOccurrences.Count == 6 &&
+                   recurring.DueAt == firstDueAt.AddMinutes(100) &&
+                   todoWindow.IsVisible &&
+                   reminderWindow.IsVisible,
+                "累计106条后即使系统时间回拨，确认前100条也必须保持提醒和任务面板打开，立即展示剩余6条");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var persisted = scheduledStore.Load().Single();
+            Assert(!GetField<bool>(window, "_isReminderActive") &&
+                   visibleOccurrences.Count == 0 &&
+                   recurring.DueAt == firstDueAt.AddMinutes(106) &&
+                   persisted.DueAt == recurring.DueAt &&
+                   recurring.DueAt > now &&
+                   todoWindow.IsVisible &&
+                   !reminderWindow.IsVisible &&
+                   GetField<object>(
+                       window,
+                       "_bubbleMode").ToString() == "Todo" &&
+                   scheduledTimer.IsEnabled,
+                "第二次确认剩余6条后才可推进到首个未来周期；Todo必须保持原样打开");
+        }
+        finally
+        {
+            scheduledTimer.Stop();
+            automaticTimer.Stop();
+            reminderSizeTimer.Stop();
+            GetField<DispatcherTimer>(
+                window,
+                "_petSizePersistTimer").Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            activeBatch.Clear();
+            visibleOccurrences.Clear();
+            observedCounts.Clear();
+            scheduledStore.Save(scheduledTasks);
+            SetField(window, "_activeReminder", null);
+            SetField(window, "_isReminderActive", false);
+            SetField(window, "_totalReminderOccurrenceCount", 0L);
+            SetField(window, "_upcomingReminderPreloadPageName", null);
+            SetField(window, "_isTransientPetSizeOverride", false);
+            SetField(window, "_isRestoringReminderSize", false);
+            if (GetRawField(window, "_reminderWindow") is
+                ReminderWindow reminderWindow)
+            {
+                reminderWindow.HideSafely();
+            }
+
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "StopVisualClock");
+            SetField(window, "_activeClip", null);
+            SetField(window, "_activeFrameIndex", -1);
+            SetField(window, "_activeClipStartedTimestamp", 0L);
+            SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+            Invoke(window, "ClearDeferredActiveClipClock");
+            Invoke(window, "ResetPetVisualTransforms");
+            Invoke(
+                window,
+                "ApplyPetSizeScale",
+                originalScale,
+                false,
+                false);
+            SetField(window, "_nowProvider", originalNowProvider);
+            SetField(
+                window,
+                "_automaticAnimationEnabled",
+                originalAutomaticEnabled);
+            if (originalAutomaticEnabled && window.IsVisible)
+            {
+                Invoke(window, "RestartAutomaticCountdown");
+            }
+
+            window.IsHitTestVisible = originalHitTestVisible;
         }
     }
 
@@ -11734,7 +12847,7 @@ internal static class Program
         try
         {
             AssertClose(todoWindow.Width, 292, "TodoWindow 总宽度");
-            AssertClose(todoWindow.Height, 378, "TodoWindow 增加绕屏行后的总高度");
+            AssertClose(todoWindow.Height, 414, "TodoWindow 三条定时任务与底部设置共存后的总高度");
             Assert(string.Equals(
                     todoWindow.FontFamily.Source,
                     "Microsoft YaHei",
@@ -11758,7 +12871,7 @@ internal static class Program
                     ReferenceEquals(binding.Command, ApplicationCommands.Paste) ||
                     ReferenceEquals(binding.Command, ApplicationCommands.Cut) ||
                     ReferenceEquals(binding.Command, ApplicationCommands.SelectAll)),
-                "复制修复不得拦截 Ctrl+V、Ctrl+X 或 Ctrl+A 的 TextBox 默认命令");
+                "窗口级命令绑定不得替换 Ctrl+V、Ctrl+X 或 Ctrl+A；首字符剪切只由同步 PreviewKeyDown 路径修复");
             var todoXaml = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml"));
             Assert(todoXaml.Contains(
                        "<Trigger Property=\"IsMouseOver\" Value=\"True\">",
@@ -11847,7 +12960,12 @@ internal static class Program
             Assert(todoSource.Contains(
                        "PreviewKeyDown += TodoWindow_PreviewKeyDown",
                        StringComparison.Ordinal) &&
-                   previewCopySource.Contains("e.Key != Key.C", StringComparison.Ordinal) &&
+                    previewCopySource.Contains(
+                        "var effectiveKey = GetEffectiveShortcutKey(e)",
+                        StringComparison.Ordinal) &&
+                    previewCopySource.Contains(
+                        "effectiveKey != Key.C",
+                        StringComparison.Ordinal) &&
                    previewCopySource.Contains(
                        "Keyboard.Modifiers & ModifierKeys.Control",
                        StringComparison.Ordinal) &&
@@ -12050,6 +13168,37 @@ internal static class Program
             var scrollViewer = FindVisualDescendant<ScrollViewer>(todoWindow)
                 ?? throw new InvalidOperationException("TodoWindow 找不到待办滚动区域");
             var itemsControl = GetField<ItemsControl>(todoWindow, "TodoItemsControl");
+            var taskHouseButtons =
+                FindVisualDescendants<Button>(todoWindow).ToArray();
+            var collapseButton = taskHouseButtons.Single(button =>
+                System.Windows.Automation.AutomationProperties.GetName(
+                    button) == "收起任务小屋");
+            var exitButton = taskHouseButtons.Single(button =>
+                System.Windows.Automation.AutomationProperties.GetName(
+                    button) == "退出小鲁班桌宠");
+            var addButton = taskHouseButtons.Single(button =>
+                System.Windows.Automation.AutomationProperties.GetName(
+                    button) == "新增待办事项");
+            Assert(collapseButton.Style is not null &&
+                   ReferenceEquals(collapseButton.Style, exitButton.Style) &&
+                   ReferenceEquals(collapseButton.Style, addButton.Style) &&
+                   collapseButton.Template.FindName(
+                       "ButtonChrome",
+                       collapseButton) is Border collapseChrome &&
+                   collapseButton.Template.FindName(
+                       "HoverTint",
+                       collapseButton) is Border &&
+                   collapseButton.Template.FindName(
+                       "KeyboardFocusRing",
+                       collapseButton) is Border &&
+                   collapseChrome.CornerRadius.TopLeft == 10 &&
+                   System.Windows.Automation.AutomationProperties.GetName(
+                       collapseButton) == "收起任务小屋" &&
+                   System.Windows.Automation.AutomationProperties.GetName(
+                       exitButton) == "退出小鲁班桌宠" &&
+                   System.Windows.Automation.AutomationProperties.GetName(
+                       addButton) == "新增待办事项",
+                "收起、退出、新增必须共用圆润高光按钮模板，并保留各自动化名称和不同语义配色");
             var roamingToggle = GetField<CheckBox>(todoWindow, "EdgeRoamingToggle");
             var sizeSlider = GetField<Slider>(todoWindow, "PetSizeSlider");
             var sizeLabel = GetField<TextBlock>(todoWindow, "PetSizeLabel");
@@ -12169,15 +13318,33 @@ internal static class Program
                 "非手势程序化ValueChanged必须发布其最终值");
             Assert(scrollViewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto,
                 "待办列表必须保留自动垂直滚动条");
-            Assert(VirtualizingPanel.GetIsVirtualizing(itemsControl),
-                "待办列表必须启用 UI 虚拟化，避免大量待办同时创建控件");
-            Assert(VirtualizingPanel.GetVirtualizationMode(itemsControl) ==
-                   VirtualizationMode.Recycling,
-                "待办列表必须使用 Recycling 容器复用模式");
+            Assert(ScrollViewer.GetCanContentScroll(itemsControl) &&
+                   !ScrollViewer.GetIsDeferredScrollingEnabled(itemsControl) &&
+                   ScrollViewer.GetPanningMode(itemsControl) ==
+                       PanningMode.VerticalOnly &&
+                   VirtualizingPanel.GetIsVirtualizing(itemsControl) &&
+                   VirtualizingPanel.GetVirtualizationMode(itemsControl) ==
+                       VirtualizationMode.Recycling &&
+                   VirtualizingPanel.GetScrollUnit(itemsControl) ==
+                       ScrollUnit.Pixel,
+                "待办列表必须使用 Pixel + Recycling 即时滚动，滚轮和滑块都不能按整行卡点跳动");
             Assert(scrollViewer.ActualHeight >= 155,
                 $"待办可视区应完整容纳五行，实际 {scrollViewer.ActualHeight:F1} DIP");
             Assert(scrollViewer.ExtentHeight > scrollViewer.ViewportHeight,
                 "超出可视区域的待办应进入滚动区域而不是撑大窗口");
+            scrollViewer.ScrollToVerticalOffset(12.5);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(Math.Abs(scrollViewer.VerticalOffset - 12.5) < 0.75,
+                $"待办 Pixel 滚动必须保留小数级中间位置，实际 offset={scrollViewer.VerticalOffset:F2}");
+            var todoVerticalScrollBar =
+                FindVisualDescendants<ScrollBar>(itemsControl)
+                    .First(scrollBar =>
+                        scrollBar.Orientation == Orientation.Vertical);
+            AssertTaskListScrollBarVisual(
+                todoVerticalScrollBar,
+                "待办列表");
+            scrollViewer.ScrollToTop();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
 
             var itemHeights = Enumerable.Range(0, 5)
                 .Select(index => itemsControl.ItemContainerGenerator.ContainerFromIndex(index))
@@ -12231,6 +13398,36 @@ internal static class Program
                    input.SelectionLength == inputSelectionLength,
                 "TodoInput 已聚焦时再次请求聚焦不得折叠用户刚选中的文本");
 
+            var taskFullTextPopup = GetField<Popup>(
+                todoWindow,
+                "TaskFullTextPopup");
+            var taskFullTextPreview = GetField<TextBox>(
+                todoWindow,
+                "TaskFullTextPreviewTextBox");
+            var shortItemContainer =
+                itemsControl.ItemContainerGenerator.ContainerFromIndex(0)
+                    as DependencyObject
+                ?? throw new InvalidOperationException("短待办没有生成可视容器");
+            var shortItemRowBorder =
+                FindVisualDescendants<Border>(shortItemContainer)
+                    .FirstOrDefault(border =>
+                        Math.Abs(border.MaxHeight - 41) < 0.01 &&
+                        Math.Abs(border.CornerRadius.TopLeft - 8) < 0.01)
+                ?? throw new InvalidOperationException("短待办找不到行级 hover Border");
+            Invoke(
+                todoWindow,
+                "TaskRow_MouseEnter",
+                shortItemRowBorder,
+                new MouseEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount));
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(!taskFullTextPopup.IsOpen &&
+                   taskFullTextPopup.PlacementTarget is null &&
+                   taskFullTextPreview.DataContext is null &&
+                   taskFullTextPreview.Text.Length == 0,
+                "完整显示的短待办悬停时不得创建全文 Popup 或持有行数据");
+
             var longTodoText = string.Concat(Enumerable.Repeat(
                 "这是一条需要自动换行并在悬停时显示完整内容的很长待办事项。",
                 5));
@@ -12277,9 +13474,9 @@ internal static class Program
                    longItemTextBox.MaxLength == 5000 &&
                    longItemTextBox.MaxLines == 2 &&
                    longItemTextBox.MaxHeight <= 36.5 &&
-                   longItemTextBox.VerticalScrollBarVisibility == ScrollBarVisibility.Hidden &&
+                   longItemTextBox.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled &&
                    longItemTextBox.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled,
-                "列表文字必须是可鼠标选择的无边框只读 TextBox，并限制为两行换行显示");
+                "列表文字必须是可鼠标选择的无边框只读 TextBox，并限制为两行且禁用内部滚动");
             Assert(longItemEditButton.Tag is TodoItem &&
                    longItemEditButton.Content is Viewbox editIcon &&
                    FindVisualDescendants<System.Windows.Shapes.Path>(editIcon).Count() == 2 &&
@@ -12293,6 +13490,20 @@ internal static class Program
                 $"{longItemContainer.ActualHeight:F1}, listWidth={itemsControl.ActualWidth:F1}");
             Assert(string.Equals(longItemTextBox.Text, longTodoText, StringComparison.Ordinal),
                 "长待办只读 TextBox 必须显示完整绑定文本而不是截断数据");
+            var visibleTextEnd = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowVisibleTextEnd",
+                longItemTextBox)!;
+            Assert(visibleTextEnd > 0 &&
+                   visibleTextEnd < longItemTextBox.Text.Length,
+                "长待办测试数据必须实际产生两行之外的隐藏文字");
+            longItemTextBox.Select(0, longItemTextBox.Text.Length);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(longItemTextBox.SelectionStart == 0 &&
+                   longItemTextBox.SelectionLength == visibleTextEnd &&
+                   longItemTextBox.GetFirstVisibleLineIndex() == 0 &&
+                   Math.Abs(longItemTextBox.VerticalOffset) < 0.01,
+                "待办行任何选区都必须钳制在当前可见两行，且不能把内部视口跟随光标滚到隐藏文字");
             Invoke(
                 todoWindow,
                 "TaskRow_MouseEnter",
@@ -12301,13 +13512,21 @@ internal static class Program
                     Mouse.PrimaryDevice,
                     Environment.TickCount));
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
-            var taskFullTextPopup = GetField<Popup>(
-                todoWindow,
-                "TaskFullTextPopup");
-            var taskFullTextPreview = GetField<TextBox>(
-                todoWindow,
-                "TaskFullTextPreviewTextBox");
+            var popupPlacements =
+                taskFullTextPopup.CustomPopupPlacementCallback?.Invoke(
+                    new Size(320, 228),
+                    new Size(200, 41),
+                    new Point());
             Assert(taskFullTextPopup.IsOpen &&
+                   taskFullTextPopup.Placement == PlacementMode.Custom &&
+                   popupPlacements is { Length: 2 } &&
+                   Math.Abs(popupPlacements[0].Point.X + 332) < 0.01 &&
+                   Math.Abs(popupPlacements[1].Point.X - 212) < 0.01 &&
+                   Math.Abs(
+                       popupPlacements[0].Point.Y -
+                       popupPlacements[1].Point.Y) < 0.01 &&
+                   popupPlacements.All(placement =>
+                       placement.PrimaryAxis == PopupPrimaryAxis.Vertical) &&
                    taskFullTextPreview.IsReadOnly &&
                    taskFullTextPreview.IsReadOnlyCaretVisible &&
                    taskFullTextPreview.TextWrapping ==
@@ -12322,7 +13541,7 @@ internal static class Program
                        taskFullTextPreview.FontFamily.Source,
                        "Microsoft YaHei",
                        StringComparison.OrdinalIgnoreCase),
-                "悬停待办行必须显示可滚动、可选中复制的完整文字浮层，不能再使用无法进入的普通 ToolTip");
+                "悬停待办行必须优先固定显示在左侧、空间不足回退右侧，并提供可滚动复制的完整文字");
             taskFullTextPreview.Select(3, 10);
             Assert((bool)Invoke(
                        todoWindow,
@@ -12337,6 +13556,12 @@ internal static class Program
                        StringComparison.Ordinal),
                 "全文浮层中的文字必须支持选择并由 Ctrl+C 精确复制选中内容");
             Invoke(todoWindow, "CloseTaskFullTextPreview");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(!taskFullTextPopup.IsOpen &&
+                   taskFullTextPopup.PlacementTarget is null &&
+                   taskFullTextPreview.DataContext is null &&
+                   taskFullTextPreview.Text.Length == 0,
+                "全文 Popup 关闭后必须释放 PlacementTarget、DataContext 和完整文字，避免长文本被窗口常驻引用");
             longItemTextBox.Select(0, 0);
             Assert(!(bool)Invoke(todoWindow, "CanCopyFromTextBox", longItemTextBox)!,
                 "列表只读文字无选区时不得误复制整条待办");
@@ -12386,16 +13611,57 @@ internal static class Program
                 "EditorTextBox");
             Assert(todoTextEditor.IsVisible &&
                    ReferenceEquals(todoTextEditor.Owner, todoWindow) &&
-                   Math.Abs(todoTextEditor.Width - 6 * 96 / 2.54) <= 1 &&
-                   Math.Abs(todoTextEditor.Height - 3.708 * 96 / 2.54) <= 1 &&
-                   todoTextEditor.ResizeMode == ResizeMode.CanResize &&
+                   Math.Abs(todoTextEditor.Width - 378) <= 0.1 &&
+                   Math.Abs(todoTextEditor.Height - 208) <= 0.1 &&
+                   todoTextEditor.ResizeMode == ResizeMode.NoResize &&
+                   todoTextEditor.WindowStartupLocation ==
+                       WindowStartupLocation.Manual &&
+                   Math.Abs(todoTextEditor.Opacity - 1) <= 0.01 &&
                    todoTextEditorInput.MaxLength == 5000,
-                "点击待办铅笔必须打开初始6cm×3.708cm、可拖动缩放且最多5000字的白色可爱编辑框");
+                "点击待办铅笔必须打开固定378×208 DIP（约10cm×5.5cm）、不可缩放且最多5000字的编辑框");
+            var taskEditorSource = File.ReadAllText(
+                FindWorkspaceFile("TaskTextEditWindow.xaml.cs"));
+            var taskEditorXaml = File.ReadAllText(
+                FindWorkspaceFile("TaskTextEditWindow.xaml"));
+            var taskEditorPositionSource = ExtractPrivateMethodSource(
+                taskEditorSource,
+                "PositionBesideOwner");
+            var taskEditorFallbackSource = ExtractPrivateMethodSource(
+                taskEditorSource,
+                "PositionBesideOwnerFallback");
+            Assert(taskEditorSource.Contains(
+                       "TargetEditorWidth = 378",
+                       StringComparison.Ordinal) &&
+                   taskEditorSource.Contains(
+                       "TargetEditorHeight = 208",
+                       StringComparison.Ordinal) &&
+                   taskEditorPositionSource.Contains(
+                       "OwnedWindowPositioner.TryPosition(",
+                       StringComparison.Ordinal) &&
+                   taskEditorFallbackSource.Contains(
+                       "var leftCandidate = owner.Left - Width",
+                       StringComparison.Ordinal) &&
+                   taskEditorFallbackSource.Contains(
+                       ": owner.Left + ownerWidth",
+                       StringComparison.Ordinal) &&
+                   taskEditorXaml.Contains(
+                       "ResizeMode=\"NoResize\"",
+                       StringComparison.Ordinal) &&
+                   taskEditorXaml.Contains(
+                       "WindowStartupLocation=\"Manual\"",
+                       StringComparison.Ordinal) &&
+                   taskEditorXaml.Contains(
+                       "Opacity=\"0\"",
+                       StringComparison.Ordinal),
+                "待办/定时编辑窗必须先隐藏定位，固定左侧优先；左侧无空间时再回退到右侧，并适配多屏工作区");
             todoTextEditor.CloseWithoutSaving();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
 
             Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            Assert(!longItemTextBox.IsReadOnly && longItemTextBox.IsKeyboardFocusWithin,
+            Assert(!longItemTextBox.IsReadOnly &&
+                   longItemTextBox.IsKeyboardFocusWithin &&
+                   longItemTextBox.VerticalScrollBarVisibility ==
+                       ScrollBarVisibility.Hidden,
                 "点击编辑按钮后必须在同一行 TextBox 内进入可编辑状态并获得焦点，避免 IME 候选框漂移");
             longItemTextBox.Text = "  修改后的长待办  ";
             longItemTextBox.Select(2, 4);
@@ -12429,6 +13695,8 @@ internal static class Program
                    ReferenceEquals(lastEditedItem, longTodoItem) &&
                    longTodoItem.Text == "修改后的长待办" &&
                    longItemTextBox.IsReadOnly &&
+                   longItemTextBox.VerticalScrollBarVisibility ==
+                       ScrollBarVisibility.Disabled &&
                    committedEditEnter.Handled,
                 "行内编辑 Enter 必须 Trim 后提交一次 TodoEdited、更新原对象并返回只读选择状态");
 
@@ -13802,190 +15070,236 @@ internal static class Program
     private static long StopwatchTicksFromSeconds(double seconds) =>
         (long)Math.Round(seconds * Stopwatch.Frequency);
 
+    private static void AssertSpritePageBufferPoolContract()
+    {
+        var poolType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.SpritePageBufferPool",
+            throwOnError: true)
+            ?? throw new InvalidOperationException(
+                "找不到 SpritePageBufferPool 类型");
+        var defaultBudget = (long)(poolType.GetField(
+                "DefaultHardBudgetBytes",
+                StaticFlags)?.GetRawConstantValue() ?? 0L);
+        Assert(defaultBudget == 160L * 1024 * 1024,
+            "sprite页像素池默认总预算必须是160MiB");
+
+        const int mebibyte = 1024 * 1024;
+        const long smallBudget = 10L * mebibyte;
+        var pool = Activator.CreateInstance(
+            poolType,
+            InstanceFlags,
+            binder: null,
+            args: [smallBudget],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException(
+                "无法创建测试用 SpritePageBufferPool");
+
+        var exact = (byte[])Invoke(pool, "Rent", 4 * mebibyte)!;
+        Assert(exact.Length == 4 * mebibyte &&
+               GetProperty<long>(pool, "AllocatedBytes") ==
+                   exact.LongLength &&
+               GetProperty<long>(pool, "RentedBytes") ==
+                   exact.LongLength &&
+               GetProperty<long>(pool, "FreeBytes") == 0,
+            "Rent必须返回精确长度数组并同步维护allocated/rented/free字节");
+        Invoke(pool, "Return", exact);
+        Assert(GetProperty<long>(pool, "RentedBytes") == 0 &&
+               GetProperty<long>(pool, "FreeBytes") ==
+                   exact.LongLength,
+            "Return必须把精确数组转入可复用free集合");
+        var reused = (byte[])Invoke(pool, "Rent", 4 * mebibyte)!;
+        Assert(ReferenceEquals(reused, exact) &&
+               reused.Length == 4 * mebibyte &&
+               GetProperty<long>(pool, "AllocationCount") == 1 &&
+               GetProperty<long>(pool, "ReuseCount") == 1,
+            "相同长度页面必须复用同一精确数组，不能退化为每次LOH分配");
+        Invoke(pool, "Return", reused);
+        AssertThrowsInvalidOperation(
+            () => Invoke(pool, "Return", reused),
+            "像素池必须拒绝双归还，避免同一数组被并发租给两个页面");
+
+        var exactOddLength = (byte[])Invoke(
+            pool,
+            "Rent",
+            12_345)!;
+        Assert(exactOddLength.Length == 12_345,
+            "非桶大小页面也必须返回精确长度，不能使用更大的ArrayPool数组破坏hash边界");
+        Invoke(pool, "Return", exactOddLength);
+
+        var overshootPool = Activator.CreateInstance(
+            poolType,
+            InstanceFlags,
+            binder: null,
+            args: [smallBudget],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException(
+                "无法创建超预算测试像素池");
+        var firstLarge = (byte[])Invoke(
+            overshootPool,
+            "Rent",
+            6 * mebibyte)!;
+        var secondLarge = (byte[])Invoke(
+            overshootPool,
+            "Rent",
+            6 * mebibyte)!;
+        Assert(GetProperty<long>(overshootPool, "AllocatedBytes") ==
+                   12L * mebibyte &&
+               GetProperty<long>(overshootPool, "AllocatedBytes") <=
+                   smallBudget + secondLarge.LongLength &&
+               GetProperty<long>(overshootPool, "FreeBytes") == 0,
+            "全部缓冲仍在使用时允许仅一个必要页面临时超预算，绝不能失效正在显示/解码的数组");
+        var discardedOnFirstReturn = (long)(Invoke(
+            overshootPool,
+            "ReturnAndGetDiscardedBytes",
+            firstLarge) ?? -1L);
+        Assert(discardedOnFirstReturn == firstLarge.LongLength &&
+               GetProperty<long>(overshootPool, "AllocatedBytes") ==
+                   secondLarge.LongLength &&
+               GetProperty<long>(overshootPool, "AllocatedBytes") <=
+                   smallBudget,
+            "临时超预算页面一归还就必须丢弃free缓冲并立即收敛到预算");
+        Invoke(overshootPool, "Return", secondLarge);
+        Assert(GetProperty<long>(overshootPool, "AllocatedBytes") <=
+                   smallBudget &&
+               GetProperty<long>(overshootPool, "RentedBytes") == 0 &&
+               GetProperty<long>(overshootPool, "AllocatedBytes") ==
+                   GetProperty<long>(overshootPool, "FreeBytes"),
+            "全部页面归还后像素池必须保持预算内且字节账严格守恒");
+
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        var poolSource = File.ReadAllText(
+            FindWorkspaceFile("SpritePageBufferPool.cs"));
+        var decodeSource = ExtractPrivateMethodSource(
+            mainSource,
+            "DecodeSpritePage");
+        var completePrefetchSource = ExtractPrivateMethodSource(
+            mainSource,
+            "CompleteSpritePagePrefetch");
+        var startPrefetchSource = ExtractPrivateMethodSource(
+            mainSource,
+            "StartSpritePagePrefetch");
+        var releaseResultSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ReleaseCompletedSpritePageResult");
+        var addResidentSource = ExtractPrivateMethodSource(
+            mainSource,
+            "AddResidentSpritePage");
+        var removeResidentSource = ExtractPrivateMethodSource(
+            mainSource,
+            "RemoveResidentSpritePage");
+        var returnBufferSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ReturnSpritePageBuffer");
+        var clearResidentSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ClearResidentSpritePages");
+        Assert(mainSource.Contains(
+                   "private readonly SpritePageBufferPool _spritePageBufferPool = new()",
+                   StringComparison.Ordinal) &&
+               decodeSource.Contains(
+                   "_spritePageBufferPool.Rent(page.UncompressedByteCount)",
+                   StringComparison.Ordinal) &&
+               !decodeSource.Contains(
+                   "new byte[page.UncompressedByteCount]",
+                   StringComparison.Ordinal) &&
+               decodeSource.Contains(
+                   "catch",
+                   StringComparison.Ordinal) &&
+               decodeSource.Contains(
+                   "ReturnSpritePageBuffer(decodedPixels)",
+                   StringComparison.Ordinal),
+            "DecodeSpritePage必须从精确长度池Rent，并在取消、hash失败或解码异常时同步归还");
+        Assert(startPrefetchSource.Contains(
+                   "Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished",
+                   StringComparison.Ordinal) &&
+               startPrefetchSource.Contains(
+                   "ReleaseCompletedSpritePageResult(completedTask)",
+                   StringComparison.Ordinal) &&
+               releaseResultSource.Contains(
+                   "ReturnSpritePageBuffer(completedTask.Result.Pixels)",
+                   StringComparison.Ordinal) &&
+               completePrefetchSource.Contains(
+                   "generation != _spritePagePrefetchGeneration",
+                   StringComparison.Ordinal) &&
+               completePrefetchSource.Contains(
+                   "ReturnSpritePageBuffer(completedTask.Result.Pixels)",
+                   StringComparison.Ordinal),
+            "dispatcher关闭、任务失效和完成回调竞态都必须归还成功解码但未接管的页面");
+        Assert(addResidentSource.Contains(
+                   "!ReferenceEquals(existingPage.Pixels, result.Pixels)",
+                   StringComparison.Ordinal) &&
+               addResidentSource.Contains(
+                   "ReturnSpritePageBuffer(result.Pixels)",
+                   StringComparison.Ordinal) &&
+               removeResidentSource.Contains(
+                   "ReturnSpritePageBuffer(residentPage.Pixels)",
+                   StringComparison.Ordinal) &&
+               clearResidentSource.Contains(
+                   "ReturnSpritePageBuffer(residentPage.Pixels)",
+                   StringComparison.Ordinal) &&
+               clearResidentSource.Contains(
+                   "_spritePageBufferPool.ClearFreeBuffers()",
+                   StringComparison.Ordinal),
+            "重复resident结果、LRU淘汰和应用清理必须成对归还/清空池中缓冲");
+        Assert(returnBufferSource.Contains(
+                   "_spritePageBufferPool.ReturnAndGetDiscardedBytes(pixels)",
+                   StringComparison.Ordinal) &&
+               returnBufferSource.Contains(
+                   "if (discardedBytes > 0",
+                   StringComparison.Ordinal) &&
+               returnBufferSource.Contains(
+                   "RecordDiscardedSpritePageBytes(discardedBytes)",
+                   StringComparison.Ordinal) &&
+               !removeResidentSource.Contains(
+                   "RecordDiscardedSpritePageBytes",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "DefaultHardBudgetBytes = 160L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "RuntimeHelpers.GetHashCode(value)",
+                   StringComparison.Ordinal),
+            "resident淘汰只归还复用池；仅池真正丢弃数组时才累计GC债，并以引用身份防止双归还");
+    }
+
     private static void AssertLoggingContract()
     {
-        var loggerType = typeof(MainWindow).Assembly.GetType(
-            "LubanDesktopPet.AppLogger",
-            throwOnError: true)!;
-        var probe = $"ui-state-check-{Guid.NewGuid():N}";
-        InvokeStatic(loggerType, "Initialize");
-        InvokeStatic(loggerType, "Info", probe);
-        Assert((bool)(InvokeStatic(loggerType, "Flush", TimeSpan.FromSeconds(2)) ?? false),
-            "后台日志队列必须能在2秒内安全刷新");
-        var loggerSource = File.ReadAllText(FindWorkspaceFile("AppLogger.cs"));
-        Assert(loggerSource.Contains("QueueCapacity = 256", StringComparison.Ordinal) &&
-               loggerSource.Contains("BlockingCollection", StringComparison.Ordinal) &&
-               loggerSource.Contains("IsBackground = true", StringComparison.Ordinal) &&
-               loggerSource.Contains("_closing", StringComparison.Ordinal) &&
-               loggerSource.Contains("CompleteAdding", StringComparison.Ordinal),
-            "日志必须使用容量256的后台队列，并以关闭屏障安全排空，渲染线程不得直接等待磁盘写入");
-        var directory = (string)(loggerType.GetProperty(
-                "LogDirectory",
-                BindingFlags.Static | BindingFlags.Public)!
-            .GetValue(null) ?? string.Empty);
-        Assert(string.Equals(Path.GetFileName(directory), "log", StringComparison.OrdinalIgnoreCase),
-            "日志必须写入 log 文件夹");
-        var logPath = Path.Combine(directory, $"xlb-pet-{DateTimeOffset.Now:yyyy-MM-dd}.log");
-        Assert(File.Exists(logPath) &&
-               File.ReadAllText(logPath).Contains(probe, StringComparison.Ordinal),
-            "当天日志文件应包含本次唯一探针");
-
         var appSource = File.ReadAllText(FindWorkspaceFile("App.xaml.cs"));
         var appXaml = File.ReadAllText(FindWorkspaceFile("App.xaml"));
-        Assert(loggerSource.Contains("MaxLogFileBytes = 2L * 1024 * 1024", StringComparison.Ordinal) &&
-               loggerSource.Contains("MaxRetainedLogFiles = 8", StringComparison.Ordinal) &&
-               loggerSource.Contains("MaxTotalLogBytes = 8L * 1024 * 1024", StringComparison.Ordinal) &&
-               loggerSource.Contains("TimeSpan.FromDays(14)", StringComparison.Ordinal) &&
-               loggerSource.Contains("MaxLogEntryBytes = 32 * 1024", StringComparison.Ordinal),
-            "日志必须同时限制单文件、文件数、目录总字节、保留天数和单条大小");
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        var startupSource = File.ReadAllText(
+            FindWorkspaceFile("StartupRegistration.cs"));
+        var projectPath = FindWorkspaceFile("DesktopPet.csproj");
+        var workspace = Path.GetDirectoryName(projectPath)!;
+        var projectSource = File.ReadAllText(projectPath);
+        var loggerPath = Path.Combine(workspace, "AppLogger.cs");
+
+        Assert(typeof(MainWindow).Assembly.GetType(
+                   "LubanDesktopPet.AppLogger",
+                   throwOnError: false) is null &&
+               !File.Exists(loggerPath),
+            "取消日志后程序集和源码中都不得再包含 AppLogger");
+        Assert(!appSource.Contains("AppLogger", StringComparison.Ordinal) &&
+               !mainSource.Contains("AppLogger", StringComparison.Ordinal) &&
+               !startupSource.Contains("AppLogger", StringComparison.Ordinal) &&
+               !projectSource.Contains("log\\.gitkeep", StringComparison.Ordinal) &&
+               !projectSource.Contains("log/.gitkeep", StringComparison.Ordinal),
+            "生产代码和发布项目不得初始化、写入或复制 log 目录");
         Assert(appSource.Contains("SingleInstanceMutexName", StringComparison.Ordinal) &&
                appSource.Contains("new Mutex(", StringComparison.Ordinal) &&
                appSource.Contains("WaitOne(0)", StringComparison.Ordinal) &&
                appSource.Contains("AbandonedMutexException", StringComparison.Ordinal) &&
-               appSource.Contains("AppLogger.Shutdown", StringComparison.Ordinal) &&
+               appSource.Contains("ReleaseMutex()", StringComparison.Ordinal) &&
+               appSource.Contains("_singleInstanceMutex?.Dispose()", StringComparison.Ordinal) &&
                appSource.Contains("Shutdown();", StringComparison.Ordinal),
-            "应用必须取得会话内命名Mutex、接管废弃锁并在释放锁前排空日志，避免重复占用内存和并发写盘");
+            "取消日志后仍必须可靠取得、释放并销毁会话内单实例Mutex");
         Assert(!appXaml.Contains("StartupUri", StringComparison.Ordinal) &&
                appSource.Contains("var mainWindow = new MainWindow();", StringComparison.Ordinal) &&
                appSource.Contains("MainWindow = mainWindow;", StringComparison.Ordinal) &&
                appSource.Contains("mainWindow.Show();", StringComparison.Ordinal),
             "主窗口必须在取得单实例锁后显式创建，第二实例不得短暂解码图集或闪出窗口");
-
-        var maintenanceDirectory = Path.Combine(
-            Path.GetTempPath(),
-            $"xlb-pet-log-retention-{Guid.NewGuid():N}");
-        try
-        {
-            Directory.CreateDirectory(maintenanceDirectory);
-            var now = DateTimeOffset.Now;
-            var activePath = Path.Combine(
-                maintenanceDirectory,
-                $"xlb-pet-{now:yyyy-MM-dd}.log");
-            var block = new byte[900 * 1024];
-            File.WriteAllBytes(activePath, block.AsSpan(0, 512 * 1024).ToArray());
-            for (var day = 1; day <= 10; day++)
-            {
-                var timestamp = now.AddDays(-day);
-                var path = Path.Combine(
-                    maintenanceDirectory,
-                    $"xlb-pet-{timestamp:yyyy-MM-dd}.log");
-                File.WriteAllBytes(path, block);
-                File.SetLastWriteTimeUtc(path, timestamp.UtcDateTime);
-            }
-
-            var expiredTimestamp = now.AddDays(-20);
-            var expiredPath = Path.Combine(
-                maintenanceDirectory,
-                $"xlb-pet-{expiredTimestamp:yyyy-MM-dd}.001.log");
-            File.WriteAllBytes(expiredPath, block);
-            File.SetLastWriteTimeUtc(expiredPath, expiredTimestamp.UtcDateTime);
-            var unrelatedLogPath = Path.Combine(
-                maintenanceDirectory,
-                $"xlb-pet-{now:yyyy-MM-dd}.extra.log");
-            var todoSentinelPath = Path.Combine(maintenanceDirectory, "todos.json");
-            File.WriteAllText(unrelatedLogPath, "unrelated");
-            File.WriteAllText(todoSentinelPath, "todo-sentinel");
-
-            InvokeStatic(
-                loggerType,
-                "MaintainLogDirectory",
-                maintenanceDirectory,
-                activePath,
-                now);
-            var managedFiles = Directory.EnumerateFiles(
-                    maintenanceDirectory,
-                    "*.log",
-                    SearchOption.TopDirectoryOnly)
-                .Where(path => (bool)(InvokeStatic(
-                    loggerType,
-                    "IsManagedLogFile",
-                    path) ?? false))
-                .Select(path => new FileInfo(path))
-                .ToArray();
-            Assert(managedFiles.Length <= 8 &&
-                   managedFiles.Sum(file => file.Length) <= 8L * 1024 * 1024 &&
-                   File.Exists(activePath) &&
-                   !File.Exists(expiredPath),
-                "日志维护必须保留当前文件并收敛到8个文件/8MiB/14天范围内");
-            Assert(File.Exists(unrelatedLogPath) &&
-                   File.ReadAllText(todoSentinelPath) == "todo-sentinel",
-                "日志维护只能删除严格命名的桌宠日志，不能触碰其他日志或用户JSON");
-
-            var lockedDirectory = Path.Combine(maintenanceDirectory, "locked-candidate");
-            Directory.CreateDirectory(lockedDirectory);
-            var lockedActivePath = Path.Combine(
-                lockedDirectory,
-                $"xlb-pet-{now:yyyy-MM-dd}.log");
-            File.WriteAllBytes(lockedActivePath, block.AsSpan(0, 512 * 1024).ToArray());
-            var lockedPath = Path.Combine(
-                lockedDirectory,
-                $"xlb-pet-{now.AddDays(-13):yyyy-MM-dd}.log");
-            File.WriteAllBytes(lockedPath, block);
-            File.SetLastWriteTimeUtc(lockedPath, now.AddDays(-13).UtcDateTime);
-            for (var day = 1; day <= 10; day++)
-            {
-                var timestamp = now.AddDays(-day);
-                var path = Path.Combine(
-                    lockedDirectory,
-                    $"xlb-pet-{timestamp:yyyy-MM-dd}.log");
-                File.WriteAllBytes(path, block);
-                File.SetLastWriteTimeUtc(path, timestamp.UtcDateTime);
-            }
-
-            using (var lockedStream = new FileStream(
-                       lockedPath,
-                       FileMode.Open,
-                       FileAccess.ReadWrite,
-                       FileShare.Read))
-            {
-                InvokeStatic(
-                    loggerType,
-                    "MaintainLogDirectory",
-                    lockedDirectory,
-                    lockedActivePath,
-                    now);
-                var remainingWithLockedCandidate = Directory.EnumerateFiles(
-                        lockedDirectory,
-                        "*.log",
-                        SearchOption.TopDirectoryOnly)
-                    .Select(path => new FileInfo(path))
-                    .ToArray();
-                Assert(File.Exists(lockedPath) &&
-                       remainingWithLockedCandidate.Length <= 8 &&
-                       remainingWithLockedCandidate.Sum(file => file.Length) <= 8L * 1024 * 1024,
-                    "单个被占用旧日志不得阻塞其余候选清理，目录仍应尽量收敛到8个文件/8MiB");
-            }
-
-            File.WriteAllBytes(activePath, new byte[2 * 1024 * 1024]);
-            var preparedPath = (string)(InvokeStatic(
-                loggerType,
-                "PrepareLogPathForAppend",
-                maintenanceDirectory,
-                now,
-                128) ?? string.Empty);
-            var archivePath = Path.Combine(
-                maintenanceDirectory,
-                $"xlb-pet-{now:yyyy-MM-dd}.001.log");
-            Assert(string.Equals(preparedPath, activePath, StringComparison.OrdinalIgnoreCase) &&
-                   !File.Exists(activePath) &&
-                   File.Exists(archivePath),
-                "2MiB日志必须原子轮转为三位编号文件，并继续写入当天主文件");
-
-            var truncated = (string)(InvokeStatic(
-                loggerType,
-                "TruncateMessageToUtf8Limit",
-                new string('界', 40_000)) ?? string.Empty);
-            Assert(System.Text.Encoding.UTF8.GetByteCount(truncated) <= 32 * 1024 &&
-                   truncated.Contains("truncated", StringComparison.Ordinal),
-                "超长异常日志必须在UTF-8字符边界内截断到32KiB");
-        }
-        finally
-        {
-            if (Directory.Exists(maintenanceDirectory))
-            {
-                Directory.Delete(maintenanceDirectory, recursive: true);
-            }
-        }
     }
 
     private static void AssertRuntimeJankSourceContract()
@@ -14094,6 +15408,9 @@ internal static class Program
         var removeResidentSpritePage = ExtractPrivateMethodSource(
             mainSource,
             "RemoveResidentSpritePage");
+        var returnSpritePageBuffer = ExtractPrivateMethodSource(
+            mainSource,
+            "ReturnSpritePageBuffer");
         var recordDiscardedSpritePageBytes = ExtractPrivateMethodSource(
             mainSource,
             "RecordDiscardedSpritePageBytes");
@@ -14116,8 +15433,7 @@ internal static class Program
         {
             ExtractPrivateMethodSource(mainSource, "CompleteActiveClip"),
             ExtractPrivateMethodSource(mainSource, "ExitEdgePeek"),
-            ExtractPrivateMethodSource(mainSource, "SetBubbleMode"),
-            ExtractPrivateMethodSource(mainSource, "LogInfo")
+            ExtractPrivateMethodSource(mainSource, "SetBubbleMode")
         };
         var hotPathMethods = new[]
         {
@@ -14193,9 +15509,12 @@ internal static class Program
                !mainSource.Contains(
                    "_spritePagePayloadBytes",
                    StringComparison.Ordinal) &&
-               decodeSpritePage.Contains(
-                   "new byte[page.UncompressedByteCount]",
-                   StringComparison.Ordinal) &&
+                decodeSpritePage.Contains(
+                    "_spritePageBufferPool.Rent(page.UncompressedByteCount)",
+                    StringComparison.Ordinal) &&
+                !decodeSpritePage.Contains(
+                    "new byte[page.UncompressedByteCount]",
+                    StringComparison.Ordinal) &&
                !decodeSpritePage.Contains(
                    "new byte[page.PayloadByteCount]",
                    StringComparison.Ordinal) &&
@@ -14243,7 +15562,7 @@ internal static class Program
                    "SpritePageResidentBudgetBytes = 128L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
-                   "SpritePageIdleResidentTargetBytes = 64L * 1024 * 1024",
+                    "SpritePageIdleResidentTargetBytes = 104L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
                    "SpritePageCollectionThresholdBytes = 48L * 1024 * 1024",
@@ -14266,10 +15585,22 @@ internal static class Program
                prefetchDispatchTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
                    StringComparison.Ordinal),
-            "活动resident软预算必须是128MiB、动作终态idle回收目标必须是64MiB；" +
+            "活动resident软预算必须是128MiB、动作终态idle热集目标必须是104MiB；" +
             "Rendering内只发布idle trim标志并在dispatcher tick执行");
         Assert(removeResidentSpritePage.Contains(
-                   "RecordDiscardedSpritePageBytes(residentPage.ByteCount)",
+                   "ReturnSpritePageBuffer(residentPage.Pixels)",
+                   StringComparison.Ordinal) &&
+               !removeResidentSpritePage.Contains(
+                   "RecordDiscardedSpritePageBytes",
+                   StringComparison.Ordinal) &&
+               returnSpritePageBuffer.Contains(
+                   "_spritePageBufferPool.ReturnAndGetDiscardedBytes(pixels)",
+                   StringComparison.Ordinal) &&
+               returnSpritePageBuffer.Contains(
+                   "if (discardedBytes > 0",
+                   StringComparison.Ordinal) &&
+               returnSpritePageBuffer.Contains(
+                   "RecordDiscardedSpritePageBytes(discardedBytes)",
                    StringComparison.Ordinal) &&
                recordDiscardedSpritePageBytes.Contains(
                    "ObserveNaturalSpritePageCollection()",
@@ -14310,6 +15641,7 @@ internal static class Program
                canRunIdleSpritePageCollection.Contains("!_renderDeferredSpritePageCancellation", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_residentSpritePageTrimPending", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("_upcomingReminderPreloadPageName is null", StringComparison.Ordinal),
+            "resident淘汰必须先归还精确缓冲池，只有池真正丢弃数组才形成Gen2债；" +
             "Gen2回收只能在动作、提醒、提醒预热、拖动、缩放、预取、Todo、edge、pillow与帧过渡全部空闲时运行");
         Assert(mainSource.Contains(
                    "ReminderSpritePreloadLeadTime =",
@@ -14448,7 +15780,12 @@ internal static class Program
                resumePageWarmup.Contains("urgent: false", StringComparison.Ordinal) &&
                completePagePrefetch.Contains("AddResidentSpritePage", StringComparison.Ordinal) &&
                completePagePrefetch.Contains("ResumeSpritePageWarmup", StringComparison.Ordinal) &&
-               decodeSpritePage.Contains("new byte[page.UncompressedByteCount]", StringComparison.Ordinal),
+               decodeSpritePage.Contains(
+                   "_spritePageBufferPool.Rent(page.UncompressedByteCount)",
+                   StringComparison.Ordinal) &&
+               !decodeSpritePage.Contains(
+                   "new byte[page.UncompressedByteCount]",
+                   StringComparison.Ordinal),
             "启动warmup顺序必须为空；按需预取完成后只把精确尺寸Pbgra32页加入常驻缓存，" +
             "不得恢复全图集后台预热");
         Assert(mainSource.Split(
@@ -15027,6 +16364,30 @@ internal static class Program
         }
     }
 
+    private static void WaitForSpritePagePrefetchToSettleWithoutRendering(
+        MainWindow window)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (GetRawField(window, "_spritePagePrefetchTask") is not null)
+        {
+            if (stopwatch.Elapsed >= TimeSpan.FromSeconds(3))
+            {
+                throw new InvalidOperationException(
+                    "精灵分页后台预取必须在3秒内由唯一Normal dispatcher回调发布");
+            }
+
+            // The production continuation is queued at Normal. A same-priority
+            // sentinel drains it but exits before the lower Render priority can
+            // present the pending frame, preserving the test's synthetic clock.
+            var frame = new DispatcherFrame();
+            Dispatcher.CurrentDispatcher.BeginInvoke(
+                DispatcherPriority.Normal,
+                new Action(() => frame.Continue = false));
+            Dispatcher.PushFrame(frame);
+            Thread.Yield();
+        }
+    }
+
     private static object? Invoke(object instance, string name, params object?[] arguments)
     {
         var method = instance.GetType().GetMethod(name, InstanceFlags)
@@ -15121,6 +16482,122 @@ internal static class Program
         Assert(Math.Abs(actual - expected) < 0.01,
             $"{message}：期望 {expected}，实际 {actual}");
     }
+
+    private static void AssertTaskListScrollBarVisual(
+        ScrollBar scrollBar,
+        string stage)
+    {
+        scrollBar.ApplyTemplate();
+        var track = scrollBar.Template.FindName(
+                "PART_Track",
+                scrollBar) as Track
+            ?? throw new InvalidOperationException(
+                $"{stage}滚动条缺少PART_Track");
+        var thumb = track.Thumb
+            ?? throw new InvalidOperationException(
+                $"{stage}滚动条缺少Thumb");
+        thumb.ApplyTemplate();
+        var pill = thumb.Template.FindName(
+                "ThumbPill",
+                thumb) as Border
+            ?? throw new InvalidOperationException(
+                $"{stage}滚动块缺少ThumbPill");
+        var highlight = thumb.Template.FindName(
+                "ThumbHighlight",
+                thumb) as Border;
+        Assert(Math.Abs(scrollBar.Width - 12) < 0.01 &&
+               Math.Abs(pill.Width - 7) < 0.01 &&
+               Math.Abs(pill.CornerRadius.TopLeft - 3.5) < 0.01 &&
+               pill.Background is SolidColorBrush background &&
+               background.Color == Color.FromRgb(0xE7, 0xA1, 0x5E) &&
+               highlight is not null,
+            $"{stage}滚动块必须是12 DIP热区内的橘色圆角高光药丸，不能使用生硬的系统默认滑块");
+    }
+
+    private static IDisposable HoldClipboardOpenForTest()
+    {
+        var ready = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        Exception? failure = null;
+        var clipboardOpened = false;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var deadline = Stopwatch.StartNew();
+                while (!(clipboardOpened = OpenClipboard(IntPtr.Zero)) &&
+                       deadline.Elapsed < TimeSpan.FromSeconds(2))
+                {
+                    Thread.Sleep(10);
+                }
+
+                if (!clipboardOpened)
+                {
+                    failure = new InvalidOperationException(
+                        $"测试线程无法独占剪贴板，Win32={Marshal.GetLastWin32Error()}");
+                }
+
+                ready.Set();
+                if (clipboardOpened)
+                {
+                    release.Wait(TimeSpan.FromSeconds(10));
+                }
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+                ready.Set();
+            }
+            finally
+            {
+                if (clipboardOpened)
+                {
+                    _ = CloseClipboard();
+                }
+
+                ready.Set();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "UiStateChecks clipboard lock"
+        };
+        thread.Start();
+        if (!ready.Wait(TimeSpan.FromSeconds(3)))
+        {
+            release.Set();
+            throw new TimeoutException("测试线程在3秒内未取得剪贴板");
+        }
+
+        if (failure is not null)
+        {
+            release.Set();
+            _ = thread.Join(TimeSpan.FromSeconds(1));
+            throw new InvalidOperationException(
+                "无法建立剪贴板占用回归条件",
+                failure);
+        }
+
+        return new CallbackDisposable(() =>
+        {
+            release.Set();
+            if (!thread.Join(TimeSpan.FromSeconds(3)))
+            {
+                throw new TimeoutException("剪贴板占用测试线程未能正常退出");
+            }
+
+            ready.Dispose();
+            release.Dispose();
+        });
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenClipboard(IntPtr newOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseClipboard();
 
     private static double NormalizeCanvasCoordinate(double value) =>
         double.IsNaN(value) ? 0 : value;
@@ -15222,5 +16699,15 @@ internal static class Program
         string DecodedSha256,
         IDictionary Frames,
         object RuntimeValue);
+
+    private sealed class CallbackDisposable(Action dispose) : IDisposable
+    {
+        private Action? _dispose = dispose;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _dispose, null)?.Invoke();
+        }
+    }
 
 }

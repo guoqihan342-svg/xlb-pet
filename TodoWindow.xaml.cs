@@ -16,6 +16,7 @@ namespace LubanDesktopPet;
 
 public partial class TodoWindow : Window
 {
+    private const double TaskFullTextPopupGap = 12;
     private static readonly Brush TodoDropIndicatorBrush =
         CreateTodoDropIndicatorBrush();
     private static readonly string[] ScheduledHourOptions =
@@ -56,11 +57,6 @@ public partial class TodoWindow : Window
     private ScrollViewer? _todoScrollViewer;
     private long _lastTodoAutoScrollTimestamp;
     private string? _pendingClipboardCopyText;
-    private string? _pendingClipboardCutText;
-    private string? _pendingClipboardCutSnapshot;
-    private TextBox? _pendingClipboardCutTextBox;
-    private int _pendingClipboardCutSelectionStart;
-    private int _pendingClipboardCutSelectionLength;
     private bool _clipboardCopyRetryQueued;
     private ScheduledTaskItem? _editingScheduledTask;
     private DateTimeOffset _editingScheduledOriginalDueAt;
@@ -83,7 +79,12 @@ public partial class TodoWindow : Window
     private long _scheduledPickerInteractionGeneration;
     private FrameworkElement? _taskFullTextOwner;
     private bool _isTaskFullTextPopupOpen;
+    private TextBox? _taskRowSelectionTextBox;
+    private int _taskRowSelectionAnchor;
+    private int _taskRowSelectionVisibleEnd;
+    private bool _adjustingTaskRowSelection;
     private TaskTextEditWindow? _taskTextEditWindow;
+    private ScheduledTaskEditWindow? _scheduledTaskEditWindow;
     private bool _tailOnRight = true;
     private bool _allowClose;
     private bool _hasClosed;
@@ -109,6 +110,16 @@ public partial class TodoWindow : Window
         };
         _taskFullTextCloseTimer.Tick +=
             TaskFullTextCloseTimer_Tick;
+        TaskFullTextPopup.CustomPopupPlacementCallback =
+            PlaceTaskFullTextPopup;
+        if (ScheduledDatePickerPopup.Child is UIElement datePickerChild)
+        {
+            datePickerChild.AddHandler(
+                Mouse.PreviewMouseDownEvent,
+                new MouseButtonEventHandler(
+                    ScheduledDatePickerPopup_PreviewMouseDown),
+                handledEventsToo: true);
+        }
 
         TextCompositionManager.AddPreviewTextInputStartHandler(
             TodoInput,
@@ -207,6 +218,7 @@ public partial class TodoWindow : Window
         _isScheduledTimePickerPopupOpen ||
         _isTaskFullTextPopupOpen ||
         _taskTextEditWindow?.IsVisible == true ||
+        _scheduledTaskEditWindow?.IsVisible == true ||
         ScheduledDatePickerPopup.IsOpen ||
         ScheduledTimePickerPopup.IsOpen ||
         TaskFullTextPopup.IsOpen;
@@ -216,7 +228,7 @@ public partial class TodoWindow : Window
         CloseScheduledPickers();
         WindowState = WindowState.Normal;
         Width = 292;
-        Height = 378;
+        Height = 414;
         InvalidateMeasure();
         InvalidateArrange();
         InvalidateVisual();
@@ -376,17 +388,15 @@ public partial class TodoWindow : Window
             return;
         }
 
-        if (e.Key == Key.X &&
+        var effectiveKey = GetEffectiveShortcutKey(e);
+        if (effectiveKey == Key.X &&
             Keyboard.Modifiers == ModifierKeys.Control &&
             Keyboard.FocusedElement is TextBox cutTextBox &&
-            IsEditableTextSource(cutTextBox))
+            IsEditableTextSource(cutTextBox) &&
+            cutTextBox.SelectionLength > 0)
         {
             e.Handled = true;
-            if (!IsImeComposing)
-            {
-                TryCutSelectedText(cutTextBox);
-            }
-
+            TryCutSelectedText(cutTextBox);
             return;
         }
 
@@ -395,7 +405,7 @@ public partial class TodoWindow : Window
         // behavior. Intercept the physical shortcut at the owned-window root:
         // input copies its full value without a selection, while read-only
         // rows still require an explicit text selection.
-        if (e.Key != Key.C ||
+        if (effectiveKey != Key.C ||
             (Keyboard.Modifiers & ModifierKeys.Control) == 0 ||
             Keyboard.FocusedElement is not TextBox textBox ||
             !IsCopySource(textBox))
@@ -412,6 +422,14 @@ public partial class TodoWindow : Window
         CopyTextToClipboard(text);
         e.Handled = true;
     }
+
+    private static Key GetEffectiveShortcutKey(KeyEventArgs e) =>
+        e.Key switch
+        {
+            Key.ImeProcessed => e.ImeProcessedKey,
+            Key.System => e.SystemKey,
+            _ => e.Key
+        };
 
     private bool TryCutSelectedText(TextBox textBox)
     {
@@ -431,37 +449,31 @@ public partial class TodoWindow : Window
             return false;
         }
 
-        CancelPendingClipboardCut();
         _pendingClipboardCopyText = null;
 
         // WPF's routed Cut command can intermittently lose the selection that
         // begins at index zero while TSF focus state settles. Capture the
         // selection before touching the clipboard, then remove exactly that
         // range and restore a deterministic caret position.
-        if (TryCopyTextToClipboard(selectedText))
+        if (!TryCopyTextToClipboard(selectedText))
         {
-            RemovePendingCutSelection(
-                textBox,
-                textSnapshot,
-                selectionStart,
-                selectionLength,
-                selectedText,
-                requireSelectionMatch: false);
-        }
-        else
-        {
-            _pendingClipboardCutText = selectedText;
-            _pendingClipboardCutSnapshot = textSnapshot;
-            _pendingClipboardCutTextBox = textBox;
-            _pendingClipboardCutSelectionStart = selectionStart;
-            _pendingClipboardCutSelectionLength = selectionLength;
-            QueueClipboardRetry();
+            // Match WPF's fail-closed Cut behavior: if another process owns
+            // the clipboard, preserve both the text and its selection. A
+            // deferred deletion could otherwise target a selection that TSF
+            // has already changed.
+            return false;
         }
 
-        return true;
+        return RemovePendingCutSelection(
+            textBox,
+            textSnapshot,
+            selectionStart,
+            selectionLength,
+            selectedText,
+            requireSelectionMatch: false);
     }
 
-    private static void RemovePendingCutSelection(
+    private static bool RemovePendingCutSelection(
         TextBox textBox,
         string textSnapshot,
         int selectionStart,
@@ -479,15 +491,16 @@ public partial class TodoWindow : Window
                 selectedText,
                 StringComparison.Ordinal) ||
             (requireSelectionMatch &&
-             (textBox.SelectionStart != selectionStart ||
-              textBox.SelectionLength != selectionLength)))
+              (textBox.SelectionStart != selectionStart ||
+               textBox.SelectionLength != selectionLength)))
         {
-            return;
+            return false;
         }
 
         textBox.Select(selectionStart, selectionLength);
         textBox.SelectedText = string.Empty;
         textBox.Select(selectionStart, 0);
+        return true;
     }
 
     private bool IsEditableTextSource(TextBox textBox) =>
@@ -521,7 +534,6 @@ public partial class TodoWindow : Window
 
     private void CopyTextToClipboard(string text)
     {
-        CancelPendingClipboardCut();
         if (TryCopyTextToClipboard(text))
         {
             return;
@@ -529,15 +541,6 @@ public partial class TodoWindow : Window
 
         _pendingClipboardCopyText = text;
         QueueClipboardRetry();
-    }
-
-    private void CancelPendingClipboardCut()
-    {
-        _pendingClipboardCutText = null;
-        _pendingClipboardCutSnapshot = null;
-        _pendingClipboardCutTextBox = null;
-        _pendingClipboardCutSelectionStart = 0;
-        _pendingClipboardCutSelectionLength = 0;
     }
 
     private bool TryCopyTextToClipboard(string text)
@@ -570,37 +573,6 @@ public partial class TodoWindow : Window
     private void RetryClipboardCopy()
     {
         _clipboardCopyRetryQueued = false;
-        var cutText = _pendingClipboardCutText;
-        var cutSnapshot = _pendingClipboardCutSnapshot;
-        var cutTextBox = _pendingClipboardCutTextBox;
-        var cutSelectionStart = _pendingClipboardCutSelectionStart;
-        var cutSelectionLength = _pendingClipboardCutSelectionLength;
-        CancelPendingClipboardCut();
-        if (!string.IsNullOrEmpty(cutText))
-        {
-            try
-            {
-                Clipboard.SetDataObject(cutText, true);
-                if (cutTextBox is not null &&
-                    cutSnapshot is not null &&
-                    ReferenceEquals(Keyboard.FocusedElement, cutTextBox))
-                {
-                    RemovePendingCutSelection(
-                        cutTextBox,
-                        cutSnapshot,
-                        cutSelectionStart,
-                        cutSelectionLength,
-                        cutText,
-                        requireSelectionMatch: true);
-                }
-            }
-            catch (ExternalException)
-            {
-                // A single deferred retry is enough. Keep the original text
-                // and selection intact if the clipboard is still unavailable.
-            }
-        }
-
         var text = _pendingClipboardCopyText;
         _pendingClipboardCopyText = null;
         if (string.IsNullOrEmpty(text))
@@ -707,6 +679,7 @@ public partial class TodoWindow : Window
     {
         CloseTaskFullTextPreview();
         _taskTextEditWindow?.CloseWithoutSaving();
+        _scheduledTaskEditWindow?.CloseWithoutSaving();
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
 
@@ -744,8 +717,8 @@ public partial class TodoWindow : Window
         _taskFullTextCloseTimer.Tick -=
             TaskFullTextCloseTimer_Tick;
         _taskTextEditWindow = null;
+        _scheduledTaskEditWindow = null;
         _pendingClipboardCopyText = null;
-        CancelPendingClipboardCut();
         _outsideTodoEditCommitPending = false;
         _outsideTodoEditCommitQueued = false;
         _isScheduledDatePickerPopupOpen = false;
@@ -842,11 +815,13 @@ public partial class TodoWindow : Window
 
     private void TaskRow_MouseEnter(object sender, MouseEventArgs e)
     {
+        _taskFullTextCloseTimer.Stop();
         if (sender is not FrameworkElement
             {
                 Tag: TodoItem or ScheduledTaskItem
             } owner)
         {
+            CloseTaskFullTextPreview();
             return;
         }
 
@@ -856,12 +831,15 @@ public partial class TodoWindow : Window
             ScheduledTaskItem scheduled => scheduled.Text,
             _ => string.Empty
         };
-        if (text.Length == 0)
+        var rowTextBox = FindVisualDescendant<TextBox>(owner);
+        if (text.Length == 0 ||
+            rowTextBox is not { IsReadOnly: true } ||
+            !IsTaskRowTextClipped(rowTextBox, text))
         {
+            CloseTaskFullTextPreview();
             return;
         }
 
-        _taskFullTextCloseTimer.Stop();
         _taskFullTextOwner = owner;
         TaskFullTextPopup.PlacementTarget = owner;
         TaskFullTextPreviewTextBox.DataContext = owner.Tag;
@@ -872,6 +850,281 @@ public partial class TodoWindow : Window
             : "待办完整内容 · 可选择复制";
         TaskFullTextCountText.Text = $"{text.Length}/5000 字";
         TaskFullTextPopup.IsOpen = true;
+    }
+
+    private static bool IsTaskRowTextClipped(
+        TextBox textBox,
+        string expectedText)
+    {
+        if (!textBox.IsLoaded ||
+            textBox.ActualWidth <= 0 ||
+            textBox.ActualHeight <= 0 ||
+            string.IsNullOrEmpty(textBox.Text) ||
+            !string.Equals(
+                textBox.Text,
+                expectedText,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var lineCount = textBox.LineCount;
+        if (lineCount <= 0)
+        {
+            return false;
+        }
+
+        if (textBox.MaxLines > 0 && lineCount > textBox.MaxLines)
+        {
+            return true;
+        }
+
+        var firstVisibleLine = textBox.GetFirstVisibleLineIndex();
+        var lastVisibleLine = textBox.GetLastVisibleLineIndex();
+        if (firstVisibleLine > 0 ||
+            (lastVisibleLine >= 0 && lastVisibleLine < lineCount - 1))
+        {
+            return true;
+        }
+
+        // Reading the TextBox template's existing viewport does not invalidate
+        // measure or arrange, so hover detection cannot resize the row and
+        // retrigger MouseEnter/MouseLeave. The small tolerance filters normal
+        // device-pixel rounding at fractional DPI scales.
+        const double layoutTolerance = 0.5;
+        var contentHost = FindVisualDescendant<ScrollViewer>(textBox);
+        return contentHost is not null &&
+               ((contentHost.ViewportHeight > 0 &&
+                 contentHost.ExtentHeight >
+                 contentHost.ViewportHeight + layoutTolerance) ||
+                (textBox.TextWrapping == TextWrapping.NoWrap &&
+                 contentHost.ViewportWidth > 0 &&
+                 contentHost.ExtentWidth >
+                 contentHost.ViewportWidth + layoutTolerance));
+    }
+
+    private static CustomPopupPlacement[] PlaceTaskFullTextPopup(
+        Size popupSize,
+        Size targetSize,
+        Point offset)
+    {
+        var verticalOffset = Math.Round(
+            (targetSize.Height - popupSize.Height) / 2);
+        return
+        [
+            new CustomPopupPlacement(
+                new Point(
+                    -popupSize.Width - TaskFullTextPopupGap + offset.X,
+                    verticalOffset + offset.Y),
+                PopupPrimaryAxis.Vertical),
+            new CustomPopupPlacement(
+                new Point(
+                    targetSize.Width + TaskFullTextPopupGap + offset.X,
+                    verticalOffset + offset.Y),
+                PopupPrimaryAxis.Vertical)
+        ];
+    }
+
+    private void TaskRowTextBox_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not TextBox { IsReadOnly: true } textBox)
+        {
+            ClearTaskRowSelectionDrag();
+            return;
+        }
+
+        RestoreTaskRowTextViewport(textBox);
+        _taskRowSelectionTextBox = textBox;
+        _taskRowSelectionVisibleEnd =
+            GetTaskRowVisibleTextEnd(textBox);
+        _taskRowSelectionAnchor = GetTaskRowCharacterIndex(
+            textBox,
+            e.GetPosition(textBox),
+            _taskRowSelectionVisibleEnd);
+    }
+
+    private void TaskRowTextBox_PreviewMouseMove(
+        object sender,
+        MouseEventArgs e)
+    {
+        if (sender is not TextBox { IsReadOnly: true } textBox ||
+            !ReferenceEquals(textBox, _taskRowSelectionTextBox) ||
+            e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var selectionEnd = GetTaskRowCharacterIndex(
+            textBox,
+            e.GetPosition(textBox),
+            _taskRowSelectionVisibleEnd);
+        var selectionStart = Math.Min(
+            _taskRowSelectionAnchor,
+            selectionEnd);
+        SetTaskRowSelection(
+            textBox,
+            selectionStart,
+            Math.Abs(selectionEnd - _taskRowSelectionAnchor),
+            _taskRowSelectionVisibleEnd);
+        e.Handled = true;
+    }
+
+    private void TaskRowTextBox_PreviewMouseLeftButtonUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is TextBox textBox &&
+            ReferenceEquals(textBox, _taskRowSelectionTextBox))
+        {
+            ClampTaskRowSelection(textBox);
+        }
+
+        ClearTaskRowSelectionDrag();
+    }
+
+    private void TaskRowTextBox_LostMouseCapture(
+        object sender,
+        MouseEventArgs e)
+    {
+        if (ReferenceEquals(sender, _taskRowSelectionTextBox))
+        {
+            ClearTaskRowSelectionDrag();
+        }
+    }
+
+    private void TaskRowTextBox_Unloaded(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (ReferenceEquals(sender, _taskRowSelectionTextBox))
+        {
+            ClearTaskRowSelectionDrag();
+        }
+    }
+
+    private void TaskRowTextBox_SelectionChanged(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (!_adjustingTaskRowSelection &&
+            sender is TextBox { IsReadOnly: true } textBox)
+        {
+            ClampTaskRowSelection(textBox);
+        }
+    }
+
+    private void ClampTaskRowSelection(TextBox textBox)
+    {
+        var visibleEnd = GetTaskRowVisibleTextEnd(textBox);
+        var selectionStart = Math.Clamp(
+            textBox.SelectionStart,
+            0,
+            visibleEnd);
+        var selectionEnd = Math.Clamp(
+            textBox.SelectionStart + textBox.SelectionLength,
+            0,
+            visibleEnd);
+        SetTaskRowSelection(
+            textBox,
+            Math.Min(selectionStart, selectionEnd),
+            Math.Abs(selectionEnd - selectionStart),
+            visibleEnd);
+    }
+
+    private void SetTaskRowSelection(
+        TextBox textBox,
+        int selectionStart,
+        int selectionLength,
+        int visibleEnd)
+    {
+        var normalizedStart = Math.Clamp(
+            selectionStart,
+            0,
+            visibleEnd);
+        var normalizedLength = Math.Clamp(
+            selectionLength,
+            0,
+            visibleEnd - normalizedStart);
+
+        _adjustingTaskRowSelection = true;
+        try
+        {
+            if (textBox.SelectionStart != normalizedStart ||
+                textBox.SelectionLength != normalizedLength)
+            {
+                textBox.Select(normalizedStart, normalizedLength);
+            }
+
+            RestoreTaskRowTextViewport(textBox);
+        }
+        finally
+        {
+            _adjustingTaskRowSelection = false;
+        }
+    }
+
+    private static int GetTaskRowVisibleTextEnd(TextBox textBox)
+    {
+        var lineCount = textBox.LineCount;
+        if (lineCount <= 0)
+        {
+            return textBox.Text.Length;
+        }
+
+        var visibleLineCount = textBox.MaxLines > 0
+            ? Math.Min(textBox.MaxLines, lineCount)
+            : lineCount;
+        var lastVisibleLine = Math.Max(0, visibleLineCount - 1);
+        var lineStart =
+            textBox.GetCharacterIndexFromLineIndex(lastVisibleLine);
+        if (lineStart < 0)
+        {
+            return textBox.Text.Length;
+        }
+
+        return Math.Clamp(
+            lineStart + textBox.GetLineLength(lastVisibleLine),
+            0,
+            textBox.Text.Length);
+    }
+
+    private static int GetTaskRowCharacterIndex(
+        TextBox textBox,
+        Point point,
+        int visibleEnd)
+    {
+        var clampedPoint = new Point(
+            Math.Clamp(point.X, 0, Math.Max(0, textBox.ActualWidth - 1)),
+            Math.Clamp(point.Y, 0, Math.Max(0, textBox.ActualHeight - 1)));
+        var characterIndex = textBox.GetCharacterIndexFromPoint(
+            clampedPoint,
+            snapToText: true);
+        if (characterIndex < 0)
+        {
+            characterIndex = point.Y <= 0 ? 0 : visibleEnd;
+        }
+
+        return Math.Clamp(characterIndex, 0, visibleEnd);
+    }
+
+    private static void RestoreTaskRowTextViewport(TextBox textBox)
+    {
+        if (textBox.LineCount > 0)
+        {
+            textBox.ScrollToLine(0);
+        }
+
+        textBox.ScrollToHorizontalOffset(0);
+        textBox.ScrollToVerticalOffset(0);
+    }
+
+    private void ClearTaskRowSelectionDrag()
+    {
+        _taskRowSelectionTextBox = null;
+        _taskRowSelectionAnchor = 0;
+        _taskRowSelectionVisibleEnd = 0;
     }
 
     private void TaskRow_MouseLeave(object sender, MouseEventArgs e)
@@ -933,10 +1186,29 @@ public partial class TodoWindow : Window
     {
         _taskFullTextCloseTimer.Stop();
         _taskFullTextOwner = null;
+        var wasTransientOpen =
+            _isTaskFullTextPopupOpen ||
+            TaskFullTextPopup.IsOpen;
+        _isTaskFullTextPopupOpen = false;
         if (TaskFullTextPopup.IsOpen)
         {
             TaskFullTextPopup.IsOpen = false;
         }
+
+        ReleaseTaskFullTextPreviewContent();
+        if (wasTransientOpen && !IsTransientPopupOpen)
+        {
+            TransientInteractionCompleted?.Invoke();
+        }
+    }
+
+    private void ReleaseTaskFullTextPreviewContent()
+    {
+        TaskFullTextPopup.PlacementTarget = null;
+        TaskFullTextPreviewTextBox.DataContext = null;
+        TaskFullTextPreviewTextBox.Text = string.Empty;
+        TaskFullTextTitle.Text = "完整内容 · 可选择复制";
+        TaskFullTextCountText.Text = string.Empty;
     }
 
     private void TaskFullTextPopup_Opened(object sender, EventArgs e)
@@ -948,7 +1220,8 @@ public partial class TodoWindow : Window
     {
         var wasTransientOpen = _isTaskFullTextPopupOpen;
         _isTaskFullTextPopupOpen = false;
-        TaskFullTextPreviewTextBox.DataContext = null;
+        _taskFullTextOwner = null;
+        ReleaseTaskFullTextPreviewContent();
         if (wasTransientOpen && !IsTransientPopupOpen)
         {
             TransientInteractionCompleted?.Invoke();
@@ -957,6 +1230,11 @@ public partial class TodoWindow : Window
 
     private void TodoTabButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CommitScheduledTaskEditorIfOpen())
+        {
+            return;
+        }
+
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: true);
@@ -964,6 +1242,11 @@ public partial class TodoWindow : Window
 
     private void ScheduledTaskTabButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CommitScheduledTaskEditorIfOpen())
+        {
+            return;
+        }
+
         CommitTodoEdit();
         PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset.Now);
         SelectTaskPage(showScheduledTasks: true, focusInput: true);
@@ -1230,6 +1513,7 @@ public partial class TodoWindow : Window
 
     private void SelectScheduledDate(DateTime date)
     {
+        MarkScheduledPickerInteractionIfOpen();
         SetScheduledDate(date, markEdited: true);
         CloseScheduledDatePicker();
         FocusScheduledDateInput();
@@ -1374,6 +1658,13 @@ public partial class TodoWindow : Window
         MarkScheduledPickerInternalInteraction();
     }
 
+    private void ScheduledDatePickerPopup_PreviewMouseDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        MarkScheduledPickerInternalInteraction();
+    }
+
     private void ScheduledTimePickerPopup_PreviewKeyDown(
         object sender,
         KeyEventArgs e)
@@ -1414,6 +1705,7 @@ public partial class TodoWindow : Window
             return;
         }
 
+        MarkScheduledPickerInteractionIfOpen();
         _scheduledTaskDraftClockEdited = true;
         UpdateScheduledTimeTextFromPicker();
     }
@@ -1442,6 +1734,11 @@ public partial class TodoWindow : Window
             return;
         }
 
+        // A ComboBox popup can deactivate its owner before WPF finishes the
+        // same input transaction. Refresh the interaction generation here so
+        // a probe captured before DropDownClosed cannot dismiss the outer
+        // reminder-time popup.
+        MarkScheduledPickerInternalInteraction();
         _scheduledPickerState = ScheduledPickerState.OpenIdle;
         QueueScheduledPickerOutsideProbe();
     }
@@ -1835,32 +2132,66 @@ public partial class TodoWindow : Window
             return;
         }
 
-        OpenTaskTextEditor(
-            "修改定时任务",
-            item.Text,
-            updatedText =>
-            {
-                if (string.Equals(
-                        item.Text,
-                        updatedText,
-                        StringComparison.Ordinal))
-                {
-                    return;
-                }
-
-                ScheduledTaskEditRequested?.Invoke(
-                    item,
-                    updatedText,
-                    item.DueAt,
-                    item.RepeatInterval,
-                    item.RepeatRule);
-            },
-            () => BeginScheduledTaskFormEdit(item));
+        CloseTaskFullTextPreview();
+        _taskTextEditWindow?.CloseWithoutSaving();
+        OpenScheduledTaskEditor(item);
         e.Handled = true;
+    }
+
+    private void OpenScheduledTaskEditor(ScheduledTaskItem item)
+    {
+        if (_scheduledTaskEditWindow is { IsVisible: true } existing)
+        {
+            if (ReferenceEquals(existing.Item, item))
+            {
+                existing.Activate();
+                return;
+            }
+
+            if (!existing.SaveAndClose())
+            {
+                existing.Activate();
+                return;
+            }
+        }
+
+        var editor = new ScheduledTaskEditWindow(item)
+        {
+            Owner = this
+        };
+        _scheduledTaskEditWindow = editor;
+        editor.EditAccepted += (
+            text,
+            dueAt,
+            repeatInterval,
+            repeatRule) =>
+        {
+            ScheduledTaskEditRequested?.Invoke(
+                item,
+                text,
+                dueAt,
+                repeatInterval,
+                repeatRule);
+        };
+        editor.Closed += (_, _) =>
+        {
+            if (!ReferenceEquals(_scheduledTaskEditWindow, editor))
+            {
+                return;
+            }
+
+            _scheduledTaskEditWindow = null;
+            if (!_hasClosed && !IsTransientPopupOpen)
+            {
+                TransientInteractionCompleted?.Invoke();
+            }
+        };
+        editor.Show();
     }
 
     private void BeginScheduledTaskFormEdit(ScheduledTaskItem item)
     {
+        CloseScheduledPickers();
         _editingScheduledTask = item;
         _editingScheduledOriginalDueAt = item.DueAt;
         _editingScheduledOriginalRepeatInterval =
@@ -1876,7 +2207,7 @@ public partial class TodoWindow : Window
             CultureInfo.InvariantCulture);
         SetScheduledRepeatDraft(item.RepeatInterval, item.RepeatRule);
         _scheduledRepeatDraftEdited = false;
-        ScheduledTaskSubmitButton.Content = "保存";
+        ScheduledTaskSubmitButton.Content = "确定修改";
         ScheduledTaskSubmitButton.ToolTip = "保存定时任务修改";
         ScheduledTaskEditCancelButton.Visibility = Visibility.Visible;
         SetScheduledTaskValidation(string.Empty);
@@ -1905,7 +2236,7 @@ public partial class TodoWindow : Window
         _editingScheduledOriginalRepeatInterval = null;
         _editingScheduledOriginalRepeatRule = null;
         _scheduledRepeatDraftEdited = false;
-        ScheduledTaskSubmitButton.Content = "设定";
+        ScheduledTaskSubmitButton.Content = "新增";
         ScheduledTaskSubmitButton.ToolTip = "添加定时任务";
         ScheduledTaskEditCancelButton.Visibility = Visibility.Collapsed;
         SetScheduledTaskValidation(string.Empty);
@@ -1969,6 +2300,7 @@ public partial class TodoWindow : Window
     {
         if (!_updatingScheduledRepeatDraft)
         {
+            MarkScheduledPickerInteractionIfOpen();
             _scheduledRepeatDraftEdited = true;
             ClearScheduledTaskValidation();
         }
@@ -2039,6 +2371,7 @@ public partial class TodoWindow : Window
             return;
         }
 
+        MarkScheduledPickerInternalInteraction();
         _scheduledPickerState = ScheduledPickerState.OpenIdle;
         QueueScheduledPickerOutsideProbe();
     }
@@ -2088,14 +2421,15 @@ public partial class TodoWindow : Window
         comboBox.SelectedItem =
             comboBox.ItemContainerGenerator.ItemFromContainer(item);
         comboBox.IsDropDownOpen = false;
+        Activate();
         comboBox.Focus();
         Keyboard.Focus(comboBox);
         e.Handled = true;
     }
 
     private bool IsScheduledPickerOpen() =>
-        ScheduledDatePickerPopup.IsOpen ||
-        ScheduledTimePickerPopup.IsOpen;
+        ScheduledDatePickerPopup?.IsOpen == true ||
+        ScheduledTimePickerPopup?.IsOpen == true;
 
     private void MarkScheduledPickerInteractionIfOpen()
     {
@@ -2309,19 +2643,8 @@ public partial class TodoWindow : Window
             return;
         }
 
-        var foregroundWindow = GetForegroundWindow();
-        var windowAtPointer =
-            GetCursorPos(out var pointer)
-                ? WindowFromPoint(pointer)
-                : IntPtr.Zero;
         var probe = new ScheduledPickerOutsideProbe(
-            _scheduledPickerInteractionGeneration,
-            foregroundWindow,
-            windowAtPointer,
-            IsKnownScheduledPickerWindow(
-                foregroundWindow) ||
-            IsKnownScheduledPickerWindow(
-                windowAtPointer));
+            _scheduledPickerInteractionGeneration);
 
         Dispatcher.BeginInvoke(
             DispatcherPriority.ApplicationIdle,
@@ -2344,25 +2667,57 @@ public partial class TodoWindow : Window
             return;
         }
 
-        if (probe.TargetWasInternal ||
-            IsKnownScheduledPickerWindow(
-                probe.ForegroundWindow) ||
-            IsKnownScheduledPickerWindow(
-                probe.WindowAtPointer))
+        // Deactivated and DropDownClosed can run while WPF is still moving
+        // focus between an outer Popup and a ComboBox child Popup. Sample the
+        // settled input state at ApplicationIdle before deciding that the user
+        // really clicked outside all reminder-time surfaces.
+        var currentForegroundWindow = GetForegroundWindow();
+        var currentWindowAtPointer =
+            GetCursorPos(out var currentPointer)
+                ? WindowFromPoint(currentPointer)
+                : IntPtr.Zero;
+        if (IsKnownScheduledPickerWindow(currentForegroundWindow) ||
+            IsKnownScheduledPickerWindow(currentWindowAtPointer) ||
+            IsPointerOverScheduledPickerSurface())
         {
             return;
         }
 
-        // If Win32 could not identify either target, fail safe and keep the
-        // picker. A later real outside click or Esc can still close it, while
-        // guessing here would reproduce the hour-selection bug.
-        if (probe.ForegroundWindow == IntPtr.Zero &&
-            probe.WindowAtPointer == IntPtr.Zero)
+        // If Win32 could not identify either current target, fail safe and keep
+        // the picker. A later real outside click or Esc can still close it,
+        // while guessing here would reproduce the hour-selection bug.
+        if (currentForegroundWindow == IntPtr.Zero &&
+            currentWindowAtPointer == IntPtr.Zero)
         {
             return;
         }
 
         CloseScheduledPickers();
+    }
+
+    private bool IsPointerOverScheduledPickerSurface()
+    {
+        return ScheduledDatePickerHost.IsMouseOver ||
+               ScheduledTimePickerHost.IsMouseOver ||
+               ScheduledRepeatEditor.IsMouseOver ||
+               IsPointerOverPopupChild(ScheduledDatePickerPopup) ||
+               IsPointerOverPopupChild(ScheduledTimePickerPopup) ||
+               IsPointerOverComboBoxPopup(ScheduledHourComboBox) ||
+               IsPointerOverComboBoxPopup(ScheduledMinuteComboBox) ||
+               IsPointerOverComboBoxPopup(ScheduledSecondComboBox) ||
+               IsPointerOverComboBoxPopup(ScheduledRepeatUnitComboBox);
+    }
+
+    private static bool IsPointerOverComboBoxPopup(ComboBox comboBox)
+    {
+        return comboBox.Template.FindName("PART_Popup", comboBox) is
+                   Popup popup &&
+               IsPointerOverPopupChild(popup);
+    }
+
+    private static bool IsPointerOverPopupChild(Popup popup)
+    {
+        return popup.Child is UIElement child && child.IsMouseOver;
     }
 
     private bool IsKnownScheduledPickerWindow(IntPtr handle)
@@ -2477,6 +2832,11 @@ public partial class TodoWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CommitScheduledTaskEditorIfOpen())
+        {
+            return;
+        }
+
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         CloseRequested?.Invoke(this, EventArgs.Empty);
@@ -2484,6 +2844,11 @@ public partial class TodoWindow : Window
 
     private void ExitButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CommitScheduledTaskEditorIfOpen())
+        {
+            return;
+        }
+
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         ExitRequested?.Invoke(this, EventArgs.Empty);
@@ -2540,6 +2905,11 @@ public partial class TodoWindow : Window
         Action<string> acceptText,
         Action? openAdvancedEditor = null)
     {
+        if (!CommitScheduledTaskEditorIfOpen())
+        {
+            return;
+        }
+
         if (_taskTextEditWindow is { IsVisible: true } existing)
         {
             existing.Activate();
@@ -2576,6 +2946,12 @@ public partial class TodoWindow : Window
             }
         };
         editor.Show();
+    }
+
+    private bool CommitScheduledTaskEditorIfOpen()
+    {
+        return _scheduledTaskEditWindow is not { IsVisible: true } editor ||
+               editor.SaveAndClose();
     }
 
     private void EditButton_Click(object sender, RoutedEventArgs e)
@@ -2911,6 +3287,7 @@ public partial class TodoWindow : Window
 
     private void TodoEditTextBox_Unloaded(object sender, RoutedEventArgs e)
     {
+        TaskRowTextBox_Unloaded(sender, e);
         if (sender is TextBox textBox &&
             ReferenceEquals(textBox, _editingTodoTextBox))
         {
@@ -3520,8 +3897,5 @@ public partial class TodoWindow : Window
     }
 
     private readonly record struct ScheduledPickerOutsideProbe(
-        long InteractionGeneration,
-        IntPtr ForegroundWindow,
-        IntPtr WindowAtPointer,
-        bool TargetWasInternal);
+        long InteractionGeneration);
 }

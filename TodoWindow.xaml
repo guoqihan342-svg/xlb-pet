@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="小鲁班任务小屋"
         Width="292"
-        Height="378"
+        Height="414"
+        MinHeight="414"
         AllowsTransparency="True"
         Background="Transparent"
         ResizeMode="NoResize"
@@ -22,6 +23,232 @@
                         PreviewExecuted="CopyCommand_Executed" />
     </Window.CommandBindings>
 
+    <Window.Resources>
+        <SolidColorBrush x:Key="CuteCreamHoverBrush" Color="#FFFFE9CC" />
+        <SolidColorBrush x:Key="CuteCollapseHoverBrush" Color="#FFFFE4C2" />
+        <SolidColorBrush x:Key="CuteDangerHoverBrush" Color="#FFFFD9D9" />
+        <SolidColorBrush x:Key="CuteBlueHoverBrush" Color="#3477E8" />
+        <SolidColorBrush x:Key="CuteOrangeHoverBrush" Color="#F8B971" />
+        <SolidColorBrush x:Key="CuteOrangeEditHoverBrush" Color="#F2A65A" />
+        <!--
+            The task house uses a single, lightweight button chrome.  The
+            per-button Background/BorderBrush/Foreground keep each action's
+            meaning clear, while Tag supplies its hover tint without creating
+            several almost-identical control templates.
+        -->
+        <Style x:Key="CuteTaskButtonStyle"
+               TargetType="{x:Type Button}">
+            <Setter Property="MinHeight" Value="27" />
+            <Setter Property="Padding" Value="9,3" />
+            <Setter Property="Background" Value="#FFFFF7EA" />
+            <Setter Property="BorderBrush" Value="#E8C99F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#865A35" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="Tag"
+                    Value="{StaticResource CuteCreamHoverBrush}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Grid x:Name="ButtonRoot"
+                              Background="Transparent"
+                              RenderTransformOrigin="0.5,0.5">
+                            <Border x:Name="ButtonChrome"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="10"
+                                    SnapsToDevicePixels="True" />
+                            <Border x:Name="HoverTint"
+                                    Background="{TemplateBinding Tag}"
+                                    CornerRadius="10"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                            <Ellipse Width="13"
+                                     Height="5"
+                                     Margin="5,3,0,0"
+                                     HorizontalAlignment="Left"
+                                     VerticalAlignment="Top"
+                                     Fill="#70FFFFFF"
+                                     IsHitTestVisible="False" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True"
+                                              SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                            <Border x:Name="KeyboardFocusRing"
+                                    Margin="-2"
+                                    BorderBrush="#E89B50"
+                                    BorderThickness="1.5"
+                                    CornerRadius="12"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                            <Border x:Name="PressedShade"
+                                    Background="#18000000"
+                                    CornerRadius="10"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="HoverTint"
+                                        Property="Opacity"
+                                        Value="0.72" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.96" />
+                                <Setter TargetName="PressedShade"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="KeyboardFocusRing"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.43" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="TaskListPageButtonStyle"
+               TargetType="{x:Type RepeatButton}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RepeatButton}">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="TaskListThumbStyle"
+               TargetType="{x:Type Thumb}">
+            <Setter Property="MinHeight" Value="24" />
+            <Setter Property="Background" Value="#E7A15E" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Thumb}">
+                        <Grid Background="Transparent">
+                            <Border x:Name="ThumbPill"
+                                    Width="7"
+                                    Margin="0,1"
+                                    HorizontalAlignment="Center"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="3.5"
+                                    SnapsToDevicePixels="True">
+                                <Border x:Name="ThumbHighlight"
+                                        Width="2"
+                                        Margin="1.5,4,0,4"
+                                        HorizontalAlignment="Left"
+                                        Background="#70FFFFFF"
+                                        CornerRadius="1"
+                                        Opacity="0.7" />
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#F09A48" />
+                                <Setter TargetName="ThumbHighlight"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter Property="Background" Value="#D97B2F" />
+                                <Setter TargetName="ThumbPill"
+                                        Property="Width"
+                                        Value="8" />
+                                <Setter TargetName="ThumbHighlight"
+                                        Property="Opacity"
+                                        Value="0.45" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ThumbPill"
+                                        Property="Opacity"
+                                        Value="0.35" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="TaskListScrollBarStyle"
+               TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="12" />
+            <Setter Property="MinWidth" Value="12" />
+            <Setter Property="Margin" Value="2,1,0,1" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid Width="{TemplateBinding Width}"
+                              Background="Transparent">
+                            <Border x:Name="TrackPill"
+                                    Width="8"
+                                    Margin="0,2"
+                                    HorizontalAlignment="Center"
+                                    Background="#22D6A06A"
+                                    CornerRadius="4" />
+                            <Track x:Name="PART_Track"
+                                   Margin="1,3"
+                                   Focusable="False"
+                                   IsDirectionReversed="True"
+                                   Orientation="{TemplateBinding Orientation}">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  Style="{StaticResource TaskListPageButtonStyle}" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource TaskListThumbStyle}" />
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  Style="{StaticResource TaskListPageButtonStyle}" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TrackPill"
+                                        Property="Background"
+                                        Value="#38D6A06A" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="TrackPill"
+                                        Property="Opacity"
+                                        Value="0.35" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid KeyboardNavigation.TabNavigation="Cycle">
         <Grid.ColumnDefinitions>
             <ColumnDefinition x:Name="FirstColumn" Width="280" />
@@ -39,8 +266,8 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="34" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="28" />
-                    <RowDefinition Height="44" />
+                    <RowDefinition Height="24" />
+                    <RowDefinition Height="36" />
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0">
@@ -157,26 +384,32 @@
                     </RadioButton>
                     <Button Grid.Column="3"
                             Width="38"
+                            Height="28"
                             Margin="3,0,0,0"
                             Padding="4,3"
-                            Background="#F1F3F6"
-                            BorderThickness="0"
-                            Cursor="Hand"
-                            FontFamily="Microsoft YaHei"
+                            AutomationProperties.Name="收起任务小屋"
+                            Background="#FFF6E9"
+                            BorderBrush="#E7C99E"
                             FontSize="11"
-                            Foreground="#515966"
+                            Foreground="#765A40"
+                            Style="{StaticResource CuteTaskButtonStyle}"
+                            Tag="{StaticResource CuteCollapseHoverBrush}"
+                            ToolTip="收起任务小屋"
                             Content="收起"
                             Click="CloseButton_Click" />
                     <Button Grid.Column="4"
                             Width="38"
+                            Height="28"
                             Margin="3,0,0,0"
                             Padding="4,3"
-                            Background="#FFF0F0"
-                            BorderThickness="0"
-                            Cursor="Hand"
-                            FontFamily="Microsoft YaHei"
+                            AutomationProperties.Name="退出小鲁班桌宠"
+                            Background="#FFFFEEEE"
+                            BorderBrush="#F0BBBB"
                             FontSize="11"
                             Foreground="#C04444"
+                            Style="{StaticResource CuteTaskButtonStyle}"
+                            Tag="{StaticResource CuteDangerHoverBrush}"
+                            ToolTip="退出小鲁班桌宠"
                             Content="退出"
                             Click="ExitButton_Click" />
                 </Grid>
@@ -196,11 +429,18 @@
                              BorderThickness="0"
                              ScrollViewer.CanContentScroll="True"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.IsDeferredScrollingEnabled="False"
+                             ScrollViewer.PanningMode="VerticalOnly"
                              ScrollViewer.VerticalScrollBarVisibility="Auto"
                              VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.ScrollUnit="Pixel"
                              VirtualizingPanel.VirtualizationMode="Recycling"
                              PreviewDragOver="TodoItemsControl_PreviewDragOver"
                              PreviewDrop="TodoItemsControl_PreviewDrop">
+                        <ListBox.Resources>
+                            <Style TargetType="{x:Type ScrollBar}"
+                                   BasedOn="{StaticResource TaskListScrollBarStyle}" />
+                        </ListBox.Resources>
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                  <Setter Property="Padding" Value="0" />
@@ -277,6 +517,7 @@
                                                      Grid.Column="2"
                                                      MinWidth="0"
                                                      MaxHeight="36"
+                                                     ClipToBounds="True"
                                                      VerticalAlignment="Center"
                                                      Cursor="IBeam"
                                                      FontFamily="Microsoft YaHei"
@@ -287,9 +528,13 @@
                                                      MinLines="1"
                                                      Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=Explicit}"
                                                      TextWrapping="Wrap"
-                                                     VerticalScrollBarVisibility="Hidden"
                                                      DataContextChanged="TodoEditTextBox_DataContextChanged"
                                                      LostKeyboardFocus="TodoEditTextBox_LostKeyboardFocus"
+                                                     LostMouseCapture="TaskRowTextBox_LostMouseCapture"
+                                                     PreviewMouseLeftButtonDown="TaskRowTextBox_PreviewMouseLeftButtonDown"
+                                                     PreviewMouseLeftButtonUp="TaskRowTextBox_PreviewMouseLeftButtonUp"
+                                                     PreviewMouseMove="TaskRowTextBox_PreviewMouseMove"
+                                                     SelectionChanged="TaskRowTextBox_SelectionChanged"
                                                      TextChanged="TodoEditTextBox_TextChanged"
                                                      Unloaded="TodoEditTextBox_Unloaded"
                                                      PreviewKeyDown="TodoEditTextBox_PreviewKeyDown">
@@ -302,6 +547,7 @@
                                                         <Setter Property="IsReadOnly" Value="True" />
                                                         <Setter Property="IsReadOnlyCaretVisible" Value="False" />
                                                         <Setter Property="IsTabStop" Value="False" />
+                                                        <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
                                                         <Style.Triggers>
                                                             <Trigger Property="IsReadOnly" Value="False">
                                                                 <Setter Property="Padding" Value="4,1" />
@@ -310,6 +556,7 @@
                                                                 <Setter Property="BorderThickness" Value="1" />
                                                                 <Setter Property="IsReadOnlyCaretVisible" Value="True" />
                                                                 <Setter Property="IsTabStop" Value="True" />
+                                                                <Setter Property="VerticalScrollBarVisibility" Value="Hidden" />
                                                             </Trigger>
                                                             <DataTrigger Binding="{Binding IsCompleted}" Value="True">
                                                                 <Setter Property="Foreground" Value="#9097A3" />
@@ -405,11 +652,13 @@
                                  ToolTip="输入待办事项，按回车添加"
                                  PreviewKeyDown="TodoInput_PreviewKeyDown" />
                         <Button Grid.Column="1"
+                                AutomationProperties.Name="新增待办事项"
                                 Background="#5B8DEF"
-                                BorderThickness="0"
-                                Cursor="Hand"
-                                FontFamily="Microsoft YaHei"
+                                BorderBrush="#4F7FD7"
                                 Foreground="White"
+                                Style="{StaticResource CuteTaskButtonStyle}"
+                                Tag="{StaticResource CuteBlueHoverBrush}"
+                                ToolTip="新增待办事项"
                                 Content="新增"
                                 Click="AddButton_Click" />
                     </Grid>
@@ -421,21 +670,51 @@
                       Visibility="Hidden">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="38" />
-                        <RowDefinition Height="28" />
                         <RowDefinition Height="36" />
+                        <RowDefinition Height="28" />
+                        <RowDefinition Height="34" />
                         <RowDefinition Height="18" />
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,0,0,5">
+                    <Border Grid.Row="1"
+                            Grid.RowSpan="4"
+                            Margin="-4,-3,-4,-3"
+                            BorderThickness="1.5"
+                            CornerRadius="12"
+                            IsHitTestVisible="False"
+                            Panel.ZIndex="-1">
+                        <Border.Style>
+                            <Style TargetType="{x:Type Border}">
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="BorderBrush" Value="Transparent" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
+                                                 Value="Visible">
+                                        <Setter Property="Background" Value="#20F2A65A" />
+                                        <Setter Property="BorderBrush" Value="#F0A157" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                    </Border>
+
+                    <Grid Grid.Row="0">
                         <ListBox x:Name="ScheduledTaskItemsControl"
+                                 MinHeight="168"
                                  Background="Transparent"
                                  BorderThickness="0"
                                  ScrollViewer.CanContentScroll="True"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.IsDeferredScrollingEnabled="False"
+                                 ScrollViewer.PanningMode="VerticalOnly"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
                                  VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.ScrollUnit="Pixel"
                                  VirtualizingPanel.VirtualizationMode="Recycling">
+                            <ListBox.Resources>
+                                <Style TargetType="{x:Type ScrollBar}"
+                                       BasedOn="{StaticResource TaskListScrollBarStyle}" />
+                            </ListBox.Resources>
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem">
                                     <Setter Property="Padding" Value="0" />
@@ -482,9 +761,9 @@
                                                     <RowDefinition Height="Auto" />
                                                     <RowDefinition Height="*" />
                                                 </Grid.RowDefinitions>
-                                                <TextBlock Grid.Row="0"
-                                                           FontFamily="Microsoft YaHei"
-                                                           FontSize="10.5"
+                                                 <TextBlock Grid.Row="0"
+                                                            FontFamily="Microsoft YaHei"
+                                                            FontSize="11.5"
                                                            FontWeight="SemiBold"
                                                            Foreground="#C87534"
                                                            Text="{Binding DueAtDisplayText}"
@@ -493,19 +772,28 @@
                                                 <TextBox Grid.Row="1"
                                                          MinWidth="0"
                                                          Padding="0"
+                                                         ClipToBounds="True"
                                                          Background="Transparent"
                                                          BorderThickness="0"
-                                                         Cursor="IBeam"
-                                                         FontFamily="Microsoft YaHei"
-                                                         FontSize="12"
+                                                          Cursor="IBeam"
+                                                          FontFamily="Microsoft YaHei"
+                                                          FontSize="13"
                                                          Foreground="#303744"
                                                          IsReadOnly="True"
                                                          IsReadOnlyCaretVisible="False"
+                                                         HorizontalScrollBarVisibility="Disabled"
                                                          MaxHeight="30"
                                                          MaxLength="5000"
                                                          MaxLines="2"
                                                          Text="{Binding Text}"
-                                                         TextWrapping="Wrap" />
+                                                         TextWrapping="Wrap"
+                                                         VerticalScrollBarVisibility="Disabled"
+                                                         LostMouseCapture="TaskRowTextBox_LostMouseCapture"
+                                                         PreviewMouseLeftButtonDown="TaskRowTextBox_PreviewMouseLeftButtonDown"
+                                                         PreviewMouseLeftButtonUp="TaskRowTextBox_PreviewMouseLeftButtonUp"
+                                                         PreviewMouseMove="TaskRowTextBox_PreviewMouseMove"
+                                                         SelectionChanged="TaskRowTextBox_SelectionChanged"
+                                                         Unloaded="TaskRowTextBox_Unloaded" />
                                             </Grid>
                                             <Button x:Name="ScheduledTaskEditButton"
                                                     Grid.Column="1"
@@ -587,14 +875,34 @@
                         <TextBox x:Name="ScheduledTaskInput"
                                  Padding="8,5"
                                  VerticalContentAlignment="Center"
-                                 BorderBrush="#E4C8AA"
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
                                  InputMethod.IsInputMethodEnabled="True"
                                  MaxLength="5000"
                                  ToolTip="输入提醒内容，按回车设定"
                                  TextChanged="ScheduledTaskInput_TextChanged"
-                                 PreviewKeyDown="ScheduledTaskInput_PreviewKeyDown" />
+                                 PreviewKeyDown="ScheduledTaskInput_PreviewKeyDown">
+                            <TextBox.Style>
+                                <Style TargetType="{x:Type TextBox}">
+                                    <Setter Property="Background" Value="#FFFFFCF7" />
+                                    <Setter Property="BorderBrush" Value="#E4C8AA" />
+                                    <Setter Property="BorderThickness" Value="1" />
+                                    <Setter Property="SelectionBrush" Value="#FFD7A6" />
+                                    <Style.Triggers>
+                                        <Trigger Property="IsKeyboardFocused" Value="True">
+                                            <Setter Property="Background" Value="#FFFFF8EE" />
+                                            <Setter Property="BorderBrush" Value="#E89D52" />
+                                        </Trigger>
+                                        <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
+                                                     Value="Visible">
+                                            <Setter Property="Background" Value="#FFFFF4E5" />
+                                            <Setter Property="BorderBrush" Value="#F0A157" />
+                                            <Setter Property="BorderThickness" Value="1.5" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBox.Style>
+                        </TextBox>
                         <TextBlock Margin="9,0,0,0"
                                    VerticalAlignment="Center"
                                    FontFamily="Microsoft YaHei"
@@ -652,14 +960,33 @@
                                      Padding="2,1"
                                      VerticalContentAlignment="Center"
                                      AutomationProperties.Name="循环间隔数值"
-                                     BorderBrush="#E4C8AA"
                                      FontFamily="Microsoft YaHei"
                                      FontSize="11"
                                      MaxLength="7"
                                      Text="1"
                                      TextAlignment="Center"
                                      TextChanged="ScheduledRepeatInput_TextChanged"
-                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput" />
+                                     PreviewTextInput="ScheduledRepeatInput_PreviewTextInput">
+                                <TextBox.Style>
+                                    <Style TargetType="{x:Type TextBox}">
+                                        <Setter Property="Background" Value="#FFFFFCF7" />
+                                        <Setter Property="BorderBrush" Value="#E4C8AA" />
+                                        <Setter Property="BorderThickness" Value="1" />
+                                        <Setter Property="SelectionBrush" Value="#FFD7A6" />
+                                        <Style.Triggers>
+                                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                                <Setter Property="Background" Value="#FFFFF8EE" />
+                                                <Setter Property="BorderBrush" Value="#E89D52" />
+                                            </Trigger>
+                                            <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
+                                                         Value="Visible">
+                                                <Setter Property="Background" Value="#FFFFF4E5" />
+                                                <Setter Property="BorderBrush" Value="#F0A157" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBox.Style>
+                            </TextBox>
                             <ComboBox x:Name="ScheduledRepeatUnitComboBox"
                                       Width="62"
                                       Height="25"
@@ -672,17 +999,185 @@
                                       FontFamily="Microsoft YaHei"
                                       FontSize="11"
                                       Foreground="#725B49"
-                                      SelectionChanged="ScheduledRepeatUnitComboBox_SelectionChanged"
-                                      DropDownOpened="ScheduledRepeatUnitComboBox_DropDownOpened"
-                                      DropDownClosed="ScheduledRepeatUnitComboBox_DropDownClosed"
-                                      PreviewKeyDown="ScheduledRepeatUnitComboBox_PreviewKeyDown">
+                                       SelectionChanged="ScheduledRepeatUnitComboBox_SelectionChanged"
+                                       DropDownOpened="ScheduledRepeatUnitComboBox_DropDownOpened"
+                                       DropDownClosed="ScheduledRepeatUnitComboBox_DropDownClosed"
+                                       PreviewKeyDown="ScheduledRepeatUnitComboBox_PreviewKeyDown">
+                                <ComboBox.Template>
+                                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                                        <Grid>
+                                            <Border x:Name="RepeatUnitButtonBorder"
+                                                    Background="#FFFFF3DF"
+                                                    BorderBrush="#E8BE89"
+                                                    BorderThickness="1"
+                                                    CornerRadius="9">
+                                                <Grid>
+                                                    <ContentPresenter Margin="5,1,17,1"
+                                                                      HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center"
+                                                                      Content="{Binding SelectionBoxItem,
+                                                                                        RelativeSource={RelativeSource TemplatedParent}}"
+                                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                                      ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                                                      IsHitTestVisible="False"
+                                                                      SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                                    <Path Width="6"
+                                                          Height="3"
+                                                          Margin="0,0,6,0"
+                                                          HorizontalAlignment="Right"
+                                                          VerticalAlignment="Center"
+                                                          Data="M0,0 L3,3 L6,0"
+                                                          IsHitTestVisible="False"
+                                                          Stroke="#B47A4E"
+                                                          StrokeEndLineCap="Round"
+                                                          StrokeLineJoin="Round"
+                                                          StrokeStartLineCap="Round"
+                                                          StrokeThickness="1.1" />
+                                                    <ToggleButton Background="Transparent"
+                                                                  BorderThickness="0"
+                                                                  ClickMode="Press"
+                                                                  Focusable="False"
+                                                                  IsChecked="{Binding IsDropDownOpen,
+                                                                                      RelativeSource={RelativeSource TemplatedParent},
+                                                                                      Mode=TwoWay}">
+                                                        <ToggleButton.Template>
+                                                            <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                                                <Border Background="Transparent" />
+                                                            </ControlTemplate>
+                                                        </ToggleButton.Template>
+                                                    </ToggleButton>
+                                                </Grid>
+                                            </Border>
+
+                                            <Popup x:Name="PART_Popup"
+                                                   AllowsTransparency="True"
+                                                   Focusable="False"
+                                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                                   Placement="Bottom"
+                                                   PopupAnimation="Fade">
+                                                <Border MinWidth="{Binding ActualWidth,
+                                                                          RelativeSource={RelativeSource TemplatedParent}}"
+                                                        MaxHeight="132"
+                                                        Margin="0,3,0,0"
+                                                        Padding="3"
+                                                        Background="#FFFFFCF7"
+                                                        BorderBrush="#EAB777"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10"
+                                                        SnapsToDevicePixels="True">
+                                                    <Border.Effect>
+                                                        <DropShadowEffect BlurRadius="12"
+                                                                          Color="#7A4B2C"
+                                                                          Direction="270"
+                                                                          Opacity="0.16"
+                                                                          ShadowDepth="3" />
+                                                    </Border.Effect>
+                                                    <ScrollViewer CanContentScroll="True"
+                                                                  HorizontalScrollBarVisibility="Disabled"
+                                                                  VerticalScrollBarVisibility="Auto">
+                                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                                    </ScrollViewer>
+                                                </Border>
+                                            </Popup>
+                                        </Grid>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="Background"
+                                                        Value="#FFFFE8C9" />
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="BorderBrush"
+                                                        Value="#E29B51" />
+                                            </Trigger>
+                                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="Background"
+                                                        Value="#FFFFEBD2" />
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="BorderBrush"
+                                                        Value="#D98A45" />
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="BorderThickness"
+                                                        Value="1.5" />
+                                            </Trigger>
+                                            <Trigger Property="IsDropDownOpen" Value="True">
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="Background"
+                                                        Value="#FFFFE4BE" />
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="BorderBrush"
+                                                        Value="#DC8D3F" />
+                                            </Trigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="Background"
+                                                        Value="#FFF6F1EA" />
+                                                <Setter TargetName="RepeatUnitButtonBorder"
+                                                        Property="BorderBrush"
+                                                        Value="#DFD3C5" />
+                                                <Setter Property="Foreground"
+                                                        Value="#A99E92" />
+                                                <Setter Property="Opacity"
+                                                        Value="0.72" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ComboBox.Template>
                                 <ComboBox.ItemContainerStyle>
                                     <Style TargetType="{x:Type ComboBoxItem}">
                                         <EventSetter Event="PreviewMouseLeftButtonDown"
                                                      Handler="ScheduledRepeatUnitItem_PreviewMouseLeftButtonDown" />
                                         <Setter Property="FontFamily" Value="Microsoft YaHei" />
                                         <Setter Property="FontSize" Value="11" />
-                                        <Setter Property="Padding" Value="6,3" />
+                                        <Setter Property="Foreground" Value="#70462D" />
+                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                        <Setter Property="Padding" Value="8,4" />
+                                        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                                                    <Border x:Name="RepeatUnitOptionBorder"
+                                                            Padding="{TemplateBinding Padding}"
+                                                            Background="Transparent"
+                                                            BorderBrush="Transparent"
+                                                            BorderThickness="1"
+                                                            CornerRadius="7">
+                                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                          VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsHighlighted" Value="True">
+                                                            <Setter TargetName="RepeatUnitOptionBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFEBD2" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="RepeatUnitOptionBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFDCA8" />
+                                                            <Setter Property="Foreground"
+                                                                    Value="#8A4F21" />
+                                                            <Setter Property="FontWeight"
+                                                                    Value="SemiBold" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                            <Setter TargetName="RepeatUnitOptionBorder"
+                                                                    Property="Background"
+                                                                    Value="#FFFFE5C2" />
+                                                            <Setter TargetName="RepeatUnitOptionBorder"
+                                                                    Property="BorderBrush"
+                                                                    Value="#D98A45" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                            <Setter Property="Foreground"
+                                                                    Value="#ADA39A" />
+                                                            <Setter Property="Opacity"
+                                                                    Value="0.7" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
                                     </Style>
                                 </ComboBox.ItemContainerStyle>
                             </ComboBox>
@@ -739,6 +1234,11 @@
                                                      Value="True">
                                             <Setter Property="Background" Value="#FFFFF4E5" />
                                             <Setter Property="BorderBrush" Value="#E89D52" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
+                                                     Value="Visible">
+                                            <Setter Property="Background" Value="#FFFFEFD9" />
+                                            <Setter Property="BorderBrush" Value="#F0A157" />
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
@@ -803,7 +1303,7 @@
                                          InputMethod.IsInputMethodEnabled="False"
                                          IsReadOnly="True"
                                          TextAlignment="Center"
-                                         ToolTip="点击选择提醒日期"
+                                         ToolTip="点击选择提醒日期，选中后关闭"
                                          PreviewKeyDown="ScheduledDateInput_PreviewKeyDown" />
                                 <Path Grid.Column="2"
                                       Width="7"
@@ -1136,6 +1636,11 @@
                                                      Value="True">
                                             <Setter Property="Background" Value="#FFFFF4E5" />
                                             <Setter Property="BorderBrush" Value="#E89D52" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
+                                                     Value="Visible">
+                                            <Setter Property="Background" Value="#FFFFEFD9" />
+                                            <Setter Property="BorderBrush" Value="#F0A157" />
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
@@ -1554,16 +2059,39 @@
                         <Button x:Name="ScheduledTaskSubmitButton"
                                 Grid.Column="4"
                                 Height="30"
-                                Background="#F2A65A"
-                                BorderThickness="0"
-                                Content="设定"
-                                Cursor="Hand"
-                                FontFamily="Microsoft YaHei"
+                                AutomationProperties.Name="新增或修改定时任务"
+                                Content="新增"
                                 FontSize="12"
                                 FontWeight="SemiBold"
                                 Foreground="White"
                                 ToolTip="添加定时任务"
-                                Click="ScheduledTaskAddButton_Click" />
+                                Click="ScheduledTaskAddButton_Click">
+                            <Button.Style>
+                                <Style TargetType="{x:Type Button}"
+                                       BasedOn="{StaticResource CuteTaskButtonStyle}">
+                                    <Setter Property="Background" Value="#F2A65A" />
+                                    <Setter Property="BorderBrush" Value="#DB8B3E" />
+                                    <Setter Property="Tag"
+                                            Value="{StaticResource CuteOrangeHoverBrush}" />
+                                    <Style.Triggers>
+                                        <Trigger Property="Content" Value="确定修改">
+                                            <Setter Property="Background" Value="#E88936" />
+                                            <Setter Property="BorderBrush" Value="#C66F27" />
+                                            <Setter Property="Tag"
+                                                    Value="{StaticResource CuteOrangeEditHoverBrush}" />
+                                        </Trigger>
+                                        <!-- Keep the edit state orange until the
+                                             code-side wording is upgraded. -->
+                                        <Trigger Property="Content" Value="保存">
+                                            <Setter Property="Background" Value="#E88936" />
+                                            <Setter Property="BorderBrush" Value="#C66F27" />
+                                            <Setter Property="Tag"
+                                                    Value="{StaticResource CuteOrangeEditHoverBrush}" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                     </Grid>
 
                     <Grid Grid.Row="4">
@@ -1592,25 +2120,27 @@
                         <Button x:Name="ScheduledTaskEditCancelButton"
                                 Grid.Column="1"
                                 MinWidth="31"
+                                MinHeight="0"
                                 Height="18"
                                 Margin="4,0,0,0"
                                 Padding="2,0"
                                 VerticalAlignment="Bottom"
                                 AutomationProperties.Name="取消修改定时任务"
-                                Background="Transparent"
-                                BorderThickness="0"
+                                Background="#FFFFF4E5"
+                                BorderBrush="#E7B77D"
+                                BorderThickness="1"
                                 Content="取消"
-                                Cursor="Hand"
-                                FontFamily="Microsoft YaHei"
                                 FontSize="10.5"
                                 Foreground="#B47A4E"
+                                Style="{StaticResource CuteTaskButtonStyle}"
+                                Tag="{StaticResource CuteCreamHoverBrush}"
                                 ToolTip="取消修改"
                                 Visibility="Collapsed"
                                 Click="ScheduledTaskEditCancelButton_Click" />
                     </Grid>
                 </Grid>
 
-                <Grid Grid.Row="2">
+                <Grid Grid.Row="2" Margin="0,2,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="*" />
@@ -1645,7 +2175,7 @@
                               Unchecked="StartupToggle_Changed" />
                 </Grid>
 
-                <Grid Grid.Row="3" Margin="0,2,0,4">
+                <Grid Grid.Row="3" Margin="0,0,0,1">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="72" />
                         <ColumnDefinition Width="*" />
@@ -1701,8 +2231,7 @@
 
         <Popup x:Name="TaskFullTextPopup"
                AllowsTransparency="True"
-               HorizontalOffset="12"
-               Placement="MousePoint"
+               Placement="Custom"
                PopupAnimation="Fade"
                StaysOpen="True"
                Opened="TaskFullTextPopup_Opened"

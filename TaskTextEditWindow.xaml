@@ -3,35 +3,247 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="修改内容"
-        Width="6cm"
-        Height="3.708cm"
-        MinWidth="190"
-        MinHeight="124"
-        Background="White"
+        Width="378"
+        Height="208"
+        Background="#FFF6FAFF"
         FontFamily="Microsoft YaHei"
-        ResizeMode="CanResize"
+        Opacity="0"
+        ResizeMode="NoResize"
         ShowInTaskbar="False"
         SizeToContent="Manual"
         SnapsToDevicePixels="True"
         Topmost="True"
         UseLayoutRounding="True"
-        WindowStartupLocation="CenterOwner"
+        WindowStartupLocation="Manual"
         WindowStyle="None"
         PreviewKeyDown="Window_PreviewKeyDown">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="31"
                             CornerRadius="14"
                             GlassFrameThickness="0"
-                            ResizeBorderThickness="6"
-                            UseAeroCaptionButtons="False" />
+                            ResizeBorderThickness="0"
+                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="EditorBlueHoverBrush" Color="#DCEBFF" />
+        <SolidColorBrush x:Key="EditorBluePrimaryHoverBrush" Color="#4F88DD" />
+        <SolidColorBrush x:Key="EditorOrangeHoverBrush" Color="#FFE5C9" />
+        <Style x:Key="EditorCuteButtonStyle"
+               TargetType="{x:Type Button}">
+            <Setter Property="MinHeight" Value="22" />
+            <Setter Property="Padding" Value="9,2" />
+            <Setter Property="Background" Value="#EAF3FF" />
+            <Setter Property="BorderBrush" Value="#BBD3F5" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#4B6F9F" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="Tag"
+                    Value="{StaticResource EditorBlueHoverBrush}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Grid x:Name="EditorButtonRoot"
+                              Background="Transparent"
+                              RenderTransformOrigin="0.5,0.5">
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="9" />
+                            <Border x:Name="EditorHoverTint"
+                                    Background="{TemplateBinding Tag}"
+                                    CornerRadius="9"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                            <Ellipse Width="12"
+                                     Height="4"
+                                     Margin="4,2,0,0"
+                                     HorizontalAlignment="Left"
+                                     VerticalAlignment="Top"
+                                     Fill="#75FFFFFF"
+                                     IsHitTestVisible="False" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                            <Border x:Name="EditorFocusRing"
+                                    Margin="-2"
+                                    BorderBrush="#6EA2E8"
+                                    BorderThickness="1.5"
+                                    CornerRadius="11"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                            <Border x:Name="EditorPressedShade"
+                                    Background="#16000000"
+                                    CornerRadius="9"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="EditorHoverTint"
+                                        Property="Opacity"
+                                        Value="0.75" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="EditorButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.96" />
+                                <Setter TargetName="EditorPressedShade"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="EditorFocusRing"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="EditorButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.42" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="EditorCloseButtonStyle"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#EAF3FF" />
+            <Setter Property="BorderBrush" Value="#C5D9F4" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Foreground" Value="#6B82A2" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Grid Background="Transparent">
+                            <Ellipse x:Name="CloseCircle"
+                                     Fill="{TemplateBinding Background}"
+                                     Stroke="{TemplateBinding BorderBrush}"
+                                     StrokeThickness="1" />
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                            <Ellipse x:Name="CloseFocusRing"
+                                     Margin="-2"
+                                     Fill="Transparent"
+                                     Stroke="#6EA2E8"
+                                     StrokeThickness="1.5"
+                                     Opacity="0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CloseCircle"
+                                        Property="Fill"
+                                        Value="#DDEBFF" />
+                                <Setter Property="Foreground" Value="#3F6EA8" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="CloseCircle"
+                                        Property="Fill"
+                                        Value="#C9DFFF" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CloseFocusRing"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="EditorScrollBarStyle"
+               TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="10" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid Width="10" Background="Transparent">
+                            <Border Width="6"
+                                    Margin="0,2"
+                                    HorizontalAlignment="Center"
+                                    Background="#25A9C8EF"
+                                    CornerRadius="3" />
+                            <Track x:Name="PART_Track"
+                                   Margin="1,3"
+                                   IsDirectionReversed="True"
+                                   Orientation="{TemplateBinding Orientation}">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  Focusable="False"
+                                                  Opacity="0" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb MinHeight="22">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border x:Name="EditorThumbPill"
+                                                        Width="6"
+                                                        Margin="0,1"
+                                                        HorizontalAlignment="Center"
+                                                        Background="#82ACE5"
+                                                        CornerRadius="3" />
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="EditorThumbPill"
+                                                                Property="Background"
+                                                                Value="#679CDF" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="EditorThumbPill"
+                                                                Property="Background"
+                                                                Value="#4E83C9" />
+                                                        <Setter TargetName="EditorThumbPill"
+                                                                Property="Width"
+                                                                Value="7" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  Focusable="False"
+                                                  Opacity="0" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
 
     <Border Margin="1"
             Padding="8,6,8,7"
-            Background="White"
-            BorderBrush="#C9DCF7"
-            BorderThickness="1"
+            BorderBrush="#AFCBEF"
+            BorderThickness="1.2"
             CornerRadius="14">
+        <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Offset="0" Color="#FFFFFFFF" />
+                <GradientStop Offset="0.58" Color="#FFF8FBFF" />
+                <GradientStop Offset="1" Color="#FFEDF5FF" />
+            </LinearGradientBrush>
+        </Border.Background>
         <Border.Effect>
             <DropShadowEffect BlurRadius="15"
                               Direction="270"
@@ -53,11 +265,20 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel VerticalAlignment="Center"
                             Orientation="Horizontal">
-                    <TextBlock Margin="1,0,5,0"
-                               VerticalAlignment="Center"
-                               FontFamily="Microsoft YaHei"
-                               FontSize="14"
-                               Text="✎" />
+                    <Border Width="22"
+                            Height="22"
+                            Margin="0,0,6,0"
+                            Background="#E5F0FF"
+                            BorderBrush="#BED5F3"
+                            BorderThickness="1"
+                            CornerRadius="11">
+                        <TextBlock HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="13"
+                                   Foreground="#4E7EBB"
+                                   Text="✎" />
+                    </Border>
                     <TextBlock x:Name="EditorTitleText"
                                VerticalAlignment="Center"
                                FontFamily="Microsoft YaHei"
@@ -70,13 +291,11 @@
                         Width="22"
                         Height="22"
                         Padding="0"
-                        Background="Transparent"
-                        BorderThickness="0"
+                        AutomationProperties.Name="取消修改"
                         Content="×"
-                        Cursor="Hand"
                         FontFamily="Microsoft YaHei"
                         FontSize="16"
-                        Foreground="#96A3B6"
+                        Style="{StaticResource EditorCloseButtonStyle}"
                         ToolTip="取消修改"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         Click="CancelButton_Click" />
@@ -88,9 +307,6 @@
                      Padding="7,5"
                      AcceptsReturn="True"
                      AcceptsTab="False"
-                     Background="#FFFEFEFF"
-                     BorderBrush="#D9E5F6"
-                     BorderThickness="1"
                      FontFamily="Microsoft YaHei"
                      FontSize="12.5"
                      Foreground="#303744"
@@ -99,7 +315,30 @@
                      TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto"
                      shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                     TextChanged="EditorTextBox_TextChanged" />
+                     TextChanged="EditorTextBox_TextChanged">
+                <TextBox.Resources>
+                    <Style TargetType="{x:Type ScrollBar}"
+                           BasedOn="{StaticResource EditorScrollBarStyle}" />
+                </TextBox.Resources>
+                <TextBox.Style>
+                    <Style TargetType="{x:Type TextBox}">
+                        <Setter Property="Background" Value="#FFFEFEFF" />
+                        <Setter Property="BorderBrush" Value="#D3E2F6" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Setter Property="SelectionBrush" Value="#BDD7FA" />
+                        <Style.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter Property="Background" Value="White" />
+                                <Setter Property="BorderBrush" Value="#72A5E8" />
+                                <Setter Property="BorderThickness" Value="1.5" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
 
             <Grid Grid.Row="2" Margin="0,4,0,0">
                 <Grid.ColumnDefinitions>
@@ -121,49 +360,31 @@
                         Padding="7,1"
                         Background="#FFF5E8"
                         BorderBrush="#E7C69E"
-                        BorderThickness="1"
                         Content="时间与循环…"
-                        Cursor="Hand"
-                        FontFamily="Microsoft YaHei"
                         FontSize="10"
                         Foreground="#A66B35"
+                        Style="{StaticResource EditorCuteButtonStyle}"
+                        Tag="{StaticResource EditorOrangeHoverBrush}"
                         Visibility="Collapsed"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         Click="AdvancedEditButton_Click" />
                 <Button Grid.Column="2"
+                        MinWidth="74"
                         Height="22"
                         Padding="9,1"
+                        AutomationProperties.Name="确定修改"
                         Background="#6F9BE0"
-                        BorderThickness="0"
-                        Content="完成"
-                        Cursor="Hand"
-                        FontFamily="Microsoft YaHei"
+                        BorderBrush="#5B87CA"
+                        Content="确定修改"
                         FontSize="10.5"
                         FontWeight="SemiBold"
                         Foreground="White"
+                        Style="{StaticResource EditorCuteButtonStyle}"
+                        Tag="{StaticResource EditorBluePrimaryHoverBrush}"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         Click="SaveButton_Click" />
             </Grid>
 
-            <Border Grid.RowSpan="3"
-                    Width="14"
-                    Height="14"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Bottom"
-                    Background="Transparent"
-                    Cursor="SizeNWSE"
-                    shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                    shell:WindowChrome.ResizeGripDirection="BottomRight">
-                <Path Width="9"
-                      Height="9"
-                      HorizontalAlignment="Right"
-                      VerticalAlignment="Bottom"
-                      Data="M1,8 L8,1 M4,8 L8,4"
-                      IsHitTestVisible="False"
-                      Stroke="#B8C7DC"
-                      StrokeEndLineCap="Round"
-                      StrokeThickness="1.1" />
-            </Border>
         </Grid>
     </Border>
 </Window>

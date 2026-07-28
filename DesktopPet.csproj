@@ -7,18 +7,19 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LubanDesktopPet</RootNamespace>
     <AssemblyName>LubanDesktopPet</AssemblyName>
-    <Version>1.0.18</Version>
+    <Version>1.0.19</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\luban-tray.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <Resource Include="Assets\sprite-pages\*.pbgra.br" />
     <Resource Include="Assets\luban-sprite-pages.json" />
     <Resource Include="Assets\luban-pillow-layer.png" />
     <Resource Include="Assets\luban-idle-no-snore-patch-source.png" />
-    <None Update="log\.gitkeep"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Assets\luban-tray.ico"
+                      LogicalName="LubanDesktopPet.Assets.luban-tray.ico" />
     <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Remove="tests\**\*" />
     <None Remove="tests\**\*" />
