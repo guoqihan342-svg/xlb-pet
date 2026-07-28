@@ -64,6 +64,9 @@ public partial class MainWindow : Window
     private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
+    // The regenerated cute prefix spends the former second-bob frame budget on
+    // eight-step interpolation around its one intentional crouch/recovery, and
+    // reaches the complete raised-hands/open-smile pose at frame 56.
     private const int CuteCleanSmoothFrameCount = 56;
     private const int WaveCleanSmoothFrameCount = 40;
     private const double PetSizeSpringAngularFrequency = 28;

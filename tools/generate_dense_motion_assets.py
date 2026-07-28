@@ -53,6 +53,12 @@ REMINDER_KEY_COUNT = 8
 REMINDER_ENTER_FRAME_COUNT = 33
 REMINDER_HOLD_FRAME_COUNT = 48
 INTERNAL_BRIDGES = {"yawn": (6,), "cry": (3,), "think": (6,)}
+SKIPPED_ACTION_KEY_FRAMES = {
+    # cute frame05 is a redundant closed-mouth pose between the already
+    # compatible frame04/frame06 silhouettes. Its two-frame budget is better
+    # spent smoothing the single intentional crouch and recovery below.
+    "cute": frozenset({5}),
+}
 NEUTRAL_SPECS = {
     "cute": (
         2,
@@ -81,7 +87,7 @@ SUBSTEP_OVERRIDES: dict[str, dict[int, int]] = {
     "wake": {4: 8, 15: 4, 20: 8, 21: 4, 23: 4},
     "yawn": {4: 8, 7: 4, 8: 4, 10: 4, 11: 8, 16: 8, 17: 4, 20: 4},
     "cry": {2: 4},
-    "cute": {2: 4, 3: 8, 4: 8},
+    "cute": {2: 4, 3: 8, 4: 8, 6: 4, 7: 8, 8: 8},
     "like": {0: 4, 5: 8, 6: 4, 8: 4, 9: 4},
     "eat": {0: 4, 1: 4, 7: 4, 10: 4},
     "wave": {
@@ -635,6 +641,8 @@ def build_action_key_sequences(
                 neutral_paths.append(neutral_path)
                 neutral_metrics.append(metrics)
         for number in range(1, 25):
+            if number in SKIPPED_ACTION_KEY_FRAMES.get(action, frozenset()):
+                continue
             keys.append(ASSETS / f"luban-{action}-frame-{number:02d}.png")
             if number in INTERNAL_BRIDGES.get(action, ()):
                 keys.append(
@@ -2017,6 +2025,7 @@ def main() -> None:
         help="Refine the current 53-frame wake base against visual motion caps",
     )
     parser.add_argument("--actions", action="store_true", help="Generate action smooth sets")
+    parser.add_argument("--cute", action="store_true", help="Regenerate only cute smooth")
     parser.add_argument("--wave", action="store_true", help="Regenerate only wave smooth")
     parser.add_argument(
         "--adaptive-actions",
@@ -2057,6 +2066,7 @@ def main() -> None:
         not args.wake
         and not args.adaptive_wake
         and not args.actions
+        and not args.cute
         and not args.wave
         and not args.adaptive_actions
         and not args.loops
@@ -2065,7 +2075,7 @@ def main() -> None:
         and not args.clean_existing
     ):
         parser.error(
-            "select --wake, --adaptive-wake, --actions, --wave, "
+            "select --wake, --adaptive-wake, --actions, --cute, --wave, "
             "--adaptive-actions, --loops, --edge-peek, --reminder, and/or "
             "--clean-existing"
         )
@@ -2095,6 +2105,20 @@ def main() -> None:
                 require_all_unique=False,
             )
         print(f"QA: {WORK_ROOT / 'qa-action-*.json'}", flush=True)
+    if args.cute:
+        cute_outputs = build_actions(("cute",))["cute"]
+        basic_qa(
+            cute_outputs,
+            WORK_ROOT / "qa-action-cute.json",
+            require_all_unique=False,
+        )
+        cute_outputs = build_adaptive_actions(("cute",))["cute"]
+        basic_qa(
+            cute_outputs,
+            WORK_ROOT / "qa-action-cute.json",
+            require_all_unique=False,
+        )
+        print(f"QA: {WORK_ROOT / 'qa-action-cute.json'}", flush=True)
     if args.wave:
         wave_outputs = build_actions(("wave",))["wave"]
         basic_qa(
@@ -2154,6 +2178,7 @@ def main() -> None:
         args.wake
         or args.adaptive_wake
         or args.actions
+        or args.cute
         or args.wave
         or args.adaptive_actions
         or args.loops

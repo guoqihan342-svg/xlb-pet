@@ -71,6 +71,17 @@ MAX_CENTROID_SECOND_DIFFERENCE_DIP = 1.0
 MAX_HEAD_SECOND_DIFFERENCE_DIP = 1.0
 MAX_TRANSIENT_EDGE_RATIO = 0.010
 MAX_WIDE_TRANSLUCENT_TRAIL_RATIO = 0.0015
+RUNTIME_STABLE_ACTION_PREFIXES = {
+    # The regenerated 56-frame prefix contains one deliberately oversampled
+    # crouch/recovery and ends at the complete raised-hands/open-smile pose.
+    "cute.runtime": ("cute.smooth", 56),
+}
+MAX_RUNTIME_CENTROID_SECOND_DIFFERENCE_DIP = 0.75
+# The blue-brim component box is quantised to whole source pixels, so a
+# sub-pixel-smooth path can report a one-pixel direction flip. Old visible cute
+# bobs measured 1.35/2.15 DIP; keep the runtime failure threshold below those
+# while allowing the regenerated path's 0.75-DIP quantisation-only findings.
+MAX_RUNTIME_HEAD_MICRO_ROUNDTRIP_DIP = 1.0
 # Boarding is an authored non-loop transition from the prone idle silhouette to
 # the mounted flight silhouette.  It may legitimately translate the character
 # and change the occupied outline, so it has a displacement/trail profile
@@ -1992,6 +2003,74 @@ def main() -> int:
                 sequence=name,
             )
 
+    runtime_profile_results: dict[str, Any] = {}
+    for runtime_name, (source_name, frame_count) in (
+        RUNTIME_STABLE_ACTION_PREFIXES.items()
+    ):
+        resources = manifest_sequences.get(source_name, [])
+        if len(resources) < frame_count:
+            add_failure(
+                failures,
+                "runtime_profile.frame_count",
+                "runtime stable-action prefix is shorter than declared",
+                sequence=runtime_name,
+                source_sequence=source_name,
+                expected=frame_count,
+                actual=len(resources),
+            )
+            continue
+        try:
+            runtime_result, _ = analyze_sequence(
+                runtime_name,
+                resources[:frame_count],
+                reader,
+                failures,
+            )
+            runtime_profile_results[runtime_name] = runtime_result
+            native_result = runtime_result["surfaces"]["native-399x509"]
+            micro_roundtrips = [
+                finding
+                for finding in native_result["report_only_findings"]
+                if (
+                    finding["metric"] == "head_micro_roundtrip"
+                    and finding["value"]
+                    > MAX_RUNTIME_HEAD_MICRO_ROUNDTRIP_DIP
+                    + FLOAT_COMPARISON_EPSILON
+                )
+            ]
+            if micro_roundtrips:
+                add_failure(
+                    failures,
+                    "runtime_profile.head_micro_roundtrip",
+                    "runtime stable-action prefix contains an internal head-height roundtrip",
+                    sequence=runtime_name,
+                    findings=micro_roundtrips,
+                )
+            centroid_jerk = native_result[
+                "maximum_centroid_second_difference_dip"
+            ]
+            if (
+                centroid_jerk
+                > MAX_RUNTIME_CENTROID_SECOND_DIFFERENCE_DIP
+                + FLOAT_COMPARISON_EPSILON
+            ):
+                add_failure(
+                    failures,
+                    "runtime_profile.centroid_second_difference",
+                    "runtime stable-action prefix contains visible body-height jitter",
+                    sequence=runtime_name,
+                    value=centroid_jerk,
+                    limit=MAX_RUNTIME_CENTROID_SECOND_DIFFERENCE_DIP,
+                )
+        except Exception as error:
+            add_failure(
+                failures,
+                "runtime_profile.analyze",
+                str(error),
+                sequence=runtime_name,
+                source_sequence=source_name,
+            )
+
     contact_path = output / "worst-transitions.png"
     selected_contacts: list[dict[str, Any]] = []
     if args.contacts:
@@ -2026,6 +2105,7 @@ def main() -> int:
         "pages": reader.page_validation,
         "reconstructed_frames": reconstructed,
         "sequences": sequence_results,
+        "runtime_profiles": runtime_profile_results,
         "contacts": {
             "written": bool(args.contacts and selected_contacts),
             "path": str(contact_path) if args.contacts else None,
@@ -2047,6 +2127,12 @@ def main() -> int:
             ),
             "diagnostic_reference_centroid_second_difference_dip": (
                 MAX_CENTROID_SECOND_DIFFERENCE_DIP
+            ),
+            "maximum_runtime_centroid_second_difference_dip": (
+                MAX_RUNTIME_CENTROID_SECOND_DIFFERENCE_DIP
+            ),
+            "maximum_runtime_head_micro_roundtrip_dip": (
+                MAX_RUNTIME_HEAD_MICRO_ROUNDTRIP_DIP
             ),
             "diagnostic_reference_transient_edge_ratio": MAX_TRANSIENT_EDGE_RATIO,
             "diagnostic_reference_wide_translucent_trail_ratio": (
@@ -2079,7 +2165,14 @@ def main() -> int:
                 "centroid_step_dip",
                 "head_center_step_dip",
                 "wide_translucent_trail_pixels",
-            ]
+            ],
+            **{
+                name: [
+                    "head_micro_roundtrip",
+                    "centroid_second_difference_dip",
+                ]
+                for name in RUNTIME_STABLE_ACTION_PREFIXES
+            },
         },
         "exact_pair_waivers": [
             {
