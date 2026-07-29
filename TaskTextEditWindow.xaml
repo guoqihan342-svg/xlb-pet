@@ -245,7 +245,8 @@
         </Style>
     </Window.Resources>
 
-    <Border Margin="1"
+    <Border x:Name="EditorChrome"
+            Margin="0"
             Padding="12,10,12,12"
             BorderBrush="#AFCBEF"
             BorderThickness="1.2"

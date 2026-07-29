@@ -1189,13 +1189,34 @@ def build_adaptive_wake() -> list[Path]:
     base_directory.mkdir(parents=True, exist_ok=True)
     for pair_index, (first, second) in enumerate(zip(keys, keys[1:])):
         midpoint_snapshot = base_directory / f"edge-{pair_index:03d}-mid.png"
-        if not midpoint_snapshot.exists():
-            if len(current) != base_count:
-                raise ValueError(
-                    "wake needs its 53-frame base sequence before creating "
-                    "adaptive midpoint snapshots"
-                )
+        fingerprint_path = (
+            base_directory / f"edge-{pair_index:03d}-mid.sha256"
+        )
+        expected_fingerprint = canonical_digest(
+            [first, second],
+            f"adaptive-wake-midpoint-{pair_index:03d}",
+        )
+        actual_fingerprint = (
+            fingerprint_path.read_text(encoding="ascii").strip()
+            if fingerprint_path.exists()
+            else ""
+        )
+        snapshot_is_current = (
+            midpoint_snapshot.exists()
+            and actual_fingerprint == expected_fingerprint
+        )
+        if len(current) == base_count and not snapshot_is_current:
             atomic_copy_png(current[pair_index * 2 + 1], midpoint_snapshot)
+            fingerprint_path.write_text(
+                expected_fingerprint + "\n",
+                encoding="ascii",
+            )
+        elif not snapshot_is_current:
+            raise ValueError(
+                "wake midpoint cache does not match its authored endpoints; "
+                "rerun with --wake to rebuild the 53-frame base first"
+            )
+
         clean_motion_path(midpoint_snapshot)
         segment = f"wake-edge-{pair_index:03d}"
         base_edges[segment] = [first, midpoint_snapshot, second]

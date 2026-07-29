@@ -21,6 +21,7 @@ public partial class ReminderWindow : Window
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private readonly Action _repositionAction;
     private Window? _anchor;
+    private FrameworkElement? _placementAnchor;
     private double _preferredHeight = 360;
     private string _presentationTitle = string.Empty;
     private string _presentationContent = string.Empty;
@@ -110,17 +111,23 @@ public partial class ReminderWindow : Window
         }
     }
 
-    public void ShowBeside(Window anchor)
+    public void ShowBeside(Window anchor) =>
+        ShowBeside(anchor, anchor);
+
+    public void ShowBeside(
+        Window anchor,
+        FrameworkElement placementAnchor)
     {
         ArgumentNullException.ThrowIfNull(anchor);
+        ArgumentNullException.ThrowIfNull(placementAnchor);
 
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.Invoke(() => ShowBeside(anchor));
+            Dispatcher.Invoke(() => ShowBeside(anchor, placementAnchor));
             return;
         }
 
-        AttachAnchor(anchor);
+        AttachAnchor(anchor, placementAnchor);
         ApplyAnchorWorkAreaSize();
 
         var wasVisible = IsVisible;
@@ -230,19 +237,28 @@ public partial class ReminderWindow : Window
             MaximumPreferredHeight);
     }
 
-    private void AttachAnchor(Window anchor)
+    private void AttachAnchor(
+        Window anchor,
+        FrameworkElement placementAnchor)
     {
-        if (ReferenceEquals(_anchor, anchor))
+        if (ReferenceEquals(_anchor, anchor) &&
+            ReferenceEquals(_placementAnchor, placementAnchor))
         {
             return;
         }
 
         DetachAnchor();
         _anchor = anchor;
+        _placementAnchor = placementAnchor;
         _anchor.LocationChanged += Anchor_GeometryChanged;
         _anchor.SizeChanged += Anchor_SizeChanged;
         _anchor.StateChanged += Anchor_GeometryChanged;
         _anchor.DpiChanged += Anchor_DpiChanged;
+        if (!ReferenceEquals(_placementAnchor, _anchor))
+        {
+            _placementAnchor.SizeChanged += PlacementAnchor_SizeChanged;
+        }
+
         _positionCache.InvalidateGeometry();
     }
 
@@ -250,7 +266,14 @@ public partial class ReminderWindow : Window
     {
         if (_anchor is null)
         {
+            _placementAnchor = null;
             return;
+        }
+
+        if (_placementAnchor is not null &&
+            !ReferenceEquals(_placementAnchor, _anchor))
+        {
+            _placementAnchor.SizeChanged -= PlacementAnchor_SizeChanged;
         }
 
         _anchor.LocationChanged -= Anchor_GeometryChanged;
@@ -258,6 +281,7 @@ public partial class ReminderWindow : Window
         _anchor.StateChanged -= Anchor_GeometryChanged;
         _anchor.DpiChanged -= Anchor_DpiChanged;
         _anchor = null;
+        _placementAnchor = null;
         _positionCache.InvalidateGeometry();
     }
 
@@ -272,7 +296,9 @@ public partial class ReminderWindow : Window
             return;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(_anchor);
+        var workArea = _placementAnchor is not null
+            ? MonitorWorkArea.GetForVisual(_anchor, _placementAnchor)
+            : MonitorWorkArea.GetForWindow(_anchor);
         var usableWidth = Math.Max(1, workArea.Width - WorkAreaInset * 2);
         var usableHeight = Math.Max(1, workArea.Height - WorkAreaInset * 2);
 
@@ -320,7 +346,12 @@ public partial class ReminderWindow : Window
     {
         _repositionQueued = false;
         var anchor = _anchor;
-        if (anchor is null || !IsVisible || !anchor.IsLoaded)
+        var placementAnchor = _placementAnchor;
+        if (anchor is null ||
+            placementAnchor is null ||
+            !IsVisible ||
+            !anchor.IsLoaded ||
+            !placementAnchor.IsLoaded)
         {
             return;
         }
@@ -328,10 +359,10 @@ public partial class ReminderWindow : Window
         ApplyAnchorWorkAreaSize();
         UpdateLayout();
 
-        if (TryShouldPlaceOnLeft(anchor, out var placeOnLeft))
+        if (TryShouldPlaceOnLeft(placementAnchor, out var placeOnLeft))
         {
             if (OwnedWindowPositioner.TryPosition(
-                    anchor,
+                    placementAnchor,
                     this,
                     _positionCache,
                     out var childIsOnLeft,
@@ -344,7 +375,7 @@ public partial class ReminderWindow : Window
         }
 
         if (!OwnedWindowPositioner.TryPosition(
-                anchor,
+                placementAnchor,
                 this,
                 _positionCache,
                 out var initiallyOnLeft,
@@ -353,10 +384,13 @@ public partial class ReminderWindow : Window
             return;
         }
 
-        if (TryShouldPlaceOnLeft(anchor, out placeOnLeft) && placeOnLeft)
+        if (TryShouldPlaceOnLeft(
+                placementAnchor,
+                out placeOnLeft) &&
+            placeOnLeft)
         {
             if (OwnedWindowPositioner.TryPosition(
-                    anchor,
+                    placementAnchor,
                     this,
                     _positionCache,
                     out var correctedOnLeft,
@@ -372,7 +406,7 @@ public partial class ReminderWindow : Window
     }
 
     private bool TryShouldPlaceOnLeft(
-        Window anchor,
+        FrameworkElement anchor,
         out bool placeOnLeft)
     {
         placeOnLeft = false;
@@ -444,6 +478,14 @@ public partial class ReminderWindow : Window
     }
 
     private void Anchor_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        _positionCache.InvalidateGeometry();
+        ScheduleReposition();
+    }
+
+    private void PlacementAnchor_SizeChanged(
+        object sender,
+        SizeChangedEventArgs e)
     {
         _positionCache.InvalidateGeometry();
         ScheduleReposition();

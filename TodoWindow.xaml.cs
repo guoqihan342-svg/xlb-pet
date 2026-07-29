@@ -10,6 +10,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 
 namespace LubanDesktopPet;
@@ -25,6 +26,82 @@ public partial class TodoWindow : Window
         CreateClockPartOptions(60);
     private static readonly string[] ScheduledRepeatUnitOptions =
         ["分钟", "小时", "天"];
+    private static readonly TaskFullTextTheme TodoTaskFullTextTheme =
+        CreateTaskFullTextTheme(
+            chromeBackground: Color.FromRgb(0xF3, 0xF7, 0xFD),
+            chromeBorder: Color.FromRgb(0x8C, 0xB4, 0xF4),
+            shadow: Color.FromRgb(0x5B, 0x78, 0xA8),
+            title: Color.FromRgb(0x3E, 0x70, 0xC6),
+            textBackground: Color.FromRgb(0xF8, 0xFB, 0xFF),
+            textBorder: Color.FromRgb(0xBD, 0xD2, 0xEF),
+            textForeground: Color.FromRgb(0x30, 0x37, 0x44),
+            selection: Color.FromRgb(0xA9, 0xC9, 0xF4),
+            count: Color.FromRgb(0x82, 0x95, 0xB3),
+            scrollTrack: Color.FromArgb(0x24, 0x5B, 0x8D, 0xEF),
+            scrollDrag: Color.FromRgb(0x3E, 0x70, 0xC6),
+            scrollThumb: Color.FromRgb(0x7B, 0xA6, 0xE8),
+            scrollHover: Color.FromRgb(0x5B, 0x8D, 0xEF));
+    private static readonly TaskFullTextTheme ScheduledTaskFullTextTheme =
+        CreateTaskFullTextTheme(
+            chromeBackground: Color.FromRgb(0xFF, 0xF8, 0xF1),
+            chromeBorder: Color.FromRgb(0xEF, 0x94, 0x65),
+            shadow: Color.FromRgb(0xA8, 0x55, 0x36),
+            title: Color.FromRgb(0xC4, 0x5F, 0x3D),
+            textBackground: Color.FromRgb(0xFF, 0xFC, 0xF8),
+            textBorder: Color.FromRgb(0xF1, 0xC1, 0x9E),
+            textForeground: Color.FromRgb(0x4B, 0x34, 0x2B),
+            selection: Color.FromRgb(0xF5, 0xB0, 0x7D),
+            count: Color.FromRgb(0xC1, 0x8A, 0x6C),
+            scrollTrack: Color.FromArgb(0x22, 0xD6, 0xA0, 0x6A),
+            scrollDrag: Color.FromRgb(0xD9, 0x7B, 0x2F),
+            scrollThumb: Color.FromRgb(0xE7, 0xA1, 0x5E),
+            scrollHover: Color.FromRgb(0xF0, 0x9A, 0x48));
+    private static readonly TaskPageControlTheme TodoTaskPageControlTheme =
+        CreateTaskPageControlTheme(
+            settingsText: Color.FromRgb(0x51, 0x59, 0x66),
+            switchTrack: Color.FromRgb(0xEA, 0xF3, 0xFF),
+            switchBorder: Color.FromRgb(0xBB, 0xD3, 0xF5),
+            switchHoverTrack: Color.FromRgb(0xDC, 0xEB, 0xFF),
+            switchHoverBorder: Color.FromRgb(0x8C, 0xB4, 0xF4),
+            switchCheckedTrack: Color.FromRgb(0x78, 0xA8, 0xEB),
+            switchCheckedBorder: Color.FromRgb(0x5B, 0x8D, 0xEF),
+            switchKnobFill: Color.FromRgb(0xF8, 0xFB, 0xFF),
+            switchKnobStroke: Color.FromRgb(0x8C, 0xB4, 0xF4),
+            switchFace: Color.FromRgb(0x4F, 0x7F, 0xD7),
+            switchShadow: Color.FromArgb(0x45, 0x5B, 0x8D, 0xEF),
+            sliderDecrease: Color.FromRgb(0x77, 0xA7, 0xEB),
+            sliderIncrease: Color.FromRgb(0xE5, 0xEF, 0xFC),
+            sliderIncreaseBorder: Color.FromRgb(0xBB, 0xD3, 0xF5),
+            sliderShadow: Color.FromArgb(0x45, 0x3E, 0x70, 0xC6),
+            sliderThumb: Color.FromRgb(0xEA, 0xF3, 0xFF),
+            sliderThumbBorder: Color.FromRgb(0x5B, 0x8D, 0xEF),
+            sliderThumbHover: Color.FromRgb(0xDC, 0xEB, 0xFF),
+            sliderThumbHoverBorder: Color.FromRgb(0x3E, 0x70, 0xC6),
+            sliderThumbDrag: Color.FromRgb(0xBD, 0xD7, 0xFA),
+            sliderFace: Color.FromRgb(0x4F, 0x7F, 0xD7));
+    private static readonly TaskPageControlTheme ScheduledTaskPageControlTheme =
+        CreateTaskPageControlTheme(
+            settingsText: Color.FromRgb(0x67, 0x53, 0x44),
+            switchTrack: Color.FromRgb(0xFF, 0xF3, 0xE3),
+            switchBorder: Color.FromRgb(0xE2, 0xB9, 0x88),
+            switchHoverTrack: Color.FromRgb(0xFF, 0xE7, 0xC9),
+            switchHoverBorder: Color.FromRgb(0xE4, 0x9A, 0x50),
+            switchCheckedTrack: Color.FromRgb(0xF7, 0xB4, 0x6E),
+            switchCheckedBorder: Color.FromRgb(0xDB, 0x87, 0x3B),
+            switchKnobFill: Color.FromRgb(0xFF, 0xFC, 0xF7),
+            switchKnobStroke: Color.FromRgb(0xE2, 0xB2, 0x7E),
+            switchFace: Color.FromRgb(0xB6, 0x78, 0x45),
+            switchShadow: Color.FromArgb(0x45, 0xA8, 0x5E, 0x25),
+            sliderDecrease: Color.FromRgb(0xF5, 0xAD, 0x68),
+            sliderIncrease: Color.FromRgb(0xFF, 0xF0, 0xDD),
+            sliderIncreaseBorder: Color.FromRgb(0xE8, 0xC3, 0x9A),
+            sliderShadow: Color.FromArgb(0x45, 0xA8, 0x5E, 0x25),
+            sliderThumb: Color.FromRgb(0xFF, 0xE7, 0xC5),
+            sliderThumbBorder: Color.FromRgb(0xE2, 0x8E, 0x43),
+            sliderThumbHover: Color.FromRgb(0xFF, 0xD9, 0xA7),
+            sliderThumbHoverBorder: Color.FromRgb(0xD8, 0x79, 0x2C),
+            sliderThumbDrag: Color.FromRgb(0xFF, 0xC9, 0x8A),
+            sliderFace: Color.FromRgb(0xA7, 0x64, 0x35));
 
     private bool _settingEdgeRoamingEnabled;
     private bool _settingStartupEnabled;
@@ -80,6 +157,8 @@ public partial class TodoWindow : Window
     private ComboBox? _activeScheduledTimePart;
     private long _scheduledPickerInteractionGeneration;
     private FrameworkElement? _taskFullTextOwner;
+    private TaskFullTextTheme _activeTaskFullTextTheme =
+        TodoTaskFullTextTheme;
     private bool _isTaskFullTextPopupOpen;
     private TextBox? _taskRowSelectionTextBox;
     private int _taskRowSelectionAnchor;
@@ -959,12 +1038,140 @@ public partial class TodoWindow : Window
         TaskFullTextPreviewTextBox.DataContext = owner.Tag;
         TaskFullTextPreviewTextBox.Text = text;
         TaskFullTextPreviewTextBox.Select(0, 0);
-        TaskFullTextTitle.Text = owner.Tag is ScheduledTaskItem
+        var isScheduledTask = owner.Tag is ScheduledTaskItem;
+        _activeTaskFullTextTheme = isScheduledTask
+            ? ScheduledTaskFullTextTheme
+            : TodoTaskFullTextTheme;
+        ApplyTaskFullTextTheme(_activeTaskFullTextTheme);
+        TaskFullTextTitle.Text = isScheduledTask
             ? "提醒完整内容 · 可选择复制"
             : "待办完整内容 · 可选择复制";
         TaskFullTextCountText.Text = $"{text.Length}/5000 字";
         TaskFullTextPopup.IsOpen = true;
+        TaskFullTextPreviewTextBox.ApplyTemplate();
+        ApplyTaskFullTextScrollBarTheme(
+            TaskFullTextPreviewTextBox,
+            _activeTaskFullTextTheme);
     }
+
+    private void ApplyTaskFullTextTheme(TaskFullTextTheme theme)
+    {
+        TaskFullTextPopupChrome.Background = theme.ChromeBackground;
+        TaskFullTextPopupChrome.BorderBrush = theme.ChromeBorder;
+        if (TaskFullTextPopupChrome.Effect is DropShadowEffect shadow)
+        {
+            shadow.Color = theme.Shadow;
+        }
+
+        TaskFullTextTitle.Foreground = theme.Title;
+        TaskFullTextPreviewTextBox.Background = theme.TextBackground;
+        TaskFullTextPreviewTextBox.BorderBrush = theme.TextBorder;
+        TaskFullTextPreviewTextBox.Foreground = theme.TextForeground;
+        TaskFullTextPreviewTextBox.SelectionBrush = theme.Selection;
+        TaskFullTextCountText.Foreground = theme.Count;
+    }
+
+    private static void ApplyTaskFullTextScrollBarTheme(
+        DependencyObject parent,
+        TaskFullTextTheme theme)
+    {
+        for (var index = 0;
+             index < VisualTreeHelper.GetChildrenCount(parent);
+             index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is ScrollBar scrollBar)
+            {
+                scrollBar.Background = theme.ScrollTrack;
+                scrollBar.BorderBrush = theme.ScrollDrag;
+                scrollBar.Foreground = theme.ScrollThumb;
+                scrollBar.Tag = theme.ScrollHover;
+            }
+
+            ApplyTaskFullTextScrollBarTheme(child, theme);
+        }
+    }
+
+    private static TaskFullTextTheme CreateTaskFullTextTheme(
+        Color chromeBackground,
+        Color chromeBorder,
+        Color shadow,
+        Color title,
+        Color textBackground,
+        Color textBorder,
+        Color textForeground,
+        Color selection,
+        Color count,
+        Color scrollTrack,
+        Color scrollDrag,
+        Color scrollThumb,
+        Color scrollHover) =>
+        new(
+            CreateSharedBrush(chromeBackground),
+            CreateSharedBrush(chromeBorder),
+            shadow,
+            CreateSharedBrush(title),
+            CreateSharedBrush(textBackground),
+            CreateSharedBrush(textBorder),
+            CreateSharedBrush(textForeground),
+            CreateSharedBrush(selection),
+            CreateSharedBrush(count),
+            CreateSharedBrush(scrollTrack),
+            CreateSharedBrush(scrollDrag),
+            CreateSharedBrush(scrollThumb),
+            CreateSharedBrush(scrollHover));
+
+    private static SolidColorBrush CreateSharedBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    private static TaskPageControlTheme CreateTaskPageControlTheme(
+        Color settingsText,
+        Color switchTrack,
+        Color switchBorder,
+        Color switchHoverTrack,
+        Color switchHoverBorder,
+        Color switchCheckedTrack,
+        Color switchCheckedBorder,
+        Color switchKnobFill,
+        Color switchKnobStroke,
+        Color switchFace,
+        Color switchShadow,
+        Color sliderDecrease,
+        Color sliderIncrease,
+        Color sliderIncreaseBorder,
+        Color sliderShadow,
+        Color sliderThumb,
+        Color sliderThumbBorder,
+        Color sliderThumbHover,
+        Color sliderThumbHoverBorder,
+        Color sliderThumbDrag,
+        Color sliderFace) =>
+        new(
+            CreateSharedBrush(settingsText),
+            CreateSharedBrush(switchTrack),
+            CreateSharedBrush(switchBorder),
+            CreateSharedBrush(switchHoverTrack),
+            CreateSharedBrush(switchHoverBorder),
+            CreateSharedBrush(switchCheckedTrack),
+            CreateSharedBrush(switchCheckedBorder),
+            CreateSharedBrush(switchKnobFill),
+            CreateSharedBrush(switchKnobStroke),
+            CreateSharedBrush(switchFace),
+            switchShadow,
+            CreateSharedBrush(sliderDecrease),
+            CreateSharedBrush(sliderIncrease),
+            CreateSharedBrush(sliderIncreaseBorder),
+            CreateSharedBrush(sliderShadow),
+            CreateSharedBrush(sliderThumb),
+            CreateSharedBrush(sliderThumbBorder),
+            CreateSharedBrush(sliderThumbHover),
+            CreateSharedBrush(sliderThumbHoverBorder),
+            CreateSharedBrush(sliderThumbDrag),
+            CreateSharedBrush(sliderFace));
 
     private static bool IsTaskRowTextClipped(
         TextBox textBox,
@@ -1361,6 +1568,10 @@ public partial class TodoWindow : Window
     private void TaskFullTextPopup_Opened(object sender, EventArgs e)
     {
         _isTaskFullTextPopupOpen = true;
+        TaskFullTextPreviewTextBox.ApplyTemplate();
+        ApplyTaskFullTextScrollBarTheme(
+            TaskFullTextPreviewTextBox,
+            _activeTaskFullTextTheme);
     }
 
     private void TaskFullTextPopup_Closed(object sender, EventArgs e)
@@ -1392,6 +1603,10 @@ public partial class TodoWindow : Window
     private void SelectTaskPage(bool showScheduledTasks, bool focusInput)
     {
         CloseTaskFullTextPreview();
+        ApplyTaskPageControlTheme(
+            showScheduledTasks
+                ? ScheduledTaskPageControlTheme
+                : TodoTaskPageControlTheme);
         TodoTabButton.IsChecked = !showScheduledTasks;
         ScheduledTaskTabButton.IsChecked = showScheduledTasks;
         TodoPage.Visibility = showScheduledTasks
@@ -1407,6 +1622,44 @@ public partial class TodoWindow : Window
                 DispatcherPriority.Input,
                 _focusSelectedPageInputAfterTabAction);
         }
+    }
+
+    private void ApplyTaskPageControlTheme(TaskPageControlTheme theme)
+    {
+        Resources["TaskPageSettingsTextBrush"] = theme.SettingsText;
+        Resources["TaskPageSwitchTrackBrush"] = theme.SwitchTrack;
+        Resources["TaskPageSwitchBorderBrush"] = theme.SwitchBorder;
+        Resources["TaskPageSwitchHoverTrackBrush"] =
+            theme.SwitchHoverTrack;
+        Resources["TaskPageSwitchHoverBorderBrush"] =
+            theme.SwitchHoverBorder;
+        Resources["TaskPageSwitchCheckedTrackBrush"] =
+            theme.SwitchCheckedTrack;
+        Resources["TaskPageSwitchCheckedBorderBrush"] =
+            theme.SwitchCheckedBorder;
+        Resources["TaskPageSwitchKnobFillBrush"] =
+            theme.SwitchKnobFill;
+        Resources["TaskPageSwitchKnobStrokeBrush"] =
+            theme.SwitchKnobStroke;
+        Resources["TaskPageSwitchFaceBrush"] = theme.SwitchFace;
+        Resources["TaskPageSwitchShadowColor"] = theme.SwitchShadow;
+        Resources["TaskPageSliderDecreaseBrush"] =
+            theme.SliderDecrease;
+        Resources["TaskPageSliderIncreaseBrush"] =
+            theme.SliderIncrease;
+        Resources["TaskPageSliderIncreaseBorderBrush"] =
+            theme.SliderIncreaseBorder;
+        Resources["TaskPageSliderShadowBrush"] = theme.SliderShadow;
+        Resources["TaskPageSliderThumbBrush"] = theme.SliderThumb;
+        Resources["TaskPageSliderThumbBorderBrush"] =
+            theme.SliderThumbBorder;
+        Resources["TaskPageSliderThumbHoverBrush"] =
+            theme.SliderThumbHover;
+        Resources["TaskPageSliderThumbHoverBorderBrush"] =
+            theme.SliderThumbHoverBorder;
+        Resources["TaskPageSliderThumbDragBrush"] =
+            theme.SliderThumbDrag;
+        Resources["TaskPageSliderFaceBrush"] = theme.SliderFace;
     }
 
     private void ScheduledTaskAddButton_Click(object sender, RoutedEventArgs e)
@@ -4210,4 +4463,42 @@ public partial class TodoWindow : Window
     private readonly record struct ScheduledPickerOutsideProbe(
         long InteractionGeneration,
         ScheduledPickerState StateAtQueue);
+
+    private sealed record TaskFullTextTheme(
+        Brush ChromeBackground,
+        Brush ChromeBorder,
+        Color Shadow,
+        Brush Title,
+        Brush TextBackground,
+        Brush TextBorder,
+        Brush TextForeground,
+        Brush Selection,
+        Brush Count,
+        Brush ScrollTrack,
+        Brush ScrollDrag,
+        Brush ScrollThumb,
+        Brush ScrollHover);
+
+    private sealed record TaskPageControlTheme(
+        Brush SettingsText,
+        Brush SwitchTrack,
+        Brush SwitchBorder,
+        Brush SwitchHoverTrack,
+        Brush SwitchHoverBorder,
+        Brush SwitchCheckedTrack,
+        Brush SwitchCheckedBorder,
+        Brush SwitchKnobFill,
+        Brush SwitchKnobStroke,
+        Brush SwitchFace,
+        Color SwitchShadow,
+        Brush SliderDecrease,
+        Brush SliderIncrease,
+        Brush SliderIncreaseBorder,
+        Brush SliderShadow,
+        Brush SliderThumb,
+        Brush SliderThumbBorder,
+        Brush SliderThumbHover,
+        Brush SliderThumbHoverBorder,
+        Brush SliderThumbDrag,
+        Brush SliderFace);
 }

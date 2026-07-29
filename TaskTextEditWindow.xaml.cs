@@ -43,9 +43,15 @@ public partial class TaskTextEditWindow : Window
         Activated += TaskTextEditWindow_Activated;
         Closed += TaskTextEditWindow_Closed;
         Loaded += TaskTextEditWindow_Loaded;
+        SourceInitialized += TaskTextEditWindow_SourceInitialized;
         SizeChanged += TaskTextEditWindow_SizeChanged;
         DpiChanged += TaskTextEditWindow_DpiChanged;
     }
+
+    private void TaskTextEditWindow_SourceInitialized(
+        object? sender,
+        EventArgs e) =>
+        WindowChromeAppearance.TryHideSystemBorder(this);
 
     public event Action<string>? TextAccepted;
 

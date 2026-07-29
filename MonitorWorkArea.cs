@@ -65,8 +65,58 @@ internal static class MonitorWorkArea
         }
     }
 
+    internal static Rect GetForVisual(
+        Window coordinateWindow,
+        FrameworkElement monitorAnchor)
+    {
+        if (coordinateWindow is null || monitorAnchor is null)
+        {
+            return GetFallbackWorkArea();
+        }
+
+        try
+        {
+            var monitor = TryGetMonitorForVisual(monitorAnchor);
+            if (monitor == IntPtr.Zero)
+            {
+                return GetForWindow(coordinateWindow);
+            }
+
+            var monitorInfo = new MonitorInfo
+            {
+                Size = (uint)Marshal.SizeOf<MonitorInfo>()
+            };
+            if (!GetMonitorInfo(monitor, ref monitorInfo))
+            {
+                return GetForWindow(coordinateWindow);
+            }
+
+            return TryConvertToWindowDips(
+                    coordinateWindow,
+                    monitorInfo.WorkArea,
+                    out var workArea)
+                ? workArea
+                : GetForWindow(coordinateWindow);
+        }
+        catch
+        {
+            return GetForWindow(coordinateWindow);
+        }
+    }
+
     internal static bool IsExternalWorkAreaEdgeAt(
         Window window,
+        ScreenEdge edge,
+        double orthogonalScreenDip) =>
+        IsExternalWorkAreaEdgeAt(
+            window,
+            monitorAnchor: null,
+            edge,
+            orthogonalScreenDip);
+
+    internal static bool IsExternalWorkAreaEdgeAt(
+        Window window,
+        FrameworkElement? monitorAnchor,
         ScreenEdge edge,
         double orthogonalScreenDip)
     {
@@ -78,9 +128,16 @@ internal static class MonitorWorkArea
                 return true;
             }
 
-            var currentMonitor = MonitorFromWindow(
-                handle,
-                MonitorDefaultToNearest);
+            var currentMonitor = monitorAnchor is not null
+                ? TryGetMonitorForVisual(monitorAnchor)
+                : IntPtr.Zero;
+            if (currentMonitor == IntPtr.Zero)
+            {
+                currentMonitor = MonitorFromWindow(
+                    handle,
+                    MonitorDefaultToNearest);
+            }
+
             var currentInfo = new MonitorInfo
             {
                 Size = (uint)Marshal.SizeOf<MonitorInfo>()
@@ -205,6 +262,41 @@ internal static class MonitorWorkArea
         }
     }
 
+    private static IntPtr TryGetMonitorForVisual(FrameworkElement visual)
+    {
+        if (!visual.IsLoaded ||
+            visual.ActualWidth <= 0 ||
+            visual.ActualHeight <= 0)
+        {
+            return IntPtr.Zero;
+        }
+
+        var center = visual.PointToScreen(
+            new Point(
+                visual.ActualWidth / 2,
+                visual.ActualHeight / 2));
+        if (!double.IsFinite(center.X) ||
+            !double.IsFinite(center.Y) ||
+            center.X < int.MinValue ||
+            center.X > int.MaxValue ||
+            center.Y < int.MinValue ||
+            center.Y > int.MaxValue)
+        {
+            return IntPtr.Zero;
+        }
+
+        var nativeCenter = new NativePoint
+        {
+            X = checked((int)Math.Round(
+                center.X,
+                MidpointRounding.AwayFromZero)),
+            Y = checked((int)Math.Round(
+                center.Y,
+                MidpointRounding.AwayFromZero))
+        };
+        return MonitorFromPoint(nativeCenter, MonitorDefaultToNearest);
+    }
+
     private static bool IsWithinHalfOpenRange(int value, int start, int end) =>
         end > start && value >= start && value < end;
 
@@ -272,6 +364,9 @@ internal static class MonitorWorkArea
     private static extern IntPtr MonitorFromWindow(IntPtr windowHandle, uint flags);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumDisplayMonitors(
         IntPtr hdc,
@@ -299,6 +394,13 @@ internal static class MonitorWorkArea
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
     }
 
     private delegate bool MonitorEnumProcedure(

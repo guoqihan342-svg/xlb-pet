@@ -7,7 +7,9 @@ from pathlib import Path
 from statistics import median
 import time
 
-from PIL import Image
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw
 
 from normalize_sprite import normalize
 from split_sprite_sheet import (
@@ -31,6 +33,9 @@ V10_PRE_REGISTERED_WAKE_BRIDGES = frozenset({20})
 EDGE_PEEK_SOURCE_NAME = "edge-v4-12-sheet-alpha.png"
 REMINDER_SOURCE_NAME = "reminder-megaphone-v1-8-key-sheet-alpha.png"
 REMINDER_BRIDGE_SOURCE_NAME = "reminder-megaphone-v2-8-bridge-sheet-alpha.png"
+SNORE_BUBBLE_CLEAN_REFERENCE_NAME = "luban-idle-no-snore-patch-source.png"
+SNORE_BUBBLE_PATCH_BOX = (143, 405, 179, 438)
+SNORE_REGISTRATION_BOX = (40, 210, 445, 490)
 V6_SCALE_REGISTERED_ACTIONS = ACTIONS
 V6_ACTION_SOURCE_NAMES = {
     "yawn": "yawn-v7-24-sheet-alpha.png",
@@ -217,6 +222,119 @@ def save_png_atomically(image: Image.Image, destination: Path) -> None:
             if attempt == 4:
                 raise
             time.sleep(0.05 * (attempt + 1))
+
+
+def remove_baked_snore_bubble(
+    frame: Image.Image,
+    clean_reference: Image.Image,
+) -> Image.Image:
+    """Replace the old opaque nose bubble with registered clean face pixels."""
+
+    target = np.asarray(frame.convert("RGBA"), dtype=np.uint8)
+    reference = np.asarray(clean_reference.convert("RGBA"), dtype=np.uint8)
+    if (
+        target.shape != reference.shape
+        or (target.shape[1], target.shape[0]) != RUNTIME_CANVAS_SIZE
+    ):
+        raise ValueError(
+            "Snore cleanup requires matching 450x550 RGBA frames"
+        )
+
+    def registration_channel(rgba: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(rgba[..., :3], cv2.COLOR_RGB2GRAY)
+        alpha = rgba[..., 3].astype(np.float32) / 255
+        return gray.astype(np.float32) * alpha / 255
+
+    registration_mask = np.zeros(target.shape[:2], dtype=np.uint8)
+    left, top, right, bottom = SNORE_REGISTRATION_BOX
+    registration_mask[top:bottom, left:right] = 255
+    patch_left, patch_top, patch_right, patch_bottom = (
+        SNORE_BUBBLE_PATCH_BOX
+    )
+    registration_mask[
+        patch_top - 12 : patch_bottom + 12,
+        patch_left - 12 : patch_right + 12,
+    ] = 0
+
+    warp = np.eye(2, 3, dtype=np.float32)
+    correlation, warp = cv2.findTransformECC(
+        registration_channel(target),
+        registration_channel(reference),
+        warp,
+        cv2.MOTION_AFFINE,
+        (
+            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+            200,
+            1e-7,
+        ),
+        registration_mask,
+        5,
+    )
+    if not np.isfinite(correlation) or correlation < 0.95:
+        raise ValueError(
+            "Clean-face registration is too weak for snore cleanup: "
+            f"{correlation:.6f}"
+        )
+
+    width, height = frame.size
+    warped_reference = cv2.warpAffine(
+        reference,
+        warp,
+        (width, height),
+        flags=cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    )
+
+    source_mask_image = Image.new("L", frame.size, 0)
+    ImageDraw.Draw(source_mask_image).ellipse(
+        (
+            patch_left,
+            patch_top,
+            patch_right - 1,
+            patch_bottom - 1,
+        ),
+        fill=255,
+    )
+    source_mask = np.asarray(source_mask_image, dtype=np.uint8)
+    warped_mask = cv2.warpAffine(
+        source_mask,
+        warp,
+        (width, height),
+        flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    select = warped_mask >= 128
+    cleaned = target.copy()
+    cleaned[select] = warped_reference[select]
+    return Image.fromarray(cleaned, "RGBA")
+
+
+def clean_existing_snore_keyframes(assets_directory: Path) -> None:
+    clean_reference_path = (
+        assets_directory / SNORE_BUBBLE_CLEAN_REFERENCE_NAME
+    )
+    first_wake_path = assets_directory / "luban-wake-01.png"
+    second_wake_path = assets_directory / "luban-wake-02.png"
+    with Image.open(clean_reference_path) as opened:
+        clean_reference = opened.convert("RGBA").copy()
+    with Image.open(first_wake_path) as opened:
+        first_wake = opened.convert("RGBA").copy()
+    with Image.open(second_wake_path) as opened:
+        second_wake = opened.convert("RGBA").copy()
+
+    cleaned_first = remove_baked_snore_bubble(
+        first_wake,
+        clean_reference,
+    )
+    cleaned_second = remove_baked_snore_bubble(
+        second_wake,
+        clean_reference,
+    )
+    save_png_atomically(cleaned_first, assets_directory / "luban-idle.png")
+    save_png_atomically(cleaned_first, first_wake_path)
+    save_png_atomically(cleaned_second, second_wake_path)
 
 
 def fit_scale(
@@ -741,6 +859,19 @@ def install_v6_wake(source_directory: Path, assets_directory: Path) -> None:
             )
         registered_frames.append(character)
 
+    with Image.open(
+        assets_directory / SNORE_BUBBLE_CLEAN_REFERENCE_NAME
+    ) as opened:
+        clean_reference = opened.convert("RGBA").copy()
+    registered_frames[0] = remove_baked_snore_bubble(
+        registered_frames[0],
+        clean_reference,
+    )
+    registered_frames[1] = remove_baked_snore_bubble(
+        registered_frames[1],
+        clean_reference,
+    )
+
     # Use the same character pixels for sleeping idle and the first wake sample;
     # the invariant pillow is rendered by its own visual layer. The user's
     # original pic assets stay untouched.
@@ -978,6 +1109,14 @@ def main() -> None:
             "with a 180px brim and a 225px head center on 450x550 canvases."
         ),
     )
+    selection.add_argument(
+        "--clean-snore-bubble",
+        action="store_true",
+        help=(
+            "Remove the legacy opaque nose bubble from idle and the first "
+            "two wake keyframes before rebuilding the dense wake sequence."
+        ),
+    )
     args = parser.parse_args()
     if args.v2_subset:
         install_v2_subset(args.source_directory, args.assets_directory)
@@ -987,6 +1126,8 @@ def main() -> None:
         install_v6_motion(args.source_directory, args.assets_directory)
     elif args.reminder:
         install_reminder(args.source_directory, args.assets_directory)
+    elif args.clean_snore_bubble:
+        clean_existing_snore_keyframes(args.assets_directory)
     else:
         install(args.source_directory, args.assets_directory)
 

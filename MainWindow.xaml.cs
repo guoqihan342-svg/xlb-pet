@@ -13,6 +13,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -26,6 +27,16 @@ public partial class MainWindow : Window
     private const double PetHeight = 242;
     private const double MinimumPetSizeScale = 0.75;
     private const double MaximumPetSizeScale = 1.40;
+    private const double PetRoamRotationOriginY = 130;
+    private const double PetRoamRotationOriginYRatio =
+        PetRoamRotationOriginY / PetHeight;
+    // Roaming continuously rotates the authored 190x242 sprite around (95,130).
+    // Its farthest corner sweeps a ~451 DIP diameter at 140%; 454 DIP keeps
+    // that full circle plus antialiasing inside one permanently sized HWND.
+    private const double PetEnvelopeWidth = 454;
+    private const double PetEnvelopeHeight = 454;
+    private const int WmNcHitTest = 0x0084;
+    private const int HtTransparent = -1;
     // Code-only playback setting: 1.0 is the authored 60fps timing; values
     // above 1.0 play character poses faster. Rebuild after changing it.
     private const double AnimationPlaybackSpeed = 1.25;
@@ -132,6 +143,8 @@ public partial class MainWindow : Window
             maxArraysPerBucket: 1);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan EdgeRoamBusyRetryDelay =
+        TimeSpan.FromSeconds(20);
     private static readonly TimeSpan EdgeRoamMaximumClockGap =
         TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan EdgeRoamDisembarkStraightenDuration =
@@ -221,6 +234,7 @@ public partial class MainWindow : Window
     private readonly Action _processTodoWindowPositionUpdateAction;
     private readonly Action _processSystemTimeChangedAction;
     private readonly Action _processSystemRecoveryAction;
+    private readonly Action _processReminderWindowPositionUpdateAction;
 
     private BubbleMode _bubbleMode;
     private bool? _cuteBubblePlacedOnLeft;
@@ -309,6 +323,7 @@ public partial class MainWindow : Window
     private bool _petSizeSettingsDirty;
     private bool _isApplyingPetSizeLayout;
     private bool _todoPositionUpdateQueued;
+    private bool _reminderPositionUpdateQueued;
     private bool _outsideTodoCloseQueued;
     private PetSizeAnchor? _petSizePreviewAnchor;
     private PetSizeAnchor? _petSizeLogicalAnchor;
@@ -369,14 +384,18 @@ public partial class MainWindow : Window
     private TimeSpan _activeFrameBlendDuration;
     private TimeSpan? _nextFrameBlendDuration;
     private TimeSpan _nextFrameMinimumHold;
+    private HwndSource? _mainHwndSource;
 
     public MainWindow()
     {
         InitializeComponent();
+        SourceInitialized += MainWindow_SourceInitialized;
         _processOutsideTodoCloseAction = ProcessOutsideTodoClose;
         _processTodoWindowPositionUpdateAction = ProcessTodoWindowPositionUpdate;
         _processSystemTimeChangedAction = ProcessSystemTimeChanged;
         _processSystemRecoveryAction = ProcessSystemRecovery;
+        _processReminderWindowPositionUpdateAction =
+            ProcessReminderWindowPositionUpdate;
         _spritePagePrefetchDispatchTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -1269,6 +1288,56 @@ public partial class MainWindow : Window
                 $"精灵图集不包含资源：{pageName}/{resourcePath}");
     }
 
+    private void MainWindow_SourceInitialized(object? sender, EventArgs e)
+    {
+        _mainHwndSource =
+            PresentationSource.FromVisual(this) as HwndSource;
+        _mainHwndSource?.AddHook(MainWindowWindowProc);
+    }
+
+    private IntPtr MainWindowWindowProc(
+        IntPtr windowHandle,
+        int message,
+        IntPtr wordParameter,
+        IntPtr longParameter,
+        ref bool handled)
+    {
+        if (message != WmNcHitTest ||
+            !PetVisual.IsLoaded ||
+            PetVisual.ActualWidth <= 0 ||
+            PetVisual.ActualHeight <= 0)
+        {
+            return IntPtr.Zero;
+        }
+
+        try
+        {
+            var packedPoint = longParameter.ToInt64();
+            var screenPoint = new Point(
+                unchecked((short)(packedPoint & 0xFFFF)),
+                unchecked((short)((packedPoint >> 16) & 0xFFFF)));
+            // Hit-test the transformed sprite rather than the unrotated
+            // Viewbox. During vertical roaming the rotated character can
+            // extend beyond the Viewbox's layout rectangle; those visible
+            // pixels must still accept a click or drag that interrupts roam.
+            var petPoint = PetVisual.PointFromScreen(screenPoint);
+            if (petPoint.X < 0 ||
+                petPoint.Y < 0 ||
+                petPoint.X > PetVisual.ActualWidth ||
+                petPoint.Y > PetVisual.ActualHeight)
+            {
+                handled = true;
+                return new IntPtr(HtTransparent);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // The visual can briefly detach while Windows is closing it.
+        }
+
+        return IntPtr.Zero;
+    }
+
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         if (_todoWindow.Owner is null)
@@ -1307,9 +1376,11 @@ public partial class MainWindow : Window
             _userPreferenceChangedSubscribed = true;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(this);
-        Left = Math.Max(workArea.Left, workArea.Right - ActualWidth - ScreenEdgeMargin);
-        Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight - ScreenEdgeMargin);
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
+        MoveMainWindowTo(
+            Left + workArea.Right - ScreenEdgeMargin - visiblePetBounds.Right,
+            Top + workArea.Bottom - ScreenEdgeMargin - visiblePetBounds.Bottom);
         _automaticAnimationEnabled = true;
         RefreshSnoreBubbleAnimationState();
         ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
@@ -1561,17 +1632,23 @@ public partial class MainWindow : Window
 
         _petSizeLogicalAnchor = null;
         _todoWindowPositionCache.InvalidateGeometry();
-        var workArea = MonitorWorkArea.GetForWindow(this);
-        var width = ActualWidth > 0 ? ActualWidth : Width;
-        var height = ActualHeight > 0 ? ActualHeight : Height;
-        Left = Math.Clamp(
-            Left,
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
+        var correctedVisibleLeft = Math.Clamp(
+            visiblePetBounds.Left,
             workArea.Left,
-            Math.Max(workArea.Left, workArea.Right - width));
-        Top = Math.Clamp(
-            Top,
+            Math.Max(
+                workArea.Left,
+                workArea.Right - visiblePetBounds.Width));
+        var correctedVisibleTop = Math.Clamp(
+            visiblePetBounds.Top,
             workArea.Top,
-            Math.Max(workArea.Top, workArea.Bottom - height));
+            Math.Max(
+                workArea.Top,
+                workArea.Bottom - visiblePetBounds.Height));
+        MoveMainWindowTo(
+            Left + correctedVisibleLeft - visiblePetBounds.Left,
+            Top + correctedVisibleTop - visiblePetBounds.Top);
 
         if (_todoWindow.IsVisible)
         {
@@ -1718,7 +1795,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(this);
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
         var bubbleWidth = _todoWindow.ActualWidth > 0
             ? _todoWindow.ActualWidth
             : _todoWindow.Width;
@@ -1839,6 +1916,26 @@ public partial class MainWindow : Window
             : Math.Round(value, MidpointRounding.AwayFromZero);
     }
 
+    private void MoveMainWindowTo(double logicalLeft, double logicalTop)
+    {
+        var snappedLeft = SnapDipToPhysicalPixel(
+            logicalLeft,
+            horizontal: true);
+        var snappedTop = SnapDipToPhysicalPixel(
+            logicalTop,
+            horizontal: false);
+        if (OwnedWindowPositioner.TrySetPosition(
+                this,
+                snappedLeft,
+                snappedTop))
+        {
+            return;
+        }
+
+        Left = snappedLeft;
+        Top = snappedTop;
+    }
+
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         if (!_isTransientPetSizeOverride)
@@ -1902,6 +1999,11 @@ public partial class MainWindow : Window
         _petSizeEnvelopePrepared = false;
         _petSizeTargetUpdatePending = false;
         StopVisualClock();
+        if (_mainHwndSource is { } mainHwndSource)
+        {
+            mainHwndSource.RemoveHook(MainWindowWindowProc);
+            _mainHwndSource = null;
+        }
         StopFrameBlend(snapToTarget: false);
         _automaticTimer.Stop();
         _automaticTimer.Tick -= AutomaticTimer_Tick;
@@ -2003,14 +2105,10 @@ public partial class MainWindow : Window
         _pointerDown = false;
         var dragOriginDock = _edgeDock;
         ExitEdgePeek(restartAutomaticCountdown: false);
-        var startWindowBounds = new Rect(
-            Left,
-            Top,
-            ActualWidth > 0 ? ActualWidth : Width,
-            ActualHeight > 0 ? ActualHeight : Height);
+        var startWindowBounds = GetPetViewboxBoundsInScreenDips();
         _edgeDockDragContext = new EdgeDockDragContext(
             dragOriginDock,
-            MonitorWorkArea.GetForWindow(this),
+            MonitorWorkArea.GetForVisual(this, PetSizeViewbox),
             startWindowBounds,
             GetDragReleaseContactBounds(startWindowBounds, dragOriginDock));
         PetHost.ReleaseMouseCapture();
@@ -2130,12 +2228,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(this);
-        var windowBounds = new Rect(
-            Left,
-            Top,
-            ActualWidth > 0 ? ActualWidth : Width,
-            ActualHeight > 0 ? ActualHeight : Height);
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
+        var windowBounds = GetPetViewboxBoundsInScreenDips();
         var dragContext = _edgeDockDragContext;
         EdgeDockDragContext? applicableDragContext =
             dragContext is { } candidateContext &&
@@ -2184,6 +2278,7 @@ public partial class MainWindow : Window
                 : contactBounds.Top + contactBounds.Height / 2;
             if (!MonitorWorkArea.IsExternalWorkAreaEdgeAt(
                     this,
+                    PetSizeViewbox,
                     screenEdge,
                     orthogonalContact))
             {
@@ -2203,16 +2298,31 @@ public partial class MainWindow : Window
         switch (touchedEdge)
         {
             case EdgeDock.Left:
-                Left = workArea.Left;
-                Top = Math.Clamp(Top, workArea.Top, workArea.Bottom - ActualHeight);
+                MoveMainWindowTo(
+                    Left + workArea.Left - windowBounds.Left,
+                    Top + Math.Clamp(
+                              windowBounds.Top,
+                              workArea.Top,
+                              workArea.Bottom - windowBounds.Height) -
+                          windowBounds.Top);
                 break;
             case EdgeDock.Right:
-                Left = workArea.Right - ActualWidth;
-                Top = Math.Clamp(Top, workArea.Top, workArea.Bottom - ActualHeight);
+                MoveMainWindowTo(
+                    Left + workArea.Right - windowBounds.Right,
+                    Top + Math.Clamp(
+                              windowBounds.Top,
+                              workArea.Top,
+                              workArea.Bottom - windowBounds.Height) -
+                          windowBounds.Top);
                 break;
             case EdgeDock.Bottom:
-                Left = Math.Clamp(Left, workArea.Left, workArea.Right - ActualWidth);
-                Top = workArea.Bottom - ActualHeight;
+                MoveMainWindowTo(
+                    Left + Math.Clamp(
+                               windowBounds.Left,
+                               workArea.Left,
+                               workArea.Right - windowBounds.Width) -
+                           windowBounds.Left,
+                    Top + workArea.Bottom - windowBounds.Bottom);
                 break;
         }
 
@@ -2902,7 +3012,8 @@ public partial class MainWindow : Window
             return false;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(this);
+        CenterPetViewboxForRotation();
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
         var routeLeft = workArea.Left + ScreenEdgeMargin;
         var routeTop = workArea.Top + ScreenEdgeMargin;
         var routeRight = workArea.Right - ScreenEdgeMargin;
@@ -2926,12 +3037,15 @@ public partial class MainWindow : Window
         _edgeRoamRouteLength = GetEdgeRoamRouteLength(
             _edgeRoamRouteBounds,
             radius);
-        var currentWindowLeft =
-            double.IsFinite(Left) ? Left : routeRight;
-        var currentWindowTop =
-            double.IsFinite(Top) ? Top : routeBottom;
-        var displayedWidth = ActualWidth > 0 ? ActualWidth : Width;
-        var displayedHeight = ActualHeight > 0 ? ActualHeight : Height;
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
+        var currentWindowLeft = double.IsFinite(visiblePetBounds.Left)
+            ? visiblePetBounds.Left
+            : routeRight;
+        var currentWindowTop = double.IsFinite(visiblePetBounds.Top)
+            ? visiblePetBounds.Top
+            : routeBottom;
+        var displayedWidth = visiblePetBounds.Width;
+        var displayedHeight = visiblePetBounds.Height;
         var supportOffset = GetEdgeRoamSupportOffset(
             displayedWidth,
             displayedHeight,
@@ -2983,6 +3097,40 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private void CenterPetViewboxForRotation()
+    {
+        var displayedHeight = PetSizeViewbox.ActualHeight > 0
+            ? PetSizeViewbox.ActualHeight
+            : PetHeight * NormalizePetSizeScale(_petSizeScale);
+        var centeredPivotOffsetY =
+            -(PetRoamRotationOriginYRatio - 0.5) * displayedHeight;
+        if (PetSizeViewbox.HorizontalAlignment ==
+                HorizontalAlignment.Center &&
+            PetSizeViewbox.VerticalAlignment ==
+                VerticalAlignment.Center &&
+            Math.Abs(PetUserSizeOffset.X) < 0.000001 &&
+            Math.Abs(PetUserSizeOffset.Y - centeredPivotOffsetY) <
+                0.000001)
+        {
+            return;
+        }
+
+        var visibleBoundsBefore = GetPetViewboxBoundsInScreenDips();
+        PetSizeViewbox.HorizontalAlignment = HorizontalAlignment.Center;
+        PetSizeViewbox.VerticalAlignment = VerticalAlignment.Center;
+        PetSizeViewbox.RenderTransformOrigin = new Point(
+            0.5,
+            0.5);
+        PetUserSizeOffset.X = 0;
+        PetUserSizeOffset.Y = centeredPivotOffsetY;
+        UpdateLayout();
+        var visibleBoundsAfter = GetPetViewboxBoundsInScreenDips();
+        MoveMainWindowTo(
+            Left + visibleBoundsBefore.Left - visibleBoundsAfter.Left,
+            Top + visibleBoundsBefore.Top - visibleBoundsAfter.Top);
+        _petSizeLogicalAnchor = null;
+    }
+
     private void StopEdgeRoaming(
         bool scheduleNext,
         bool restoreIdleFrame,
@@ -2992,7 +3140,9 @@ public partial class MainWindow : Window
         var wasRoaming = _isEdgeRoaming;
         if (!wasRoaming)
         {
-            if (scheduleNext)
+            if (scheduleNext &&
+                _edgeRoamingEnabled &&
+                _nextEdgeRoamDueTimestamp <= 0)
             {
                 ScheduleNextEdgeRoam(
                     Stopwatch.GetTimestamp(),
@@ -3852,19 +4002,25 @@ public partial class MainWindow : Window
         double supportScreenX,
         double supportScreenY)
     {
-        var displayedWidth = ActualWidth > 0 ? ActualWidth : Width;
-        var displayedHeight = ActualHeight > 0 ? ActualHeight : Height;
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
+        var displayedWidth = visiblePetBounds.Width;
+        var displayedHeight = visiblePetBounds.Height;
         var supportOffset = GetEdgeRoamSupportOffset(
             displayedWidth,
             displayedHeight,
             _edgeRoamRotationDegrees);
-        _edgeRoamLogicalLeft = supportScreenX - supportOffset.X;
-        _edgeRoamLogicalTop = supportScreenY - supportOffset.Y;
+        var desiredVisibleLeft = supportScreenX - supportOffset.X;
+        var desiredVisibleTop = supportScreenY - supportOffset.Y;
+        _edgeRoamLogicalLeft =
+            Left + desiredVisibleLeft - visiblePetBounds.Left;
+        _edgeRoamLogicalTop =
+            Top + desiredVisibleTop - visiblePetBounds.Top;
         _isApplyingEdgeRoamPosition = true;
         try
         {
-            Left = SnapDipToPhysicalPixel(_edgeRoamLogicalLeft, horizontal: true);
-            Top = SnapDipToPhysicalPixel(_edgeRoamLogicalTop, horizontal: false);
+            MoveMainWindowTo(
+                _edgeRoamLogicalLeft,
+                _edgeRoamLogicalTop);
         }
         finally
         {
@@ -3878,7 +4034,7 @@ public partial class MainWindow : Window
         double rotationDegrees)
     {
         var normalizedOriginX = 0.5;
-        var normalizedOriginY = 0.5371900826446281;
+        var normalizedOriginY = PetRoamRotationOriginYRatio;
         var supportDeltaY =
             EdgeRoamSupportAnchorYRatio - normalizedOriginY;
         var radians =
@@ -4101,7 +4257,10 @@ public partial class MainWindow : Window
                 return;
             }
 
-            ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
+            // A click animation or another short-lived visual state can overlap
+            // the due instant. Retry soon instead of silently postponing the
+            // whole ten-minute cycle.
+            ScheduleNextEdgeRoam(timestamp, EdgeRoamBusyRetryDelay);
         }
         else if (_edgeRoamPreloadRequested)
         {
@@ -4321,7 +4480,6 @@ public partial class MainWindow : Window
         _snoreBubbleCurrentScale = SnoreBubbleMinimumScale;
         SnoreBubbleScale.ScaleX = SnoreBubbleMinimumScale;
         SnoreBubbleScale.ScaleY = SnoreBubbleMinimumScale;
-        SnoreBubbleBakedCover.Opacity = shouldAnimate ? 1 : 0;
         SnoreBubbleHost.Opacity = shouldAnimate ? 1 : 0;
         UpdateVisualClockSubscription();
     }
@@ -7083,7 +7241,8 @@ public partial class MainWindow : Window
             _todoWindow.BeginReminderInterruption();
         }
 
-        if (mode is BubbleMode.Todo or BubbleMode.Reminder)
+        if (mode is BubbleMode.Todo or BubbleMode.Reminder ||
+            previousMode is BubbleMode.Todo or BubbleMode.Reminder)
         {
             StopEdgeRoaming(
                 scheduleNext: true,
@@ -7108,16 +7267,16 @@ public partial class MainWindow : Window
         {
             // Materialize the exact pose currently on screen and publish the
             // first Todo-entry pose before the transparent owner changes
-            // bounds or the owned panel can pump a nested layout/render pass.
+            // state or the owned panel can pump a nested layout/render pass.
             // Keep the clip frozen until Show() returns, so the right-click
             // path cannot expose an old transform or skip an entry pose.
             EnterTodoVisualState();
             StopVisualClock();
 
-            // Resize the layered owner once while the prepared first pose is
-            // frozen. The panel then keeps this envelope for its whole
-            // lifetime, so slider input and sprite presentation never resize
-            // the same transparent HWND in one visual frame.
+            // The native owner already has its permanent maximum envelope.
+            // Merely opening Todo must not begin a size-preview session:
+            // re-anchoring the Viewbox and moving the layered HWND in the same
+            // right-click could otherwise expose one intermediate frame.
             EnsureTodoPetSizePreviewEnvelope();
             ShowBubbleVisuals(mode);
             UpdateVisualClockSubscription();
@@ -7472,11 +7631,12 @@ public partial class MainWindow : Window
                 _todoWindow.ShowDefaultTab();
                 _todoWindow.Opacity = 0;
                 _todoWindow.Show();
-                _todoWindow.Opacity = 1;
+                _todoWindow.UpdateLayout();
             }
 
             _todoWindowPositionCache.InvalidateGeometry();
             UpdateTodoWindowPosition();
+            _todoWindow.Opacity = 1;
             return;
         }
 
@@ -7486,9 +7646,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var displayedPetHeight = PetHost.ActualHeight > 0
-            ? PetHost.ActualHeight
-            : PetHost.Height;
+        var displayedPetHeight = GetPetViewboxBoundsInScreenDips().Height;
         UpdateCuteBubblePlacementAndTail();
         BubblePopup.VerticalOffset = displayedPetHeight - CuteBubbleHeight;
         BubbleHost.Visibility = Visibility.Visible;
@@ -7499,7 +7657,7 @@ public partial class MainWindow : Window
 
     private void UpdateCuteBubblePlacementAndTail()
     {
-        var workArea = MonitorWorkArea.GetForWindow(this);
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
         var petTopLeft = PetSizeViewbox.TranslatePoint(new Point(0, 0), this);
         var petBottomRight = PetSizeViewbox.TranslatePoint(
             new Point(
@@ -7569,12 +7727,21 @@ public partial class MainWindow : Window
         }
 
         var reminderWindow = EnsureReminderWindow();
-        var anchor = _todoWindow.IsVisible
-            ? (Window)_todoWindow
-            : this;
-        reminderWindow.ShowBeside(anchor);
+        if (_todoWindow.IsVisible)
+        {
+            reminderWindow.ShowBeside(_todoWindow);
+        }
+        else
+        {
+            // The main HWND deliberately stays at the permanent 140% envelope
+            // to prevent layered-window flashes. Position the reminder beside
+            // the rendered pet, not beside the transparent unused margin.
+            reminderWindow.ShowBeside(this, PetSizeViewbox);
+        }
 
-        var petCenter = Left + (ActualWidth > 0 ? ActualWidth : Width) / 2;
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
+        var petCenter =
+            visiblePetBounds.Left + visiblePetBounds.Width / 2;
         var reminderCenter =
             reminderWindow.Left +
             (reminderWindow.ActualWidth > 0
@@ -7594,6 +7761,27 @@ public partial class MainWindow : Window
         }
 
         ShowReminderWindow();
+    }
+
+    private void QueueReminderWindowPositionUpdate()
+    {
+        if (_reminderPositionUpdateQueued ||
+            _isClosing ||
+            _reminderWindow?.IsVisible != true)
+        {
+            return;
+        }
+
+        _reminderPositionUpdateQueued = true;
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            _processReminderWindowPositionUpdateAction);
+    }
+
+    private void ProcessReminderWindowPositionUpdate()
+    {
+        _reminderPositionUpdateQueued = false;
+        RefreshReminderWindowPosition();
     }
 
     private void ReminderWindow_AcknowledgeRequested(
@@ -7916,13 +8104,11 @@ public partial class MainWindow : Window
 
         var timestamp = Stopwatch.GetTimestamp();
         ConsumeLatestPetSizeInputAt(timestamp);
-        if (!_isPetSizePreviewSessionActive)
+        if (_isPetSizePreviewSessionActive)
         {
-            var currentScale = GetPetSizeMotionStateAt(timestamp).Scale;
-            BeginPetSizePreviewSession(currentScale);
+            PreparePetSizePreviewEnvelope();
         }
 
-        PreparePetSizePreviewEnvelope();
         _petSizePersistTimer.Stop();
         _petSizeCommitPending = false;
     }
@@ -7973,8 +8159,10 @@ public partial class MainWindow : Window
         }
 
         _petSizePreviewAnchor = CapturePetSizeAnchor(preservePosition: true);
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
         _petSizeTodoChildOnLeft = _todoWindow.IsVisible
-            ? _todoWindow.Left < Left + Width / 2
+            ? _todoWindow.Left <
+              visiblePetBounds.Left + visiblePetBounds.Width / 2
             : null;
         _petSizePreviewBaseScale = currentScale;
         _isPetSizePreviewSessionActive = true;
@@ -8037,13 +8225,15 @@ public partial class MainWindow : Window
             // frame without moving the Todo HWND that currently owns the
             // captured Slider. The full child-window move remains deferred
             // until release so fast pointer drags stay stable.
+            var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
             var todoIsBeforePet = _petSizeTodoChildOnLeft ??
                                   _todoWindow.Left +
                                   (_todoWindow.ActualWidth > 0
                                       ? _todoWindow.ActualWidth
                                       : _todoWindow.Width) /
                                   2 <=
-                                  Left + Width / 2;
+                                  visiblePetBounds.Left +
+                                  visiblePetBounds.Width / 2;
             UpdateTodoWindowTailPlacement(todoIsBeforePet);
         }
 
@@ -8091,6 +8281,15 @@ public partial class MainWindow : Window
         // commit, including the terminal frame. This keeps high-frequency
         // slider retargeting from turning the final render into a double write.
         ApplyPetSizePreviewScale(motion.Scale);
+        if (completed &&
+            _isReminderActive &&
+            _reminderWindow?.IsVisible == true)
+        {
+            // RenderTransform does not raise SizeChanged on the placement
+            // anchor. Re-anchor the reminder once the final enlarged/shrunk
+            // pet geometry has been committed.
+            QueueReminderWindowPositionUpdate();
+        }
     }
 
     private void PreparePetSizePreviewEnvelope()
@@ -8174,20 +8373,64 @@ public partial class MainWindow : Window
             return null;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(this);
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
         if (_petSizeLogicalAnchor is { } logicalAnchor &&
             logicalAnchor.WorkArea == workArea)
         {
             return logicalAnchor;
         }
 
-        var currentWidth = double.IsFinite(Width) && Width > 0 ? Width : ActualWidth;
-        var currentHeight = double.IsFinite(Height) && Height > 0 ? Height : ActualHeight;
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
         var anchor = CreatePetSizeAnchor(
             workArea,
-            new Rect(Left, Top, currentWidth, currentHeight));
+            visiblePetBounds);
         _petSizeLogicalAnchor = anchor;
         return anchor;
+    }
+
+    private Rect GetPetViewboxBoundsInScreenDips()
+    {
+        if (IsLoaded &&
+            PetSizeViewbox.IsLoaded &&
+            PetSizeViewbox.ActualWidth > 0 &&
+            PetSizeViewbox.ActualHeight > 0)
+        {
+            try
+            {
+                var topLeft = PetSizeViewbox.TranslatePoint(
+                    new Point(0, 0),
+                    this);
+                var bottomRight = PetSizeViewbox.TranslatePoint(
+                    new Point(
+                        PetSizeViewbox.ActualWidth,
+                        PetSizeViewbox.ActualHeight),
+                    this);
+                return new Rect(
+                    Left + Math.Min(topLeft.X, bottomRight.X),
+                    Top + Math.Min(topLeft.Y, bottomRight.Y),
+                    Math.Abs(bottomRight.X - topLeft.X),
+                    Math.Abs(bottomRight.Y - topLeft.Y));
+            }
+            catch (InvalidOperationException)
+            {
+                // Fall through to deterministic layout math while the visual
+                // tree is being reattached after a monitor/DPI transition.
+            }
+        }
+
+        var scale = NormalizePetSizeScale(_petSizeScale);
+        var displayedWidth = PetWidth * scale;
+        var displayedHeight = PetHeight * scale;
+        var offset = CalculatePetEnvelopeContentOffset(
+            displayedWidth,
+            displayedHeight,
+            PetSizeViewbox.HorizontalAlignment,
+            PetSizeViewbox.VerticalAlignment);
+        return new Rect(
+            Left + offset.X,
+            Top + offset.Y,
+            displayedWidth,
+            displayedHeight);
     }
 
     private static PetSizeAnchor CreatePetSizeAnchor(Rect workArea, Rect currentBounds)
@@ -8226,7 +8469,9 @@ public partial class MainWindow : Window
             ? HorizontalAlignment.Left
             : anchor is { PreserveRightEdge: true }
                 ? HorizontalAlignment.Right
-                : HorizontalAlignment.Center;
+                : anchor is null
+                    ? HorizontalAlignment.Center
+                    : HorizontalAlignment.Center;
         var verticalAlignment = anchor is { PreserveTopEdge: true }
             ? VerticalAlignment.Top
             : VerticalAlignment.Bottom;
@@ -8245,16 +8490,14 @@ public partial class MainWindow : Window
 
     private void ApplyPetSizeWindowBounds(double scale, PetSizeAnchor? anchor)
     {
-        var displayedWidth = PetWidth * scale;
-        var displayedHeight = PetHeight * scale;
         var wasApplyingLayout = _isApplyingPetSizeLayout;
         _isApplyingPetSizeLayout = true;
         try
         {
             if (anchor is not { } fixedAnchor)
             {
-                Width = displayedWidth;
-                Height = displayedHeight;
+                Width = PetEnvelopeWidth;
+                Height = PetEnvelopeHeight;
                 return;
             }
 
@@ -8275,8 +8518,8 @@ public partial class MainWindow : Window
             {
                 // Before SourceInitialized (or if the native call fails), keep
                 // the ordinary WPF dependency-property path as a safe fallback.
-                Width = displayedWidth;
-                Height = displayedHeight;
+                Width = PetEnvelopeWidth;
+                Height = PetEnvelopeHeight;
                 Left = bounds.Left;
                 Top = bounds.Top;
             }
@@ -8294,12 +8537,51 @@ public partial class MainWindow : Window
         double dpiScaleX,
         double dpiScaleY)
     {
-        var logicalBounds = CalculatePetSizeLogicalWindowBounds(scale, anchor);
+        var visibleBounds = CalculatePetSizeLogicalWindowBounds(scale, anchor);
+        var displayedWidth = PetWidth * scale;
+        var displayedHeight = PetHeight * scale;
+        var horizontalAlignment = anchor.PreserveLeftEdge
+            ? HorizontalAlignment.Left
+            : anchor.PreserveRightEdge
+                ? HorizontalAlignment.Right
+                : HorizontalAlignment.Center;
+        var verticalAlignment = anchor.PreserveTopEdge
+            ? VerticalAlignment.Top
+            : VerticalAlignment.Bottom;
+        var contentOffset = CalculatePetEnvelopeContentOffset(
+            displayedWidth,
+            displayedHeight,
+            horizontalAlignment,
+            verticalAlignment);
         return new Rect(
-            SnapDipToPhysicalPixelAtScale(logicalBounds.Left, dpiScaleX),
-            SnapDipToPhysicalPixelAtScale(logicalBounds.Top, dpiScaleY),
-            logicalBounds.Width,
-            logicalBounds.Height);
+            SnapDipToPhysicalPixelAtScale(
+                visibleBounds.Left - contentOffset.X,
+                dpiScaleX),
+            SnapDipToPhysicalPixelAtScale(
+                visibleBounds.Top - contentOffset.Y,
+                dpiScaleY),
+            PetEnvelopeWidth,
+            PetEnvelopeHeight);
+    }
+
+    private static Vector CalculatePetEnvelopeContentOffset(
+        double displayedWidth,
+        double displayedHeight,
+        HorizontalAlignment horizontalAlignment,
+        VerticalAlignment verticalAlignment)
+    {
+        var remainingWidth = Math.Max(0, PetEnvelopeWidth - displayedWidth);
+        var remainingHeight = Math.Max(0, PetEnvelopeHeight - displayedHeight);
+        var offsetX = horizontalAlignment switch
+        {
+            HorizontalAlignment.Left => 0,
+            HorizontalAlignment.Right => remainingWidth,
+            _ => remainingWidth / 2
+        };
+        var offsetY = verticalAlignment == VerticalAlignment.Top
+            ? 0
+            : remainingHeight;
+        return new Vector(offsetX, offsetY);
     }
 
     private static Rect CalculatePetSizeLogicalWindowBounds(
@@ -8349,9 +8631,7 @@ public partial class MainWindow : Window
         ConsumeLatestPetSizeInputAt(timestamp);
         var reuseTodoPreviewEnvelope =
             _petSizePreviewEnvelopePinnedForTodo &&
-            _todoWindow.IsVisible &&
-            _isPetSizePreviewSessionActive &&
-            _petSizeEnvelopePrepared;
+            _todoWindow.IsVisible;
         if (_isPetSizeAdjustmentActive)
         {
             _isPetSizeAdjustmentActive = false;
@@ -8361,10 +8641,11 @@ public partial class MainWindow : Window
 
         if (reuseTodoPreviewEnvelope)
         {
-            // The Todo panel already owns a maximum transparent envelope. Keep
-            // that exact HWND surface while the reminder grows to 140%; a
-            // commit followed by a new preview would synchronously shrink and
-            // re-expand the layered window and could be composed as a flash.
+            // The Todo panel already owns the permanent maximum transparent
+            // envelope, even before the user touches the size slider. Keep
+            // that exact HWND surface and its current screen anchor while the
+            // reminder grows to 140%; moving to the screen corner here would
+            // detach the pet from an open editor and make it appear to jump.
             _reminderRestoreScale =
                 NormalizePetSizeScale(_petSizeTargetScale);
             if (_petSizeSettingsDirty)
@@ -8734,17 +9015,75 @@ public partial class MainWindow : Window
 
     private void TodoWindow_ScheduledTaskDeleteRequested(ScheduledTaskItem item)
     {
-        if (_queuedReminderIds.Contains(item.Id))
+        if (!_scheduledTasks.Remove(item))
         {
             return;
         }
 
-        if (_scheduledTasks.Remove(item))
+        var now = _nowProvider();
+        RemoveDeletedScheduledTaskFromReminderState(item.Id);
+        SaveScheduledTasks();
+        RebuildReminderQueueAt(now);
+
+        if (_activeReminder is null)
         {
-            _queuedReminderIds.Remove(item.Id);
-            SaveScheduledTasks();
-            ScheduleNextReminderAt(_nowProvider());
+            if (!ShowNextQueuedReminderAt(now))
+            {
+                FinishReminderAfterScheduledTaskDeletion(now);
+                return;
+            }
         }
+
+        RefreshActiveReminderPresentation(now);
+        ScheduleNextReminderAt(now);
+    }
+
+    private void RemoveDeletedScheduledTaskFromReminderState(Guid itemId)
+    {
+        _queuedReminderIds.Remove(itemId);
+        _activeReminderBatch.RemoveAll(item => item.Id == itemId);
+        _visibleReminderOccurrences.RemoveAll(
+            occurrence => occurrence.TaskId == itemId);
+        _presentedReminderOccurrenceCounts.Remove(itemId);
+
+        if (_activeReminder?.Id == itemId)
+        {
+            _activeReminder = _activeReminderBatch.Count > 0
+                ? _activeReminderBatch[0]
+                : null;
+        }
+    }
+
+    private void FinishReminderAfterScheduledTaskDeletion(
+        DateTimeOffset now)
+    {
+        _activeReminder = null;
+        _activeReminderBatch.Clear();
+        _visibleReminderOccurrences.Clear();
+        _presentedReminderOccurrenceCounts.Clear();
+        _totalReminderOccurrenceCount = 0;
+        _reminderQueue.Clear();
+        _queuedReminderIds.Clear();
+        _isReminderPresentationDismissed = false;
+
+        var wasReminderVisible =
+            _isReminderActive || _bubbleMode == BubbleMode.Reminder;
+        _isReminderActive = false;
+        if (wasReminderVisible)
+        {
+            SetBubbleMode(
+                _todoWindow.IsVisible
+                    ? BubbleMode.Todo
+                    : BubbleMode.None);
+        }
+        else
+        {
+            _reminderWindow?.HideSafely();
+            _reminderWindow?.ClearPresentation();
+        }
+
+        RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
+        ScheduleNextReminderAt(now);
     }
 
     private void TodoWindow_ScheduledTaskEditRequested(
@@ -9241,12 +9580,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var workArea = MonitorWorkArea.GetForWindow(this);
-        var width = ActualWidth > 0 ? ActualWidth : Width;
-        var height = ActualHeight > 0 ? ActualHeight : Height;
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
+        var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
         _petSizeLogicalAnchor = null;
-        Left = Math.Max(workArea.Left, workArea.Right - width);
-        Top = Math.Max(workArea.Top, workArea.Bottom - height);
+        MoveMainWindowTo(
+            Left + workArea.Right - visiblePetBounds.Right,
+            Top + workArea.Bottom - visiblePetBounds.Bottom);
         _todoWindowPositionCache.InvalidateGeometry();
     }
 

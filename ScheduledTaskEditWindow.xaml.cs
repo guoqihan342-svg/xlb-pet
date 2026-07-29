@@ -13,7 +13,7 @@ namespace LubanDesktopPet;
 public partial class ScheduledTaskEditWindow : Window
 {
     private const double TargetEditorWidth = 378;
-    private const double TargetEditorHeight = 414;
+    private const double TargetEditorHeight = 360;
     private static readonly string[] HourOptions =
         CreateClockPartOptions(24);
     private static readonly string[] MinuteSecondOptions =
@@ -97,9 +97,15 @@ public partial class ScheduledTaskEditWindow : Window
         Deactivated += ScheduledTaskEditWindow_Deactivated;
         Closed += ScheduledTaskEditWindow_Closed;
         Loaded += ScheduledTaskEditWindow_Loaded;
+        SourceInitialized += ScheduledTaskEditWindow_SourceInitialized;
         SizeChanged += ScheduledTaskEditWindow_SizeChanged;
         DpiChanged += ScheduledTaskEditWindow_DpiChanged;
     }
+
+    private void ScheduledTaskEditWindow_SourceInitialized(
+        object? sender,
+        EventArgs e) =>
+        WindowChromeAppearance.TryHideSystemBorder(this);
 
     public event Action<
         string,

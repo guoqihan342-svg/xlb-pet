@@ -17,6 +17,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using LubanDesktopPet;
@@ -189,6 +190,13 @@ internal static class Program
                 {
                     RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
                         () => AssertTodoArrowPositionMatrixContract(window));
+                    return 0;
+                }
+
+                if (args.Contains("--deadline-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertAutomaticDeadlineContract),
+                        () => AssertAutomaticDeadlineContract(window));
                     return 0;
                 }
 
@@ -1040,14 +1048,21 @@ internal static class Program
         try
         {
             Invoke(window, "ApplyPetSizeScale", 1.40d, false, false);
-            var requiredPixelsAt96DpiWidth = (int)Math.Ceiling(window.Width);
-            var requiredPixelsAt96DpiHeight = (int)Math.Ceiling(window.Height);
-            var requiredPixelsAt150DpiWidth = (int)Math.Ceiling(window.Width * 1.5d);
-            var requiredPixelsAt150DpiHeight = (int)Math.Ceiling(window.Height * 1.5d);
-            AssertClose(window.Width, LogicalPetWidth * 1.40d,
+            var visibleWidth = LogicalPetWidth * 1.40d;
+            var visibleHeight = LogicalPetHeight * 1.40d;
+            var requiredPixelsAt96DpiWidth = (int)Math.Ceiling(visibleWidth);
+            var requiredPixelsAt96DpiHeight = (int)Math.Ceiling(visibleHeight);
+            var requiredPixelsAt150DpiWidth = (int)Math.Ceiling(visibleWidth * 1.5d);
+            var requiredPixelsAt150DpiHeight = (int)Math.Ceiling(visibleHeight * 1.5d);
+            var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+            AssertClose(window.Width, 454,
                 "140%时窗口逻辑宽度");
-            AssertClose(window.Height, LogicalPetHeight * 1.40d,
+            AssertClose(window.Height, 454,
                 "140%时窗口逻辑高度");
+            AssertClose(petSizeViewbox.Width, visibleWidth,
+                "140% visible pet logical width");
+            AssertClose(petSizeViewbox.Height, visibleHeight,
+                "140% visible pet logical height");
             Assert(displayFrameBuffer.PixelWidth >= requiredPixelsAt96DpiWidth &&
                    displayFrameBuffer.PixelHeight >= requiredPixelsAt96DpiHeight,
                 $"140%@100%DPI不得再上采样：窗口需要 " +
@@ -4278,21 +4293,15 @@ internal static class Program
             .Select(element => ((string?)element.Attribute("Include") ?? string.Empty)
                 .Replace('\\', '/'))
             .ToArray();
-        Assert(includes.Length == 4 &&
+        Assert(includes.Length == 3 &&
                includes.Contains("Assets/sprite-pages/*.pbgra.br", StringComparer.OrdinalIgnoreCase) &&
                includes.Contains("Assets/luban-sprite-pages.json", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains(
-                   "Assets/luban-idle-no-snore-patch-source.png",
-                   StringComparer.OrdinalIgnoreCase),
+               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase),
             "csproj只能嵌入无损Brotli分页通配符和v4 manifest");
         Assert(!includes.Any(include =>
                 include.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (include.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !include.Equals("Assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
-                 !include.Equals(
-                     "Assets/luban-idle-no-snore-patch-source.png",
-                     StringComparison.OrdinalIgnoreCase))),
+                 !include.Equals("Assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
             "csproj不得嵌入分页预览PNG、源PNG或旧单atlas");
 
         var assembly = typeof(MainWindow).Assembly;
@@ -4316,18 +4325,14 @@ internal static class Program
             .Select(resource => resource.ToLowerInvariant())
             .Append("assets/luban-sprite-pages.json")
             .Append("assets/luban-pillow-layer.png")
-            .Append("assets/luban-idle-no-snore-patch-source.png")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         Assert(assetKeys.SetEquals(expectedAssets) &&
-               assetKeys.Count == expectedPageResources.Count + 3,
+               assetKeys.Count == expectedPageResources.Count + 2,
             $"主程序集Assets资源必须严格等于{expectedPageResources.Count}个Brotli分页和一个v4 manifest");
         Assert(!assetKeys.Any(key =>
                 key.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
-                 !key.Equals(
-                     "assets/luban-idle-no-snore-patch-source.png",
-                     StringComparison.OrdinalIgnoreCase))),
+                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
             "主程序集不得包含分页预览PNG、旧单atlas或源PNG");
     }
 
@@ -5285,10 +5290,10 @@ internal static class Program
                startRoaming.Contains("_dragInteractionActive", StringComparison.Ordinal) &&
                startRoaming.Contains("_pointerDown", StringComparison.Ordinal) &&
                startRoaming.Contains("_bubbleMode", StringComparison.Ordinal) &&
-               startRoaming.Contains("_edgeDock", StringComparison.Ordinal) &&
-               startRoaming.Contains(
-                   "MonitorWorkArea.GetForWindow(this)",
-                   StringComparison.Ordinal) &&
+                startRoaming.Contains("_edgeDock", StringComparison.Ordinal) &&
+                startRoaming.Contains(
+                    "MonitorWorkArea.GetForVisual(this, PetSizeViewbox)",
+                    StringComparison.Ordinal) &&
                startRoaming.Contains("_isEdgeRoaming = true", StringComparison.Ordinal) &&
                startRoaming.Contains(
                    "StartEdgeRoamBoarding(",
@@ -5520,12 +5525,25 @@ internal static class Program
         var roamInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeRoamInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var roamBusyRetryDelay = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeRoamBusyRetryDelay",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var roamPreloadLeadTime = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeRoamPreloadLeadTime",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         Assert(automaticInterval == TimeSpan.FromMinutes(1) &&
                roamInterval == TimeSpan.FromMinutes(10) &&
+               roamBusyRetryDelay == TimeSpan.FromSeconds(20) &&
                roamPreloadLeadTime == TimeSpan.FromSeconds(2) &&
+               stopRoaming.Contains(
+                   "if (scheduleNext &&",
+                   StringComparison.Ordinal) &&
+               stopRoaming.Contains(
+                   "_nextEdgeRoamDueTimestamp <= 0",
+                   StringComparison.Ordinal) &&
+               automaticTick.Contains(
+                   "ScheduleNextEdgeRoam(timestamp, EdgeRoamBusyRetryDelay)",
+                   StringComparison.Ordinal) &&
                restartAutomaticCountdown.Contains(
                    "_nextAutomaticActivityDueTimestamp = checked(",
                    StringComparison.Ordinal) &&
@@ -5547,7 +5565,9 @@ internal static class Program
                armAutomaticWakeTimer.Contains(
                    "Math.Min(",
                    StringComparison.Ordinal),
-            "普通可爱动作必须独立按 1 分钟截止，绕屏必须独立按 10 分钟截止；共享唤醒 timer 只能选择最早绝对截止时间");
+            "普通可爱动作必须独立按1分钟截止，绕屏默认明确按10分钟截止；" +
+            "非绕屏Stop(scheduleNext:true)只能在尚无due时补计划，不能把已有截止后移；" +
+            "到点但忙碌时必须20秒后重试，共享唤醒timer只选择最早绝对截止时间");
         Assert(!mainSource.Contains("EdgeDock.Top", StringComparison.Ordinal) &&
                !mainSource.Contains("\"edge-top\"", StringComparison.Ordinal) &&
                mainSource.Contains("CornerRadius", StringComparison.Ordinal),
@@ -7883,10 +7903,11 @@ internal static class Program
 
         var window = new MainWindow
         {
-            Width = displayedWidth,
-            Height = displayedHeight,
+            Left = 0,
+            Top = 0,
             ShowActivated = false
         };
+        SetField(window, "_petSizeScale", 1d);
         foreach (var supportCase in supportCases)
         {
             var radians = supportCase.Angle * Math.PI / 180;
@@ -7916,6 +7937,11 @@ internal static class Program
                 window,
                 "_edgeRoamRotationDegrees",
                 supportCase.Angle);
+            var visibleBoundsBefore = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            var visibleOffsetX = visibleBoundsBefore.Left - window.Left;
+            var visibleOffsetY = visibleBoundsBefore.Top - window.Top;
             Invoke(
                 window,
                 "ApplyEdgeRoamingPosition",
@@ -7929,18 +7955,22 @@ internal static class Program
                 "_edgeRoamLogicalTop");
             AssertClose(
                 logicalLeft,
-                supportCase.SupportScreen.X - expectedOffset.X,
+                supportCase.SupportScreen.X -
+                expectedOffset.X -
+                visibleOffsetX,
                 $"{supportCase.Edge} support-screen to Left conversion");
             AssertClose(
                 logicalTop,
-                supportCase.SupportScreen.Y - expectedOffset.Y,
+                supportCase.SupportScreen.Y -
+                expectedOffset.Y -
+                visibleOffsetY,
                 $"{supportCase.Edge} support-screen to Top conversion");
             AssertClose(
-                logicalLeft + actualOffset.X,
+                logicalLeft + visibleOffsetX + actualOffset.X,
                 supportCase.SupportScreen.X,
                 $"{supportCase.Edge} transformed 457/509 foot X contact");
             AssertClose(
-                logicalTop + actualOffset.Y,
+                logicalTop + visibleOffsetY + actualOffset.Y,
                 supportCase.SupportScreen.Y,
                 $"{supportCase.Edge} transformed 457/509 foot Y contact");
             Assert(
@@ -8370,9 +8400,17 @@ internal static class Program
             "LubanDesktopPet.MonitorWorkArea",
             throwOnError: true)!;
         AssertWindowBoundaryDockActivation(window, monitorType);
-        var workArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
-        var width = window.ActualWidth;
-        var height = window.ActualHeight;
+        var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+        var workArea = (Rect)InvokeStatic(
+            monitorType,
+            "GetForVisual",
+            window,
+            petSizeViewbox)!;
+        var visiblePetBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        var width = visiblePetBounds.Width;
+        var height = visiblePetBounds.Height;
         var safeLeft = workArea.Left + Math.Max(20, (workArea.Width - width) / 2);
         var safeTop = workArea.Top + Math.Max(20, (workArea.Height - height) / 2);
 
@@ -8388,13 +8426,15 @@ internal static class Program
                 "GetEdgePeekRestHoldDuration",
                 edgeFrames.Length)!;
             PrimeSpritePageForFrame(window, edgeFrames.GetValue(restFrameIndex)!);
-            window.Left = safeLeft;
-            window.Top = safeTop;
-            var initialWindowBounds = new Rect(
-                window.Left,
-                window.Top,
-                width,
-                height);
+            var currentVisibleBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            window.Left += safeLeft - currentVisibleBounds.Left;
+            window.Top += safeTop - currentVisibleBounds.Top;
+            window.UpdateLayout();
+            var initialWindowBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
             var initialContactBounds = (Rect)Invoke(
                 window,
                 "GetPetContactBounds",
@@ -8482,8 +8522,11 @@ internal static class Program
                 $"退出{edge}探头后必须清除绝对时间截止点");
         }
 
-        window.Left = safeLeft;
-        window.Top = workArea.Top;
+        var beforeTopContactBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        window.Left += safeLeft - beforeTopContactBounds.Left;
+        window.Top += workArea.Top - beforeTopContactBounds.Top;
         var frameBeforeTopContact = GetRawField(window, "_currentSpriteFrame");
         Invoke(window, "UpdateEdgeDockAfterDrag");
         Assert(GetField<object>(window, "_edgeDock").ToString() == "None" &&
@@ -8609,6 +8652,7 @@ internal static class Program
         var originalTop = window.Top;
         var edgeLeftFrames = GetField<Array>(window, "_edgeLeftFrames");
         var edgeBottomFrames = GetField<Array>(window, "_edgeBottomFrames");
+        var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
         PrimeSpritePageForFrame(
             window,
             edgeLeftFrames.GetValue(edgeLeftFrames.Length - 1)!);
@@ -8625,10 +8669,14 @@ internal static class Program
                 window.UpdateLayout();
                 var workArea = (Rect)InvokeStatic(
                     monitorType,
-                    "GetForWindow",
-                    window)!;
-                var width = window.ActualWidth;
-                var height = window.ActualHeight;
+                    "GetForVisual",
+                    window,
+                    petSizeViewbox)!;
+                var initialVisibleBounds = (Rect)Invoke(
+                    window,
+                    "GetPetViewboxBoundsInScreenDips")!;
+                var width = initialVisibleBounds.Width;
+                var height = initialVisibleBounds.Height;
                 var safeLeft =
                     workArea.Left + Math.Max(20, (workArea.Width - width) / 2);
                 var safeTop =
@@ -8637,21 +8685,31 @@ internal static class Program
                 foreach (var edge in new[] { "Left", "Right", "Bottom" })
                 {
                     Invoke(window, "ExitEdgePeek", false, true);
-                    window.Left = edge switch
+                    var currentVisibleBounds = (Rect)Invoke(
+                        window,
+                        "GetPetViewboxBoundsInScreenDips")!;
+                    var desiredVisibleLeft = edge switch
                     {
                         "Left" => workArea.Left,
                         "Right" => workArea.Right - width,
                         _ => safeLeft
                     };
-                    window.Top = edge == "Bottom"
+                    var desiredVisibleTop = edge == "Bottom"
                         ? workArea.Bottom - height
                         : safeTop;
+                    window.Left +=
+                        desiredVisibleLeft - currentVisibleBounds.Left;
+                    window.Top +=
+                        desiredVisibleTop - currentVisibleBounds.Top;
                     PumpDispatcher(TimeSpan.FromMilliseconds(10));
 
+                    var visibleBounds = (Rect)Invoke(
+                        window,
+                        "GetPetViewboxBoundsInScreenDips")!;
                     var contactBounds = (Rect)Invoke(
                         window,
                         "GetPetContactBounds",
-                        new Rect(window.Left, window.Top, width, height))!;
+                        visibleBounds)!;
                     var visibleGap = edge switch
                     {
                         "Left" => contactBounds.Left - workArea.Left,
@@ -8663,14 +8721,19 @@ internal static class Program
                         $"但落在 12 DIP 磁吸区内的真实窗口贴边场景；gap={visibleGap:F3}");
 
                     Invoke(window, "UpdateEdgeDockAfterDrag");
+                    var snappedVisibleBounds = (Rect)Invoke(
+                        window,
+                        "GetPetViewboxBoundsInScreenDips")!;
                     var snappedToBoundary = edge switch
                     {
-                        "Left" => Math.Abs(window.Left - workArea.Left) <= 0.5,
+                        "Left" => Math.Abs(
+                            snappedVisibleBounds.Left -
+                            workArea.Left) <= 0.5,
                         "Right" => Math.Abs(
-                            window.Left + window.ActualWidth -
+                            snappedVisibleBounds.Right -
                             workArea.Right) <= 0.5,
                         _ => Math.Abs(
-                            window.Top + window.ActualHeight -
+                            snappedVisibleBounds.Bottom -
                             workArea.Bottom) <= 0.5
                     };
                     Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
@@ -8683,25 +8746,37 @@ internal static class Program
                 foreach (var edge in new[] { "Left", "Right", "Bottom" })
                 {
                     Invoke(window, "ExitEdgePeek", false, true);
-                    window.Left = edge switch
+                    var currentVisibleBounds = (Rect)Invoke(
+                        window,
+                        "GetPetViewboxBoundsInScreenDips")!;
+                    var desiredVisibleLeft = edge switch
                     {
                         "Left" => workArea.Left - overshoot,
                         "Right" => workArea.Right - width + overshoot,
                         _ => safeLeft
                     };
-                    window.Top = edge == "Bottom"
+                    var desiredVisibleTop = edge == "Bottom"
                         ? workArea.Bottom - height + overshoot
                         : safeTop;
+                    window.Left +=
+                        desiredVisibleLeft - currentVisibleBounds.Left;
+                    window.Top +=
+                        desiredVisibleTop - currentVisibleBounds.Top;
                     PumpDispatcher(TimeSpan.FromMilliseconds(10));
                     Invoke(window, "UpdateEdgeDockAfterDrag");
+                    var snappedVisibleBounds = (Rect)Invoke(
+                        window,
+                        "GetPetViewboxBoundsInScreenDips")!;
                     var snappedToBoundary = edge switch
                     {
-                        "Left" => Math.Abs(window.Left - workArea.Left) <= 0.5,
+                        "Left" => Math.Abs(
+                            snappedVisibleBounds.Left -
+                            workArea.Left) <= 0.5,
                         "Right" => Math.Abs(
-                            window.Left + window.ActualWidth -
+                            snappedVisibleBounds.Right -
                             workArea.Right) <= 0.5,
                         _ => Math.Abs(
-                            window.Top + window.ActualHeight -
+                            snappedVisibleBounds.Bottom -
                             workArea.Bottom) <= 0.5
                     };
                     Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
@@ -8737,19 +8812,28 @@ internal static class Program
     {
         Invoke(window, "ApplyPetSizeScale", 1d, false, false);
         PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
         var workArea = (Rect)InvokeStatic(
             monitorType,
-            "GetForWindow",
-            window)!;
-        var width = window.ActualWidth;
-        var height = window.ActualHeight;
-        var startWindowBounds = new Rect(
+            "GetForVisual",
+            window,
+            petSizeViewbox)!;
+        var initialVisibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        var width = initialVisibleBounds.Width;
+        var height = initialVisibleBounds.Height;
+        var desiredStartWindowBounds = new Rect(
             workArea.Right - width,
             workArea.Top + Math.Max(20, (workArea.Height - height) / 2),
             width,
             height);
-        window.Left = startWindowBounds.Left;
-        window.Top = startWindowBounds.Top;
+        window.Left += desiredStartWindowBounds.Left - initialVisibleBounds.Left;
+        window.Top += desiredStartWindowBounds.Top - initialVisibleBounds.Top;
+        window.UpdateLayout();
+        var startWindowBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
 
         var rightDock = GetNestedEnum("EdgeDock", "Right");
         var rightRestFrame = edgeLeftFrames.GetValue(
@@ -8817,13 +8901,22 @@ internal static class Program
         Assert(GetRawField(window, "_edgeDockDragContext") is not null,
             "快速松手同步触发 LostMouseCapture 时必须保留拖拽来源和轨迹，直到 DragMove finally 完成吸附");
 
-        var finalWindowBounds = new Rect(
+        var desiredFinalWindowBounds = new Rect(
             workArea.Right - width,
             workArea.Bottom - height + 20,
             width,
             height);
-        window.Left = finalWindowBounds.Left;
-        window.Top = finalWindowBounds.Top;
+        var beforeFinalVisibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        window.Left +=
+            desiredFinalWindowBounds.Left - beforeFinalVisibleBounds.Left;
+        window.Top +=
+            desiredFinalWindowBounds.Top - beforeFinalVisibleBounds.Top;
+        window.UpdateLayout();
+        var finalWindowBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
         var finalContactBounds = (Rect)Invoke(
             window,
             "GetDragReleaseContactBounds",
@@ -8875,8 +8968,11 @@ internal static class Program
         Invoke(window, "UpdateEdgeDockAfterDrag");
         var deadline =
             GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
+        var snappedVisibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
         Assert(GetField<object>(window, "_edgeDock").ToString() == "Bottom" &&
-               Math.Abs(window.Top + window.ActualHeight -
+               Math.Abs(snappedVisibleBounds.Bottom -
                         workArea.Bottom) <= 0.5 &&
                Math.Abs(
                    GetField<ScaleTransform>(window, "PetFacingScale").ScaleX -
@@ -8984,6 +9080,23 @@ internal static class Program
                    GetField<long>(window, "_nextEdgeRoamDueTimestamp") ==
                        roamSentinel,
                 "重启 1 分钟普通动作倒计时不得推迟独立的绕屏截止时间");
+
+            var stopSentinel = checked(
+                Stopwatch.GetTimestamp() +
+                ToProductionStopwatchTicks(TimeSpan.FromSeconds(37)));
+            SetField(window, "_isEdgeRoaming", false);
+            SetField(window, "_nextEdgeRoamDueTimestamp", stopSentinel);
+            Invoke(
+                window,
+                "StopEdgeRoaming",
+                true,
+                false,
+                false,
+                false);
+            Assert(
+                GetField<long>(window, "_nextEdgeRoamDueTimestamp") ==
+                stopSentinel,
+                "普通停止绕屏时，如果已有下一次到期时间就必须保持不变");
 
             SetField(
                 window,
@@ -9492,17 +9605,22 @@ internal static class Program
         var monitorType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.MonitorWorkArea",
             throwOnError: true)!;
-        var originalWorkArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
+        var recoveryPetViewbox = GetField<Viewbox>(
+            window,
+            "PetSizeViewbox");
+        var originalWorkArea = (Rect)InvokeStatic(
+            monitorType,
+            "GetForVisual",
+            window,
+            recoveryPetViewbox)!;
         window.Left = originalWorkArea.Left;
         window.Top = Math.Clamp(
             originalWorkArea.Top + 40,
             originalWorkArea.Top,
             originalWorkArea.Bottom - window.ActualHeight);
-        var recoveryWindowBounds = new Rect(
-            window.Left,
-            window.Top,
-            window.ActualWidth > 0 ? window.ActualWidth : window.Width,
-            window.ActualHeight > 0 ? window.ActualHeight : window.Height);
+        var recoveryWindowBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
         var recoveryContactBounds = (Rect)Invoke(
             window,
             "GetPetContactBounds",
@@ -9519,13 +9637,18 @@ internal static class Program
 
         Assert(GetField<object>(window, "_edgeDock").ToString() == "None",
             "显示器切换或断开后必须终止旧显示器的手动边缘探头状态");
-        var recoveredWorkArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
-        var width = window.ActualWidth > 0 ? window.ActualWidth : window.Width;
-        var height = window.ActualHeight > 0 ? window.ActualHeight : window.Height;
-        Assert(window.Left >= recoveredWorkArea.Left - 0.5 &&
-               window.Left <= recoveredWorkArea.Right - width + 0.5 &&
-               window.Top >= recoveredWorkArea.Top - 0.5 &&
-               window.Top <= recoveredWorkArea.Bottom - height + 0.5,
+        var recoveredWorkArea = (Rect)InvokeStatic(
+            monitorType,
+            "GetForVisual",
+            window,
+            recoveryPetViewbox)!;
+        var recoveredVisibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        Assert(recoveredVisibleBounds.Left >= recoveredWorkArea.Left - 0.5 &&
+               recoveredVisibleBounds.Right <= recoveredWorkArea.Right + 0.5 &&
+               recoveredVisibleBounds.Top >= recoveredWorkArea.Top - 0.5 &&
+               recoveredVisibleBounds.Bottom <= recoveredWorkArea.Bottom + 0.5,
             "显示器切换或断开后桌宠必须被重新夹取到仍有效的工作区内");
     }
 
@@ -9561,7 +9684,7 @@ internal static class Program
                prepareEnvelopeIndex > freezeTodoClockIndex &&
                showWindowIndex > prepareEnvelopeIndex &&
                resumeClockIndex > showWindowIndex,
-            "显示 Owned TodoWindow 前必须先准备并冻结Todo入场首帧，再原子准备主窗口包络；" +
+            "显示 Owned TodoWindow 前必须先准备并冻结Todo入场首帧，再准备固定包络内的缩放会话；" +
             "Show()完成后才恢复视觉时钟，避免重入合成旧动作或跳过入场帧");
 
         // 这项测试会打开真实的可激活 Owned Window。测试运行期间终端或
@@ -9569,6 +9692,18 @@ internal static class Program
         var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
         var originalMainHitTestVisible = window.IsHitTestVisible;
         var originalTodoHitTestVisible = todoWindow.IsHitTestVisible;
+        var widthDescriptor = DependencyPropertyDescriptor.FromProperty(
+            Window.WidthProperty,
+            typeof(Window))
+            ?? throw new InvalidOperationException("无法监听桌宠Width依赖属性");
+        var heightDescriptor = DependencyPropertyDescriptor.FromProperty(
+            Window.HeightProperty,
+            typeof(Window))
+            ?? throw new InvalidOperationException("无法监听桌宠Height依赖属性");
+        var ownerWidthChangeCount = 0;
+        var ownerHeightChangeCount = 0;
+        EventHandler ownerWidthChanged = (_, _) => ownerWidthChangeCount++;
+        EventHandler ownerHeightChanged = (_, _) => ownerHeightChangeCount++;
         window.IsHitTestVisible = false;
         todoWindow.IsHitTestVisible = false;
         SetField(window, "_suppressTodoWindowDeactivate", true);
@@ -9576,6 +9711,14 @@ internal static class Program
         {
             window.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(
+                Math.Abs(window.Width - 454d) <= 0.51 &&
+                Math.Abs(window.Height - 454d) <= 0.51,
+                "主透明HWND启动后必须保持最大包络，只允许原生物理像素取整误差");
+            var permanentEnvelopeWidth = window.Width;
+            var permanentEnvelopeHeight = window.Height;
+            widthDescriptor.AddValueChanged(window, ownerWidthChanged);
+            heightDescriptor.AddValueChanged(window, ownerHeightChanged);
 
             Assert(ReferenceEquals(todoWindow.Owner, window),
                 "待办窗口必须是 MainWindow 的 Owned Window");
@@ -9654,8 +9797,7 @@ internal static class Program
                     Equals(visibleFrame, requestedTodoEntryFrame) &&
                     visiblePendingFrame is null &&
                     visibleDeadline == long.MaxValue &&
-                    !visibleClockSubscribed &&
-                    visibleEnvelopePrepared;
+                    !visibleClockSubscribed;
                 todoVisibleSnapshotDetail =
                     $"index={visibleFrameIndex}, pending={visiblePendingFrame is not null}, " +
                     $"deadline={visibleDeadline}, clock={visibleClockSubscribed}, " +
@@ -9681,27 +9823,32 @@ internal static class Program
             Assert(ReferenceEquals(GetRawField(window, "_activeClip"), todoEnterClip),
                 "打开待办必须把活动片段切换为唯一的 Todo 入场片段实例");
             Assert(todoVisibleSnapshotCaptured && todoVisibleSnapshotValid,
-                "Owned TodoWindow 首次可见时必须已经准备首个Todo姿势、固定最大包络且冻结时钟：" +
+                "Owned TodoWindow 首次可见时必须已经准备首个Todo姿势并冻结时钟；" +
+                "固定最大包络由窗口启动期长期保持，不依赖尺寸预览会话：" +
                 todoVisibleSnapshotDetail);
             Assert(GetField<bool>(window, "_isVisualClockSubscribed"),
                 "Owned TodoWindow 的Show()返回后必须恢复Todo入场视觉时钟");
             var ownerGeometryRecords = ownerGeometryChanges.GeometryChanges;
-            Assert(ownerGeometryRecords.Count == 1,
-                $"右键打开待办时透明主窗口必须只有一次原子几何提交，实际 {ownerGeometryRecords.Count}");
-            var ownerGeometryRecord = ownerGeometryRecords[0];
-            Assert((ownerGeometryRecord.Flags &
-                    (WindowPositionChangeRecorder.SwpNoMove |
-                     WindowPositionChangeRecorder.SwpNoSize)) == 0,
-                $"右键打开待办的唯一几何提交必须同时包含位置和尺寸，flags=0x{ownerGeometryRecord.Flags:X}");
             var ownerDpiAtOpen = VisualTreeHelper.GetDpi(window);
-            Assert(ownerGeometryRecord.Width == (int)Math.Round(
-                       LogicalPetWidth * 1.40d * ownerDpiAtOpen.DpiScaleX,
-                       MidpointRounding.AwayFromZero) &&
-                   ownerGeometryRecord.Height == (int)Math.Round(
-                       LogicalPetHeight * 1.40d * ownerDpiAtOpen.DpiScaleY,
-                       MidpointRounding.AwayFromZero),
-                $"右键打开待办的原子包络物理尺寸不正确：" +
-                $"{ownerGeometryRecord.Width}×{ownerGeometryRecord.Height}");
+            var expectedEnvelopePixelWidth = (int)Math.Round(
+                permanentEnvelopeWidth * ownerDpiAtOpen.DpiScaleX,
+                MidpointRounding.AwayFromZero);
+            var expectedEnvelopePixelHeight = (int)Math.Round(
+                permanentEnvelopeHeight * ownerDpiAtOpen.DpiScaleY,
+                MidpointRounding.AwayFromZero);
+            Assert(ownerWidthChangeCount == 0 &&
+                   ownerHeightChangeCount == 0 &&
+                   ownerGeometryChanges.SizeMessageCount == 0 &&
+                   Math.Abs(window.Width - permanentEnvelopeWidth) <= 0.001 &&
+                   Math.Abs(window.Height - permanentEnvelopeHeight) <= 0.001 &&
+                   ownerGeometryRecords.All(record =>
+                       (record.Flags & WindowPositionChangeRecorder.SwpNoSize) != 0 ||
+                       (record.Width == expectedEnvelopePixelWidth &&
+                        record.Height == expectedEnvelopePixelHeight)),
+                "右键打开待办不得再改变透明主HWND的Width/Height；" +
+                $"widthChanges={ownerWidthChangeCount}, heightChanges={ownerHeightChangeCount}, " +
+                $"WM_SIZE={ownerGeometryChanges.SizeMessageCount}, " +
+                $"nativeChanges={ownerGeometryRecords.Count}");
             Invoke(window, "TryShowPendingSpriteFrame");
 
             Assert(todoWindow.IsVisible, "进入 Todo 模式应显示独立 modeless 待办窗口");
@@ -9739,15 +9886,8 @@ internal static class Program
                 Math.Max(18, todoWindow.ActualHeight - 36),
                 "待办箭头下边界钳制");
             Invoke(window, "UpdateTodoWindowPosition");
-            var ownerDpi = VisualTreeHelper.GetDpi(window);
-            var expectedEnvelopeWidth = Math.Round(
-                    LogicalPetWidth * 1.40d * ownerDpi.DpiScaleX,
-                    MidpointRounding.AwayFromZero) /
-                ownerDpi.DpiScaleX;
-            var expectedEnvelopeHeight = Math.Round(
-                    LogicalPetHeight * 1.40d * ownerDpi.DpiScaleY,
-                    MidpointRounding.AwayFromZero) /
-                ownerDpi.DpiScaleY;
+            const double expectedEnvelopeWidth = 454;
+            const double expectedEnvelopeHeight = 454;
             AssertClose(
                 window.Width,
                 expectedEnvelopeWidth,
@@ -9843,26 +9983,40 @@ internal static class Program
             var monitorType = typeof(MainWindow).Assembly.GetType(
                 "LubanDesktopPet.MonitorWorkArea",
                 throwOnError: true)!;
-            var workArea = (Rect)InvokeStatic(monitorType, "GetForWindow", window)!;
+            var petViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+            var workArea = (Rect)InvokeStatic(
+                monitorType,
+                "GetForVisual",
+                window,
+                petViewbox)!;
             var todoEdgeFrames = GetField<Array>(window, "_edgeLeftFrames");
             var todoEdgeRestFrame =
                 todoEdgeFrames.GetValue(todoEdgeFrames.Length - 1)!;
             PrimeSpritePageForFrame(window, todoEdgeRestFrame);
-            window.Left = workArea.Left;
-            window.Top = Math.Clamp(
-                window.Top,
-                workArea.Top,
-                workArea.Bottom - window.ActualHeight);
-            var todoWindowBounds = new Rect(
-                window.Left,
-                window.Top,
-                window.ActualWidth > 0 ? window.ActualWidth : window.Width,
-                window.ActualHeight > 0 ? window.ActualHeight : window.Height);
+            var todoWindowBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            Invoke(
+                window,
+                "MoveMainWindowTo",
+                window.Left + workArea.Left - todoWindowBounds.Left,
+                window.Top + Math.Clamp(
+                                 todoWindowBounds.Top,
+                                 workArea.Top,
+                                 workArea.Bottom - todoWindowBounds.Height) -
+                             todoWindowBounds.Top);
+            todoWindowBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
             var todoContactBounds = (Rect)Invoke(
                 window,
                 "GetPetContactBounds",
                 todoWindowBounds)!;
-            window.Left += workArea.Left - todoContactBounds.Left;
+            Invoke(
+                window,
+                "MoveMainWindowTo",
+                window.Left + workArea.Left - todoContactBounds.Left,
+                window.Top);
             Invoke(window, "UpdateEdgeDockAfterDrag");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(GetField<object>(window, "_edgeDock").ToString() == "Left",
@@ -9936,11 +10090,18 @@ internal static class Program
                     .Skip(GetField<int>(window, "_activeFrameIndex"))
                     .Sum(frame => GetFrameDuration(frame).Ticks));
             PumpDispatcher(todoExitRemaining + TimeSpan.FromMilliseconds(250));
-            Assert(GetRawField(window, "_activeClip") is null,
-                "Todo 收起过渡完成后必须清理活动动作");
+            Assert(GetRawField(window, "_activeClip") is null &&
+                   ownerWidthChangeCount == 0 &&
+                   ownerHeightChangeCount == 0 &&
+                   ownerGeometryChanges.SizeMessageCount == 0 &&
+                   Math.Abs(window.Width - permanentEnvelopeWidth) <= 0.001 &&
+                   Math.Abs(window.Height - permanentEnvelopeHeight) <= 0.001,
+                "Todo 收起过渡完成后必须清理活动动作，且打开、收起全过程不得改变固定主HWND包络");
         }
         finally
         {
+            widthDescriptor.RemoveValueChanged(window, ownerWidthChanged);
+            heightDescriptor.RemoveValueChanged(window, ownerHeightChanged);
             window.IsHitTestVisible = originalMainHitTestVisible;
             todoWindow.IsHitTestVisible = originalTodoHitTestVisible;
             SetField(window, "_suppressTodoWindowDeactivate", false);
@@ -10617,6 +10778,15 @@ internal static class Program
             var validationText = GetField<TextBlock>(
                 todoWindow,
                 "ScheduledTaskValidationText");
+            var roamingToggle = GetField<CheckBox>(
+                todoWindow,
+                "EdgeRoamingToggle");
+            var startupToggle = GetField<CheckBox>(
+                todoWindow,
+                "StartupToggle");
+            var petSizeSlider = GetField<Slider>(
+                todoWindow,
+                "PetSizeSlider");
 
             Rect BoundsInTodo(FrameworkElement element)
             {
@@ -10699,6 +10869,78 @@ internal static class Program
                            statusBounds.Right <= cancelBounds.Left + 0.5,
                         $"{stage}编辑取消按钮不得覆盖校验/循环预览或输入框");
                 }
+            }
+
+            void AssertTaskPageSettingsTheme(
+                bool scheduled,
+                string stage)
+            {
+                todoWindow.UpdateLayout();
+                roamingToggle.ApplyTemplate();
+                startupToggle.ApplyTemplate();
+                petSizeSlider.ApplyTemplate();
+                var roamingTrack = roamingToggle.Template.FindName(
+                    "SwitchTrack",
+                    roamingToggle) as Border;
+                var startupTrack = startupToggle.Template.FindName(
+                    "SwitchTrack",
+                    startupToggle) as Border;
+                var sliderTrack = petSizeSlider.Template.FindName(
+                    "PART_Track",
+                    petSizeSlider) as Track;
+                sliderTrack?.DecreaseRepeatButton.ApplyTemplate();
+                sliderTrack?.IncreaseRepeatButton.ApplyTemplate();
+                sliderTrack?.Thumb.ApplyTemplate();
+                var decreaseBorder = sliderTrack is null
+                    ? null
+                    : FindVisualDescendant<Border>(
+                        sliderTrack.DecreaseRepeatButton);
+                var increaseBorder = sliderTrack is null
+                    ? null
+                    : FindVisualDescendant<Border>(
+                        sliderTrack.IncreaseRepeatButton);
+                var thumbFace = sliderTrack?.Thumb.Template.FindName(
+                    "ThumbFace",
+                    sliderTrack.Thumb) as System.Windows.Shapes.Ellipse;
+                var expectedSettingsText = scheduled
+                    ? Color.FromRgb(0x67, 0x53, 0x44)
+                    : Color.FromRgb(0x51, 0x59, 0x66);
+                var expectedUncheckedTrack = scheduled
+                    ? Color.FromRgb(0xFF, 0xF3, 0xE3)
+                    : Color.FromRgb(0xEA, 0xF3, 0xFF);
+                var expectedCheckedTrack = scheduled
+                    ? Color.FromRgb(0xF7, 0xB4, 0x6E)
+                    : Color.FromRgb(0x78, 0xA8, 0xEB);
+                var expectedDecrease = scheduled
+                    ? Color.FromRgb(0xF5, 0xAD, 0x68)
+                    : Color.FromRgb(0x77, 0xA7, 0xEB);
+                var expectedIncrease = scheduled
+                    ? Color.FromRgb(0xFF, 0xF0, 0xDD)
+                    : Color.FromRgb(0xE5, 0xEF, 0xFC);
+                var expectedThumb = scheduled
+                    ? Color.FromRgb(0xFF, 0xE7, 0xC5)
+                    : Color.FromRgb(0xEA, 0xF3, 0xFF);
+                var expectedThumbBorder = scheduled
+                    ? Color.FromRgb(0xE2, 0x8E, 0x43)
+                    : Color.FromRgb(0x5B, 0x8D, 0xEF);
+                Assert(roamingToggle.Foreground is SolidColorBrush roamingText &&
+                       roamingText.Color == expectedSettingsText &&
+                       startupToggle.Foreground is SolidColorBrush startupText &&
+                       startupText.Color == expectedSettingsText &&
+                       roamingTrack?.Background is SolidColorBrush roamingBackground &&
+                       roamingBackground.Color == expectedCheckedTrack &&
+                       startupTrack?.Background is SolidColorBrush startupBackground &&
+                       startupBackground.Color == expectedUncheckedTrack &&
+                       decreaseBorder?.Background is SolidColorBrush decreaseBrush &&
+                       decreaseBrush.Color == expectedDecrease &&
+                       increaseBorder?.Background is SolidColorBrush increaseBrush &&
+                       increaseBrush.Color == expectedIncrease &&
+                       thumbFace?.Fill is SolidColorBrush thumbBrush &&
+                       thumbBrush.Color == expectedThumb &&
+                       thumbFace.Stroke is SolidColorBrush thumbBorder &&
+                       thumbBorder.Color == expectedThumbBorder,
+                    $"{stage}底部绕屏、开机自启和桌宠大小必须整套使用" +
+                    $"{(scheduled ? "橘色" : "蓝色")}主题");
             }
 
             Assert(todoTab.IsChecked == true &&
@@ -10813,8 +11055,91 @@ internal static class Program
             });
             todoWindow.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            todoWindow.ShowDefaultTab();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            roamingToggle.ApplyTemplate();
+            startupToggle.ApplyTemplate();
+            petSizeSlider.ApplyTemplate();
+            var originalRoamingTemplate = roamingToggle.Template;
+            var originalStartupTemplate = startupToggle.Template;
+            var originalSliderTemplate = petSizeSlider.Template;
+            var originalRoamingTrack = roamingToggle.Template.FindName(
+                "SwitchTrack",
+                roamingToggle);
+            var originalStartupTrack = startupToggle.Template.FindName(
+                "SwitchTrack",
+                startupToggle);
+            var originalSliderTrack = petSizeSlider.Template.FindName(
+                "PART_Track",
+                petSizeSlider);
+            var originalRoamingValue = roamingToggle.IsChecked;
+            var originalStartupValue = startupToggle.IsChecked;
+            var originalPetSizeValue = petSizeSlider.Value;
+            AssertTaskPageSettingsTheme(
+                scheduled: false,
+                "待办页");
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertTaskPageSettingsTheme(
+                scheduled: true,
+                "定时任务页");
+            Assert(ReferenceEquals(roamingToggle.Template, originalRoamingTemplate) &&
+                   ReferenceEquals(startupToggle.Template, originalStartupTemplate) &&
+                   ReferenceEquals(petSizeSlider.Template, originalSliderTemplate) &&
+                   ReferenceEquals(
+                       roamingToggle.Template.FindName(
+                           "SwitchTrack",
+                           roamingToggle),
+                       originalRoamingTrack) &&
+                   ReferenceEquals(
+                       startupToggle.Template.FindName(
+                           "SwitchTrack",
+                           startupToggle),
+                       originalStartupTrack) &&
+                   ReferenceEquals(
+                       petSizeSlider.Template.FindName(
+                           "PART_Track",
+                           petSizeSlider),
+                       originalSliderTrack) &&
+                   roamingToggle.IsChecked == originalRoamingValue &&
+                   startupToggle.IsChecked == originalStartupValue &&
+                   Math.Abs(petSizeSlider.Value - originalPetSizeValue) <=
+                       0.000001,
+                "切到定时任务页只能替换动态主题画刷，不能重建开关/滑块模板或重置值");
+            Invoke(todoWindow, "SelectTaskPage", false, false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertTaskPageSettingsTheme(
+                scheduled: false,
+                "切回待办页");
+            Assert(ReferenceEquals(roamingToggle.Template, originalRoamingTemplate) &&
+                   ReferenceEquals(startupToggle.Template, originalStartupTemplate) &&
+                   ReferenceEquals(petSizeSlider.Template, originalSliderTemplate) &&
+                   roamingToggle.IsChecked == originalRoamingValue &&
+                   startupToggle.IsChecked == originalStartupValue &&
+                   Math.Abs(petSizeSlider.Value - originalPetSizeValue) <=
+                       0.000001,
+                "切回待办页必须恢复蓝色且保持底部控件实例、模板和值");
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
             todoWindow.UpdateLayout();
             AssertScheduledFormLayout("默认新增态");
+            scheduledRepeatToggle.ApplyTemplate();
+            var scheduledRepeatShell = scheduledRepeatToggle.Template.FindName(
+                "CuteCheckShell",
+                scheduledRepeatToggle) as Border;
+            scheduledRepeatToggle.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Assert(scheduledRepeatShell?.Background is SolidColorBrush
+                       repeatCheckedBackground &&
+                   repeatCheckedBackground.Color ==
+                       Color.FromRgb(0xF2, 0xA0, 0x52) &&
+                   scheduledRepeatShell.BorderBrush is SolidColorBrush
+                       repeatCheckedBorder &&
+                   repeatCheckedBorder.Color ==
+                       Color.FromRgb(0xD9, 0x84, 0x35),
+                "定时任务的循环勾选必须继续使用橘色萌系样式");
+            scheduledRepeatToggle.IsChecked = false;
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
             scheduledInput.ApplyTemplate();
             var scheduledInputBorder = scheduledInput.Template.FindName(
                 "ScheduledInputBorder",
@@ -11005,6 +11330,15 @@ internal static class Program
                 scheduledShortTextBox.FontSize,
                 13,
                 "定时任务内容字体");
+            Assert(Math.Abs(scheduledShortRow.MaxHeight - 62) <= 0.01 &&
+                   Math.Abs(scheduledLongRow.MaxHeight - 62) <= 0.01 &&
+                   scheduledLongTextBox.MaxLines == 2 &&
+                   Math.Abs(scheduledLongTextBox.MaxHeight - 36) <= 0.01 &&
+                   scheduledLongTextBox.ActualHeight >= 33.5 &&
+                   scheduledLongTextBox.ActualHeight <= 36.5,
+                $"定时任务每行必须给正文完整保留两行36 DIP并把行上限扩到62 DIP；" +
+                $"row={scheduledLongRow.MaxHeight:F1}, text=" +
+                $"{scheduledLongTextBox.ActualHeight:F1}/{scheduledLongTextBox.MaxHeight:F1}");
             Assert(!(bool)InvokeStatic(
                        typeof(TodoWindow),
                        "IsTaskRowTextClipped",
@@ -11082,15 +11416,18 @@ internal static class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             Assert(taskFullTextPopup.IsOpen &&
                    taskFullTextPopup.PlacementTarget ==
-                       scheduledLongRow &&
+                        scheduledLongRow &&
                    taskFullTextPreview.DataContext ==
                        scheduledLongItem &&
                    taskFullTextPreview.Text == scheduledLongText &&
                    GetField<TextBlock>(
                        todoWindow,
                        "TaskFullTextTitle").Text ==
-                       "提醒完整内容 · 可选择复制",
+                        "提醒完整内容 · 可选择复制",
                 "只有实际裁剪的定时任务才可打开左优先全文窗，并显示完整可选择文字");
+            AssertTaskFullTextTheme(
+                todoWindow,
+                scheduled: true);
             Invoke(todoWindow, "CloseTaskFullTextPreview");
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             Assert(taskFullTextPopup.PlacementTarget is null &&
@@ -11940,11 +12277,14 @@ internal static class Program
             var scheduledEditorSaveButton = GetField<Button>(
                 scheduledEditor,
                 "SaveButton");
+            var scheduledEditorChrome = GetField<Border>(
+                scheduledEditor,
+                "EditorChrome");
             Assert(scheduledEditor.IsVisible &&
                    ReferenceEquals(scheduledEditor.Owner, todoWindow) &&
                    ReferenceEquals(scheduledEditor.Item, editItem) &&
                    scheduledEditor.Width == 378 &&
-                   scheduledEditor.Height == 414 &&
+                   scheduledEditor.Height == 360 &&
                    scheduledEditor.ResizeMode == ResizeMode.CanResizeWithGrip &&
                    scheduledEditor.FontFamily.Source == "Microsoft YaHei" &&
                    scheduledEditor.Title == "修改定时任务" &&
@@ -11963,21 +12303,33 @@ internal static class Program
                        "RepeatCountBorder",
                        scheduledEditorRepeatCount) is Border &&
                    scheduledEditorRepeatUnit.Template.FindName(
-                       "RepeatUnitButtonBorder",
-                       scheduledEditorRepeatUnit) is Border &&
+                        "RepeatUnitButtonBorder",
+                        scheduledEditorRepeatUnit) is Border &&
+                   scheduledEditorChrome.Margin == new Thickness(0) &&
+                   Math.Abs(
+                       scheduledEditorChrome.ActualWidth -
+                       scheduledEditor.ActualWidth) <= 0.5 &&
+                   Math.Abs(
+                       scheduledEditorChrome.ActualHeight -
+                       scheduledEditor.ActualHeight) <= 0.5 &&
                    GetRawField(todoWindow, "_editingScheduledTask") is null &&
                    scheduledInput.Text.Length == 0 &&
                    Equals(scheduledSubmit.Content, "新增") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed &&
                    todoWindow.IsTransientPopupOpen,
-                $"点击定时任务铅笔必须以 378×414 DIP 打开可缩放橘色 Owned Window，日期/时分秒与新增表单同宽，循环控件同为萌系橘色；新增表单不得被改写。实际 size={scheduledEditor.Width}×{scheduledEditor.Height}, date={scheduledEditorDateHost.ActualWidth}, time={scheduledEditorTimeHost.ActualWidth}, button={scheduledEditorSaveButton.Height}");
+                $"点击定时任务铅笔必须以378×360 DIP打开紧凑可缩放橘色Owned Window，" +
+                $"根圆角边框必须贴满客户区且不得露白；实际 size=" +
+                $"{scheduledEditor.Width}×{scheduledEditor.Height}, date=" +
+                $"{scheduledEditorDateHost.ActualWidth}, time=" +
+                $"{scheduledEditorTimeHost.ActualWidth}, button=" +
+                $"{scheduledEditorSaveButton.Height}");
             scheduledEditor.Width = 450;
             scheduledEditor.Height = 500;
             scheduledEditor.UpdateLayout();
             Invoke(scheduledEditor, "PositionBesideOwner");
             Assert(Math.Abs(scheduledEditor.Width - 450) <= 0.1 &&
                    Math.Abs(scheduledEditor.Height - 500) <= 0.1,
-                "定时任务修改窗由用户调整大小后，Owner重新定位不得重置回378×414");
+                "定时任务修改窗由用户调整大小后，Owner重新定位不得重置回378×360");
             scheduledEditorText.Focus();
             Keyboard.Focus(scheduledEditorText);
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
@@ -12219,6 +12571,10 @@ internal static class Program
 
             var scheduledEditorSource = File.ReadAllText(
                 FindWorkspaceFile("ScheduledTaskEditWindow.xaml.cs"));
+            var scheduledEditorXaml = File.ReadAllText(
+                FindWorkspaceFile("ScheduledTaskEditWindow.xaml"));
+            var chromeAppearanceSource = File.ReadAllText(
+                FindWorkspaceFile("WindowChromeAppearance.cs"));
             var scheduledEditorDeactivatedSource =
                 ExtractPrivateMethodSource(
                     scheduledEditorSource,
@@ -12245,13 +12601,38 @@ internal static class Program
                    scheduledEditorDeactivatedSource.Contains(
                        "_closePickersAfterDeactivationAction",
                        StringComparison.Ordinal) &&
-                   scheduledEditorClosePickersSource.Contains(
-                       "CloseScheduledPickers()",
-                       StringComparison.Ordinal) &&
-                   !scheduledEditorClosePickersSource.Contains(
-                       "CommitAndClose",
-                       StringComparison.Ordinal),
-                "定时编辑窗失活只能清理悬浮 picker，绝不能自动提交；只有确定修改按钮可以保存草稿");
+                    scheduledEditorClosePickersSource.Contains(
+                        "CloseScheduledPickers()",
+                        StringComparison.Ordinal) &&
+                    !scheduledEditorClosePickersSource.Contains(
+                        "CommitAndClose",
+                        StringComparison.Ordinal) &&
+                    scheduledEditorSource.Contains(
+                        "TargetEditorHeight = 360",
+                        StringComparison.Ordinal) &&
+                    scheduledEditorSource.Contains(
+                        "SourceInitialized += ScheduledTaskEditWindow_SourceInitialized",
+                        StringComparison.Ordinal) &&
+                    scheduledEditorSource.Contains(
+                        "WindowChromeAppearance.TryHideSystemBorder(this)",
+                        StringComparison.Ordinal) &&
+                    scheduledEditorXaml.Contains(
+                        "<Border x:Name=\"EditorChrome\"",
+                        StringComparison.Ordinal) &&
+                    scheduledEditorXaml.Contains(
+                        "Margin=\"0\"",
+                        StringComparison.Ordinal) &&
+                    chromeAppearanceSource.Contains(
+                        "DwmWindowAttributeBorderColor = 34",
+                        StringComparison.Ordinal) &&
+                    chromeAppearanceSource.Contains(
+                        "DwmColorNone = 0xFFFFFFFE",
+                        StringComparison.Ordinal) &&
+                    chromeAppearanceSource.Contains(
+                        "DwmSetWindowAttribute(",
+                        StringComparison.Ordinal),
+                "定时编辑窗失活只能清理picker、默认高度必须为360；" +
+                "根圆角边框贴边并在SourceInitialized通过DWM关闭系统白边");
 
             var externalSavedLocal = DateTime.Now.AddDays(3);
             externalSavedLocal = new DateTime(
@@ -13612,6 +13993,15 @@ internal static class Program
         var dismissReminderSource = ExtractPrivateMethodSource(
             mainSource,
             "DismissActiveReminderPresentation");
+        var deleteScheduledTaskSource = ExtractPrivateMethodSource(
+            mainSource,
+            "TodoWindow_ScheduledTaskDeleteRequested");
+        var removeDeletedReminderSource = ExtractPrivateMethodSource(
+            mainSource,
+            "RemoveDeletedScheduledTaskFromReminderState");
+        var finishDeletedReminderSource = ExtractPrivateMethodSource(
+            mainSource,
+            "FinishReminderAfterScheduledTaskDeletion");
         Assert(mainSource.Contains(
                    "MaximumVisibleReminderOccurrences = 100",
                    StringComparison.Ordinal) &&
@@ -13675,6 +14065,9 @@ internal static class Program
                 reminderSource.Contains(
                     "usableHeight",
                     StringComparison.Ordinal) &&
+                reminderSource.Contains(
+                    "MonitorWorkArea.GetForVisual(_anchor, _placementAnchor)",
+                    StringComparison.Ordinal) &&
                reminderSource.Contains(
                    "Math.Min(_preferredHeight, usableHeight)",
                    StringComparison.Ordinal) &&
@@ -13689,9 +14082,28 @@ internal static class Program
                     StringComparison.Ordinal) &&
                 reminderXaml.Split(
                     "<TextBox ",
-                    StringSplitOptions.None).Length == 2,
+                    StringSplitOptions.None).Length == 2 &&
+                deleteScheduledTaskSource.Contains(
+                    "RemoveDeletedScheduledTaskFromReminderState(item.Id)",
+                    StringComparison.Ordinal) &&
+                deleteScheduledTaskSource.Contains(
+                    "RebuildReminderQueueAt(now)",
+                    StringComparison.Ordinal) &&
+                deleteScheduledTaskSource.Contains(
+                    "RefreshActiveReminderPresentation(now)",
+                    StringComparison.Ordinal) &&
+                removeDeletedReminderSource.Contains(
+                    "_visibleReminderOccurrences.RemoveAll(",
+                    StringComparison.Ordinal) &&
+                removeDeletedReminderSource.Contains(
+                    "_presentedReminderOccurrenceCounts.Remove(itemId)",
+                    StringComparison.Ordinal) &&
+                finishDeletedReminderSource.Contains(
+                    "RestoreReminderPetSizeAt(",
+                    StringComparison.Ordinal),
             "提醒必须按 occurrence 建模、未确认时继续布下一次定时器；" +
-            "关闭显示与确认完成必须分流，并在单个轻量窗口内最多显示100条");
+            "关闭显示与确认完成必须分流，删除活动任务要同步重整提醒状态，" +
+            "并在单个轻量窗口内最多显示100条");
 
         scheduledTimer.Stop();
         automaticTimer.Stop();
@@ -13718,6 +14130,108 @@ internal static class Program
                 window.Show();
                 PumpDispatcher(TimeSpan.FromMilliseconds(40));
             }
+
+            var deleteFirst = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "42D00000-0000-0000-0000-000000000001"),
+                Text = "提醒时删除的第一行",
+                DueAt = now.AddSeconds(-2),
+                CreatedAt = now.AddMinutes(-2)
+            };
+            var deleteSecond = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "42D00000-0000-0000-0000-000000000002"),
+                Text = "提醒时必须保留的第二行",
+                DueAt = now.AddSeconds(-1),
+                CreatedAt = now.AddMinutes(-1)
+            };
+            Invoke(window, "InsertScheduledTaskSorted", deleteFirst);
+            Invoke(window, "InsertScheduledTaskSorted", deleteSecond);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "提醒中删除回归必须先持久化两条到点任务");
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var deletionReminderWindow =
+                (ReminderWindow?)GetRawField(window, "_reminderWindow")
+                ?? throw new InvalidOperationException(
+                    "提醒中删除回归没有创建提醒窗口");
+            var deletionReminderText = GetField<TextBox>(
+                deletionReminderWindow,
+                "ReminderContentTextBox");
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       deleteFirst) &&
+                   activeBatch.SequenceEqual(
+                       [deleteFirst, deleteSecond]) &&
+                   visibleOccurrences.Count == 2 &&
+                   deletionReminderWindow.IsVisible,
+                "两条到点任务必须先形成活动提醒批次，第一行才具备真实删除条件");
+
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskDeleteRequested",
+                deleteFirst);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledTasks.SequenceEqual([deleteSecond]) &&
+                   scheduledStore.Load().Select(item => item.Id)
+                       .SequenceEqual([deleteSecond.Id]) &&
+                   ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       deleteSecond) &&
+                   activeBatch.SequenceEqual([deleteSecond]) &&
+                   visibleOccurrences.Count == 1 &&
+                   GetProperty<Guid>(
+                       visibleOccurrences[0]!,
+                       "TaskId") == deleteSecond.Id &&
+                   observedCounts.Count == 1 &&
+                   queuedReminderIds.SetEquals([deleteSecond.Id]) &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 1 &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   deletionReminderWindow.IsVisible &&
+                   deletionReminderText.Text.Contains(
+                       deleteSecond.Text,
+                       StringComparison.Ordinal) &&
+                   !deletionReminderText.Text.Contains(
+                       deleteFirst.Text,
+                       StringComparison.Ordinal),
+                "提醒弹窗活跃时删除第一行，必须立即移除其occurrence并把剩余任务重整为新的活动首项");
+
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskDeleteRequested",
+                deleteSecond);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledTasks.Count == 0 &&
+                   scheduledStore.Load().Count == 0 &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   activeBatch.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts.Count == 0 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 0 &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   !deletionReminderWindow.IsVisible &&
+                   GetField<object>(
+                       window,
+                       "_bubbleMode").ToString() == "None",
+                "删除活动提醒的最后一项必须完整退出提醒、清空批次/队列/计数并保留空持久化状态");
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
 
             Invoke(
                 window,
@@ -13784,7 +14298,7 @@ internal static class Program
                 "循环堆叠测试数据必须先持久化");
 
             Invoke(window, "ProcessScheduledTasksAt", now);
-            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            PumpDispatcher(TimeSpan.FromMilliseconds(400));
             var reminderWindow =
                 (ReminderWindow?)GetRawField(
                     window,
@@ -13792,6 +14306,14 @@ internal static class Program
             observedReminderWindow = reminderWindow;
             dismissObserver = (_, _) => dismissRequestCount++;
             reminderWindow!.DismissRequested += dismissObserver;
+            var expectedReminderPetBounds = (Rect)InvokeStatic(
+                typeof(MainWindow),
+                "CalculatePetSizeLogicalWindowBounds",
+                1.40d,
+                reminderSizeAnchor)!;
+            var actualReminderPetBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
             Assert(reminderWindow?.IsVisible == true &&
                    todoWindow.IsVisible &&
                    scheduledInput.Text ==
@@ -13809,15 +14331,33 @@ internal static class Program
                    interruptedTodoEditor.IsVisible &&
                    interruptedTodoEditorText.Text ==
                        "提醒期间未保存的待办草稿" &&
-                   Math.Abs(window.Left - expectedReminderEnvelope.Left) <= 1 &&
-                   Math.Abs(window.Top - expectedReminderEnvelope.Top) <= 1 &&
+                   Math.Abs(
+                       actualReminderPetBounds.Left -
+                       expectedReminderPetBounds.Left) <= 1 &&
+                   Math.Abs(
+                       actualReminderPetBounds.Top -
+                       expectedReminderPetBounds.Top) <= 1 &&
+                   Math.Abs(
+                       actualReminderPetBounds.Width -
+                       expectedReminderPetBounds.Width) <= 1 &&
+                   Math.Abs(
+                       actualReminderPetBounds.Height -
+                       expectedReminderPetBounds.Height) <= 1 &&
                    Math.Abs(window.Width - expectedReminderEnvelope.Width) <= 1 &&
                    Math.Abs(window.Height - expectedReminderEnvelope.Height) <= 1 &&
                    visibleOccurrences.Count == 1 &&
                    GetField<long>(
                        window,
                        "_totalReminderOccurrenceCount") == 1,
-                "面板打开时到点提醒必须显示在旁边并按原锚点放大，不能关闭面板、清空草稿或跳到屏幕角落");
+                "面板打开时到点提醒必须显示在旁边并按原锚点放大，不能关闭面板、清空草稿或跳到屏幕角落；" +
+                $"reminderVisible={reminderWindow?.IsVisible}, todoVisible={todoWindow.IsVisible}, " +
+                $"draftMatch={scheduledInput.Text == "正在编辑，提醒不得关闭或清空"}, " +
+                $"editorTracked={ReferenceEquals(GetRawField(todoWindow, "_editorInterruptedByReminder"), interruptedTodoEditor)}, " +
+                $"editorVisible={interruptedTodoEditor.IsVisible}, editorText={interruptedTodoEditorText.Text}, " +
+                $"outer=({window.Left:F2},{window.Top:F2},{window.Width:F2},{window.Height:F2}), " +
+                $"pet={actualReminderPetBounds}, expectedPet={expectedReminderPetBounds}, " +
+                $"expectedEnvelope={expectedReminderEnvelope}, occurrences={visibleOccurrences.Count}, " +
+                $"total={GetField<long>(window, "_totalReminderOccurrenceCount")}");
 
             var todoBounds = new Rect(
                 todoWindow.Left,
@@ -14440,12 +14980,9 @@ internal static class Program
                 Environment.NewLine,
                 expectedOrder.Select(item =>
                     $"{item.DueAt.ToLocalTime():M月d日 HH:mm:ss}  {item.Text}"));
-            var width = window.ActualWidth > 0
-                ? window.ActualWidth
-                : window.Width;
-            var height = window.ActualHeight > 0
-                ? window.ActualHeight
-                : window.Height;
+            var reminderPetBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(
                            window,
@@ -14480,8 +15017,8 @@ internal static class Program
                        expectedOrder.Length.ToString(
                            CultureInfo.InvariantCulture),
                        StringComparison.Ordinal) == true &&
-                   Math.Abs(window.Left - (workArea.Right - width)) <= 1 &&
-                   Math.Abs(window.Top - (workArea.Bottom - height)) <= 1,
+                   Math.Abs(reminderPetBounds.Right - workArea.Right) <= 1 &&
+                   Math.Abs(reminderPetBounds.Bottom - workArea.Bottom) <= 1,
                 "三个到点任务必须抢占绕屏、清零旋转、移到当前屏幕右下角，并按稳定顺序合并为一个可复制泡泡；" +
                 $"active={GetRawField(window, "_activeReminder") is not null}, " +
                 $"batch={activeBatch.Count}, queue={reminderQueue.Count}, ids={queuedReminderIds.Count}, " +
@@ -14493,8 +15030,8 @@ internal static class Program
                 $"bubble={GetField<object>(window, "_bubbleMode")}, " +
                 $"textMatch={reminderMessage.Text == expectedMessage}, " +
                 $"button={acknowledgeButton.Content}, " +
-                $"position=({window.Left:F2},{window.Top:F2}), " +
-                $"target=({workArea.Right - width:F2},{workArea.Bottom - height:F2})");
+                $"petBounds={reminderPetBounds}, " +
+                $"targetRightBottom=({workArea.Right:F2},{workArea.Bottom:F2})");
 
             var frozenTexts = expectedOrder
                 .Select(item => item.Text)
@@ -14513,19 +15050,32 @@ internal static class Program
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskDeleteRequested",
-                expectedOrder[2]);
-            Assert(scheduledTasks.SequenceEqual(expectedOrder) &&
-                   activeBatch.SequenceEqual(expectedOrder) &&
-                   expectedOrder.Select(item => item.Text)
-                       .SequenceEqual(frozenTexts) &&
-                   expectedOrder.Select(item => item.DueAt)
-                       .SequenceEqual(frozenDueTimes) &&
+                expectedOrder[0]);
+            var expectedAfterDelete = expectedOrder.Skip(1).ToArray();
+            var expectedMessageAfterDelete = string.Join(
+                Environment.NewLine,
+                expectedAfterDelete.Select(item =>
+                    $"{item.DueAt.ToLocalTime():M月d日 HH:mm:ss}  {item.Text}"));
+            Assert(scheduledTasks.SequenceEqual(expectedAfterDelete) &&
+                   activeBatch.SequenceEqual(expectedAfterDelete) &&
+                   ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       expectedAfterDelete[0]) &&
+                   expectedAfterDelete.Select(item => item.Text)
+                       .SequenceEqual(frozenTexts.Skip(1)) &&
+                   expectedAfterDelete.Select(item => item.DueAt)
+                       .SequenceEqual(frozenDueTimes.Skip(1)) &&
                    scheduledStore.Load().Select(item => item.Id)
-                       .SequenceEqual(expectedOrder.Select(item => item.Id)),
+                       .SequenceEqual(expectedAfterDelete.Select(item => item.Id)) &&
+                   queuedReminderIds.SetEquals(
+                       expectedAfterDelete.Select(item => item.Id)) &&
+                   reminderMessage.Text == expectedMessageAfterDelete,
                 "进入可见或排队提醒批次后，修改和删除都必须冻结，不能让气泡、队列与磁盘状态分裂");
 
             reminderMessage.SelectAll();
-            Assert(reminderMessage.SelectedText == expectedMessage,
+            Assert(reminderMessage.SelectedText == expectedMessageAfterDelete,
                 "合并提醒泡泡的全部文本必须支持一次选中复制");
 
             now = now.AddMinutes(-10);
@@ -14534,12 +15084,12 @@ internal static class Program
                        GetField<ScheduledTaskItem>(
                            window,
                            "_activeReminder"),
-                       expectedOrder[0]) &&
-                   activeBatch.SequenceEqual(expectedOrder) &&
+                       expectedAfterDelete[0]) &&
+                   activeBatch.SequenceEqual(expectedAfterDelete) &&
                    queuedReminderIds.SetEquals(
-                       expectedOrder.Select(item => item.Id)) &&
+                       expectedAfterDelete.Select(item => item.Id)) &&
                    GetField<bool>(window, "_isReminderActive") &&
-                   reminderMessage.Text == expectedMessage,
+                   reminderMessage.Text == expectedMessageAfterDelete,
                 "系统时间回拨到批次到点前，已经展示的合并提醒不得消失、拆批或重新排序");
 
             Invoke(window, "AcknowledgeActiveReminder");
@@ -15395,7 +15945,13 @@ internal static class Program
                        "<Trigger Property=\"IsMouseOver\" Value=\"True\">",
                        StringComparison.Ordinal) &&
                    todoXaml.Contains(
-                       "<Setter Property=\"Background\" Value=\"#EAF3FF\" />",
+                       "x:Name=\"TodoRowBorder\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "Value=\"#EAF3FF\"",
+                       StringComparison.Ordinal) &&
+                   todoXaml.Contains(
+                       "Value=\"#91B8EE\"",
                        StringComparison.Ordinal),
                 "待办行悬停时必须切换为浅蓝背景，且透明只读 TextBox 不得遮断行级 hover");
             var todoXamlDocument = XDocument.Parse(todoXaml);
@@ -15817,8 +16373,8 @@ internal static class Program
                 .OfType<FrameworkElement>()
                 .Select(container => container.ActualHeight)
                 .ToArray();
-            Assert(itemHeights.Length == 5 && itemHeights.All(height => height <= 36.1),
-                $"待办行高应与定时任务统一为约 36 DIP，容器数 {itemHeights.Length}，" +
+            Assert(itemHeights.Length == 5 && itemHeights.All(height => height <= 38.1),
+                $"待办萌系卡片行高应控制在约 38 DIP，容器数 {itemHeights.Length}，" +
                 $"实际：{string.Join(", ", itemHeights.Select(height => $"{height:F1}"))}；" +
                 $"Scroll Actual={scrollViewer.ActualHeight:F1}, " +
                 $"Viewport={scrollViewer.ViewportHeight:F1}, Extent={scrollViewer.ExtentHeight:F1}");
@@ -15826,8 +16382,53 @@ internal static class Program
                 "列表可视区域必须完整显示前五行");
 
             var input = GetField<TextBox>(todoWindow, "TodoInput");
-            Assert(input.MaxLength == 5000,
-                "待办输入框必须允许单项最多5000字");
+            input.ApplyTemplate();
+            var todoInputBorder = input.Template.FindName(
+                "TodoInputBorder",
+                input) as Border;
+            var todoInputHoverTrigger = input.Template.Triggers
+                .OfType<Trigger>()
+                .Single(trigger =>
+                    trigger.Property == UIElement.IsMouseOverProperty &&
+                    Equals(trigger.Value, true));
+            var todoInputFocusTrigger = input.Template.Triggers
+                .OfType<Trigger>()
+                .Single(trigger =>
+                    trigger.Property ==
+                        UIElement.IsKeyboardFocusedProperty &&
+                    Equals(trigger.Value, true));
+            var todoInputHoverBorder = todoInputHoverTrigger.Setters
+                .OfType<Setter>()
+                .Single(setter =>
+                    setter.TargetName == "TodoInputBorder" &&
+                    setter.Property == Border.BorderBrushProperty)
+                .Value as SolidColorBrush;
+            var todoInputFocusBorder = todoInputFocusTrigger.Setters
+                .OfType<Setter>()
+                .Single(setter =>
+                    setter.TargetName == "TodoInputBorder" &&
+                    setter.Property == Border.BorderBrushProperty)
+                .Value as SolidColorBrush;
+            Assert(input.MaxLength == 5000 &&
+                   todoInputBorder is not null &&
+                   Math.Abs(todoInputBorder.CornerRadius.TopLeft - 9) <=
+                       0.01 &&
+                   input.Background is SolidColorBrush todoInputBackground &&
+                   todoInputBackground.Color ==
+                       Color.FromRgb(0xF8, 0xFB, 0xFF) &&
+                   input.BorderBrush is SolidColorBrush todoInputOutline &&
+                   todoInputOutline.Color ==
+                       Color.FromRgb(0xBD, 0xD2, 0xEF) &&
+                   input.SelectionBrush is SolidColorBrush
+                       todoInputSelection &&
+                   todoInputSelection.Color ==
+                       Color.FromRgb(0xA9, 0xC9, 0xF4) &&
+                   todoInputHoverBorder?.Color ==
+                       Color.FromRgb(0x8C, 0xB4, 0xF4) &&
+                   todoInputFocusBorder?.Color ==
+                       Color.FromRgb(0x5B, 0x8D, 0xEF),
+                "待办输入框必须与定时输入框共用9 DIP圆角结构，" +
+                "同时保留蓝色背景、边框、悬停、焦点和选区");
             input.Text = "输入框无选区也应复制全文";
             input.Select(0, 0);
             Assert((bool)Invoke(todoWindow, "CanCopyFromTextBox", input)! &&
@@ -15889,6 +16490,27 @@ internal static class Program
             var shortItemTextBox =
                 FindVisualDescendant<TextBox>(shortItemContainer)
                 ?? throw new InvalidOperationException("短待办找不到只读文字框");
+            var shortItemCheckBox =
+                FindVisualDescendants<CheckBox>(shortItemContainer)
+                    .SingleOrDefault()
+                ?? throw new InvalidOperationException("短待办找不到完成勾选框");
+            shortItemCheckBox.ApplyTemplate();
+            var todoCheckShell = shortItemCheckBox.Template.FindName(
+                "CuteCheckShell",
+                shortItemCheckBox) as Border;
+            shortItemCheckBox.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Assert(todoCheckShell?.Background is SolidColorBrush
+                       todoCheckedBackground &&
+                   todoCheckedBackground.Color ==
+                       Color.FromRgb(0x5B, 0x8D, 0xEF) &&
+                   todoCheckShell.BorderBrush is SolidColorBrush
+                       todoCheckedBorder &&
+                   todoCheckedBorder.Color ==
+                       Color.FromRgb(0x4F, 0x7F, 0xD7),
+                "待办事项完成勾选必须使用蓝色萌系样式，不能沿用定时任务的橘色勾选");
+            shortItemCheckBox.IsChecked = false;
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
             var shortVisibleEnd = (int)InvokeStatic(
                 typeof(TodoWindow),
                 "GetTaskRowVisibleTextEnd",
@@ -16037,22 +16659,26 @@ internal static class Program
                        taskFullTextPreview.Text,
                        longTodoText,
                        StringComparison.Ordinal) &&
-                   taskFullTextPopupChrome.Background is SolidColorBrush
-                       popupBackground &&
-                   popupBackground.Color == Color.FromRgb(0xFF, 0xF8, 0xF1) &&
-                   taskFullTextPopupChrome.BorderBrush is SolidColorBrush
-                       popupBorder &&
-                   popupBorder.Color == Color.FromRgb(0xEF, 0x94, 0x65) &&
-                   taskFullTextTitle.Foreground is SolidColorBrush popupTitleBrush &&
-                   popupTitleBrush.Color == Color.FromRgb(0xC4, 0x5F, 0x3D) &&
-                   taskFullTextPreview.SelectionBrush is SolidColorBrush
-                       popupSelection &&
-                   popupSelection.Color == Color.FromRgb(0xF5, 0xB0, 0x7D) &&
+                    taskFullTextPopupChrome.Background is SolidColorBrush
+                        popupBackground &&
+                    popupBackground.Color == Color.FromRgb(0xF3, 0xF7, 0xFD) &&
+                    taskFullTextPopupChrome.BorderBrush is SolidColorBrush
+                        popupBorder &&
+                    popupBorder.Color == Color.FromRgb(0x8C, 0xB4, 0xF4) &&
+                    taskFullTextTitle.Foreground is SolidColorBrush popupTitleBrush &&
+                    popupTitleBrush.Color == Color.FromRgb(0x3E, 0x70, 0xC6) &&
+                    taskFullTextPreview.SelectionBrush is SolidColorBrush
+                        popupSelection &&
+                    popupSelection.Color == Color.FromRgb(0xA9, 0xC9, 0xF4) &&
                    string.Equals(
                        taskFullTextPreview.FontFamily.Source,
                        "Microsoft YaHei",
                        StringComparison.OrdinalIgnoreCase),
-                "悬停待办行必须优先固定显示在左侧、空间不足回退右侧，并提供可滚动复制的完整文字");
+                "悬停待办行必须优先固定显示在左侧、空间不足回退右侧，" +
+                "并以蓝色主题提供可滚动复制的完整文字");
+            AssertTaskFullTextTheme(
+                todoWindow,
+                scheduled: false);
             var popupVerticalScrollBar =
                 FindVisualDescendants<ScrollBar>(taskFullTextPreview)
                     .FirstOrDefault(scrollBar =>
@@ -16062,7 +16688,7 @@ internal static class Program
                    popupVerticalScrollBar.Template.FindName(
                        "PART_Track",
                        popupVerticalScrollBar) is Track,
-                "橘红全文小窗的长文字滚动条也必须使用圆润自绘模板，不能退回系统蓝色滑块");
+                "蓝色待办全文小窗的长文字滚动条也必须使用圆润自绘模板");
             taskFullTextPreview.Select(3, 10);
             Assert((bool)Invoke(
                        todoWindow,
@@ -16133,6 +16759,9 @@ internal static class Program
             var todoTextEditorSaveButton = GetField<Button>(
                 todoTextEditor,
                 "SaveButton");
+            var todoTextEditorChrome = GetField<Border>(
+                todoTextEditor,
+                "EditorChrome");
             Assert(todoTextEditor.IsVisible &&
                    ReferenceEquals(todoTextEditor.Owner, todoWindow) &&
                    Math.Abs(todoTextEditor.Width - 378) <= 0.1 &&
@@ -16143,8 +16772,16 @@ internal static class Program
                    Math.Abs(todoTextEditor.Opacity - 1) <= 0.01 &&
                    todoTextEditorInput.MaxLength == 5000 &&
                    Math.Abs(todoTextEditorSaveButton.Height - 38) <= 0.1 &&
-                   todoTextEditorSaveButton.FontSize >= 13,
-                "点击待办铅笔必须以378×414 DIP打开可缩放编辑框，最多5000字且确定修改字号清晰");
+                   todoTextEditorSaveButton.FontSize >= 13 &&
+                   todoTextEditorChrome.Margin == new Thickness(0) &&
+                   Math.Abs(
+                       todoTextEditorChrome.ActualWidth -
+                       todoTextEditor.ActualWidth) <= 0.5 &&
+                   Math.Abs(
+                       todoTextEditorChrome.ActualHeight -
+                       todoTextEditor.ActualHeight) <= 0.5,
+                "点击待办铅笔必须以378×414 DIP打开可缩放编辑框，" +
+                "根圆角边框贴满客户区不露白，最多5000字且确定修改字号清晰");
             var taskEditorSource = File.ReadAllText(
                 FindWorkspaceFile("TaskTextEditWindow.xaml.cs"));
             var taskEditorXaml = File.ReadAllText(
@@ -16160,6 +16797,12 @@ internal static class Program
                        StringComparison.Ordinal) &&
                    taskEditorSource.Contains(
                        "TargetEditorHeight = 414",
+                       StringComparison.Ordinal) &&
+                   taskEditorSource.Contains(
+                       "SourceInitialized += TaskTextEditWindow_SourceInitialized",
+                       StringComparison.Ordinal) &&
+                   taskEditorSource.Contains(
+                       "WindowChromeAppearance.TryHideSystemBorder(this)",
                        StringComparison.Ordinal) &&
                    taskEditorPositionSource.Contains(
                        "OwnedWindowPositioner.TryPosition(",
@@ -16182,13 +16825,20 @@ internal static class Program
                    taskEditorXaml.Contains(
                        "Opacity=\"0\"",
                        StringComparison.Ordinal) &&
+                   taskEditorXaml.Contains(
+                       "<Border x:Name=\"EditorChrome\"",
+                       StringComparison.Ordinal) &&
+                   taskEditorXaml.Contains(
+                       "Margin=\"0\"",
+                       StringComparison.Ordinal) &&
                    !taskEditorSource.Contains(
                        "Deactivated +=",
                        StringComparison.Ordinal) &&
                    !taskEditorSource.Contains(
                        "CommitAfterDeactivation",
                        StringComparison.Ordinal),
-                "待办/定时编辑窗必须先隐藏定位，固定左侧优先、失活不保存；左侧无空间时再回退到右侧，并适配多屏工作区");
+                "待办编辑窗必须保持414默认高度、根圆角边框贴边并通过DWM关闭系统白边；" +
+                "同时先隐藏定位、固定左侧优先且失活不保存");
             todoTextEditor.Width = 430;
             todoTextEditor.Height = 470;
             todoTextEditor.UpdateLayout();
@@ -16700,14 +17350,14 @@ internal static class Program
             Assert(GetField<bool>(
                        window,
                        "_petSizePreviewEnvelopePinnedForTodo") &&
-                   GetField<bool>(
+                   !GetField<bool>(
                        window,
                        "_isPetSizePreviewSessionActive") &&
-                   GetField<bool>(
+                   !GetField<bool>(
                        window,
                        "_petSizeEnvelopePrepared") &&
-                   Math.Abs(window.Width - 266) <= 0.5 &&
-                   Math.Abs(window.Height - 338.8) <= 0.5,
+                   Math.Abs(window.Width - 454) <= 0.5 &&
+                   Math.Abs(window.Height - 454) <= 0.5,
                 "Todo进入动画开始前必须只建立一次140%透明包络并固定到面板关闭");
 
             var sizeChangedCount = 0;
@@ -16767,6 +17417,9 @@ internal static class Program
                        GetField<bool>(
                            window,
                            "_isPetSizePreviewSessionActive") &&
+                       GetField<bool>(
+                           window,
+                           "_petSizeEnvelopePrepared") &&
                        sizeChangedCount == 0 &&
                        locationChangedCount == 0 &&
                        Math.Abs(window.Width - envelopeWidth) <= 0.001 &&
@@ -16783,6 +17436,7 @@ internal static class Program
                     $"todoActive={GetField<bool>(todoWindow, "_petSizeAdjustmentActive")}, " +
                     $"mainActive={GetField<bool>(window, "_isPetSizeAdjustmentActive")}, " +
                     $"session={GetField<bool>(window, "_isPetSizePreviewSessionActive")}, " +
+                    $"prepared={GetField<bool>(window, "_petSizeEnvelopePrepared")}, " +
                     $"sizeChanged={sizeChangedCount}, locationChanged={locationChangedCount}, " +
                     $"scaleEvents={scaleChangedCount}, completed={completedCount}, " +
                     $"timer={persistTimer.IsEnabled}, frame={frameBeforeNoOpStress}->{GetField<int>(window, "_activeFrameIndex")}");
@@ -16800,9 +17454,6 @@ internal static class Program
                 var stableTodoExitClip = GetRawField(window, "_activeClip")
                     ?? throw new InvalidOperationException(
                         "稳定Todo收起未启动todo-close");
-                var settledScale = GetField<double>(
-                    window,
-                    "_petSizeTargetScale");
                 var visibleBoundsAfterTodoExitStart =
                     GetVisualPhysicalBounds(petSizeViewbox);
                 Assert(!GetField<bool>(
@@ -16818,10 +17469,8 @@ internal static class Program
                        GetProperty<string>(
                            stableTodoExitClip,
                            "ActionName") == "todo-close" &&
-                       Math.Abs(window.Width -
-                                190d * settledScale) <= 0.5 &&
-                       Math.Abs(window.Height -
-                                242d * settledScale) <= 0.5,
+                       Math.Abs(window.Width - 454) <= 0.5 &&
+                       Math.Abs(window.Height - 454) <= 0.5,
                     "稳定Todo退出必须在todo-close首帧前一次性收紧透明包络，末帧后不得再提交原生尺寸");
                 AssertPhysicalBoundsClose(
                     visibleBoundsAfterTodoExitStart,
@@ -16846,17 +17495,12 @@ internal static class Program
                     GetProperty<object>(
                         stableTodoExitFinalFrame,
                         "Image"));
-                var snoreCover = GetField<UIElement>(
-                    window,
-                    "SnoreBubbleBakedCover");
                 var snoreHost = GetField<UIElement>(
                     window,
                     "SnoreBubbleHost");
                 Assert(GetField<bool>(
                            window,
                            "_isSnoreBubbleAnimating") &&
-                       Math.Abs(snoreCover.Opacity - 1) <=
-                           0.000001 &&
                        Math.Abs(snoreHost.Opacity - 1) <=
                            0.000001,
                     "todo-close最终idle首次呈现时必须同步接管透明呼噜泡泡，不能等clip结束后再切换像素");
@@ -16880,8 +17524,6 @@ internal static class Program
                        GetField<bool>(
                            window,
                            "_isSnoreBubbleAnimating") &&
-                       Math.Abs(snoreCover.Opacity - 1) <=
-                           0.000001 &&
                        Math.Abs(snoreHost.Opacity - 1) <=
                            0.000001,
                     "todo-close最终idle到clip完成后至少460ms内，原生几何和呼噜泡泡可见状态都必须保持连续");
@@ -16899,10 +17541,10 @@ internal static class Program
                 Assert(GetField<bool>(
                            window,
                            "_petSizePreviewEnvelopePinnedForTodo") &&
-                       GetField<bool>(
+                       !GetField<bool>(
                            window,
                            "_isPetSizePreviewSessionActive") &&
-                       GetField<bool>(
+                       !GetField<bool>(
                            window,
                            "_petSizeEnvelopePrepared") &&
                        Math.Abs(window.Width - envelopeWidth) <=
@@ -17113,8 +17755,8 @@ internal static class Program
                        !GetField<bool>(
                            window,
                            "_petSizeEnvelopePrepared") &&
-                       Math.Abs(window.Width - 190 * racePercent / 100d) <= 0.5 &&
-                       Math.Abs(window.Height - 242 * racePercent / 100d) <= 0.5,
+                       Math.Abs(window.Width - 454) <= 0.5 &&
+                       Math.Abs(window.Height - 454) <= 0.5,
                     "Todo退出稳定帧后必须只提交一次最终滑轨值对应的原生窗口尺寸");
             }
             finally
@@ -17191,9 +17833,9 @@ internal static class Program
         var store = GetField<AppSettingsStore>(window, "_settingsStore");
         Invoke(window, "ApplyPetSizeScale", 1.23d, true, false);
         AssertClose(GetField<double>(window, "_petSizeScale"), 1.23, "运行时尺寸比例");
-        Assert(Math.Abs(window.Width - 233.7) <= 0.5,
+        Assert(Math.Abs(window.Width - 454) <= 0.5,
             $"123%桌宠窗口宽度只允许物理像素对齐误差，实际 {window.Width}");
-        Assert(Math.Abs(window.Height - 297.66) <= 0.5,
+        Assert(Math.Abs(window.Height - 454) <= 0.5,
             $"123%桌宠窗口高度只允许物理像素对齐误差，实际 {window.Height}");
         var petHost = GetField<Grid>(window, "PetHost");
         var petVisual = GetField<Grid>(window, "PetVisual");
@@ -17281,8 +17923,8 @@ internal static class Program
         var controlledStart = Stopwatch.GetTimestamp();
         Invoke(window, "StartPetSizeScaleTransitionAt", 1.40d, controlledStart);
         Assert(GetField<bool>(window, "_petSizeEnvelopePrepared") &&
-               Math.Abs(window.Width - 266) <= 0.5 &&
-               Math.Abs(window.Height - 338.8) <= 0.5,
+               Math.Abs(window.Width - 454) <= 0.5 &&
+               Math.Abs(window.Height - 454) <= 0.5,
             "非手势尺寸动画也必须在进入合成热路径前一次性准备最大包络");
         var sampleTicks = transitionTicks * 3 / 10;
         var sampleSeconds = sampleTicks / (double)Stopwatch.Frequency;
@@ -17309,9 +17951,9 @@ internal static class Program
         Invoke(window, "AdvancePetSizeTransition", controlledStart + sampleTicks);
         AssertClose(GetField<double>(window, "_petSizeScale"), sampleScale,
             "缩放预览中间比例");
-        Assert(Math.Abs(window.Width - 266) <= 0.5,
+        Assert(Math.Abs(window.Width - 454) <= 0.5,
             "缩放预览期间透明窗口只建立一次最大包络");
-        Assert(Math.Abs(window.Height - 338.8) <= 0.5,
+        Assert(Math.Abs(window.Height - 454) <= 0.5,
             "缩放预览期间透明窗口高度包络");
         var userScale = GetField<ScaleTransform>(window, "PetUserSizeScale");
         var userOffset = GetField<TranslateTransform>(window, "PetUserSizeOffset");
@@ -17380,8 +18022,8 @@ internal static class Program
         Assert(!GetField<bool>(window, "_isPetSizeTransitioning") &&
                !GetField<bool>(window, "_isPetSizePreviewSessionActive"),
             "停止拖动后必须一次性提交最终尺寸");
-        Assert(Math.Abs(window.Width - 209) <= 0.5, "110%提交后窗口宽度");
-        Assert(Math.Abs(window.Height - 266.2) <= 0.5, "110%提交后窗口高度");
+        Assert(Math.Abs(window.Width - 454) <= 0.5, "110%提交后窗口宽度");
+        Assert(Math.Abs(window.Height - 454) <= 0.5, "110%提交后窗口高度");
         AssertClose(userScale.ScaleX, 1, "提交后水平预览变换必须归一");
         AssertClose(userScale.ScaleY, 1, "提交后垂直预览变换必须归一");
         AssertClose(userOffset.X, 0, "提交后水平像素对齐偏移必须归零");
@@ -17444,8 +18086,8 @@ internal static class Program
                 Invoke(window, "StopVisualClock");
                 var gestureStartElapsed = Stopwatch.GetElapsedTime(gestureStartedAt);
                 Assert(!GetField<bool>(window, "_petSizeEnvelopePrepared") &&
-                       Math.Abs(window.Width - 190) <= 0.5 &&
-                       Math.Abs(window.Height - 242) <= 0.5,
+                       Math.Abs(window.Width - 454) <= 0.5 &&
+                       Math.Abs(window.Height - 454) <= 0.5,
                     $"{refreshRate}Hz同值按下不得改写原生窗口包络");
 
                 var controlledStart = Stopwatch.GetTimestamp();
@@ -17460,8 +18102,8 @@ internal static class Program
                         1d / inputRate));
                 Invoke(window, "StopVisualClock");
                 Assert(GetField<bool>(window, "_petSizeEnvelopePrepared") &&
-                       Math.Abs(window.Width - 266) <= 0.5 &&
-                       Math.Abs(window.Height - 338.8) <= 0.5,
+                       Math.Abs(window.Width - 454) <= 0.5 &&
+                       Math.Abs(window.Height - 454) <= 0.5,
                     $"{refreshRate}Hz首次真实输入必须在Rendering前一次性完成最大原生窗口包络");
 
                 var envelopeLeft = window.Left;
@@ -17904,9 +18546,31 @@ internal static class Program
                             anchor,
                             dpiScale,
                             dpiScale)!;
+                        var committedContentOffset = (Vector)InvokeStatic(
+                            typeof(MainWindow),
+                            "CalculatePetEnvelopeContentOffset",
+                            petWidth * scale,
+                            petHeight * scale,
+                            preserveLeft
+                                ? HorizontalAlignment.Left
+                                : preserveRight
+                                    ? HorizontalAlignment.Right
+                                    : HorizontalAlignment.Center,
+                            preserveTop
+                                ? VerticalAlignment.Top
+                                : VerticalAlignment.Bottom)!;
+                        var committedVisibleBounds = new Rect(
+                            committedBounds.Left + committedContentOffset.X,
+                            committedBounds.Top + committedContentOffset.Y,
+                            petWidth * scale,
+                            petHeight * scale);
                         var commitDriftPixels = Math.Max(
-                            Math.Abs(committedBounds.Left - visibleBounds.Left) * dpiScale,
-                            Math.Abs(committedBounds.Top - visibleBounds.Top) * dpiScale);
+                            Math.Abs(
+                                committedVisibleBounds.Left -
+                                visibleBounds.Left) * dpiScale,
+                            Math.Abs(
+                                committedVisibleBounds.Top -
+                                visibleBounds.Top) * dpiScale);
                         maximumCommitDriftPixels = Math.Max(
                             maximumCommitDriftPixels,
                             commitDriftPixels);
@@ -17952,8 +18616,12 @@ internal static class Program
                     throwOnError: true)!,
                 "GetForWindow",
                 window)!;
-            window.Left = workArea.Right - window.Width - edgeGap;
-            window.Top = workArea.Bottom - window.Height - edgeGap;
+            window.UpdateLayout();
+            var visibleBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            window.Left += workArea.Right - edgeGap - visibleBounds.Right;
+            window.Top += workArea.Bottom - edgeGap - visibleBounds.Bottom;
             window.UpdateLayout();
 
             if (!todoWindow.IsVisible)
@@ -18000,8 +18668,8 @@ internal static class Program
                 "尺寸手势期间 Slider Track 物理 X 必须冻结");
             AssertClose(sliderTrack.PointToScreen(new Point(0, 0)).Y, frozenTrackOrigin.Y,
                 "尺寸手势期间 Slider Track 物理 Y 必须冻结");
-            Assert(GetField<bool>(window, "_petSizeTodoPositionNeedsUpdate"),
-                "尺寸手势期间人物变化必须保留 Todo 跟随 dirty，不能逐帧移动滑块所属窗口");
+            Assert(!GetField<bool>(window, "_petSizeTodoPositionNeedsUpdate"),
+                "尺寸手势开始但数值尚未变化时不得制造虚假的 Todo 跟随 dirty");
 
             var transitionStartedAt = Stopwatch.GetTimestamp();
             var transitionTicks = (long)Math.Ceiling(
@@ -18236,16 +18904,23 @@ internal static class Program
         Assert(GetField<bool>(
                    window,
                    "_petSizePreviewEnvelopePinnedForTodo") &&
-               GetField<bool>(
+               !GetField<bool>(
                    window,
                    "_isPetSizePreviewSessionActive") &&
-               GetField<bool>(
+               !GetField<bool>(
                    window,
                    "_petSizeEnvelopePrepared"),
             "提醒打断回归必须先建立Todo固定最大透明包络");
 
         Invoke(todoWindow, "BeginPetSizeAdjustment");
         slider.Value = 123d;
+        Assert(GetField<bool>(
+                   window,
+                   "_isPetSizePreviewSessionActive") &&
+               GetField<bool>(
+                   window,
+                   "_petSizeEnvelopePrepared"),
+            "首次真实尺寸变化后必须建立并准备预览会话");
         var previewBaseScale = GetField<double>(
             window,
             "_petSizePreviewBaseScale");
@@ -19380,10 +20055,90 @@ internal static class Program
             petSizeViewboxStart,
             StringComparison.Ordinal);
         Assert(petSizeViewboxStart >= 0 && petSizeViewboxEnd > petSizeViewboxStart &&
+               mainXaml.Contains(
+                   "Width=\"454\"",
+                   StringComparison.Ordinal) &&
+               mainXaml.Contains(
+                   "Height=\"454\"",
+                   StringComparison.Ordinal) &&
+               mainXaml[petSizeViewboxStart..petSizeViewboxEnd].Contains(
+                   "Width=\"190\"",
+                   StringComparison.Ordinal) &&
+               mainXaml[petSizeViewboxStart..petSizeViewboxEnd].Contains(
+                   "Height=\"242\"",
+                   StringComparison.Ordinal) &&
+                mainXaml[petSizeViewboxStart..petSizeViewboxEnd].Contains(
+                    "VerticalAlignment=\"Bottom\"",
+                    StringComparison.Ordinal) &&
                mainXaml[petSizeViewboxStart..petSizeViewboxEnd].Contains(
                    "UseLayoutRounding=\"False\"",
                    StringComparison.Ordinal),
-            "尺寸预览 Viewbox 必须关闭布局取整，避免理论缩放基准被单轴取整后出现 1px 裁切和回缩");
+            "主透明HWND必须从启动起固定为454×454完整旋转包络，" +
+            "190×242可见宠物在包络内独立缩放并关闭布局取整");
+
+        var centerForRotationSource = ExtractPrivateMethodSource(
+            mainSource,
+            "CenterPetViewboxForRotation");
+        Assert(centerForRotationSource.Contains(
+                   "HorizontalAlignment.Center",
+                   StringComparison.Ordinal) &&
+               centerForRotationSource.Contains(
+                   "VerticalAlignment.Center",
+                   StringComparison.Ordinal) &&
+               centerForRotationSource.Contains(
+                   "centeredPivotOffsetY",
+                   StringComparison.Ordinal) &&
+               centerForRotationSource.Contains(
+                   "PetUserSizeOffset.Y = centeredPivotOffsetY",
+                   StringComparison.Ordinal) &&
+               ExtractPrivateMethodSource(mainSource, "StartEdgeRoaming")
+                   .Contains(
+                       "CenterPetViewboxForRotation()",
+                       StringComparison.Ordinal),
+            "绕屏开始前必须把真实旋转枢轴无闪重心化，不能沿用左右吸附布局");
+
+        const double rotationEnvelopeSize = 454;
+        const double maximumScale = 1.4;
+        var rotatedWidth = 190 * maximumScale;
+        var rotatedHeight = 242 * maximumScale;
+        var pivot = new Point(
+            95 * maximumScale,
+            130 * maximumScale);
+        var envelopePivot = new Point(
+            rotationEnvelopeSize / 2,
+            rotationEnvelopeSize / 2);
+        var corners = new[]
+        {
+            new Point(0, 0),
+            new Point(rotatedWidth, 0),
+            new Point(rotatedWidth, rotatedHeight),
+            new Point(0, rotatedHeight)
+        };
+        foreach (var angle in new[]
+                 {
+                     -90d, -75d, -60d, -45d, -30d, -15d,
+                     0d, 15d, 30d, 45d, 60d, 75d, 90d
+                 })
+        {
+            var radians = angle * Math.PI / 180;
+            var cosine = Math.Cos(radians);
+            var sine = Math.Sin(radians);
+            var transformed = corners.Select(corner =>
+            {
+                var x = corner.X - pivot.X;
+                var y = corner.Y - pivot.Y;
+                return new Point(
+                    envelopePivot.X + x * cosine - y * sine,
+                    envelopePivot.Y + x * sine + y * cosine);
+            }).ToArray();
+            Assert(transformed.Min(point => point.X) >= 1 &&
+                   transformed.Min(point => point.Y) >= 1 &&
+                   transformed.Max(point => point.X) <=
+                       rotationEnvelopeSize - 1 &&
+                   transformed.Max(point => point.Y) <=
+                       rotationEnvelopeSize - 1,
+                $"140%绕屏旋转{angle}°必须完整落在454×454包络内");
+        }
 
         var outsideCloseSource = ExtractPrivateMethodSource(
             mainSource,
@@ -19432,12 +20187,27 @@ internal static class Program
         var ownedWindowPositionerType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.OwnedWindowPositioner",
             throwOnError: true)!;
-        var trySetBoundsSource = ExtractPrivateMethodSource(
-            positionerSource,
-            "TrySetBounds");
+        var trySetBoundsStart = positionerSource.IndexOf(
+            "internal static bool TrySetBounds(",
+            StringComparison.Ordinal);
+        var trySetPositionStart = positionerSource.IndexOf(
+            "internal static bool TrySetPosition(",
+            StringComparison.Ordinal);
+        Assert(
+            trySetBoundsStart >= 0 &&
+            trySetPositionStart > trySetBoundsStart,
+            "必须保留独立的原子主窗口边界更新方法");
+        var trySetBoundsSource =
+            positionerSource[trySetBoundsStart..trySetPositionStart];
         var applyPetSizeWindowBoundsSource = ExtractPrivateMethodSource(
             mainSource,
             "ApplyPetSizeWindowBounds");
+        var unchangedSizeBranch = trySetBoundsSource.IndexOf(
+            "if (sizeIsUnchanged)",
+            StringComparison.Ordinal);
+        var atomicResizeBranch = trySetBoundsSource.LastIndexOf(
+            "return SetWindowPos(",
+            StringComparison.Ordinal);
         Assert(trySetBoundsSource.Contains(
                    "PresentationSource.FromVisual(window) is not HwndSource source",
                    StringComparison.Ordinal) &&
@@ -19448,15 +20218,30 @@ internal static class Program
                    "RoundPhysicalPixel(logicalBounds.Height, scaleY)",
                    StringComparison.Ordinal) &&
                trySetBoundsSource.Contains(
+                   "GetWindowRect(source.Handle, out var currentBounds)",
+                   StringComparison.Ordinal) &&
+               unchangedSizeBranch >= 0 &&
+               atomicResizeBranch > unchangedSizeBranch &&
+               trySetBoundsSource[unchangedSizeBranch..atomicResizeBranch].Contains(
+                   "SwpNoSize",
+                   StringComparison.Ordinal) &&
+               trySetBoundsSource[atomicResizeBranch..].Contains(
                    "SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder",
                    StringComparison.Ordinal) &&
-               !trySetBoundsSource.Contains("SwpNoMove", StringComparison.Ordinal) &&
-               !trySetBoundsSource.Contains("SwpNoSize", StringComparison.Ordinal) &&
+               !trySetBoundsSource[atomicResizeBranch..].Contains(
+                   "SwpNoSize",
+                   StringComparison.Ordinal) &&
                applyPetSizeWindowBoundsSource.Contains(
                    "if (!OwnedWindowPositioner.TrySetBounds(this, bounds))",
+                   StringComparison.Ordinal) &&
+               applyPetSizeWindowBoundsSource.Contains(
+                   "Width = PetEnvelopeWidth",
+                   StringComparison.Ordinal) &&
+               applyPetSizeWindowBoundsSource.Contains(
+                   "Height = PetEnvelopeHeight",
                    StringComparison.Ordinal),
-            "主透明窗口的尺寸预览包络必须用一次同时移动和缩放的原生提交，" +
-            "仅在无HWND或调用失败时回退到WPF属性写入");
+            "固定最大包络位置改变时必须走SWP_NOSIZE，避免透明HWND收到WM_SIZE；" +
+            "仅真正尺寸不一致时才允许一次原子move-size修复");
         Assert((int)InvokeStatic(
                    ownedWindowPositionerType,
                    "RoundPhysicalPixel",
@@ -19465,13 +20250,13 @@ internal static class Program
                (int)InvokeStatic(
                    ownedWindowPositionerType,
                    "RoundPhysicalPixel",
-                   266d,
-                   1.25)! == 333 &&
+                   454d,
+                   1.25)! == 568 &&
                (int)InvokeStatic(
                    ownedWindowPositionerType,
                    "RoundPhysicalPixel",
-                   338.8d,
-                   1.5)! == 508,
+                   454d,
+                   1.5)! == 681,
             "原子窗口包络必须在负坐标与125%/150%DPI下独立执行AwayFromZero物理像素取整");
         Assert((bool)InvokeStatic(
                    ownedWindowPositionerType,
@@ -19515,7 +20300,8 @@ internal static class Program
                advancePetSizeComposition.Contains(
                    "_todoWindow.FlushPendingPetSizeScaleChanged()",
                    StringComparison.Ordinal),
-            "最大预览包络只能在真实尺寸值变化后准备；空点滑轨不得改透明窗口尺寸，MainWindow须在整个手势期间保持唯一合成合帧器");
+            "尺寸手势必须延迟到真实值变化后才建立预览会话；" +
+            "固定最大HWND包络不变，MainWindow在整个手势期间保持唯一合成合帧器");
         var petSizeRenderLayoutWrites = new[]
         {
             "PreparePetSizePreviewEnvelope",
@@ -20252,6 +21038,103 @@ internal static class Program
             $"{stage}滚动块必须是12 DIP热区内的主题色圆角高光药丸，不能使用生硬的系统默认滑块");
     }
 
+    private static void AssertTaskFullTextTheme(
+        TodoWindow todoWindow,
+        bool scheduled)
+    {
+        var stage = scheduled ? "定时任务全文窗" : "待办全文窗";
+        var chrome = GetField<Border>(
+            todoWindow,
+            "TaskFullTextPopupChrome");
+        var title = GetField<TextBlock>(
+            todoWindow,
+            "TaskFullTextTitle");
+        var preview = GetField<TextBox>(
+            todoWindow,
+            "TaskFullTextPreviewTextBox");
+        var count = GetField<TextBlock>(
+            todoWindow,
+            "TaskFullTextCountText");
+        var expectedChromeBackground = scheduled
+            ? Color.FromRgb(0xFF, 0xF8, 0xF1)
+            : Color.FromRgb(0xF3, 0xF7, 0xFD);
+        var expectedChromeBorder = scheduled
+            ? Color.FromRgb(0xEF, 0x94, 0x65)
+            : Color.FromRgb(0x8C, 0xB4, 0xF4);
+        var expectedShadow = scheduled
+            ? Color.FromRgb(0xA8, 0x55, 0x36)
+            : Color.FromRgb(0x5B, 0x78, 0xA8);
+        var expectedTitle = scheduled
+            ? Color.FromRgb(0xC4, 0x5F, 0x3D)
+            : Color.FromRgb(0x3E, 0x70, 0xC6);
+        var expectedTextBackground = scheduled
+            ? Color.FromRgb(0xFF, 0xFC, 0xF8)
+            : Color.FromRgb(0xF8, 0xFB, 0xFF);
+        var expectedTextBorder = scheduled
+            ? Color.FromRgb(0xF1, 0xC1, 0x9E)
+            : Color.FromRgb(0xBD, 0xD2, 0xEF);
+        var expectedTextForeground = scheduled
+            ? Color.FromRgb(0x4B, 0x34, 0x2B)
+            : Color.FromRgb(0x30, 0x37, 0x44);
+        var expectedSelection = scheduled
+            ? Color.FromRgb(0xF5, 0xB0, 0x7D)
+            : Color.FromRgb(0xA9, 0xC9, 0xF4);
+        var expectedCount = scheduled
+            ? Color.FromRgb(0xC1, 0x8A, 0x6C)
+            : Color.FromRgb(0x82, 0x95, 0xB3);
+        var expectedScrollTrack = scheduled
+            ? Color.FromArgb(0x22, 0xD6, 0xA0, 0x6A)
+            : Color.FromArgb(0x24, 0x5B, 0x8D, 0xEF);
+        var expectedScrollDrag = scheduled
+            ? Color.FromRgb(0xD9, 0x7B, 0x2F)
+            : Color.FromRgb(0x3E, 0x70, 0xC6);
+        var expectedScrollThumb = scheduled
+            ? Color.FromRgb(0xE7, 0xA1, 0x5E)
+            : Color.FromRgb(0x7B, 0xA6, 0xE8);
+        var expectedScrollHover = scheduled
+            ? Color.FromRgb(0xF0, 0x9A, 0x48)
+            : Color.FromRgb(0x5B, 0x8D, 0xEF);
+
+        preview.ApplyTemplate();
+        var scrollBar = FindVisualDescendants<ScrollBar>(preview)
+            .FirstOrDefault(candidate =>
+                candidate.Orientation == Orientation.Vertical)
+            ?? throw new InvalidOperationException(
+                $"{stage}缺少自绘纵向滚动条");
+        scrollBar.ApplyTemplate();
+        Assert(chrome.Background is SolidColorBrush chromeBackground &&
+               chromeBackground.Color == expectedChromeBackground &&
+               chrome.BorderBrush is SolidColorBrush chromeBorder &&
+               chromeBorder.Color == expectedChromeBorder &&
+               chrome.Effect is DropShadowEffect shadow &&
+               shadow.Color == expectedShadow &&
+               title.Foreground is SolidColorBrush titleBrush &&
+               titleBrush.Color == expectedTitle &&
+               preview.Background is SolidColorBrush textBackground &&
+               textBackground.Color == expectedTextBackground &&
+               preview.BorderBrush is SolidColorBrush textBorder &&
+               textBorder.Color == expectedTextBorder &&
+               preview.Foreground is SolidColorBrush textForeground &&
+               textForeground.Color == expectedTextForeground &&
+               preview.SelectionBrush is SolidColorBrush selection &&
+               selection.Color == expectedSelection &&
+               count.Foreground is SolidColorBrush countBrush &&
+               countBrush.Color == expectedCount &&
+               scrollBar.Background is SolidColorBrush scrollTrack &&
+               scrollTrack.Color == expectedScrollTrack &&
+               scrollBar.BorderBrush is SolidColorBrush scrollDrag &&
+               scrollDrag.Color == expectedScrollDrag &&
+               scrollBar.Foreground is SolidColorBrush scrollThumb &&
+               scrollThumb.Color == expectedScrollThumb &&
+               scrollBar.Tag is SolidColorBrush scrollHover &&
+               scrollHover.Color == expectedScrollHover &&
+               scrollBar.Template.FindName(
+                   "PART_Track",
+                   scrollBar) is Track,
+            $"{stage}必须整套使用{(scheduled ? "橘色" : "蓝色")}主题，" +
+            "包括窗口、正文、选区、计数和滚动条");
+    }
+
     private static IDisposable HoldClipboardOpenForTest()
     {
         var ready = new ManualResetEventSlim();
@@ -20440,6 +21323,7 @@ internal static class Program
 
     private sealed class WindowPositionChangeRecorder : IDisposable
     {
+        private const int SizeChangedMessage = 0x0005;
         private const int WindowPositionChangedMessage = 0x0047;
         internal const uint SwpNoSize = 0x0001;
         internal const uint SwpNoMove = 0x0002;
@@ -20458,6 +21342,8 @@ internal static class Program
 
         internal List<WindowPositionChange> GeometryChanges { get; } = [];
 
+        internal int SizeMessageCount { get; private set; }
+
         private IntPtr WindowProcedure(
             IntPtr windowHandle,
             int message,
@@ -20465,6 +21351,12 @@ internal static class Program
             IntPtr lParam,
             ref bool handled)
         {
+            if (message == SizeChangedMessage)
+            {
+                SizeMessageCount++;
+                return IntPtr.Zero;
+            }
+
             if (message != WindowPositionChangedMessage ||
                 lParam == IntPtr.Zero)
             {

@@ -251,12 +251,33 @@ internal static class OwnedWindowPositioner
                 return false;
             }
 
+            var currentWidth = currentBounds.Right - currentBounds.Left;
+            var currentHeight = currentBounds.Bottom - currentBounds.Top;
+            var sizeIsUnchanged =
+                currentWidth == width && currentHeight == height;
             if (currentBounds.Left == left &&
                 currentBounds.Top == top &&
-                currentBounds.Right - currentBounds.Left == width &&
-                currentBounds.Bottom - currentBounds.Top == height)
+                sizeIsUnchanged)
             {
                 return true;
+            }
+
+            if (sizeIsUnchanged)
+            {
+                // A position-only correction must not send WM_SIZE to a
+                // transparent owner whose layered backbuffer is already at
+                // the permanent maximum envelope.
+                return SetWindowPos(
+                    source.Handle,
+                    IntPtr.Zero,
+                    left,
+                    top,
+                    0,
+                    0,
+                    SwpNoSize |
+                    SwpNoZOrder |
+                    SwpNoActivate |
+                    SwpNoOwnerZOrder);
             }
 
             // A shown WPF Window normally turns separate Width, Height, Left
@@ -274,6 +295,63 @@ internal static class OwnedWindowPositioner
                 width,
                 height,
                 SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool TrySetPosition(
+        Window window,
+        double logicalLeft,
+        double logicalTop)
+    {
+        try
+        {
+            if (!window.IsLoaded ||
+                PresentationSource.FromVisual(window) is not HwndSource source ||
+                source.Handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var transform = source.CompositionTarget.TransformToDevice;
+            var scaleX = transform.M11;
+            var scaleY = transform.M22;
+            if (!double.IsFinite(scaleX) ||
+                !double.IsFinite(scaleY) ||
+                scaleX <= 0 ||
+                scaleY <= 0 ||
+                !double.IsFinite(logicalLeft) ||
+                !double.IsFinite(logicalTop))
+            {
+                return false;
+            }
+
+            var left = RoundPhysicalPixel(logicalLeft, scaleX);
+            var top = RoundPhysicalPixel(logicalTop, scaleY);
+            if (!GetWindowRect(source.Handle, out var currentBounds))
+            {
+                return false;
+            }
+
+            if (currentBounds.Left == left && currentBounds.Top == top)
+            {
+                return true;
+            }
+
+            return SetWindowPos(
+                source.Handle,
+                IntPtr.Zero,
+                left,
+                top,
+                0,
+                0,
+                SwpNoSize |
+                SwpNoZOrder |
+                SwpNoActivate |
+                SwpNoOwnerZOrder);
         }
         catch
         {

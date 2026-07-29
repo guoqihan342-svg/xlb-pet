@@ -4,7 +4,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="修改定时任务"
         Width="378"
-        Height="414"
+        Height="360"
         MinWidth="350"
         MinHeight="320"
         Background="#FFFFF9F2"
@@ -694,7 +694,8 @@
         </Style>
     </Window.Resources>
 
-    <Border Margin="1"
+    <Border x:Name="EditorChrome"
+            Margin="0"
             Padding="12,10,12,12"
             BorderBrush="#E7B77E"
             BorderThickness="1.2"

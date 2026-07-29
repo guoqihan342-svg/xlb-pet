@@ -31,6 +31,33 @@
         <SolidColorBrush x:Key="CuteOrangeHoverBrush" Color="#F8B971" />
         <SolidColorBrush x:Key="CuteOrangeEditHoverBrush" Color="#F2A65A" />
         <!--
+            These brushes are replaced as one palette when the selected task
+            page changes. DynamicResource keeps the existing switch/slider
+            templates alive, so changing tabs never resets their values or
+            rebuilds the controls.
+        -->
+        <SolidColorBrush x:Key="TaskPageSettingsTextBrush" Color="#515966" />
+        <SolidColorBrush x:Key="TaskPageSwitchTrackBrush" Color="#EAF3FF" />
+        <SolidColorBrush x:Key="TaskPageSwitchBorderBrush" Color="#BBD3F5" />
+        <SolidColorBrush x:Key="TaskPageSwitchHoverTrackBrush" Color="#DCEBFF" />
+        <SolidColorBrush x:Key="TaskPageSwitchHoverBorderBrush" Color="#8CB4F4" />
+        <SolidColorBrush x:Key="TaskPageSwitchCheckedTrackBrush" Color="#78A8EB" />
+        <SolidColorBrush x:Key="TaskPageSwitchCheckedBorderBrush" Color="#5B8DEF" />
+        <SolidColorBrush x:Key="TaskPageSwitchKnobFillBrush" Color="#F8FBFF" />
+        <SolidColorBrush x:Key="TaskPageSwitchKnobStrokeBrush" Color="#8CB4F4" />
+        <SolidColorBrush x:Key="TaskPageSwitchFaceBrush" Color="#4F7FD7" />
+        <Color x:Key="TaskPageSwitchShadowColor">#455B8DEF</Color>
+        <SolidColorBrush x:Key="TaskPageSliderDecreaseBrush" Color="#77A7EB" />
+        <SolidColorBrush x:Key="TaskPageSliderIncreaseBrush" Color="#E5EFFC" />
+        <SolidColorBrush x:Key="TaskPageSliderIncreaseBorderBrush" Color="#BBD3F5" />
+        <SolidColorBrush x:Key="TaskPageSliderShadowBrush" Color="#453E70C6" />
+        <SolidColorBrush x:Key="TaskPageSliderThumbBrush" Color="#EAF3FF" />
+        <SolidColorBrush x:Key="TaskPageSliderThumbBorderBrush" Color="#5B8DEF" />
+        <SolidColorBrush x:Key="TaskPageSliderThumbHoverBrush" Color="#DCEBFF" />
+        <SolidColorBrush x:Key="TaskPageSliderThumbHoverBorderBrush" Color="#3E70C6" />
+        <SolidColorBrush x:Key="TaskPageSliderThumbDragBrush" Color="#BDD7FA" />
+        <SolidColorBrush x:Key="TaskPageSliderFaceBrush" Color="#4F7FD7" />
+        <!--
             The task house uses a single, lightweight button chrome.  The
             per-button Background/BorderBrush/Foreground keep each action's
             meaning clear, while Tag supplies its hover tint without creating
@@ -414,13 +441,98 @@
             </Setter>
         </Style>
 
+        <Style x:Key="CuteTodoCheckBoxStyle"
+               TargetType="{x:Type CheckBox}">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="Foreground" Value="#4B6F9F" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="CuteCheckShell"
+                                    Width="19"
+                                    Height="19"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Background="#F8FBFF"
+                                    BorderBrush="#BDD2EF"
+                                    BorderThickness="1.2"
+                                    CornerRadius="7">
+                                <Grid>
+                                    <Ellipse Width="8"
+                                             Height="3"
+                                             Margin="3,2,0,0"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Top"
+                                             Fill="#8FFFFFFF"
+                                             IsHitTestVisible="False" />
+                                    <Path x:Name="CuteCheckMark"
+                                          Width="11"
+                                          Height="8"
+                                          Data="M1,4 L4.2,7 L10,1"
+                                          Fill="Transparent"
+                                          Stroke="White"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round"
+                                          StrokeThickness="2"
+                                          Visibility="Collapsed" />
+                                </Grid>
+                            </Border>
+                            <ContentPresenter Grid.Column="1"
+                                              Margin="6,0,0,0"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="Background"
+                                        Value="#EAF3FF" />
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="BorderBrush"
+                                        Value="#8CB4F4" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="Background"
+                                        Value="#5B8DEF" />
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="BorderBrush"
+                                        Value="#4F7FD7" />
+                                <Setter TargetName="CuteCheckMark"
+                                        Property="Visibility"
+                                        Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="BorderThickness"
+                                        Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="CuteSettingsSwitchStyle"
                TargetType="{x:Type CheckBox}">
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="FontFamily" Value="Microsoft YaHei" />
             <Setter Property="FontSize" Value="12" />
-            <Setter Property="Foreground" Value="#675344" />
+            <Setter Property="Foreground"
+                    Value="{DynamicResource TaskPageSettingsTextBrush}" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -435,8 +547,8 @@
                                     Height="21"
                                     HorizontalAlignment="Left"
                                     VerticalAlignment="Center"
-                                    Background="#FFF3E3D2"
-                                    BorderBrush="#E2B988"
+                                    Background="{DynamicResource TaskPageSwitchTrackBrush}"
+                                    BorderBrush="{DynamicResource TaskPageSwitchBorderBrush}"
                                     BorderThickness="1"
                                     CornerRadius="11">
                                 <Grid Margin="2">
@@ -444,15 +556,15 @@
                                              Width="15"
                                              Height="15"
                                              HorizontalAlignment="Left"
-                                             Fill="#FFFFFCF7"
-                                             Stroke="#E2B27E"
+                                             Fill="{DynamicResource TaskPageSwitchKnobFillBrush}"
+                                             Stroke="{DynamicResource TaskPageSwitchKnobStrokeBrush}"
                                              StrokeThickness="1">
                                         <Ellipse.Effect>
                                             <DropShadowEffect BlurRadius="3"
                                                               Direction="270"
                                                               Opacity="0.18"
                                                               ShadowDepth="1"
-                                                              Color="#8A5D38" />
+                                                              Color="{DynamicResource TaskPageSwitchShadowColor}" />
                                         </Ellipse.Effect>
                                     </Ellipse>
                                     <Grid x:Name="KnobFace"
@@ -466,20 +578,20 @@
                                                  Margin="2,2,0,0"
                                                  HorizontalAlignment="Left"
                                                  VerticalAlignment="Top"
-                                                 Fill="#B67845" />
+                                                 Fill="{DynamicResource TaskPageSwitchFaceBrush}" />
                                         <Ellipse Width="1.6"
                                                  Height="1.9"
                                                  Margin="0,2,2,0"
                                                  HorizontalAlignment="Right"
                                                  VerticalAlignment="Top"
-                                                 Fill="#B67845" />
+                                                 Fill="{DynamicResource TaskPageSwitchFaceBrush}" />
                                         <Path Width="4"
                                               Height="2"
                                               Margin="0,0,0,1"
                                               VerticalAlignment="Bottom"
                                               Data="M0,0 C1,2 3,2 4,0"
                                               Fill="Transparent"
-                                              Stroke="#B67845"
+                                              Stroke="{DynamicResource TaskPageSwitchFaceBrush}"
                                               StrokeEndLineCap="Round"
                                               StrokeThickness="0.8" />
                                     </Grid>
@@ -501,18 +613,18 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="SwitchTrack"
                                         Property="Background"
-                                        Value="#FFFFE7C9" />
+                                        Value="{DynamicResource TaskPageSwitchHoverTrackBrush}" />
                                 <Setter TargetName="SwitchTrack"
                                         Property="BorderBrush"
-                                        Value="#E49A50" />
+                                        Value="{DynamicResource TaskPageSwitchHoverBorderBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="SwitchTrack"
                                         Property="Background"
-                                        Value="#F7B46E" />
+                                        Value="{DynamicResource TaskPageSwitchCheckedTrackBrush}" />
                                 <Setter TargetName="SwitchTrack"
                                         Property="BorderBrush"
-                                        Value="#DB873B" />
+                                        Value="{DynamicResource TaskPageSwitchCheckedBorderBrush}" />
                                 <Setter TargetName="SwitchKnob"
                                         Property="HorizontalAlignment"
                                         Value="Right" />
@@ -555,7 +667,7 @@
                                         <RepeatButton.Template>
                                             <ControlTemplate TargetType="{x:Type RepeatButton}">
                                                 <Border Height="7"
-                                                        Background="#F5AD68"
+                                                        Background="{DynamicResource TaskPageSliderDecreaseBrush}"
                                                         CornerRadius="4,0,0,4" />
                                             </ControlTemplate>
                                         </RepeatButton.Template>
@@ -571,11 +683,11 @@
                                                 <Grid RenderTransformOrigin="0.5,0.5">
                                                     <Ellipse x:Name="ThumbShadow"
                                                              Margin="1,2,1,0"
-                                                             Fill="#45A85E25" />
+                                                              Fill="{DynamicResource TaskPageSliderShadowBrush}" />
                                                     <Ellipse x:Name="ThumbFace"
                                                              Margin="1,0,1,2"
-                                                             Fill="#FFFFE7C5"
-                                                             Stroke="#E28E43"
+                                                             Fill="{DynamicResource TaskPageSliderThumbBrush}"
+                                                             Stroke="{DynamicResource TaskPageSliderThumbBorderBrush}"
                                                              StrokeThickness="1.2" />
                                                     <Ellipse Width="8"
                                                              Height="3"
@@ -583,41 +695,59 @@
                                                              HorizontalAlignment="Left"
                                                              VerticalAlignment="Top"
                                                              Fill="#90FFFFFF" />
-                                                    <Ellipse Width="2.2"
-                                                             Height="2.5"
-                                                             Margin="7,0,0,7"
+                                                    <Ellipse x:Name="ThumbLeftEye"
+                                                             Width="2.4"
+                                                             Height="3"
+                                                             Margin="7,8,0,0"
+                                                             HorizontalAlignment="Left"
+                                                             VerticalAlignment="Top"
+                                                             Fill="{DynamicResource TaskPageSliderFaceBrush}" />
+                                                    <Ellipse x:Name="ThumbRightEye"
+                                                             Width="2.4"
+                                                             Height="3"
+                                                             Margin="0,8,7,0"
+                                                             HorizontalAlignment="Right"
+                                                             VerticalAlignment="Top"
+                                                             Fill="{DynamicResource TaskPageSliderFaceBrush}" />
+                                                    <Ellipse Width="3"
+                                                             Height="1.6"
+                                                             Margin="4,0,0,7"
                                                              HorizontalAlignment="Left"
                                                              VerticalAlignment="Bottom"
-                                                             Fill="#A76435" />
-                                                    <Ellipse Width="2.2"
-                                                             Height="2.5"
-                                                             Margin="0,0,7,7"
+                                                             Fill="{DynamicResource TaskPageSliderFaceBrush}"
+                                                             Opacity="0.28" />
+                                                    <Ellipse Width="3"
+                                                             Height="1.6"
+                                                             Margin="0,0,4,7"
                                                              HorizontalAlignment="Right"
                                                              VerticalAlignment="Bottom"
-                                                             Fill="#A76435" />
-                                                    <Path Width="6"
-                                                          Height="3"
-                                                          Margin="0,0,0,4"
+                                                             Fill="{DynamicResource TaskPageSliderFaceBrush}"
+                                                             Opacity="0.28" />
+                                                    <Path x:Name="ThumbSmile"
+                                                          Width="7"
+                                                          Height="4"
+                                                          Margin="0,0,0,4.5"
                                                           VerticalAlignment="Bottom"
-                                                          Data="M0,0 C1.5,3 4.5,3 6,0"
+                                                          Data="M0,0 C1.5,3.6 5.5,3.6 7,0"
                                                           Fill="Transparent"
-                                                          Stroke="#A76435"
+                                                          Stroke="{DynamicResource TaskPageSliderFaceBrush}"
                                                           StrokeEndLineCap="Round"
-                                                          StrokeThickness="1" />
+                                                          StrokeStartLineCap="Round"
+                                                          StrokeThickness="1.1" />
                                                 </Grid>
                                                 <ControlTemplate.Triggers>
                                                     <Trigger Property="IsMouseOver" Value="True">
                                                         <Setter TargetName="ThumbFace"
                                                                 Property="Fill"
-                                                                Value="#FFFFD9A7" />
+                                                                Value="{DynamicResource TaskPageSliderThumbHoverBrush}" />
                                                         <Setter TargetName="ThumbFace"
                                                                 Property="Stroke"
-                                                                Value="#D8792C" />
+                                                                Value="{DynamicResource TaskPageSliderThumbHoverBorderBrush}" />
                                                     </Trigger>
                                                     <Trigger Property="IsDragging" Value="True">
                                                         <Setter TargetName="ThumbFace"
                                                                 Property="Fill"
-                                                                Value="#FFC98A" />
+                                                                Value="{DynamicResource TaskPageSliderThumbDragBrush}" />
                                                         <Setter TargetName="ThumbShadow"
                                                                 Property="Opacity"
                                                                 Value="0.72" />
@@ -633,8 +763,8 @@
                                         <RepeatButton.Template>
                                             <ControlTemplate TargetType="{x:Type RepeatButton}">
                                                 <Border Height="7"
-                                                        Background="#FFF0DDC8"
-                                                        BorderBrush="#E8C39A"
+                                                        Background="{DynamicResource TaskPageSliderIncreaseBrush}"
+                                                        BorderBrush="{DynamicResource TaskPageSliderIncreaseBorderBrush}"
                                                         BorderThickness="0,1,1,1"
                                                         CornerRadius="0,4,4,0" />
                                             </ControlTemplate>
@@ -892,10 +1022,34 @@
                                             Unloaded="TaskRow_Unloaded">
                                         <Border.Style>
                                             <Style TargetType="Border">
-                                                <Setter Property="Background" Value="#F3F7FD" />
+                                                <Setter Property="Background">
+                                                    <Setter.Value>
+                                                        <LinearGradientBrush StartPoint="0,0"
+                                                                             EndPoint="1,1">
+                                                            <GradientStop Offset="0"
+                                                                          Color="#F9FCFF" />
+                                                            <GradientStop Offset="1"
+                                                                          Color="#EDF5FF" />
+                                                        </LinearGradientBrush>
+                                                    </Setter.Value>
+                                                </Setter>
+                                                <Setter Property="BorderBrush"
+                                                        Value="#D5E5F8" />
+                                                <Setter Property="BorderThickness"
+                                                        Value="1" />
                                                 <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsCompleted}"
+                                                                 Value="True">
+                                                        <Setter Property="Background"
+                                                                Value="#F5F9FE" />
+                                                        <Setter Property="BorderBrush"
+                                                                Value="#DCE7F5" />
+                                                    </DataTrigger>
                                                     <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Background" Value="#EAF3FF" />
+                                                        <Setter Property="Background"
+                                                                Value="#EAF3FF" />
+                                                        <Setter Property="BorderBrush"
+                                                                Value="#91B8EE" />
                                                     </Trigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -908,6 +1062,13 @@
                                                 <ColumnDefinition Width="26" />
                                                 <ColumnDefinition Width="26" />
                                             </Grid.ColumnDefinitions>
+                                            <Border Width="3"
+                                                    Margin="-4,5,0,5"
+                                                    HorizontalAlignment="Left"
+                                                    Background="#8CB4F4"
+                                                    CornerRadius="2"
+                                                    IsHitTestVisible="False"
+                                                    Opacity="0.62" />
                                             <Border x:Name="TodoDragHandle"
                                                     Grid.Column="0"
                                                     Width="18"
@@ -933,7 +1094,7 @@
                                                       Margin="0,0,7,0"
                                                       VerticalAlignment="Center"
                                                       Cursor="Hand"
-                                                      Style="{StaticResource CuteTaskCheckBoxStyle}"
+                                                      Style="{StaticResource CuteTodoCheckBoxStyle}"
                                                       IsChecked="{Binding IsCompleted, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                       Click="TodoCheckBox_Click" />
                                             <TextBox x:Name="TodoTextBox"
@@ -1085,11 +1246,56 @@
                                     <Setter Property="Background" Value="#F8FBFF" />
                                     <Setter Property="BorderBrush" Value="#BDD2EF" />
                                     <Setter Property="BorderThickness" Value="1" />
+                                    <Setter Property="FocusVisualStyle" Value="{x:Null}" />
                                     <Setter Property="SelectionBrush" Value="#A9C9F4" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="{x:Type TextBox}">
+                                                <Border x:Name="TodoInputBorder"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        CornerRadius="9"
+                                                        Padding="{TemplateBinding Padding}"
+                                                        SnapsToDevicePixels="True">
+                                                    <ScrollViewer x:Name="PART_ContentHost"
+                                                                  Focusable="False"
+                                                                  HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                                                  VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="TodoInputBorder"
+                                                                Property="Background"
+                                                                Value="#F3F7FD" />
+                                                        <Setter TargetName="TodoInputBorder"
+                                                                Property="BorderBrush"
+                                                                Value="#8CB4F4" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                                        <Setter TargetName="TodoInputBorder"
+                                                                Property="Background"
+                                                                Value="#F2F7FF" />
+                                                        <Setter TargetName="TodoInputBorder"
+                                                                Property="BorderBrush"
+                                                                Value="#5B8DEF" />
+                                                        <Setter TargetName="TodoInputBorder"
+                                                                Property="BorderThickness"
+                                                                Value="1.5" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
                                     <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#F3F7FD" />
+                                            <Setter Property="BorderBrush" Value="#8CB4F4" />
+                                        </Trigger>
                                         <Trigger Property="IsKeyboardFocused" Value="True">
                                             <Setter Property="Background" Value="#F2F7FF" />
                                             <Setter Property="BorderBrush" Value="#5B8DEF" />
+                                            <Setter Property="BorderThickness" Value="1.5" />
                                         </Trigger>
                                     </Style.Triggers>
                                 </Style>
@@ -1198,7 +1404,7 @@
                                     <Border x:Name="ScheduledTaskRowBorder"
                                             Margin="0,0,0,2"
                                             Padding="7,4"
-                                            MaxHeight="54"
+                                            MaxHeight="62"
                                             CornerRadius="9"
                                             Tag="{Binding}"
                                             MouseEnter="TaskRow_MouseEnter"
@@ -1226,7 +1432,7 @@
                                             <Grid Grid.Column="0">
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto" />
-                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
                                                 </Grid.RowDefinitions>
                                                  <TextBlock Grid.Row="0"
                                                             FontFamily="Microsoft YaHei"
@@ -1236,7 +1442,7 @@
                                                            Text="{Binding DueAtDisplayText}"
                                                            TextTrimming="CharacterEllipsis"
                                                            ToolTip="{Binding DueAtDisplayText}" />
-                                                <TextBox Grid.Row="1"
+                                                 <TextBox Grid.Row="1"
                                                          MinWidth="0"
                                                          Padding="0"
                                                          ClipToBounds="True"
@@ -1250,7 +1456,7 @@
                                                          IsReadOnly="True"
                                                          IsReadOnlyCaretVisible="False"
                                                          HorizontalScrollBarVisibility="Disabled"
-                                                         MaxHeight="30"
+                                                          MaxHeight="36"
                                                          MaxLength="5000"
                                                          MaxLines="2"
                                                          Text="{Binding Text}"
@@ -1351,8 +1557,11 @@
                                  VerticalContentAlignment="Center"
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
+                                 CaretBrush="#A8642F"
+                                 HorizontalScrollBarVisibility="Hidden"
                                  InputMethod.IsInputMethodEnabled="True"
                                  MaxLength="5000"
+                                 TextWrapping="NoWrap"
                                  ToolTip="输入提醒内容，按回车设定"
                                  TextChanged="ScheduledTaskInput_TextChanged"
                                  PreviewKeyDown="ScheduledTaskInput_PreviewKeyDown">
@@ -1366,17 +1575,24 @@
                                     <Setter Property="Template">
                                         <Setter.Value>
                                             <ControlTemplate TargetType="{x:Type TextBox}">
-                                                <Border x:Name="ScheduledInputBorder"
-                                                        Background="{TemplateBinding Background}"
-                                                        BorderBrush="{TemplateBinding BorderBrush}"
-                                                        BorderThickness="{TemplateBinding BorderThickness}"
-                                                        CornerRadius="9">
-                                                    <ScrollViewer x:Name="PART_ContentHost"
-                                                                  Margin="{TemplateBinding Padding}"
-                                                                  Focusable="False"
-                                                                  HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
-                                                                  VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
-                                                </Border>
+                                                <Grid SnapsToDevicePixels="True">
+                                                    <Border x:Name="ScheduledInputBorder"
+                                                            Background="{TemplateBinding Background}"
+                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            CornerRadius="9"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ScrollViewer x:Name="PART_ContentHost"
+                                                                      Focusable="False"
+                                                                      HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                                                      VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+                                                    </Border>
+                                                    <Border x:Name="ScheduledInputFocusRing"
+                                                            BorderBrush="Transparent"
+                                                            BorderThickness="1.5"
+                                                            CornerRadius="9"
+                                                            IsHitTestVisible="False" />
+                                                </Grid>
                                                 <ControlTemplate.Triggers>
                                                     <Trigger Property="IsMouseOver" Value="True">
                                                         <Setter TargetName="ScheduledInputBorder"
@@ -1393,9 +1609,9 @@
                                                         <Setter TargetName="ScheduledInputBorder"
                                                                 Property="BorderBrush"
                                                                 Value="#E89D52" />
-                                                        <Setter TargetName="ScheduledInputBorder"
-                                                                Property="BorderThickness"
-                                                                Value="1.5" />
+                                                        <Setter TargetName="ScheduledInputFocusRing"
+                                                                Property="BorderBrush"
+                                                                Value="#E89D52" />
                                                     </Trigger>
                                                 </ControlTemplate.Triggers>
                                             </ControlTemplate>
@@ -1409,13 +1625,11 @@
                                         <Trigger Property="IsKeyboardFocused" Value="True">
                                             <Setter Property="Background" Value="#FFFFF8EE" />
                                             <Setter Property="BorderBrush" Value="#E89D52" />
-                                            <Setter Property="BorderThickness" Value="1.5" />
                                         </Trigger>
                                         <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
                                                      Value="Visible">
                                             <Setter Property="Background" Value="#FFFFF4E5" />
                                             <Setter Property="BorderBrush" Value="#F0A157" />
-                                            <Setter Property="BorderThickness" Value="1.5" />
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
@@ -1432,10 +1646,15 @@
                                 <Style TargetType="TextBlock">
                                     <Setter Property="Visibility" Value="Collapsed" />
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding Text, ElementName=ScheduledTaskInput}"
-                                                     Value="">
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding Text, ElementName=ScheduledTaskInput}"
+                                                           Value="" />
+                                                <Condition Binding="{Binding IsKeyboardFocusWithin, ElementName=ScheduledTaskInput}"
+                                                           Value="False" />
+                                            </MultiDataTrigger.Conditions>
                                             <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
+                                        </MultiDataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </TextBlock.Style>
@@ -2675,7 +2894,7 @@
                               Cursor="Hand"
                               FontFamily="Microsoft YaHei"
                               FontSize="12"
-                              Foreground="#515966"
+                              Foreground="{DynamicResource TaskPageSettingsTextBrush}"
                               Style="{StaticResource CuteSettingsSwitchStyle}"
                               IsChecked="True"
                               ToolTip="控制小鲁班是否自动绕着屏幕移动"
@@ -2690,7 +2909,7 @@
                               Cursor="Hand"
                               FontFamily="Microsoft YaHei"
                               FontSize="12"
-                              Foreground="#515966"
+                              Foreground="{DynamicResource TaskPageSettingsTextBrush}"
                               Style="{StaticResource CuteSettingsSwitchStyle}"
                               IsChecked="False"
                               ToolTip="登录 Windows 后自动启动小鲁班"
@@ -2707,7 +2926,7 @@
                     <TextBlock VerticalAlignment="Center"
                                FontFamily="Microsoft YaHei"
                                FontSize="12"
-                               Foreground="#515966"
+                               Foreground="{DynamicResource TaskPageSettingsTextBrush}"
                                Text="桌宠大小" />
                     <Slider x:Name="PetSizeSlider"
                             Grid.Column="1"
@@ -2732,7 +2951,7 @@
                                VerticalAlignment="Center"
                                FontFamily="Microsoft YaHei"
                                FontSize="12"
-                               Foreground="#515966"
+                               Foreground="{DynamicResource TaskPageSettingsTextBrush}"
                                TextAlignment="Right"
                                Text="100%" />
                 </Grid>
