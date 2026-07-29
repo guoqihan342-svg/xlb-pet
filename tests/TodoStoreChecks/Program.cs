@@ -841,7 +841,205 @@ static void CheckScheduledRepeatRules(string tempDirectory)
         badRuleReloaded[2].RepeatInterval is null,
         "未知、损坏或与 DueAt 不一致的 rule 必须回退 legacy/单次且绝不能删任务");
 
+    CheckScheduledRepeatAdvanceToFuture(tempDirectory, chinaTimeZone);
     CheckScheduledRepeatDstRules();
+}
+
+static void CheckScheduledRepeatAdvanceToFuture(
+    string tempDirectory,
+    TimeZoneInfo timeZone)
+{
+    var nowLocal = new DateTime(
+        2026,
+        7,
+        29,
+        12,
+        34,
+        56,
+        DateTimeKind.Unspecified);
+    var now = new DateTimeOffset(
+        TimeZoneInfo.ConvertTimeToUtc(nowLocal, timeZone),
+        TimeSpan.Zero);
+    var cases = new[]
+    {
+        (
+            Unit: ScheduledRepeatUnit.Minute,
+            Every: 7,
+            AnchorLocal: new DateTime(
+                2026,
+                7,
+                29,
+                10,
+                0,
+                30,
+                DateTimeKind.Unspecified),
+            ExpectedOrdinal: 23L,
+            NominalInterval: TimeSpan.FromMinutes(7),
+            Label: "分钟"),
+        (
+            Unit: ScheduledRepeatUnit.Hour,
+            Every: 3,
+            AnchorLocal: new DateTime(
+                2026,
+                7,
+                28,
+                23,
+                15,
+                20,
+                DateTimeKind.Unspecified),
+            ExpectedOrdinal: 5L,
+            NominalInterval: TimeSpan.FromHours(3),
+            Label: "小时"),
+        (
+            Unit: ScheduledRepeatUnit.Day,
+            Every: 3,
+            AnchorLocal: new DateTime(
+                2026,
+                7,
+                20,
+                8,
+                5,
+                4,
+                DateTimeKind.Unspecified),
+            ExpectedOrdinal: 4L,
+            NominalInterval: TimeSpan.FromDays(3),
+            Label: "天")
+    };
+    var advancedItems = new List<ScheduledTaskItem>(cases.Length);
+    var expectedById =
+        new Dictionary<Guid, (ScheduledRepeatRule Rule, DateTimeOffset DueAt)>();
+
+    for (var index = 0; index < cases.Length; index++)
+    {
+        var testCase = cases[index];
+        Assert(
+            ScheduledRepeatSchedule.TryCreate(
+                testCase.Unit,
+                testCase.Every,
+                testCase.AnchorLocal,
+                timeZone,
+                out var initialRule,
+                out var initialDueAt) &&
+            initialRule is not null &&
+            initialDueAt <= now,
+            $"过去的{testCase.Label}循环必须先建立有效的已过期锚点");
+        var confirmedInitialRule = initialRule!;
+        Assert(
+            ScheduledRepeatSchedule.TryGetOccurrence(
+                confirmedInitialRule,
+                testCase.ExpectedOrdinal,
+                out var expectedDueAt) &&
+            expectedDueAt > now,
+            $"{testCase.Label}循环的预期 ordinal 必须对应严格晚于现在的 occurrence");
+        Assert(
+            ScheduledRepeatSchedule.TryAdvanceToFuture(
+                confirmedInitialRule,
+                initialDueAt,
+                now,
+                out var futureRule,
+                out var futureDueAt) &&
+            futureRule is not null,
+            $"过去的{testCase.Label}循环必须能自动推进到未来");
+        var confirmedFutureRule = futureRule!;
+        Assert(
+            confirmedFutureRule ==
+                confirmedInitialRule with { NextOrdinal = testCase.ExpectedOrdinal } &&
+            confirmedFutureRule.NextOrdinal == testCase.ExpectedOrdinal &&
+            confirmedFutureRule.AnchorLocal == confirmedInitialRule.AnchorLocal &&
+            futureDueAt == expectedDueAt &&
+            futureDueAt > now,
+            $"{testCase.Label}循环必须保持原锚点并推进到正确的严格未来 ordinal");
+        Assert(
+            ScheduledRepeatSchedule.TryValidateForDueAt(
+                confirmedFutureRule,
+                futureDueAt,
+                out var nominalInterval) &&
+            nominalInterval == testCase.NominalInterval,
+            $"推进后的{testCase.Label}规则和 DueAt 必须仍可通过一致性校验");
+
+        var id = new Guid(
+            $"40000000-0000-0000-0000-{index + 1:000000000000}");
+        advancedItems.Add(new ScheduledTaskItem
+        {
+            Id = id,
+            Text = $"推进后的{testCase.Label}循环",
+            DueAt = futureDueAt,
+            CreatedAt = now.AddDays(-1),
+            RepeatRule = confirmedFutureRule
+        });
+        expectedById.Add(id, (confirmedFutureRule, futureDueAt));
+    }
+
+    var futureAnchorLocal = nowLocal.AddDays(2);
+    Assert(
+        ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Day,
+            2,
+            futureAnchorLocal,
+            timeZone,
+            out var futureAnchorRule,
+            out var futureAnchorDueAt) &&
+        futureAnchorRule is not null &&
+        futureAnchorDueAt > now,
+        "未来循环锚点必须能正常建立");
+    Assert(
+        ScheduledRepeatSchedule.TryAdvanceToFuture(
+            futureAnchorRule,
+            futureAnchorDueAt,
+            now,
+            out var unchangedFutureRule,
+            out var unchangedFutureDueAt) &&
+        unchangedFutureRule == futureAnchorRule &&
+        unchangedFutureRule.AnchorLocal == futureAnchorLocal &&
+        unchangedFutureRule.NextOrdinal == 0 &&
+        unchangedFutureDueAt == futureAnchorDueAt,
+        "已经在未来的循环锚点和 NextOrdinal 必须保持不变");
+
+    Assert(
+        ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Minute,
+            2,
+            nowLocal,
+            timeZone,
+            out var dueNowRule,
+            out var dueNow) &&
+        dueNowRule is not null &&
+        dueNow == now &&
+        ScheduledRepeatSchedule.TryAdvanceToFuture(
+            dueNowRule,
+            dueNow,
+            now,
+            out var afterNowRule,
+            out var afterNowDueAt) &&
+        afterNowRule.NextOrdinal == 1 &&
+        afterNowDueAt > now,
+        "恰好等于现在的循环也必须推进一次，结果必须严格晚于现在");
+
+    var advanceStorePath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "advanced-repeat-rules.json");
+    var advanceStore = new ScheduledTaskStore(advanceStorePath);
+    Assert(
+        advanceStore.Save(advancedItems),
+        "推进后的分钟、小时和天循环必须能一起存储");
+    Assert(
+        advanceStore.TryLoad(out var reloadedItems) &&
+        reloadedItems.Count == advancedItems.Count,
+        "推进后的分钟、小时和天循环必须能在重启后完整重载");
+    foreach (var reloadedItem in reloadedItems)
+    {
+        Assert(
+            expectedById.TryGetValue(reloadedItem.Id, out var expected) &&
+            reloadedItem.RepeatRule == expected.Rule &&
+            reloadedItem.DueAt == expected.DueAt &&
+            ScheduledRepeatSchedule.TryValidateForDueAt(
+                reloadedItem.RepeatRule,
+                reloadedItem.DueAt,
+                out var reloadedInterval) &&
+            reloadedInterval == reloadedItem.RepeatInterval,
+            "重载后的推进规则、NextOrdinal、DueAt 和兼容间隔必须保持一致");
+    }
 }
 
 static void CheckScheduledRepeatDstRules()

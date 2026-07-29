@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     // clock on every monitor refresh; these values do not create a UI slider.
     private const double EdgeRoamBaseSpeedDipsPerSecond = 160;
     private const double EdgeRoamCornerRadiusDips = 48;
+    private const double EdgeRoamSupportAnchorYRatio = 457d / 509d;
     // 48 authored poses at the global 1.25x playback setting land exactly on
     // 60fps. A 75fps pose clock on a 60Hz desktop periodically skipped two
     // adjacent in-between frames and made an otherwise smooth path pulse.
@@ -65,7 +66,7 @@ public partial class MainWindow : Window
     // previous 64 MiB target evicted one of those pages after nearly every
     // interaction and repeatedly allocated/decompressed the same LOH buffers.
     private const long SpritePageIdleResidentTargetBytes = 104L * 1024 * 1024;
-    private const long SpritePageCollectionThresholdBytes = 48L * 1024 * 1024;
+    private const long SpritePageCollectionThresholdBytes = 24L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
     private const int MaximumVisibleReminderOccurrences = 100;
@@ -1679,7 +1680,7 @@ public partial class MainWindow : Window
                 out var childIsOnLeft,
                 _isPetSizePreviewSessionActive ? _petSizeTodoChildOnLeft : null))
         {
-            _todoWindow.SetTailOnRight(childIsOnLeft);
+            UpdateTodoWindowTailPlacement(childIsOnLeft);
             return;
         }
 
@@ -1712,11 +1713,40 @@ public partial class MainWindow : Window
             desiredLeft,
             workArea.Left,
             maximumLeft);
-        _todoWindow.SetTailOnRight(
+        var childIsActuallyOnLeft =
             actualLeft + bubbleWidth / 2 <=
-            (petLeft + petRight) / 2);
+            (petLeft + petRight) / 2;
         _todoWindow.Left = actualLeft;
         _todoWindow.Top = Math.Clamp(desiredTop, workArea.Top, maximumTop);
+        UpdateTodoWindowTailPlacement(childIsActuallyOnLeft);
+    }
+
+    private void UpdateTodoWindowTailPlacement(bool childIsOnLeft)
+    {
+        try
+        {
+            var petTopLeft =
+                PetSizeViewbox.PointToScreen(new Point(0, 0));
+            var petBottomRight = PetSizeViewbox.PointToScreen(
+                new Point(
+                    PetSizeViewbox.ActualWidth,
+                    PetSizeViewbox.ActualHeight));
+            var childOrigin =
+                _todoWindow.PointToScreen(new Point(0, 0));
+            var childDpiScaleY =
+                VisualTreeHelper.GetDpi(_todoWindow).DpiScaleY;
+            var petCenterY = (petTopLeft.Y + petBottomRight.Y) / 2;
+            var tailCenterY =
+                (petCenterY - childOrigin.Y) /
+                Math.Max(0.01, childDpiScaleY);
+            _todoWindow.SetTailPlacement(
+                childIsOnLeft,
+                tailCenterY);
+        }
+        catch
+        {
+            _todoWindow.SetTailOnRight(childIsOnLeft);
+        }
     }
 
     private void QueueTodoWindowPositionUpdate()
@@ -2771,12 +2801,10 @@ public partial class MainWindow : Window
         }
 
         var workArea = MonitorWorkArea.GetForWindow(this);
-        var width = ActualWidth > 0 ? ActualWidth : Width;
-        var height = ActualHeight > 0 ? ActualHeight : Height;
         var routeLeft = workArea.Left + ScreenEdgeMargin;
         var routeTop = workArea.Top + ScreenEdgeMargin;
-        var routeRight = workArea.Right - width - ScreenEdgeMargin;
-        var routeBottom = workArea.Bottom - height - ScreenEdgeMargin;
+        var routeRight = workArea.Right - ScreenEdgeMargin;
+        var routeBottom = workArea.Bottom - ScreenEdgeMargin;
         if (!double.IsFinite(routeLeft) || !double.IsFinite(routeTop) ||
             !double.IsFinite(routeRight) || !double.IsFinite(routeBottom) ||
             routeRight - routeLeft < 24 || routeBottom - routeTop < 24)
@@ -2796,9 +2824,19 @@ public partial class MainWindow : Window
         _edgeRoamRouteLength = GetEdgeRoamRouteLength(
             _edgeRoamRouteBounds,
             radius);
+        var currentWindowLeft =
+            double.IsFinite(Left) ? Left : routeRight;
+        var currentWindowTop =
+            double.IsFinite(Top) ? Top : routeBottom;
+        var displayedWidth = ActualWidth > 0 ? ActualWidth : Width;
+        var displayedHeight = ActualHeight > 0 ? ActualHeight : Height;
+        var supportOffset = GetEdgeRoamSupportOffset(
+            displayedWidth,
+            displayedHeight,
+            rotationDegrees: 0);
         _edgeRoamStartPoint = new Point(
-            double.IsFinite(Left) ? Left : routeRight,
-            double.IsFinite(Top) ? Top : routeBottom);
+            currentWindowLeft + supportOffset.X,
+            currentWindowTop + supportOffset.Y);
         _edgeRoamRouteStartDistance = FindClosestEdgeRoamRouteDistance(
             _edgeRoamRouteBounds,
             radius,
@@ -2817,8 +2855,8 @@ public partial class MainWindow : Window
             _edgeRoamStartPoint,
             _edgeRoamRouteStartPoint);
         _edgeRoamReturnLength = _edgeRoamApproachLength;
-        _edgeRoamLogicalLeft = _edgeRoamStartPoint.X;
-        _edgeRoamLogicalTop = _edgeRoamStartPoint.Y;
+        _edgeRoamLogicalLeft = currentWindowLeft;
+        _edgeRoamLogicalTop = currentWindowTop;
         _edgeRoamFacingScaleX = PetFacingScale.ScaleX < 0 ? -1 : 1;
         _edgeRoamStartedTimestamp = 0;
         _edgeRoamLastRenderingTimestamp = 0;
@@ -2994,7 +3032,7 @@ public partial class MainWindow : Window
 
         var disembarkStartRotationDegrees =
             reverse && double.IsFinite(_edgeRoamRotationDegrees)
-                ? Math.Clamp(_edgeRoamRotationDegrees, -90, 90)
+                ? _edgeRoamRotationDegrees
                 : 0;
         var wasForwardBoarding =
             _edgeRoamPhase == EdgeRoamPhase.Boarding &&
@@ -3099,6 +3137,9 @@ public partial class MainWindow : Window
                     _edgeRoamDisembarkStartRotationDegrees,
                     elapsedSeconds);
             PetRoamRotate.Angle = _edgeRoamRotationDegrees;
+            ApplyEdgeRoamingPosition(
+                _edgeRoamStartPoint.X,
+                _edgeRoamStartPoint.Y);
         }
 
         var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
@@ -3150,7 +3191,7 @@ public partial class MainWindow : Window
             elapsedSeconds <= 0 ||
             durationSeconds <= 0)
         {
-            return Math.Clamp(startRotationDegrees, -90, 90);
+            return startRotationDegrees;
         }
 
         var progress = Math.Clamp(
@@ -3159,8 +3200,14 @@ public partial class MainWindow : Window
             1);
         var easedProgress =
             progress * progress * (3 - 2 * progress);
-        return Math.Clamp(startRotationDegrees, -90, 90) *
-               (1 - easedProgress);
+        var nearestUprightRotation =
+            Math.Round(
+                startRotationDegrees / 360,
+                MidpointRounding.AwayFromZero) *
+            360;
+        return startRotationDegrees +
+               (nearestUprightRotation - startRotationDegrees) *
+               easedProgress;
     }
 
     private void StartEdgeRoamTravel(long timestamp)
@@ -3212,6 +3259,9 @@ public partial class MainWindow : Window
         }
 
         UpdateEdgeRoamFacing(initialPosition, initialLookAhead);
+        ApplyEdgeRoamingPosition(
+            initialPosition.X,
+            initialPosition.Y);
         _nextFrameBlendDuration = TimeSpan.Zero;
         ShowStableFrame(_roamFlightFrames[0]);
         UpdateVisualClockSubscription();
@@ -3527,31 +3577,24 @@ public partial class MainWindow : Window
             return new EdgeRoamOrientation(
                 currentScaleX < 0 ? -1 : 1,
                 double.IsFinite(currentRotationDegrees)
-                    ? Math.Clamp(currentRotationDegrees, -90, 90)
+                    ? currentRotationDegrees
                     : 0);
         }
 
-        // The source mount heading is H=(-1,0), while Luban's authored up axis
-        // is U=(0,-1). On a vertical edge H must follow the motion and U must
-        // point into the screen. That yields:
-        // left:  angle=+90, up ScaleX=+1 / down ScaleX=-1
-        // right: angle=-90, up ScaleX=-1 / down ScaleX=+1.
-        // On rounded corners, derive a continuous angle from the tangent's
-        // vertical weight instead of holding the previous angle until a 1.2x
-        // dominance threshold and then snapping by 90 degrees.
-        var absoluteX = Math.Abs(deltaX);
-        var absoluteY = Math.Abs(deltaY);
-        var verticalWeight =
-            absoluteY / (absoluteX + absoluteY);
-        var easedVerticalWeight =
-            verticalWeight * verticalWeight *
-            (3 - 2 * verticalWeight);
-        var routeCenterX =
-            routeBounds.Left + routeBounds.Width / 2;
-        var verticalEdgeAngle =
-            position.X <= routeCenterX ? 90d : -90d;
-        var rotationDegrees =
-            verticalEdgeAngle * easedVerticalWeight;
+        // Treat every monitor edge as the ground. Luban's authored up axis is
+        // U=(0,-1), so rotate U onto the rounded rectangle's inward normal:
+        // bottom=0, left=+90, top=+/-180 and right=-90. The corner normal
+        // rotates continuously, avoiding quarter-turn snaps.
+        var inwardNormal = GetEdgeRoamInwardNormal(
+            position,
+            routeBounds);
+        var targetRotationDegrees =
+            Math.Atan2(inwardNormal.X, -inwardNormal.Y) *
+            180 /
+            Math.PI;
+        var rotationDegrees = UnwrapDegreesNear(
+            targetRotationDegrees,
+            currentRotationDegrees);
 
         // Of the two possible horizontal mirrors, choose the one whose
         // transformed authored heading has the larger dot product with the
@@ -3569,6 +3612,77 @@ public partial class MainWindow : Window
         return new EdgeRoamOrientation(
             resolvedScaleX,
             rotationDegrees);
+    }
+
+    private static Vector GetEdgeRoamInwardNormal(
+        Point position,
+        Rect routeBounds)
+    {
+        var radius = GetEdgeRoamCornerRadius(routeBounds);
+        var innerLeft = routeBounds.Left + radius;
+        var innerRight = routeBounds.Right - radius;
+        var innerTop = routeBounds.Top + radius;
+        var innerBottom = routeBounds.Bottom - radius;
+        var cornerCenter = new Point(
+            Math.Clamp(position.X, innerLeft, innerRight),
+            Math.Clamp(position.Y, innerTop, innerBottom));
+        var inward = cornerCenter - position;
+        if (inward.LengthSquared > 1e-9)
+        {
+            inward.Normalize();
+            return inward;
+        }
+
+        var topDistance = Math.Abs(position.Y - routeBounds.Top);
+        var rightDistance = Math.Abs(routeBounds.Right - position.X);
+        var bottomDistance = Math.Abs(routeBounds.Bottom - position.Y);
+        var leftDistance = Math.Abs(position.X - routeBounds.Left);
+        var nearestDistance = Math.Min(
+            Math.Min(topDistance, rightDistance),
+            Math.Min(bottomDistance, leftDistance));
+        if (nearestDistance == topDistance)
+        {
+            return new Vector(0, 1);
+        }
+
+        if (nearestDistance == rightDistance)
+        {
+            return new Vector(-1, 0);
+        }
+
+        return nearestDistance == bottomDistance
+            ? new Vector(0, -1)
+            : new Vector(1, 0);
+    }
+
+    private static double UnwrapDegreesNear(
+        double targetDegrees,
+        double referenceDegrees)
+    {
+        if (!double.IsFinite(targetDegrees))
+        {
+            return double.IsFinite(referenceDegrees)
+                ? referenceDegrees
+                : 0;
+        }
+
+        if (!double.IsFinite(referenceDegrees))
+        {
+            return targetDegrees;
+        }
+
+        var unwrapped = targetDegrees;
+        while (unwrapped - referenceDegrees > 180)
+        {
+            unwrapped -= 360;
+        }
+
+        while (unwrapped - referenceDegrees < -180)
+        {
+            unwrapped += 360;
+        }
+
+        return unwrapped;
     }
 
     private static double ResolveEdgeRoamFacingScaleX(
@@ -3600,10 +3714,18 @@ public partial class MainWindow : Window
             currentScaleX,
             currentRotationDegrees).RotationDegrees;
 
-    private void ApplyEdgeRoamingPosition(double logicalLeft, double logicalTop)
+    private void ApplyEdgeRoamingPosition(
+        double supportScreenX,
+        double supportScreenY)
     {
-        _edgeRoamLogicalLeft = logicalLeft;
-        _edgeRoamLogicalTop = logicalTop;
+        var displayedWidth = ActualWidth > 0 ? ActualWidth : Width;
+        var displayedHeight = ActualHeight > 0 ? ActualHeight : Height;
+        var supportOffset = GetEdgeRoamSupportOffset(
+            displayedWidth,
+            displayedHeight,
+            _edgeRoamRotationDegrees);
+        _edgeRoamLogicalLeft = supportScreenX - supportOffset.X;
+        _edgeRoamLogicalTop = supportScreenY - supportOffset.Y;
         _isApplyingEdgeRoamPosition = true;
         try
         {
@@ -3614,6 +3736,27 @@ public partial class MainWindow : Window
         {
             _isApplyingEdgeRoamPosition = false;
         }
+    }
+
+    private static Point GetEdgeRoamSupportOffset(
+        double displayedWidth,
+        double displayedHeight,
+        double rotationDegrees)
+    {
+        var normalizedOriginX = 0.5;
+        var normalizedOriginY = 0.5371900826446281;
+        var supportDeltaY =
+            EdgeRoamSupportAnchorYRatio - normalizedOriginY;
+        var radians =
+            (double.IsFinite(rotationDegrees) ? rotationDegrees : 0) *
+            Math.PI /
+            180;
+        return new Point(
+            normalizedOriginX * displayedWidth -
+            supportDeltaY * displayedHeight * Math.Sin(radians),
+            (normalizedOriginY +
+             supportDeltaY * Math.Cos(radians)) *
+            displayedHeight);
     }
 
     private static double GetPointDistance(Point first, Point second)
@@ -5903,6 +6046,18 @@ public partial class MainWindow : Window
         TrimResidentSpritePagesToTarget(
             SpritePageIdleResidentTargetBytes,
             preservePageName: null);
+
+        // Resident eviction first returns exact-length LOH arrays to the pool.
+        // Once the pet is idle, retaining free arrays above the same 104 MiB
+        // hot-set target only preserves fragmentation without improving the
+        // next animation. Discard that excess after protected/resident pages
+        // have settled, and account only the arrays that were truly released.
+        var discardedBytes = _spritePageBufferPool.TrimFreeBuffers(
+            SpritePageIdleResidentTargetBytes);
+        if (discardedBytes > 0)
+        {
+            RecordDiscardedSpritePageBytes(discardedBytes);
+        }
     }
 
     private void TrimResidentSpritePagesToTarget(
@@ -7511,6 +7666,22 @@ public partial class MainWindow : Window
         if (_isPetSizeTransitioning)
         {
             AdvancePetSizeTransition(timestamp);
+        }
+
+        if (_petSizeTodoPositionNeedsUpdate && _todoWindow.IsVisible)
+        {
+            // Keep the arrow visually attached to Luban on every composition
+            // frame without moving the Todo HWND that currently owns the
+            // captured Slider. The full child-window move remains deferred
+            // until release so fast pointer drags stay stable.
+            var todoIsBeforePet = _petSizeTodoChildOnLeft ??
+                                  _todoWindow.Left +
+                                  (_todoWindow.ActualWidth > 0
+                                      ? _todoWindow.ActualWidth
+                                      : _todoWindow.Width) /
+                                  2 <=
+                                  Left + Width / 2;
+            UpdateTodoWindowTailPlacement(todoIsBeforePet);
         }
 
         // Keep the window that owns the Slider physically stationary while its

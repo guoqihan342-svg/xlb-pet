@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -14,7 +13,7 @@ namespace LubanDesktopPet;
 public partial class ScheduledTaskEditWindow : Window
 {
     private const double TargetEditorWidth = 378;
-    private const double TargetEditorHeight = 208;
+    private const double TargetEditorHeight = 414;
     private static readonly string[] HourOptions =
         CreateClockPartOptions(24);
     private static readonly string[] MinuteSecondOptions =
@@ -28,12 +27,12 @@ public partial class ScheduledTaskEditWindow : Window
     private readonly DateTimeOffset _originalDueAt;
     private readonly TimeSpan? _originalRepeatInterval;
     private readonly ScheduledRepeatRule? _originalRepeatRule;
-    private readonly Action _commitAfterDeactivationAction;
+    private readonly Action _closePickersAfterDeactivationAction;
     private readonly Action _positionBesideOwnerAction;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private Window? _positionOwner;
-    private bool _allowClose;
     private bool _initializing;
+    private bool _isImeComposing;
     private bool _scheduleEdited;
     private bool _repeatEdited;
     private bool _internalPopupOpen;
@@ -50,7 +49,8 @@ public partial class ScheduledTaskEditWindow : Window
         _originalDueAt = item.DueAt;
         _originalRepeatInterval = item.RepeatInterval;
         _originalRepeatRule = item.RepeatRule;
-        _commitAfterDeactivationAction = CommitAfterDeactivation;
+        _closePickersAfterDeactivationAction =
+            ClosePickersAfterDeactivation;
         _positionBesideOwnerAction = PositionBesideOwner;
         _positionCache = new OwnedWindowPositioner.PositionCache(this);
 
@@ -83,9 +83,16 @@ public partial class ScheduledTaskEditWindow : Window
             _initializing = false;
         }
 
+        TextCompositionManager.AddPreviewTextInputStartHandler(
+            TaskTextBox,
+            TaskTextBox_PreviewTextInputStart);
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(
+            TaskTextBox,
+            TaskTextBox_PreviewTextInputUpdate);
+        TaskTextBox.PreviewTextInput +=
+            TaskTextBox_PreviewTextInputCommitted;
         Activated += ScheduledTaskEditWindow_Activated;
         Deactivated += ScheduledTaskEditWindow_Deactivated;
-        Closing += ScheduledTaskEditWindow_Closing;
         Closed += ScheduledTaskEditWindow_Closed;
         Loaded += ScheduledTaskEditWindow_Loaded;
         DpiChanged += ScheduledTaskEditWindow_DpiChanged;
@@ -102,15 +109,12 @@ public partial class ScheduledTaskEditWindow : Window
 
     public void CloseWithoutSaving()
     {
-        _allowClose = true;
         CloseScheduledPickers();
         if (IsLoaded)
         {
             Close();
         }
     }
-
-    public bool SaveAndClose() => CommitAndClose();
 
     private static string[] CreateClockPartOptions(int count)
     {
@@ -348,7 +352,7 @@ public partial class ScheduledTaskEditWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape)
+        if (e.Key == Key.Escape && !_isImeComposing)
         {
             if (ScheduledTimePickerPopup.IsOpen ||
                 IsAnyTimePickerDropDownOpen())
@@ -369,15 +373,31 @@ public partial class ScheduledTaskEditWindow : Window
 
             CloseWithoutSaving();
             e.Handled = true;
-            return;
         }
+    }
 
-        if (e.Key == Key.Enter &&
-            Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-        {
-            CommitAndClose();
-            e.Handled = true;
-        }
+    private void TaskTextBox_PreviewTextInputStart(
+        object sender,
+        TextCompositionEventArgs e)
+    {
+        _isImeComposing = true;
+    }
+
+    private void TaskTextBox_PreviewTextInputUpdate(
+        object sender,
+        TextCompositionEventArgs e)
+    {
+        var composition = e.TextComposition;
+        _isImeComposing =
+            !string.IsNullOrEmpty(composition.CompositionText) ||
+            !string.IsNullOrEmpty(composition.SystemCompositionText);
+    }
+
+    private void TaskTextBox_PreviewTextInputCommitted(
+        object sender,
+        TextCompositionEventArgs e)
+    {
+        _isImeComposing = false;
     }
 
     private void Window_PreviewMouseDown(
@@ -544,7 +564,6 @@ public partial class ScheduledTaskEditWindow : Window
         EventArgs e)
     {
         UpdateInternalPopupState();
-        QueueCommitAfterDeactivation();
     }
 
     private void ScheduledDatePickerPopup_PreviewKeyDown(
@@ -756,7 +775,6 @@ public partial class ScheduledTaskEditWindow : Window
         EventArgs e)
     {
         UpdateInternalPopupState();
-        QueueCommitAfterDeactivation();
     }
 
     private void ScheduledPickerPopup_PreviewMouseDown(
@@ -982,7 +1000,6 @@ public partial class ScheduledTaskEditWindow : Window
         }
 
         UpdateInternalPopupState();
-        QueueCommitAfterDeactivation();
     }
 
     private bool IsAnyComboDropDownOpen() =>
@@ -1032,7 +1049,6 @@ public partial class ScheduledTaskEditWindow : Window
             return false;
         }
 
-        _allowClose = true;
         CloseScheduledPickers();
         EditAccepted?.Invoke(
             text,
@@ -1060,42 +1076,52 @@ public partial class ScheduledTaskEditWindow : Window
             return false;
         }
 
-        if (!_scheduleEdited && !_repeatEdited)
+        var preserveOriginalSchedule = !_scheduleEdited && !_repeatEdited;
+        DateTime selectedLocal;
+        if (preserveOriginalSchedule)
         {
             dueAt = _originalDueAt;
             repeatInterval = _originalRepeatInterval;
             repeatRule = _originalRepeatRule;
-            return true;
+            selectedLocal = DateTime.SpecifyKind(
+                TimeZoneInfo.ConvertTime(
+                        _originalDueAt,
+                        TimeZoneInfo.Local)
+                    .DateTime,
+                DateTimeKind.Unspecified);
         }
-
-        if (DueDatePicker.SelectedDate is not { } selectedDate ||
-            HourComboBox.SelectedIndex is < 0 or > 23 ||
-            MinuteComboBox.SelectedIndex is < 0 or > 59 ||
-            SecondComboBox.SelectedIndex is < 0 or > 59)
+        else
         {
-            SetValidation("请选择完整的提醒日期和时分秒");
-            FocusScheduledDateInput();
-            return false;
+            if (DueDatePicker.SelectedDate is not { } selectedDate ||
+                HourComboBox.SelectedIndex is < 0 or > 23 ||
+                MinuteComboBox.SelectedIndex is < 0 or > 59 ||
+                SecondComboBox.SelectedIndex is < 0 or > 59)
+            {
+                SetValidation("请选择完整的提醒日期和时分秒");
+                FocusScheduledDateInput();
+                return false;
+            }
+
+            selectedLocal = DateTime.SpecifyKind(
+                selectedDate.Date
+                    .AddHours(HourComboBox.SelectedIndex)
+                    .AddMinutes(MinuteComboBox.SelectedIndex)
+                    .AddSeconds(SecondComboBox.SelectedIndex),
+                DateTimeKind.Unspecified);
+            if (TimeZoneInfo.Local.IsInvalidTime(selectedLocal))
+            {
+                SetValidation("这个本地时间不存在，请换一个时间");
+                FocusScheduledDateInput();
+                return false;
+            }
+
+            dueAt = new DateTimeOffset(
+                selectedLocal,
+                TimeZoneInfo.Local.GetUtcOffset(selectedLocal));
         }
 
-        var selectedLocal = DateTime.SpecifyKind(
-            selectedDate.Date
-                .AddHours(HourComboBox.SelectedIndex)
-                .AddMinutes(MinuteComboBox.SelectedIndex)
-                .AddSeconds(SecondComboBox.SelectedIndex),
-            DateTimeKind.Unspecified);
-        if (TimeZoneInfo.Local.IsInvalidTime(selectedLocal))
-        {
-            SetValidation("这个本地时间不存在，请换一个时间");
-            FocusScheduledDateInput();
-            return false;
-        }
-
-        dueAt = new DateTimeOffset(
-            selectedLocal,
-            TimeZoneInfo.Local.GetUtcOffset(selectedLocal));
-
-        if (RepeatToggle.IsChecked == true)
+        if (!preserveOriginalSchedule &&
+            RepeatToggle.IsChecked == true)
         {
             if (!_repeatEdited &&
                 _originalRepeatRule is null &&
@@ -1115,7 +1141,36 @@ public partial class ScheduledTaskEditWindow : Window
             }
         }
 
-        if (dueAt <= DateTimeOffset.Now)
+        var now = DateTimeOffset.Now;
+        if (dueAt <= now &&
+            RepeatToggle.IsChecked == true)
+        {
+            if (repeatRule is null &&
+                !TryReadRepeatRule(
+                    selectedLocal,
+                    out repeatRule,
+                    out repeatInterval,
+                    out dueAt))
+            {
+                return false;
+            }
+
+            if (!ScheduledRepeatSchedule.TryAdvanceToFuture(
+                    repeatRule,
+                    dueAt,
+                    now,
+                    out var futureRule,
+                    out var futureDueAt))
+            {
+                SetValidation("这个循环时间无法推进，请换一个时间");
+                FocusScheduledDateInput();
+                return false;
+            }
+
+            repeatRule = futureRule;
+            dueAt = futureDueAt;
+        }
+        else if (dueAt <= now)
         {
             SetValidation("提醒时间要晚于现在哦");
             FocusScheduledDateInput();
@@ -1190,29 +1245,6 @@ public partial class ScheduledTaskEditWindow : Window
         ValidationText.Text = message;
     }
 
-    private void ScheduledTaskEditWindow_Deactivated(
-        object? sender,
-        EventArgs e)
-    {
-        if (_internalPopupOpen &&
-            !IsAnyComboDropDownOpen() &&
-            !IsPointerInsideScheduledPicker())
-        {
-            CloseScheduledPickers();
-        }
-
-        QueueCommitAfterDeactivation();
-    }
-
-    private bool IsPointerInsideScheduledPicker() =>
-        ScheduledDatePickerHost.IsMouseOver ||
-        ScheduledTimePickerHost.IsMouseOver ||
-        ScheduledDatePickerPopup.Child?.IsMouseOver == true ||
-        ScheduledTimePickerPopup.Child?.IsMouseOver == true ||
-        RepeatToggle.IsMouseOver ||
-        RepeatCountTextBox.IsMouseOver ||
-        RepeatUnitComboBox.IsMouseOver;
-
     private static bool IsWithinPopup(
         DependencyObject? source,
         System.Windows.Controls.Primitives.Popup popup) =>
@@ -1248,54 +1280,48 @@ public partial class ScheduledTaskEditWindow : Window
         return false;
     }
 
-    private void ScheduledTaskEditWindow_Activated(
+    private void ScheduledTaskEditWindow_Deactivated(
         object? sender,
         EventArgs e)
     {
-        ValidationText.Text = string.Empty;
-    }
-
-    private void QueueCommitAfterDeactivation()
-    {
-        if (_allowClose)
-        {
-            return;
-        }
-
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.ApplicationIdle,
-            _commitAfterDeactivationAction);
+            _closePickersAfterDeactivationAction);
     }
 
-    private void CommitAfterDeactivation()
+    private void ClosePickersAfterDeactivation()
     {
-        if (_allowClose ||
+        if (!IsLoaded ||
             IsActive ||
-            IsKeyboardFocusWithin)
-        {
-            return;
-        }
-
-        // A real outside click can deactivate the owner before the ComboBox
-        // child popup reports DropDownClosed. Re-check the settled input state
-        // at ApplicationIdle: an open child or a pointer still over an editor
-        // surface is internal, otherwise close the transient picker and save.
-        if (IsAnyComboDropDownOpen() ||
+            IsKeyboardFocusWithin ||
+            !_internalPopupOpen ||
+            IsAnyComboDropDownOpen() ||
             IsPointerInsideScheduledPicker())
         {
             return;
         }
 
+        // A real switch to another window must not leave a Topmost picker
+        // floating over unrelated applications. This only closes picker UI;
+        // the unconfirmed edit window and draft remain intact.
         CloseScheduledPickers();
-        UpdateInternalPopupState();
-        CommitAndClose();
     }
 
-    private void ScheduledTaskEditWindow_Closing(
+    private bool IsPointerInsideScheduledPicker() =>
+        ScheduledDatePickerHost.IsMouseOver ||
+        ScheduledTimePickerHost.IsMouseOver ||
+        ScheduledDatePickerPopup.Child?.IsMouseOver == true ||
+        ScheduledTimePickerPopup.Child?.IsMouseOver == true ||
+        RepeatToggle.IsMouseOver ||
+        RepeatCountTextBox.IsMouseOver ||
+        RepeatUnitComboBox.IsMouseOver;
+
+    private void ScheduledTaskEditWindow_Activated(
         object? sender,
-        CancelEventArgs e)
+        EventArgs e)
     {
-        _allowClose = true;
+        _isImeComposing = false;
+        ValidationText.Text = string.Empty;
     }
 
     private void ScheduledTaskEditWindow_Closed(
@@ -1303,9 +1329,16 @@ public partial class ScheduledTaskEditWindow : Window
         EventArgs e)
     {
         DetachPositionOwner();
+        TextCompositionManager.RemovePreviewTextInputStartHandler(
+            TaskTextBox,
+            TaskTextBox_PreviewTextInputStart);
+        TextCompositionManager.RemovePreviewTextInputUpdateHandler(
+            TaskTextBox,
+            TaskTextBox_PreviewTextInputUpdate);
+        TaskTextBox.PreviewTextInput -=
+            TaskTextBox_PreviewTextInputCommitted;
         Activated -= ScheduledTaskEditWindow_Activated;
         Deactivated -= ScheduledTaskEditWindow_Deactivated;
-        Closing -= ScheduledTaskEditWindow_Closing;
         Closed -= ScheduledTaskEditWindow_Closed;
         Loaded -= ScheduledTaskEditWindow_Loaded;
         DpiChanged -= ScheduledTaskEditWindow_DpiChanged;

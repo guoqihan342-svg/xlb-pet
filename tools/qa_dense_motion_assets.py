@@ -968,6 +968,37 @@ def analyze_static_pillow(path: Path) -> dict[str, object]:
     }
 
 
+def left_sleeve_boundary_gap(frame: np.ndarray) -> int:
+    """Measure the transparent wedge below the side-peek gripping hand."""
+
+    alpha = frame[..., 3]
+    ys, _ = np.nonzero(
+        alpha >= generator.installer.EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+    )
+    if not len(ys):
+        raise AssertionError("left edge-peek frame is empty")
+    bottom = int(ys.max() + 1)
+    start_y = max(
+        int(ys.min()),
+        bottom - generator.installer.EDGE_LEFT_SLEEVE_TAIL_ROWS,
+    )
+    end_y = max(
+        start_y,
+        bottom - generator.installer.EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS,
+    )
+    gaps = []
+    for y in range(start_y, end_y):
+        visible = np.flatnonzero(
+            alpha[y] >= generator.installer.EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+        )
+        if not len(visible):
+            raise AssertionError(
+                f"left edge-peek sleeve scanline {y} is unexpectedly empty"
+            )
+        gaps.append(int(visible[0]))
+    return max(gaps, default=0)
+
+
 def sorted_sequence(prefix: str) -> list[Path]:
     return sorted(ASSETS.glob(f"{prefix}-*.png"), key=lambda path: path.name)
 
@@ -1190,6 +1221,17 @@ def main() -> None:
                     )
                 ),
             }
+            if direction == "left":
+                sleeve_gap_widths = [
+                    left_sleeve_boundary_gap(load(path))
+                    for path in outputs
+                ]
+                edge_result["lower_sleeve_boundary_continuity"] = {
+                    "applies_to_runtime_edges": ["left", "right-mirrored"],
+                    "gap_widths_source_px": sleeve_gap_widths,
+                    "max_gap_width_source_px": max(sleeve_gap_widths),
+                    "maximum_allowed_source_px": 0,
+                }
             fully_peeked_frame = quarter * 2
             resting_frame = quarter * 4
             fully_peeked_box = sequence["frames"][
@@ -1587,6 +1629,16 @@ def main() -> None:
         if contact["max_adjacent_step_max_physical_px"] > 1.0:
             failures.append(
                 f"edge {direction} boundary contact moves by more than 1px"
+            )
+        sleeve_contact = edge_result.get("lower_sleeve_boundary_continuity")
+        if (
+            sleeve_contact is not None
+            and sleeve_contact["max_gap_width_source_px"]
+            > sleeve_contact["maximum_allowed_source_px"]
+        ):
+            failures.append(
+                "edge left/right mirrored lower sleeve has a transparent "
+                f"boundary wedge of {sleeve_contact['max_gap_width_source_px']}px"
             )
         reveal_depth = edge_result["reveal_depth"]["normal_axis_dip"]
         if reveal_depth < EDGE_REVEAL_DEPTH_DIP_MIN:

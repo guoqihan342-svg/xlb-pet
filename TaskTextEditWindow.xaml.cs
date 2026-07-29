@@ -1,5 +1,4 @@
 using System;
-using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -9,16 +8,12 @@ namespace LubanDesktopPet;
 public partial class TaskTextEditWindow : Window
 {
     private const double TargetEditorWidth = 378;
-    private const double TargetEditorHeight = 208;
+    private const double TargetEditorHeight = 414;
 
-    private readonly Action _commitAfterDeactivationAction;
-    private readonly Action _completeImeDeactivationAction;
     private readonly Action _positionBesideOwnerAction;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private Window? _positionOwner;
-    private bool _allowClose;
     private bool _isImeComposing;
-    private bool _commitAfterImeDeactivationPending;
     private bool _positionBesideOwnerQueued;
 
     public TaskTextEditWindow(
@@ -27,8 +22,6 @@ public partial class TaskTextEditWindow : Window
         bool showAdvancedEdit)
     {
         InitializeComponent();
-        _commitAfterDeactivationAction = CommitAfterDeactivation;
-        _completeImeDeactivationAction = CompleteImeDeactivation;
         _positionBesideOwnerAction = PositionBesideOwner;
         _positionCache = new OwnedWindowPositioner.PositionCache(this);
         EditorTitleText.Text = title;
@@ -47,8 +40,6 @@ public partial class TaskTextEditWindow : Window
         EditorTextBox.PreviewTextInput +=
             EditorTextBox_PreviewTextInputCommitted;
         Activated += TaskTextEditWindow_Activated;
-        Deactivated += TaskTextEditWindow_Deactivated;
-        Closing += TaskTextEditWindow_Closing;
         Closed += TaskTextEditWindow_Closed;
         Loaded += TaskTextEditWindow_Loaded;
         DpiChanged += TaskTextEditWindow_DpiChanged;
@@ -60,7 +51,6 @@ public partial class TaskTextEditWindow : Window
 
     public void CloseWithoutSaving()
     {
-        _allowClose = true;
         if (IsLoaded)
         {
             Close();
@@ -270,15 +260,6 @@ public partial class TaskTextEditWindow : Window
         {
             CloseWithoutSaving();
             e.Handled = true;
-            return;
-        }
-
-        if (e.Key == Key.Enter &&
-            Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
-            !_isImeComposing)
-        {
-            CommitAndClose(openAdvancedEditor: false);
-            e.Handled = true;
         }
     }
 
@@ -292,7 +273,6 @@ public partial class TaskTextEditWindow : Window
             return false;
         }
 
-        _allowClose = true;
         TextAccepted?.Invoke(normalized);
         Close();
         if (openAdvancedEditor)
@@ -301,81 +281,6 @@ public partial class TaskTextEditWindow : Window
         }
 
         return true;
-    }
-
-    private void TaskTextEditWindow_Deactivated(
-        object? sender,
-        EventArgs e)
-    {
-        if (_allowClose)
-        {
-            return;
-        }
-
-        if (_isImeComposing)
-        {
-            _commitAfterImeDeactivationPending = true;
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.ContextIdle,
-                _completeImeDeactivationAction);
-            return;
-        }
-
-        QueueCommitAfterDeactivation();
-    }
-
-    private void TaskTextEditWindow_Activated(
-        object? sender,
-        EventArgs e)
-    {
-        _commitAfterImeDeactivationPending = false;
-    }
-
-    private void QueueCommitAfterDeactivation()
-    {
-        Dispatcher.BeginInvoke(
-            DispatcherPriority.ContextIdle,
-            _commitAfterDeactivationAction);
-    }
-
-    private void CommitAfterDeactivation()
-    {
-        if (_allowClose ||
-            _isImeComposing)
-        {
-            return;
-        }
-
-        if (IsActive || IsKeyboardFocusWithin)
-        {
-            _commitAfterImeDeactivationPending = false;
-            return;
-        }
-
-        _commitAfterImeDeactivationPending = false;
-        CommitAndClose(openAdvancedEditor: false);
-    }
-
-    private void CompleteImeDeactivation()
-    {
-        if (_allowClose ||
-            !_commitAfterImeDeactivationPending)
-        {
-            return;
-        }
-
-        if (IsActive || IsKeyboardFocusWithin)
-        {
-            _commitAfterImeDeactivationPending = false;
-            return;
-        }
-
-        // Losing the editor window ends the native IME session. Some input
-        // methods report a final committed/update event, while others only
-        // cancel the composition. ContextIdle runs after either path, so it is
-        // safe to treat a still-pending composition as finished here.
-        _isImeComposing = false;
-        CommitAfterDeactivation();
     }
 
     private void EditorTextBox_PreviewTextInputStart(
@@ -393,11 +298,6 @@ public partial class TaskTextEditWindow : Window
         _isImeComposing =
             !string.IsNullOrEmpty(composition.CompositionText) ||
             !string.IsNullOrEmpty(composition.SystemCompositionText);
-        if (!_isImeComposing &&
-            _commitAfterImeDeactivationPending)
-        {
-            QueueCommitAfterDeactivation();
-        }
     }
 
     private void EditorTextBox_PreviewTextInputCommitted(
@@ -405,20 +305,17 @@ public partial class TaskTextEditWindow : Window
         TextCompositionEventArgs e)
     {
         _isImeComposing = false;
-        if (_commitAfterImeDeactivationPending)
-        {
-            QueueCommitAfterDeactivation();
-        }
     }
 
-    private void TaskTextEditWindow_Closing(
+    private void TaskTextEditWindow_Activated(
         object? sender,
-        CancelEventArgs e)
+        EventArgs e)
     {
-        if (!_allowClose)
-        {
-            _allowClose = true;
-        }
+        // Some IMEs cancel their native composition on deactivation without
+        // sending WPF a final committed/update event. Returning to the editor
+        // starts a fresh input session, so an old composing flag must not make
+        // Esc permanently ineffective.
+        _isImeComposing = false;
     }
 
     private void TaskTextEditWindow_Closed(object? sender, EventArgs e)
@@ -433,8 +330,6 @@ public partial class TaskTextEditWindow : Window
         EditorTextBox.PreviewTextInput -=
             EditorTextBox_PreviewTextInputCommitted;
         Activated -= TaskTextEditWindow_Activated;
-        Deactivated -= TaskTextEditWindow_Deactivated;
-        Closing -= TaskTextEditWindow_Closing;
         Closed -= TaskTextEditWindow_Closed;
         Loaded -= TaskTextEditWindow_Loaded;
         DpiChanged -= TaskTextEditWindow_DpiChanged;

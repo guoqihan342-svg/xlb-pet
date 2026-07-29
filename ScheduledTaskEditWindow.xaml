@@ -4,7 +4,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="修改定时任务"
         Width="378"
-        Height="208"
+        Height="414"
         Background="#FFFFF9F2"
         FontFamily="Microsoft YaHei"
         Opacity="0"
@@ -235,9 +235,88 @@
         </Style>
         <Style TargetType="{x:Type CheckBox}">
             <Setter Property="FontFamily" Value="Microsoft YaHei" />
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontSize" Value="11.5" />
             <Setter Property="Foreground" Value="#8A562E" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="CheckBoxShell"
+                                    Width="20"
+                                    Height="20"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Background="#FFFFF6E9"
+                                    BorderBrush="#E7B77D"
+                                    BorderThickness="1.2"
+                                    CornerRadius="7">
+                                <Grid>
+                                    <Ellipse Width="8"
+                                             Height="3"
+                                             Margin="3,2,0,0"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Top"
+                                             Fill="#72FFFFFF"
+                                             IsHitTestVisible="False" />
+                                    <Path x:Name="CheckMark"
+                                          Width="11"
+                                          Height="8"
+                                          Data="M1,4 L4.2,7 L10,1"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Fill="Transparent"
+                                          Stroke="White"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round"
+                                          StrokeThickness="2"
+                                          Visibility="Collapsed" />
+                                </Grid>
+                            </Border>
+                            <ContentPresenter Grid.Column="1"
+                                              Margin="7,0,0,0"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CheckBoxShell"
+                                        Property="Background"
+                                        Value="#FFFFEACF" />
+                                <Setter TargetName="CheckBoxShell"
+                                        Property="BorderBrush"
+                                        Value="#E49649" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckBoxShell"
+                                        Property="Background"
+                                        Value="#F2A052" />
+                                <Setter TargetName="CheckBoxShell"
+                                        Property="BorderBrush"
+                                        Value="#D98435" />
+                                <Setter TargetName="CheckMark"
+                                        Property="Visibility"
+                                        Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CheckBoxShell"
+                                        Property="BorderThickness"
+                                        Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="OrangeButtonStyle"
                TargetType="{x:Type Button}">
@@ -354,7 +433,7 @@
     </Window.Resources>
 
     <Border Margin="1"
-            Padding="8,5,8,7"
+            Padding="12,10,12,12"
             BorderBrush="#E7B77E"
             BorderThickness="1.2"
             CornerRadius="14">
@@ -374,9 +453,9 @@
         </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="25" />
+                <RowDefinition Height="32" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="26" />
+                <RowDefinition Height="50" />
             </Grid.RowDefinitions>
 
             <Grid Grid.Row="0">
@@ -426,9 +505,9 @@
                     <Style TargetType="{x:Type ScrollBar}"
                            BasedOn="{StaticResource OrangeScrollBarStyle}" />
                 </ScrollViewer.Resources>
-                <StackPanel Margin="0,1,0,2">
+                <StackPanel Margin="2,8,2,6">
                     <TextBox x:Name="TaskTextBox"
-                             Height="42"
+                             Height="124"
                              AcceptsReturn="True"
                              InputMethod.IsInputMethodEnabled="True"
                              MaxLength="5000"
@@ -436,13 +515,67 @@
                              VerticalContentAlignment="Top"
                              VerticalScrollBarVisibility="Auto"
                              shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                             TextChanged="DraftControl_Changed" />
+                             TextChanged="DraftControl_Changed">
+                        <TextBox.Style>
+                            <Style TargetType="{x:Type TextBox}"
+                                   BasedOn="{StaticResource {x:Type TextBox}}">
+                                <Setter Property="Background" Value="#FFFFF8EF" />
+                                <Setter Property="BorderBrush" Value="#F2C995" />
+                                <Setter Property="CaretBrush" Value="#A85E25" />
+                                <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                <Setter Property="SelectionBrush" Value="#FFD9A9" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="{x:Type TextBox}">
+                                            <Border x:Name="TaskBodyBorder"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="8"
+                                                    SnapsToDevicePixels="True">
+                                                <ScrollViewer x:Name="PART_ContentHost"
+                                                              Margin="{TemplateBinding Padding}"
+                                                              Focusable="False"
+                                                              HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                                              VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                                    <Setter TargetName="TaskBodyBorder"
+                                                            Property="Background"
+                                                            Value="#FFFFFCF7" />
+                                                    <Setter TargetName="TaskBodyBorder"
+                                                            Property="BorderBrush"
+                                                            Value="#E89D52" />
+                                                    <Setter TargetName="TaskBodyBorder"
+                                                            Property="BorderThickness"
+                                                            Value="1.5" />
+                                                </Trigger>
+                                                <Trigger Property="IsEnabled" Value="False">
+                                                    <Setter TargetName="TaskBodyBorder"
+                                                            Property="Opacity"
+                                                            Value="0.55" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                                <Style.Triggers>
+                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                        <Setter Property="Background" Value="#FFFFFCF7" />
+                                        <Setter Property="BorderBrush" Value="#E89D52" />
+                                        <Setter Property="BorderThickness" Value="1.5" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBox.Style>
+                    </TextBox>
 
-                    <Grid Height="30" Margin="0,4,0,0">
+                    <Grid Height="30" Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="132" />
-                            <ColumnDefinition Width="8" />
-                            <ColumnDefinition Width="132" />
+                            <ColumnDefinition Width="102" />
+                            <ColumnDefinition Width="4" />
+                            <ColumnDefinition Width="92" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
@@ -598,7 +731,7 @@
                         <Popup x:Name="ScheduledDatePickerPopup"
                                AllowsTransparency="True"
                                Closed="ScheduledDatePickerPopup_Closed"
-                               HorizontalOffset="-52"
+                               HorizontalOffset="0"
                                Opened="ScheduledDatePickerPopup_Opened"
                                Placement="Bottom"
                                PlacementTarget="{Binding ElementName=ScheduledDatePickerHost}"
@@ -939,7 +1072,7 @@
                         <Popup x:Name="ScheduledTimePickerPopup"
                                AllowsTransparency="True"
                                Closed="ScheduledTimePickerPopup_Closed"
-                               HorizontalOffset="-45"
+                               HorizontalOffset="-65"
                                Opened="ScheduledTimePickerPopup_Opened"
                                Placement="Bottom"
                                PlacementTarget="{Binding ElementName=ScheduledTimePickerHost}"
@@ -1154,17 +1287,19 @@
                         </Popup>
                     </Grid>
 
-                    <Grid Height="27" Margin="0,4,0,0">
+                    <Grid Height="32" Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="104" />
+                            <ColumnDefinition Width="64" />
+                            <ColumnDefinition Width="8" />
                             <ColumnDefinition Width="82" />
-                            <ColumnDefinition Width="62" />
-                            <ColumnDefinition Width="6" />
-                            <ColumnDefinition Width="74" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <CheckBox x:Name="RepeatToggle"
                                   Grid.Column="0"
+                                  AutomationProperties.Name="循环提醒"
                                   Content="循环提醒"
+                                  ToolTip="勾选后按天、小时或分钟循环提醒"
                                   Checked="RepeatToggle_Changed"
                                   Unchecked="RepeatToggle_Changed"
                                   shell:WindowChrome.IsHitTestVisibleInChrome="True" />
@@ -1201,7 +1336,7 @@
                 </StackPanel>
             </ScrollViewer>
 
-            <Grid Grid.Row="2" Margin="0,3,0,0">
+            <Grid Grid.Row="2" Margin="0,7,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -1211,10 +1346,12 @@
                            FontFamily="Microsoft YaHei"
                            FontSize="9.5"
                            Foreground="#B98A65"
-                           Text="点击窗外自动保存 · Esc 取消" />
-                <Button Grid.Column="1"
-                        MinWidth="82"
-                        Height="22"
+                           Text="仅点击“确定修改”保存 · Esc 取消" />
+                <Button x:Name="SaveButton"
+                        Grid.Column="1"
+                        MinWidth="100"
+                        Height="38"
+                        Padding="14,4"
                         AutomationProperties.Name="确定修改"
                         Content="确定修改"
                         Style="{StaticResource OrangeButtonStyle}"

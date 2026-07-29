@@ -300,6 +300,29 @@ public static class ScheduledRepeatSchedule
         return true;
     }
 
+    public static bool TryAdvanceToFuture(
+        ScheduledRepeatRule? rule,
+        DateTimeOffset currentDueAt,
+        DateTimeOffset now,
+        [NotNullWhen(true)] out ScheduledRepeatRule? futureRule,
+        out DateTimeOffset futureDueAt)
+    {
+        futureRule = null;
+        futureDueAt = default;
+        if (rule is null ||
+            !TryEvaluate(rule, currentDueAt, now, out var evaluation) ||
+            evaluation.NextDueAt is not { } nextDueAt ||
+            evaluation.NextOrdinal is not { } nextOrdinal ||
+            nextDueAt <= now)
+        {
+            return false;
+        }
+
+        futureRule = rule with { NextOrdinal = nextOrdinal };
+        futureDueAt = nextDueAt;
+        return true;
+    }
+
     public static string FormatRule(ScheduledRepeatRule rule)
     {
         ArgumentNullException.ThrowIfNull(rule);

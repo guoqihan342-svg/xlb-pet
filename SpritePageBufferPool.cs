@@ -28,7 +28,7 @@ namespace LubanDesktopPet;
 /// </remarks>
 internal sealed class SpritePageBufferPool
 {
-    internal const long DefaultHardBudgetBytes = 160L * 1024 * 1024;
+    internal const long DefaultHardBudgetBytes = 128L * 1024 * 1024;
 
     private readonly object _syncRoot = new();
     private readonly long _hardBudgetBytes;

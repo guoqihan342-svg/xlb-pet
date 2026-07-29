@@ -4,7 +4,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="修改内容"
         Width="378"
-        Height="208"
+        Height="414"
         Background="#FFF6FAFF"
         FontFamily="Microsoft YaHei"
         Opacity="0"
@@ -233,7 +233,7 @@
     </Window.Resources>
 
     <Border Margin="1"
-            Padding="8,6,8,7"
+            Padding="12,10,12,12"
             BorderBrush="#AFCBEF"
             BorderThickness="1.2"
             CornerRadius="14">
@@ -253,9 +253,9 @@
         </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="25" />
+                <RowDefinition Height="32" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="27" />
+                <RowDefinition Height="50" />
             </Grid.RowDefinitions>
 
             <Grid Grid.Row="0">
@@ -303,8 +303,9 @@
 
             <TextBox x:Name="EditorTextBox"
                      Grid.Row="1"
+                     Margin="0,8,0,8"
                      MinHeight="40"
-                     Padding="7,5"
+                     Padding="10,8"
                      AcceptsReturn="True"
                      AcceptsTab="False"
                      FontFamily="Microsoft YaHei"
@@ -340,7 +341,7 @@
                 </TextBox.Style>
             </TextBox>
 
-            <Grid Grid.Row="2" Margin="0,4,0,0">
+            <Grid Grid.Row="2" Margin="0,7,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -355,9 +356,9 @@
                            Text="0/5000" />
                 <Button x:Name="AdvancedEditButton"
                         Grid.Column="1"
-                        Height="22"
-                        Margin="0,0,5,0"
-                        Padding="7,1"
+                        Height="38"
+                        Margin="0,0,8,0"
+                        Padding="12,4"
                         Background="#FFF5E8"
                         BorderBrush="#E7C69E"
                         Content="时间与循环…"
@@ -368,10 +369,11 @@
                         Visibility="Collapsed"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         Click="AdvancedEditButton_Click" />
-                <Button Grid.Column="2"
-                        MinWidth="74"
-                        Height="22"
-                        Padding="9,1"
+                <Button x:Name="SaveButton"
+                        Grid.Column="2"
+                        MinWidth="96"
+                        Height="38"
+                        Padding="14,4"
                         AutomationProperties.Name="确定修改"
                         Background="#6F9BE0"
                         BorderBrush="#5B87CA"

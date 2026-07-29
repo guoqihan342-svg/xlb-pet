@@ -109,11 +109,6 @@
                                         Property="Opacity"
                                         Value="1" />
                             </Trigger>
-                            <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="KeyboardFocusRing"
-                                        Property="Opacity"
-                                        Value="1" />
-                            </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="ButtonRoot"
                                         Property="Opacity"
@@ -124,6 +119,54 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style x:Key="TaskRowIconButtonStyle"
+               TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="Foreground" Value="#8295B3" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="IconButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#3E70C6" />
+                                <Setter TargetName="IconButtonChrome"
+                                        Property="Background"
+                                        Value="#E5F0FF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="IconButtonChrome"
+                                        Property="Background"
+                                        Value="#D5E6FC" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.42" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ScheduledTaskRowIconButtonStyle"
+               TargetType="{x:Type Button}"
+               BasedOn="{StaticResource TaskRowIconButtonStyle}">
+            <Setter Property="Foreground" Value="#B69275" />
         </Style>
 
         <Style x:Key="TaskListPageButtonStyle"
@@ -168,13 +211,17 @@
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#F09A48" />
+                                <Setter Property="Background"
+                                        Value="{Binding Tag,
+                                                        RelativeSource={RelativeSource Self}}" />
                                 <Setter TargetName="ThumbHighlight"
                                         Property="Opacity"
                                         Value="1" />
                             </Trigger>
                             <Trigger Property="IsDragging" Value="True">
-                                <Setter Property="Background" Value="#D97B2F" />
+                                <Setter Property="Background"
+                                        Value="{Binding BorderBrush,
+                                                        RelativeSource={RelativeSource Self}}" />
                                 <Setter TargetName="ThumbPill"
                                         Property="Width"
                                         Value="8" />
@@ -198,7 +245,10 @@
             <Setter Property="Width" Value="12" />
             <Setter Property="MinWidth" Value="12" />
             <Setter Property="Margin" Value="2,1,0,1" />
-            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Background" Value="#22D6A06A" />
+            <Setter Property="BorderBrush" Value="#D97B2F" />
+            <Setter Property="Foreground" Value="#E7A15E" />
+            <Setter Property="Tag" Value="#F09A48" />
             <Setter Property="Focusable" Value="False" />
             <Setter Property="IsTabStop" Value="False" />
             <Setter Property="SnapsToDevicePixels" Value="True" />
@@ -211,8 +261,9 @@
                                     Width="8"
                                     Margin="0,2"
                                     HorizontalAlignment="Center"
-                                    Background="#22D6A06A"
-                                    CornerRadius="4" />
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="4"
+                                    Opacity="0.72" />
                             <Track x:Name="PART_Track"
                                    Margin="1,3"
                                    Focusable="False"
@@ -223,7 +274,10 @@
                                                   Style="{StaticResource TaskListPageButtonStyle}" />
                                 </Track.DecreaseRepeatButton>
                                 <Track.Thumb>
-                                    <Thumb Style="{StaticResource TaskListThumbStyle}" />
+                                    <Thumb Background="{TemplateBinding Foreground}"
+                                           BorderBrush="{TemplateBinding BorderBrush}"
+                                           Style="{StaticResource TaskListThumbStyle}"
+                                           Tag="{TemplateBinding Tag}" />
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
                                     <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
@@ -234,8 +288,8 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="TrackPill"
-                                        Property="Background"
-                                        Value="#38D6A06A" />
+                                        Property="Opacity"
+                                        Value="1" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="TrackPill"
@@ -382,21 +436,38 @@
                             </ControlTemplate>
                         </RadioButton.Template>
                     </RadioButton>
-                    <Button Grid.Column="3"
+                    <Button x:Name="CollapseButton"
+                            Grid.Column="3"
                             Width="38"
                             Height="28"
                             Margin="3,0,0,0"
                             Padding="4,3"
                             AutomationProperties.Name="收起任务小屋"
-                            Background="#FFF6E9"
-                            BorderBrush="#E7C99E"
                             FontSize="11"
-                            Foreground="#765A40"
-                            Style="{StaticResource CuteTaskButtonStyle}"
-                            Tag="{StaticResource CuteCollapseHoverBrush}"
                             ToolTip="收起任务小屋"
                             Content="收起"
-                            Click="CloseButton_Click" />
+                            Click="CloseButton_Click">
+                        <Button.Style>
+                            <Style TargetType="{x:Type Button}"
+                                   BasedOn="{StaticResource CuteTaskButtonStyle}">
+                                <Setter Property="Background" Value="#EDF5FF" />
+                                <Setter Property="BorderBrush" Value="#B8D2F5" />
+                                <Setter Property="Foreground" Value="#3E70C6" />
+                                <Setter Property="Tag" Value="#CFE2FB" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsChecked,
+                                                                   ElementName=ScheduledTaskTabButton}"
+                                                 Value="True">
+                                        <Setter Property="Background" Value="#FFF6E9" />
+                                        <Setter Property="BorderBrush" Value="#E7C99E" />
+                                        <Setter Property="Foreground" Value="#A46634" />
+                                        <Setter Property="Tag"
+                                                Value="{StaticResource CuteCollapseHoverBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
                     <Button Grid.Column="4"
                             Width="38"
                             Height="28"
@@ -439,7 +510,12 @@
                              PreviewDrop="TodoItemsControl_PreviewDrop">
                         <ListBox.Resources>
                             <Style TargetType="{x:Type ScrollBar}"
-                                   BasedOn="{StaticResource TaskListScrollBarStyle}" />
+                                   BasedOn="{StaticResource TaskListScrollBarStyle}">
+                                <Setter Property="Background" Value="#245B8DEF" />
+                                <Setter Property="BorderBrush" Value="#3E70C6" />
+                                <Setter Property="Foreground" Value="#7BA6E8" />
+                                <Setter Property="Tag" Value="#5B8DEF" />
+                            </Style>
                         </ListBox.Resources>
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
@@ -460,17 +536,17 @@
                         <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border x:Name="TodoRowBorder"
-                                            Margin="0,0,0,1"
-                                            Padding="7,2"
-                                            MaxHeight="41"
-                                            CornerRadius="8"
+                                            Margin="0,0,0,2"
+                                            Padding="7,4"
+                                            MaxHeight="54"
+                                            CornerRadius="9"
                                             Tag="{Binding}"
                                             MouseEnter="TaskRow_MouseEnter"
                                             MouseLeave="TaskRow_MouseLeave"
                                             Unloaded="TaskRow_Unloaded">
                                         <Border.Style>
                                             <Style TargetType="Border">
-                                                <Setter Property="Background" Value="#F6F7F9" />
+                                                <Setter Property="Background" Value="#F3F7FD" />
                                                 <Style.Triggers>
                                                     <Trigger Property="IsMouseOver" Value="True">
                                                         <Setter Property="Background" Value="#EAF3FF" />
@@ -571,11 +647,7 @@
                                                     Width="24"
                                                     Height="24"
                                                     Padding="0"
-                                                    Background="Transparent"
-                                                    BorderThickness="0"
-                                                    Cursor="Hand"
-                                                    FontFamily="Microsoft YaHei"
-                                                    Foreground="#A0A6B0"
+                                                    Style="{StaticResource TaskRowIconButtonStyle}"
                                                     AutomationProperties.Name="修改待办"
                                                     ToolTip="修改待办"
                                                     Tag="{Binding}"
@@ -586,11 +658,13 @@
                                                     <Canvas Width="16" Height="16">
                                                         <Path Data="M13.2,1.5 L14.5,2.8 L5,12.3 L1.7,14.3 L3.7,11 Z"
                                                               Fill="Transparent"
-                                                              Stroke="#A0A6B0"
+                                                              Stroke="{Binding Foreground,
+                                                                               RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
                                                               StrokeLineJoin="Round"
                                                               StrokeThickness="1.4" />
                                                         <Path Data="M3.7,11 L5,12.3"
-                                                              Stroke="#A0A6B0"
+                                                              Stroke="{Binding Foreground,
+                                                                               RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
                                                               StrokeStartLineCap="Round"
                                                               StrokeEndLineCap="Round"
                                                               StrokeThickness="1.4" />
@@ -601,11 +675,8 @@
                                                     Width="24"
                                                     Height="24"
                                                     Padding="0"
-                                                    Background="Transparent"
-                                                    BorderThickness="0"
-                                                    Cursor="Hand"
                                                     FontSize="16"
-                                                    Foreground="#A0A6B0"
+                                                    Style="{StaticResource TaskRowIconButtonStyle}"
                                                     Content="×"
                                                     Tag="{Binding}"
                                                     Click="DeleteButton_Click" />
@@ -644,17 +715,32 @@
                                  Margin="0,0,7,0"
                                  Padding="8,5"
                                  VerticalContentAlignment="Center"
-                                 BorderBrush="#D8DEE8"
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
                                  InputMethod.IsInputMethodEnabled="True"
                                  MaxLength="5000"
                                  ToolTip="输入待办事项，按回车添加"
-                                 PreviewKeyDown="TodoInput_PreviewKeyDown" />
+                                 PreviewKeyDown="TodoInput_PreviewKeyDown">
+                            <TextBox.Style>
+                                <Style TargetType="{x:Type TextBox}">
+                                    <Setter Property="Background" Value="#F8FBFF" />
+                                    <Setter Property="BorderBrush" Value="#BDD2EF" />
+                                    <Setter Property="BorderThickness" Value="1" />
+                                    <Setter Property="SelectionBrush" Value="#A9C9F4" />
+                                    <Style.Triggers>
+                                        <Trigger Property="IsKeyboardFocused" Value="True">
+                                            <Setter Property="Background" Value="#F2F7FF" />
+                                            <Setter Property="BorderBrush" Value="#5B8DEF" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBox.Style>
+                        </TextBox>
                         <Button Grid.Column="1"
                                 AutomationProperties.Name="新增待办事项"
                                 Background="#5B8DEF"
                                 BorderBrush="#4F7FD7"
+                                Focusable="False"
                                 Foreground="White"
                                 Style="{StaticResource CuteTaskButtonStyle}"
                                 Tag="{StaticResource CuteBlueHoverBrush}"
@@ -803,11 +889,7 @@
                                                     HorizontalAlignment="Right"
                                                     VerticalAlignment="Center"
                                                     AutomationProperties.Name="修改定时任务"
-                                                    Background="Transparent"
-                                                    BorderThickness="0"
-                                                    Cursor="Hand"
-                                                    FontFamily="Microsoft YaHei"
-                                                    Foreground="#B69275"
+                                                    Style="{StaticResource ScheduledTaskRowIconButtonStyle}"
                                                     Tag="{Binding}"
                                                     ToolTip="修改定时任务"
                                                     Click="ScheduledTaskEditButton_Click">
@@ -817,11 +899,13 @@
                                                     <Canvas Width="16" Height="16">
                                                         <Path Data="M13.2,1.5 L14.5,2.8 L5,12.3 L1.7,14.3 L3.7,11 Z"
                                                               Fill="Transparent"
-                                                              Stroke="#B69275"
+                                                              Stroke="{Binding Foreground,
+                                                                               RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
                                                               StrokeLineJoin="Round"
                                                               StrokeThickness="1.4" />
                                                         <Path Data="M3.7,11 L5,12.3"
-                                                              Stroke="#B69275"
+                                                              Stroke="{Binding Foreground,
+                                                                               RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
                                                               StrokeStartLineCap="Round"
                                                               StrokeEndLineCap="Round"
                                                               StrokeThickness="1.4" />
@@ -835,13 +919,9 @@
                                                     HorizontalAlignment="Right"
                                                     VerticalAlignment="Center"
                                                     AutomationProperties.Name="删除定时任务"
-                                                    Background="Transparent"
-                                                    BorderThickness="0"
                                                     Content="×"
-                                                    Cursor="Hand"
-                                                    FontFamily="Microsoft YaHei"
                                                     FontSize="16"
-                                                    Foreground="#B69275"
+                                                    Style="{StaticResource ScheduledTaskRowIconButtonStyle}"
                                                     Tag="{Binding}"
                                                     ToolTip="删除定时任务"
                                                     Click="ScheduledTaskDeleteButton_Click" />
@@ -2061,6 +2141,7 @@
                                 Height="30"
                                 AutomationProperties.Name="新增或修改定时任务"
                                 Content="新增"
+                                Focusable="False"
                                 FontSize="12"
                                 FontWeight="SemiBold"
                                 Foreground="White"
@@ -2218,9 +2299,9 @@
 
         <Grid x:Name="TailHost"
               Grid.Column="1"
-              Margin="-1,0,0,0"
+              Margin="-1,198,0,0"
               HorizontalAlignment="Left"
-              VerticalAlignment="Center"
+              VerticalAlignment="Top"
               IsHitTestVisible="False">
             <Polygon x:Name="TailPolygon"
                      Points="0,0 12,9 0,18"

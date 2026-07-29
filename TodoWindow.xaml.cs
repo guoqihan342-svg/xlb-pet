@@ -85,7 +85,10 @@ public partial class TodoWindow : Window
     private bool _adjustingTaskRowSelection;
     private TaskTextEditWindow? _taskTextEditWindow;
     private ScheduledTaskEditWindow? _scheduledTaskEditWindow;
+    private bool _suppressDeleteConfirmationForSession;
+    private bool _isDeleteConfirmationOpen;
     private bool _tailOnRight = true;
+    private double _tailTop = 198;
     private bool _allowClose;
     private bool _hasClosed;
 
@@ -149,6 +152,7 @@ public partial class TodoWindow : Window
             handledEventsToo: true);
         PreviewKeyDown += TodoWindow_PreviewKeyDown;
         Deactivated += TodoWindow_TransientPopupDeactivated;
+        IsVisibleChanged += TodoWindow_IsVisibleChanged;
         Closing += TodoWindow_Closing;
         Closed += TodoWindow_Closed;
         ScheduledHourComboBox.ItemsSource = ScheduledHourOptions;
@@ -217,6 +221,7 @@ public partial class TodoWindow : Window
         _isScheduledDatePickerPopupOpen ||
         _isScheduledTimePickerPopupOpen ||
         _isTaskFullTextPopupOpen ||
+        _isDeleteConfirmationOpen ||
         _taskTextEditWindow?.IsVisible == true ||
         _scheduledTaskEditWindow?.IsVisible == true ||
         ScheduledDatePickerPopup.IsOpen ||
@@ -650,15 +655,32 @@ public partial class TodoWindow : Window
         SecondColumn.Width = new GridLength(tailOnRight ? 12 : 280);
         Grid.SetColumn(TodoBorder, tailOnRight ? 0 : 1);
         Grid.SetColumn(TailHost, tailOnRight ? 1 : 0);
-        TailHost.Margin = tailOnRight
-            ? new Thickness(-1, 0, 0, 0)
-            : new Thickness(0, 0, -1, 0);
+        UpdateTailMargin();
         TailHost.HorizontalAlignment = tailOnRight
             ? HorizontalAlignment.Left
             : HorizontalAlignment.Right;
         TailPolygon.Points = tailOnRight
             ? PointCollection.Parse("0,0 12,9 0,18")
             : PointCollection.Parse("12,0 0,9 12,18");
+    }
+
+    public void SetTailPlacement(bool tailOnRight, double centerY)
+    {
+        SetTailOnRight(tailOnRight);
+        var bubbleHeight = ActualHeight > 0 ? ActualHeight : Height;
+        var maximumTop = Math.Max(18, bubbleHeight - 36);
+        _tailTop = Math.Clamp(
+            double.IsFinite(centerY) ? centerY - 9 : bubbleHeight / 2 - 9,
+            18,
+            maximumTop);
+        UpdateTailMargin();
+    }
+
+    private void UpdateTailMargin()
+    {
+        TailHost.Margin = _tailOnRight
+            ? new Thickness(-1, _tailTop, 0, 0)
+            : new Thickness(0, _tailTop, -1, 0);
     }
 
     public void CloseForApplication()
@@ -678,8 +700,7 @@ public partial class TodoWindow : Window
     private void TodoWindow_Closing(object? sender, CancelEventArgs e)
     {
         CloseTaskFullTextPreview();
-        _taskTextEditWindow?.CloseWithoutSaving();
-        _scheduledTaskEditWindow?.CloseWithoutSaving();
+        CloseOwnedEditorsWithoutSaving();
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
 
@@ -708,6 +729,27 @@ public partial class TodoWindow : Window
         CommitPendingTodoEdit();
         e.Cancel = true;
         CloseRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void TodoWindow_IsVisibleChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs e)
+    {
+        if (IsVisible)
+        {
+            return;
+        }
+
+        CloseTaskFullTextPreview();
+        CloseOwnedEditorsWithoutSaving();
+        CloseScheduledPickers();
+        CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
+    }
+
+    private void CloseOwnedEditorsWithoutSaving()
+    {
+        _taskTextEditWindow?.CloseWithoutSaving();
+        _scheduledTaskEditWindow?.CloseWithoutSaving();
     }
 
     private void TodoWindow_Closed(object? sender, EventArgs e)
@@ -1230,11 +1272,6 @@ public partial class TodoWindow : Window
 
     private void TodoTabButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!CommitScheduledTaskEditorIfOpen())
-        {
-            return;
-        }
-
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         SelectTaskPage(showScheduledTasks: false, focusInput: true);
@@ -1242,11 +1279,6 @@ public partial class TodoWindow : Window
 
     private void ScheduledTaskTabButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!CommitScheduledTaskEditorIfOpen())
-        {
-            return;
-        }
-
         CommitTodoEdit();
         PrepareScheduledTaskDraftClockForDisplay(DateTimeOffset.Now);
         SelectTaskPage(showScheduledTasks: true, focusInput: true);
@@ -2052,7 +2084,41 @@ public partial class TodoWindow : Window
             }
         }
 
-        if (dueAt <= DateTimeOffset.Now)
+        var now = DateTimeOffset.Now;
+        if (dueAt <= now &&
+            repeatRule is not null)
+        {
+            if (!ScheduledRepeatSchedule.TryAdvanceToFuture(
+                    repeatRule,
+                    dueAt,
+                    now,
+                    out repeatRule,
+                    out dueAt))
+            {
+                SetScheduledTaskValidation(
+                    "循环时间无法自动推进，请换一个时间");
+                ScheduledTimeInput.Focus();
+                ScheduledTimeInput.SelectAll();
+                return false;
+            }
+        }
+        else if (dueAt <= now &&
+                 repeatInterval is { } legacyInterval)
+        {
+            if (!TryAdvanceLegacyScheduledDueAt(
+                    dueAt,
+                    legacyInterval,
+                    now,
+                    out dueAt))
+            {
+                SetScheduledTaskValidation(
+                    "循环时间无法自动推进，请换一个时间");
+                ScheduledTimeInput.Focus();
+                ScheduledTimeInput.SelectAll();
+                return false;
+            }
+        }
+        else if (dueAt <= now)
         {
             SetScheduledTaskValidation("提醒时间要晚于现在哦");
             ScheduledTimeInput.Focus();
@@ -2061,6 +2127,35 @@ public partial class TodoWindow : Window
         }
 
         return true;
+    }
+
+    private static bool TryAdvanceLegacyScheduledDueAt(
+        DateTimeOffset dueAt,
+        TimeSpan repeatInterval,
+        DateTimeOffset now,
+        out DateTimeOffset futureDueAt)
+    {
+        futureDueAt = default;
+        if (repeatInterval <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            var elapsedTicks = checked(
+                now.UtcDateTime.Ticks - dueAt.UtcDateTime.Ticks);
+            var steps = checked(elapsedTicks / repeatInterval.Ticks + 1);
+            futureDueAt = dueAt.AddTicks(
+                checked(steps * repeatInterval.Ticks));
+            return futureDueAt > now;
+        }
+        catch (Exception exception) when (
+            exception is OverflowException or ArgumentOutOfRangeException)
+        {
+            futureDueAt = default;
+            return false;
+        }
     }
 
     private bool TryReadScheduledRepeatRule(
@@ -2148,11 +2243,7 @@ public partial class TodoWindow : Window
                 return;
             }
 
-            if (!existing.SaveAndClose())
-            {
-                existing.Activate();
-                return;
-            }
+            existing.CloseWithoutSaving();
         }
 
         var editor = new ScheduledTaskEditWindow(item)
@@ -2259,12 +2350,20 @@ public partial class TodoWindow : Window
     {
         if (sender is Button { Tag: ScheduledTaskItem item })
         {
+            CloseTaskFullTextPreview();
+            if (!ConfirmDeleteForSession("定时任务", item.Text))
+            {
+                e.Handled = true;
+                return;
+            }
+
             if (ReferenceEquals(item, _editingScheduledTask))
             {
                 CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
             }
 
             ScheduledTaskDeleteRequested?.Invoke(item);
+            e.Handled = true;
         }
     }
 
@@ -2832,11 +2931,7 @@ public partial class TodoWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!CommitScheduledTaskEditorIfOpen())
-        {
-            return;
-        }
-
+        CloseOwnedEditorsWithoutSaving();
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         CloseRequested?.Invoke(this, EventArgs.Empty);
@@ -2844,11 +2939,7 @@ public partial class TodoWindow : Window
 
     private void ExitButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!CommitScheduledTaskEditorIfOpen())
-        {
-            return;
-        }
-
+        CloseOwnedEditorsWithoutSaving();
         CloseScheduledPickers();
         CancelScheduledTaskEdit(resetDraft: true, focusInput: false);
         ExitRequested?.Invoke(this, EventArgs.Empty);
@@ -2905,10 +2996,7 @@ public partial class TodoWindow : Window
         Action<string> acceptText,
         Action? openAdvancedEditor = null)
     {
-        if (!CommitScheduledTaskEditorIfOpen())
-        {
-            return;
-        }
+        _scheduledTaskEditWindow?.CloseWithoutSaving();
 
         if (_taskTextEditWindow is { IsVisible: true } existing)
         {
@@ -2946,12 +3034,6 @@ public partial class TodoWindow : Window
             }
         };
         editor.Show();
-    }
-
-    private bool CommitScheduledTaskEditorIfOpen()
-    {
-        return _scheduledTaskEditWindow is not { IsVisible: true } editor ||
-               editor.SaveAndClose();
     }
 
     private void EditButton_Click(object sender, RoutedEventArgs e)
@@ -3708,6 +3790,13 @@ public partial class TodoWindow : Window
     {
         if (sender is Button { Tag: TodoItem item })
         {
+            CloseTaskFullTextPreview();
+            if (!ConfirmDeleteForSession("待办事项", item.Text))
+            {
+                e.Handled = true;
+                return;
+            }
+
             if (ReferenceEquals(item, _editingTodoItem))
             {
                 if (IsImeComposing)
@@ -3723,7 +3812,48 @@ public partial class TodoWindow : Window
             }
 
             DeleteRequested?.Invoke(item);
+            e.Handled = true;
         }
+    }
+
+    private bool ConfirmDeleteForSession(string itemKind, string text)
+    {
+        if (_suppressDeleteConfirmationForSession)
+        {
+            return true;
+        }
+
+        const int previewLength = 38;
+        var normalizedText = text.Trim();
+        var preview = normalizedText.Length <= previewLength
+            ? normalizedText
+            : $"{normalizedText[..previewLength]}…";
+        CuteConfirmationResult result;
+        _isDeleteConfirmationOpen = true;
+        try
+        {
+            result = CuteConfirmationWindow.ShowFor(
+                this,
+                $"删除{itemKind}",
+                $"确定删除“{preview}”吗？\n删除后无法恢复。",
+                confirmText: "删除",
+                showSessionSuppression: true);
+        }
+        finally
+        {
+            _isDeleteConfirmationOpen = false;
+            if (!_hasClosed && !IsTransientPopupOpen)
+            {
+                TransientInteractionCompleted?.Invoke();
+            }
+        }
+
+        if (result.Confirmed && result.SuppressForSession)
+        {
+            _suppressDeleteConfirmationForSession = true;
+        }
+
+        return result.Confirmed;
     }
 
     private void PetSizeSlider_PreviewMouseLeftButtonDown(
