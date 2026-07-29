@@ -83,6 +83,13 @@ internal static class Program
                 return RunEdgeRoamPreview(application);
             }
 
+            if (args.Contains(
+                    "--reminder-close-preview",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                return RunReminderClosePreview(application);
+            }
+
             AssertLoggingContract();
             RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
             RunCheck(
@@ -512,6 +519,120 @@ internal static class Program
             {
                 // The preview is diagnostic-only; a locked temp log must not
                 // turn a successful visual review into a failed process.
+            }
+        }
+    }
+
+    private static int RunReminderClosePreview(Application application)
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-reminder-close-preview-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var preview = new MainWindow
+        {
+            Left = 700,
+            ShowActivated = true,
+            ShowInTaskbar = true,
+            Title = "小鲁班提醒关闭回归预览（关闭桌宠结束）",
+            Top = 360,
+            Topmost = true
+        };
+
+        SetField(
+            preview,
+            "_todoStore",
+            new TodoStore(Path.Combine(tempDirectory, "todos.json")));
+        SetField(
+            preview,
+            "_settingsStore",
+            new AppSettingsStore(Path.Combine(tempDirectory, "settings.json")));
+        var scheduledStore = new ScheduledTaskStore(
+            Path.Combine(tempDirectory, "scheduled-tasks.json"));
+        SetField(preview, "_scheduledTaskStore", scheduledStore);
+        GetField<ObservableCollection<TodoItem>>(preview, "_todos").Clear();
+        var scheduledTasks =
+            GetField<ObservableCollection<ScheduledTaskItem>>(
+                preview,
+                "_scheduledTasks");
+        scheduledTasks.Clear();
+        GetField<Queue<ScheduledTaskItem>>(
+            preview,
+            "_reminderQueue").Clear();
+        GetField<HashSet<Guid>>(
+            preview,
+            "_queuedReminderIds").Clear();
+        GetField<DispatcherTimer>(
+            preview,
+            "_scheduledTaskTimer").Stop();
+        Invoke(preview, "ApplyPetSizeScale", 1d, false, false);
+
+        var dueAt = DateTimeOffset.Now.AddSeconds(-2);
+        var reminder = new ScheduledTaskItem
+        {
+            Text = "关闭这个提醒后，请右键小鲁班；待办面板能打开就说明桌宠没有卡死。",
+            DueAt = dueAt,
+            CreatedAt = dueAt.AddMinutes(-1)
+        };
+        Invoke(preview, "InsertScheduledTaskSorted", reminder);
+        if (!scheduledStore.Save(scheduledTasks))
+        {
+            throw new InvalidOperationException(
+                "Failed to prepare reminder-close preview data.");
+        }
+
+        preview.Loaded += (_, _) =>
+            preview.Dispatcher.BeginInvoke(
+                DispatcherPriority.ApplicationIdle,
+                new Action(() =>
+                {
+                    try
+                    {
+                        SetField(
+                            preview,
+                            "_automaticAnimationEnabled",
+                            false);
+                        GetField<DispatcherTimer>(
+                            preview,
+                            "_automaticTimer").Stop();
+                        Invoke(
+                            preview,
+                            "ProcessScheduledTasksAt",
+                            DateTimeOffset.Now);
+                        if (GetRawField(preview, "_reminderWindow") is
+                            ReminderWindow reminderWindow)
+                        {
+                            // Make the owned diagnostic window independently
+                            // targetable by Windows UI automation.
+                            reminderWindow.ShowInTaskbar = true;
+                            reminderWindow.Title =
+                                "小鲁班提醒关闭按钮实机验证";
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine(exception);
+                        application.Shutdown(1);
+                    }
+                }));
+
+        Console.WriteLine(
+            "[PREVIEW] Close the reminder with its X, then right-click Luban. " +
+            "The Todo panel must open and the reminder must remain unacknowledged.");
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        try
+        {
+            return application.Run(preview);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // Preview cleanup must not hide its visual verification result.
             }
         }
     }
@@ -12727,6 +12848,9 @@ internal static class Program
             TimeSpan.FromHours(8));
         var firstDueAt = now;
         Func<DateTimeOffset> controlledNow = () => now;
+        ReminderWindow? observedReminderWindow = null;
+        EventHandler? dismissObserver = null;
+        var dismissRequestCount = 0;
 
         var mainSource = File.ReadAllText(
             FindWorkspaceFile("MainWindow.xaml.cs"));
@@ -12746,6 +12870,9 @@ internal static class Program
         var restartReminderAttentionSource = ExtractPrivateMethodSource(
             mainSource,
             "RestartReminderAttentionAnimation");
+        var dismissReminderSource = ExtractPrivateMethodSource(
+            mainSource,
+            "DismissActiveReminderPresentation");
         Assert(mainSource.Contains(
                    "MaximumVisibleReminderOccurrences = 100",
                    StringComparison.Ordinal) &&
@@ -12782,26 +12909,50 @@ internal static class Program
                refreshActiveReminderSource.Contains(
                    "RestartReminderAttentionAnimation()",
                    StringComparison.Ordinal) &&
-               restartReminderAttentionSource.Contains(
-                   "StartReminderHoldAnimation()",
-                   StringComparison.Ordinal) &&
-               reminderSource.Contains(
-                   "ShowBeside(Window anchor)",
-                   StringComparison.Ordinal) &&
-               reminderSource.Contains(
-                   "usableHeight",
-                   StringComparison.Ordinal) &&
+                restartReminderAttentionSource.Contains(
+                    "StartReminderHoldAnimation()",
+                    StringComparison.Ordinal) &&
+                dismissReminderSource.Contains(
+                    "_isReminderPresentationDismissed = true",
+                    StringComparison.Ordinal) &&
+                dismissReminderSource.Contains(
+                    "_activeReminder is null",
+                    StringComparison.Ordinal) &&
+                !dismissReminderSource.Contains(
+                    "SaveScheduledTasks",
+                    StringComparison.Ordinal) &&
+                mainSource.Contains(
+                    "_reminderWindow.DismissRequested +=",
+                    StringComparison.Ordinal) &&
+                reminderSource.Contains(
+                    "ShowBeside(Window anchor)",
+                    StringComparison.Ordinal) &&
+                reminderSource.Contains(
+                    "public event EventHandler? DismissRequested",
+                    StringComparison.Ordinal) &&
+                reminderSource.Contains(
+                    "RequestDismiss(",
+                    StringComparison.Ordinal) &&
+                reminderSource.Contains(
+                    "usableHeight",
+                    StringComparison.Ordinal) &&
                reminderSource.Contains(
                    "Math.Min(_preferredHeight, usableHeight)",
                    StringComparison.Ordinal) &&
-               reminderXaml.Contains(
-                   "ShowActivated=\"False\"",
-                   StringComparison.Ordinal) &&
-               reminderXaml.Split(
-                   "<TextBox ",
-                   StringSplitOptions.None).Length == 2,
-            "提醒必须按 occurrence 建模、未确认时继续布下一次定时器，" +
-            "并在单个轻量窗口内最多显示100条");
+                reminderXaml.Contains(
+                    "ShowActivated=\"False\"",
+                    StringComparison.Ordinal) &&
+                reminderXaml.Contains(
+                    "x:Name=\"ReminderCloseButton\"",
+                    StringComparison.Ordinal) &&
+                reminderXaml.Contains(
+                    "Click=\"CloseButton_Click\"",
+                    StringComparison.Ordinal) &&
+                reminderXaml.Split(
+                    "<TextBox ",
+                    StringSplitOptions.None).Length == 2,
+            "提醒必须按 occurrence 建模、未确认时继续布下一次定时器；" +
+            "关闭显示与确认完成必须分流，并在单个轻量窗口内最多显示100条");
 
         scheduledTimer.Stop();
         automaticTimer.Stop();
@@ -12814,6 +12965,7 @@ internal static class Program
         observedCounts.Clear();
         SetField(window, "_activeReminder", null);
         SetField(window, "_isReminderActive", false);
+        SetField(window, "_isReminderPresentationDismissed", false);
         SetField(window, "_totalReminderOccurrenceCount", 0L);
         SetField(window, "_upcomingReminderPreloadPageName", null);
         SetField(window, "_nowProvider", controlledNow);
@@ -12867,6 +13019,9 @@ internal static class Program
                 (ReminderWindow?)GetRawField(
                     window,
                     "_reminderWindow");
+            observedReminderWindow = reminderWindow;
+            dismissObserver = (_, _) => dismissRequestCount++;
+            reminderWindow!.DismissRequested += dismissObserver;
             Assert(reminderWindow?.IsVisible == true &&
                    todoWindow.IsVisible &&
                    scheduledInput.Text ==
@@ -12986,8 +13141,135 @@ internal static class Program
                            firstDueAt,
                            firstDueAt.AddMinutes(1),
                            firstDueAt.AddMinutes(2)
-                       }),
+                        }),
                 "循环提醒必须按每次计划时间严格升序堆叠");
+
+            var persistedDueBeforeDismiss =
+                scheduledStore.Load().Single().DueAt;
+            var reminderRestoreScale =
+                GetField<double>(window, "_reminderRestoreScale");
+            var reminderCloseButton =
+                GetField<Button>(reminderWindow, "ReminderCloseButton");
+            reminderCloseButton.RaiseEvent(
+                new RoutedEventArgs(Button.ClickEvent));
+            reminderCloseButton.RaiseEvent(
+                new RoutedEventArgs(Button.ClickEvent));
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(!GetField<bool>(window, "_isReminderActive") &&
+                   GetField<bool>(
+                       window,
+                       "_isReminderPresentationDismissed") &&
+                   ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       recurring) &&
+                   visibleOccurrences.Count == 3 &&
+                   scheduledTasks.Count == 1 &&
+                   recurring.DueAt == firstDueAt &&
+                   scheduledStore.Load().Single().DueAt ==
+                       persistedDueBeforeDismiss &&
+                   !reminderWindow.IsVisible &&
+                   !GetField<bool>(reminderWindow, "_hasClosed") &&
+                   todoWindow.IsVisible &&
+                   scheduledInput.Text ==
+                       "正在编辑，提醒不得关闭或清空" &&
+                   GetField<object>(
+                       window,
+                       "_bubbleMode").ToString() == "Todo" &&
+                   GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   GetField<bool>(
+                       window,
+                       "_isRestoringReminderSize") &&
+                   scheduledTimer.IsEnabled &&
+                   dismissRequestCount == 1,
+                "连续点击提醒右上角关闭按钮只能收起显示：不得确认、推进、关闭实例或卡住Todo和尺寸恢复");
+
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Assert(!GetField<bool>(window, "_isReminderActive") &&
+                   GetField<bool>(
+                       window,
+                       "_isReminderPresentationDismissed") &&
+                   visibleOccurrences.Count == 3 &&
+                   !reminderWindow.IsVisible &&
+                   reminderTextBox.Text.Length == 0 &&
+                   dismissRequestCount == 1,
+                "关闭提醒后对同一时刻重复调度不得重弹，也不得在隐藏窗口重新滞留长文本");
+
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Assert(!GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   !GetField<bool>(
+                       window,
+                       "_isRestoringReminderSize") &&
+                   Math.Abs(
+                       GetField<double>(window, "_petSizeScale") -
+                       reminderRestoreScale) < 0.001,
+                "只关闭提醒显示也必须完成尺寸恢复并解除临时放大状态");
+
+            now = firstDueAt.AddMinutes(3);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Assert(GetField<bool>(window, "_isReminderActive") &&
+                   !GetField<bool>(
+                       window,
+                       "_isReminderPresentationDismissed") &&
+                   visibleOccurrences.Count == 4 &&
+                   reminderWindow.IsVisible &&
+                   scheduledInput.Text ==
+                       "正在编辑，提醒不得关闭或清空",
+                "下一次新的循环 occurrence 到点后，必须带着旧记录重新显示且恢复可操作状态");
+
+            reminderWindow.Close();
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(!GetField<bool>(window, "_isReminderActive") &&
+                   GetField<bool>(
+                       window,
+                       "_isReminderPresentationDismissed") &&
+                   visibleOccurrences.Count == 4 &&
+                   !reminderWindow.IsVisible &&
+                   !GetField<bool>(reminderWindow, "_hasClosed") &&
+                   scheduledTasks.Count == 1 &&
+                   scheduledStore.Load().Single().DueAt ==
+                       persistedDueBeforeDismiss &&
+                   dismissRequestCount == 2,
+                "系统关闭请求也只能收起提醒显示，窗口实例、未确认记录和磁盘任务必须保留");
+
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Assert(!GetField<bool>(window, "_isReminderActive") &&
+                   visibleOccurrences.Count == 4 &&
+                   !reminderWindow.IsVisible,
+                "系统关闭后同一 occurrence 不得因轮询立即重弹");
+
+            now = firstDueAt.AddMinutes(4);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            var effectivePetSizeTarget =
+                GetField<bool>(window, "_petSizeTargetUpdatePending")
+                    ? GetField<double>(
+                        window,
+                        "_pendingPetSizeTargetScale")
+                    : GetField<double>(window, "_petSizeTargetScale");
+            Assert(GetField<bool>(window, "_isReminderActive") &&
+                   !GetField<bool>(
+                       window,
+                       "_isReminderPresentationDismissed") &&
+                   visibleOccurrences.Count == 5 &&
+                   reminderWindow.IsVisible &&
+                   GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   !GetField<bool>(
+                       window,
+                       "_isRestoringReminderSize") &&
+                   Math.Abs(effectivePetSizeTarget - 1.40d) < 0.001,
+                "尺寸尚在恢复时若新 occurrence 到点，必须取消缩小并重新平滑放大，不能卡在普通尺寸");
 
             now = firstDueAt.AddMinutes(105);
             Invoke(window, "ProcessScheduledTasksAt", now);
@@ -13049,8 +13331,15 @@ internal static class Program
             visibleOccurrences.Clear();
             observedCounts.Clear();
             scheduledStore.Save(scheduledTasks);
+            if (observedReminderWindow is not null &&
+                dismissObserver is not null)
+            {
+                observedReminderWindow.DismissRequested -= dismissObserver;
+            }
+
             SetField(window, "_activeReminder", null);
             SetField(window, "_isReminderActive", false);
+            SetField(window, "_isReminderPresentationDismissed", false);
             SetField(window, "_totalReminderOccurrenceCount", 0L);
             SetField(window, "_upcomingReminderPreloadPageName", null);
             SetField(window, "_isTransientPetSizeOverride", false);

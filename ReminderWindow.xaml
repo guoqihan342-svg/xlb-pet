@@ -82,13 +82,14 @@
                                    Text="到时间啦，记得看看这些事情哦" />
                     </StackPanel>
 
-                    <Button Grid.Column="2"
+                    <Button x:Name="ReminderCloseButton"
+                            Grid.Column="2"
                             Width="26"
                             Height="26"
                             Padding="0"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Top"
-                            AutomationProperties.Name="收起提醒"
+                            AutomationProperties.Name="关闭提醒"
                             Background="Transparent"
                             BorderThickness="0"
                             Content="×"
@@ -96,8 +97,8 @@
                             FontFamily="Microsoft YaHei"
                             FontSize="17"
                             Foreground="#94A3B7"
-                            ToolTip="收起"
-                            Click="HideButton_Click">
+                            ToolTip="关闭"
+                            Click="CloseButton_Click">
                         <Button.Style>
                             <Style TargetType="Button">
                                 <Setter Property="Background" Value="Transparent" />

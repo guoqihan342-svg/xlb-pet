@@ -27,6 +27,7 @@ public partial class ReminderWindow : Window
     private int _presentationVisibleCount = -1;
     private long _presentationOverflowCount = -1;
     private bool _allowClose;
+    private bool _dismissRequestPending;
     private bool _hasClosed;
     private bool _repositionQueued;
 
@@ -38,6 +39,8 @@ public partial class ReminderWindow : Window
     }
 
     public event EventHandler? AcknowledgeRequested;
+
+    public event EventHandler? DismissRequested;
 
     public void SetPresentation(
         string? title,
@@ -465,11 +468,13 @@ public partial class ReminderWindow : Window
         RoutedEventArgs e)
     {
         AcknowledgeRequested?.Invoke(this, EventArgs.Empty);
+        e.Handled = true;
     }
 
-    private void HideButton_Click(object sender, RoutedEventArgs e)
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
-        HideSafely();
+        RequestDismiss(deferUntilClosingCompletes: false);
+        e.Handled = true;
     }
 
     private void ReminderWindow_PreviewKeyDown(
@@ -482,7 +487,7 @@ public partial class ReminderWindow : Window
         }
 
         e.Handled = true;
-        HideSafely();
+        RequestDismiss(deferUntilClosingCompletes: false);
     }
 
     private void ReminderWindow_Closing(
@@ -495,12 +500,67 @@ public partial class ReminderWindow : Window
         }
 
         e.Cancel = true;
-        HideSafely();
+        RequestDismiss(deferUntilClosingCompletes: true);
+    }
+
+    private void RequestDismiss(bool deferUntilClosingCompletes)
+    {
+        if (_allowClose || _hasClosed || _dismissRequestPending)
+        {
+            return;
+        }
+
+        _dismissRequestPending = true;
+        if (deferUntilClosingCompletes)
+        {
+            _ = Dispatcher.BeginInvoke(
+                DispatcherPriority.Normal,
+                new Action(DispatchDismissRequest));
+            return;
+        }
+
+        DispatchDismissRequest();
+    }
+
+    private void DispatchDismissRequest()
+    {
+        if (_allowClose || _hasClosed)
+        {
+            _dismissRequestPending = false;
+            return;
+        }
+
+        try
+        {
+            if (DismissRequested is { } dismissRequested)
+            {
+                dismissRequested.Invoke(this, EventArgs.Empty);
+            }
+            else
+            {
+                HideSafely();
+            }
+        }
+        finally
+        {
+            if (Dispatcher.HasShutdownStarted ||
+                Dispatcher.HasShutdownFinished)
+            {
+                _dismissRequestPending = false;
+            }
+            else
+            {
+                _ = Dispatcher.BeginInvoke(
+                    DispatcherPriority.Background,
+                    new Action(() => _dismissRequestPending = false));
+            }
+        }
     }
 
     protected override void OnClosed(EventArgs e)
     {
         _hasClosed = true;
+        _dismissRequestPending = false;
         DetachAnchor();
         base.OnClosed(e);
     }

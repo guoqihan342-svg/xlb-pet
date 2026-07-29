@@ -307,6 +307,7 @@ public partial class MainWindow : Window
     private int _systemRecoveryQueued;
     private bool _suppressClickReactionAfterRoamInterruption;
     private bool _isReminderActive;
+    private bool _isReminderPresentationDismissed;
     private bool _isTransientPetSizeOverride;
     private bool _isRestoringReminderSize;
     private double _reminderRestoreScale = 1;
@@ -1878,6 +1879,7 @@ public partial class MainWindow : Window
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
         _isReminderActive = false;
+        _isReminderPresentationDismissed = false;
         _activeReminder = null;
         _activeReminderBatch.Clear();
         _visibleReminderOccurrences.Clear();
@@ -1896,6 +1898,8 @@ public partial class MainWindow : Window
         {
             reminderWindow.AcknowledgeRequested -=
                 ReminderWindow_AcknowledgeRequested;
+            reminderWindow.DismissRequested -=
+                ReminderWindow_DismissRequested;
             reminderWindow.CloseForApplication();
             _reminderWindow = null;
         }
@@ -7173,8 +7177,9 @@ public partial class MainWindow : Window
         if (!_isReminderActive)
         {
             // A 100-item reminder can own a large combined TextBox string.
-            // Release it as soon as the batch is fully acknowledged; merely
-            // pressing “收起” while the batch is active intentionally keeps it.
+            // Release the visual string after acknowledgement or a
+            // presentation-only dismissal. The occurrence records themselves
+            // stay in MainWindow until the user acknowledges them.
             _reminderWindow?.ClearPresentation();
         }
 
@@ -7261,6 +7266,8 @@ public partial class MainWindow : Window
             _reminderWindow = new ReminderWindow();
             _reminderWindow.AcknowledgeRequested +=
                 ReminderWindow_AcknowledgeRequested;
+            _reminderWindow.DismissRequested +=
+                ReminderWindow_DismissRequested;
         }
 
         if (IsLoaded && _reminderWindow.Owner is null)
@@ -7311,6 +7318,13 @@ public partial class MainWindow : Window
         EventArgs e)
     {
         AcknowledgeActiveReminder();
+    }
+
+    private void ReminderWindow_DismissRequested(
+        object? sender,
+        EventArgs e)
+    {
+        DismissActiveReminderPresentation();
     }
 
     private void TodoWindow_PetSizeScaleChanged(double scale)
@@ -8016,6 +8030,26 @@ public partial class MainWindow : Window
         _reminderSizeCommitTimer.Start();
     }
 
+    private void EnsureReminderPetSizeOverrideAt(long timestamp)
+    {
+        if (!_isTransientPetSizeOverride)
+        {
+            BeginReminderPetSizeOverrideAt(timestamp);
+            return;
+        }
+
+        // A recurring reminder may arrive while a dismissed reminder is still
+        // shrinking. Retarget the same temporary override to 140% without
+        // replacing the original user scale that must eventually be restored.
+        _reminderSizeCommitTimer.Stop();
+        _isRestoringReminderSize = false;
+        _petSizeSettingsDirty = false;
+        _petSizeCommitPending = false;
+        _petSizePersistTimer.Stop();
+        QueuePetSizeScaleTargetAt(MaximumPetSizeScale, timestamp);
+        RefreshReminderBubbleOffset();
+    }
+
     private void ReminderSizeCommitTimer_Tick(object? sender, EventArgs e)
     {
         _reminderSizeCommitTimer.Stop();
@@ -8400,6 +8434,7 @@ public partial class MainWindow : Window
             else
             {
                 _activeReminder = null;
+                _isReminderPresentationDismissed = false;
                 _activeReminderBatch.Clear();
                 _visibleReminderOccurrences.Clear();
                 _presentedReminderOccurrenceCounts.Clear();
@@ -8446,6 +8481,7 @@ public partial class MainWindow : Window
 
             _upcomingReminderPreloadPageName = null;
             _activeReminder = item;
+            _isReminderPresentationDismissed = false;
             RefreshActiveReminderPresentation(now);
             return true;
         }
@@ -8513,16 +8549,24 @@ public partial class MainWindow : Window
                 observedCount);
         }
 
+        if (_isReminderPresentationDismissed)
+        {
+            if (!hasNewReminderOccurrences)
+            {
+                return;
+            }
+
+            // A new occurrence is the only in-process event that reopens a
+            // dismissed, still-unacknowledged stack.
+            _isReminderPresentationDismissed = false;
+        }
+
         UpdateReminderWindowPresentation();
 
         if (_isReminderActive && _bubbleMode == BubbleMode.Reminder)
         {
             if (hasNewReminderOccurrences)
             {
-                // “收起” hides only the current presentation. A genuinely new
-                // due occurrence must make the updated stack visible again,
-                // while a repeated poll of the same instant leaves it hidden
-                // and does not restart the shake.
                 ShowReminderWindow();
                 RestartReminderAttentionAnimation();
             }
@@ -8535,7 +8579,7 @@ public partial class MainWindow : Window
         }
 
         _isReminderActive = true;
-        BeginReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
+        EnsureReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
         SetBubbleMode(BubbleMode.Reminder);
     }
 
@@ -8794,6 +8838,7 @@ public partial class MainWindow : Window
         }
 
         var now = _nowProvider();
+        _isReminderPresentationDismissed = false;
         var acknowledgedCounts = _visibleReminderOccurrences
             .GroupBy(occurrence => occurrence.TaskId)
             .ToDictionary(group => group.Key, group => group.LongCount());
@@ -8850,6 +8895,28 @@ public partial class MainWindow : Window
                 : BubbleMode.None);
         RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
         ScheduleNextReminderAt(now);
+    }
+
+    private void DismissActiveReminderPresentation()
+    {
+        if (_isClosing ||
+            !_isReminderActive ||
+            _activeReminder is null ||
+            _isReminderPresentationDismissed)
+        {
+            return;
+        }
+
+        // Closing the presentation is deliberately not an acknowledgement:
+        // preserve the task, visible occurrences and persisted due time.
+        _isReminderPresentationDismissed = true;
+        _isReminderActive = false;
+        SetBubbleMode(
+            _todoWindow.IsVisible
+                ? BubbleMode.Todo
+                : BubbleMode.None);
+        RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
+        ScheduleNextReminderAt(_nowProvider());
     }
 
     private void AdvanceAcknowledgedScheduledTask(
