@@ -30,6 +30,8 @@ public partial class TodoWindow : Window
     private bool _settingStartupEnabled;
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
+    private long _petSizeAdjustmentGeneration;
+    private bool _petSizeFirstScalePublishedDuringAdjustment;
     private bool _petSizeScaleNotificationQueued;
     private double _pendingPetSizeScale = 1;
     private int _displayedPetSizePercent = int.MinValue;
@@ -143,7 +145,11 @@ public partial class TodoWindow : Window
         ScheduledTaskInput.PreviewTextInput += TodoInput_PreviewTextInputCommitted;
         ScheduledTaskInput.LostKeyboardFocus += TodoInput_LostKeyboardFocus;
         PetSizeSlider.PreviewMouseLeftButtonDown += PetSizeSlider_PreviewMouseLeftButtonDown;
-        PetSizeSlider.PreviewMouseLeftButtonUp += PetSizeSlider_PreviewMouseLeftButtonUp;
+        PetSizeSlider.AddHandler(
+            Mouse.PreviewMouseUpEvent,
+            new MouseButtonEventHandler(
+                PetSizeSlider_PreviewMouseLeftButtonUp),
+            handledEventsToo: true);
         PetSizeSlider.LostMouseCapture += PetSizeSlider_LostMouseCapture;
         PetSizeSlider.PreviewKeyDown += PetSizeSlider_PreviewKeyDown;
         PetSizeSlider.PreviewKeyUp += PetSizeSlider_PreviewKeyUp;
@@ -233,6 +239,8 @@ public partial class TodoWindow : Window
     internal void BeginReminderInterruption()
     {
         _isReminderInterruptionActive = true;
+        PetSizeSlider.IsEnabled = false;
+        CompletePetSizeAdjustmentForInterruption();
 
         if (_scheduledTaskEditWindow is { IsVisible: true } scheduledEditor)
         {
@@ -249,6 +257,7 @@ public partial class TodoWindow : Window
     internal void EndReminderInterruption(bool restoreEditorFocus)
     {
         _isReminderInterruptionActive = false;
+        PetSizeSlider.IsEnabled = true;
         var interruptedEditor = _editorInterruptedByReminder;
         _editorInterruptedByReminder = null;
 
@@ -2841,7 +2850,8 @@ public partial class TodoWindow : Window
         }
 
         var probe = new ScheduledPickerOutsideProbe(
-            _scheduledPickerInteractionGeneration);
+            _scheduledPickerInteractionGeneration,
+            _scheduledPickerState);
 
         Dispatcher.BeginInvoke(
             DispatcherPriority.ApplicationIdle,
@@ -2855,6 +2865,7 @@ public partial class TodoWindow : Window
         var timePickerOpen = ScheduledTimePickerPopup.IsOpen;
         if (_hasClosed ||
             !IsScheduledPickerOpen() ||
+            probe.StateAtQueue == ScheduledPickerState.InternalCommit ||
             probe.InteractionGeneration !=
                 _scheduledPickerInteractionGeneration ||
             (timePickerOpen &&
@@ -3330,6 +3341,31 @@ public partial class TodoWindow : Window
     private void TodoWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         var originalSource = e.OriginalSource as DependencyObject;
+        if (e.ChangedButton == MouseButton.Left &&
+            IsWithin(originalSource, PetSizeSlider))
+        {
+            // Slider handles a move-to-point Track press in its class handler
+            // before the Slider instance's PreviewMouseLeftButtonDown handler.
+            // Begin at the owning Window while the tunneling event is still on
+            // its way to Slider, so ValueChanged is coalesced into the same
+            // composition-driven gesture as a Thumb drag.
+            BeginPetSizeAdjustment();
+            if (!IsPetSizeSliderThumbInteraction(originalSource) &&
+                !ReferenceEquals(Mouse.Captured, PetSizeSlider) &&
+                !Mouse.Capture(PetSizeSlider, CaptureMode.SubTree))
+            {
+                // A rare failed capture must not strand the adjustment if the
+                // pointer is released outside the Track. Slider updates its
+                // move-to-point value synchronously before this fallback runs.
+                var adjustmentGeneration = _petSizeAdjustmentGeneration;
+                Dispatcher.BeginInvoke(
+                    DispatcherPriority.Input,
+                    new Action(
+                        () => EndPetSizeAdjustmentIfCurrent(
+                            adjustmentGeneration)));
+            }
+        }
+
         var isRepeatEditorInteraction =
             IsWithin(originalSource, ScheduledRepeatEditor) ||
             IsWithinScheduledTimePartPopup(
@@ -3572,6 +3608,15 @@ public partial class TodoWindow : Window
         ResetImeCompositionAfterFocusLoss();
         _outsideTodoEditCommitPending = true;
         FinishTodoEditAfterOutsideClick();
+    }
+
+    private bool IsPetSizeSliderThumbInteraction(DependencyObject? source)
+    {
+        PetSizeSlider.ApplyTemplate();
+        return PetSizeSlider.Template.FindName(
+                   "PART_Track",
+                   PetSizeSlider) is Track { Thumb: { } thumb } &&
+               IsWithin(source, thumb);
     }
 
     private static bool IsWithin(DependencyObject? source, DependencyObject ancestor)
@@ -3947,7 +3992,19 @@ public partial class TodoWindow : Window
 
     private void PetSizeSlider_PreviewMouseLeftButtonUp(
         object sender,
-        MouseButtonEventArgs e) => EndPetSizeAdjustment();
+        MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        EndPetSizeAdjustment();
+        if (ReferenceEquals(Mouse.Captured, PetSizeSlider))
+        {
+            PetSizeSlider.ReleaseMouseCapture();
+        }
+    }
 
     private void PetSizeSlider_LostMouseCapture(
         object sender,
@@ -3984,8 +4041,24 @@ public partial class TodoWindow : Window
             return;
         }
 
+        _petSizeFirstScalePublishedDuringAdjustment = false;
+        _petSizeAdjustmentGeneration = unchecked(
+            _petSizeAdjustmentGeneration + 1);
         _petSizeAdjustmentActive = true;
         PetSizeAdjustmentStarted?.Invoke();
+    }
+
+    private void EndPetSizeAdjustmentIfCurrent(long expectedGeneration)
+    {
+        // A capture-failure fallback belongs only to the press that queued it.
+        // If the user starts a Thumb drag before that dispatcher callback
+        // runs, the stale fallback must not finish the newer gesture.
+        if (expectedGeneration != _petSizeAdjustmentGeneration)
+        {
+            return;
+        }
+
+        EndPetSizeAdjustment();
     }
 
     private void EndPetSizeAdjustment()
@@ -4001,6 +4074,7 @@ public partial class TodoWindow : Window
 
         FlushPendingPetSizeScaleChanged();
         _petSizeAdjustmentActive = false;
+        _petSizeFirstScalePublishedDuringAdjustment = false;
         PetSizeAdjustmentCompleted?.Invoke();
     }
 
@@ -4020,6 +4094,16 @@ public partial class TodoWindow : Window
         var scale = _pendingPetSizeScale;
         _petSizeScaleNotificationQueued = false;
         PetSizeScaleChanged?.Invoke(scale);
+    }
+
+    internal void CompletePetSizeAdjustmentForInterruption()
+    {
+        EndPetSizeAdjustment();
+        if (Mouse.Captured is DependencyObject captured &&
+            IsWithin(captured, PetSizeSlider))
+        {
+            Mouse.Capture(null);
+        }
     }
 
     private void EdgeRoamingToggle_Changed(object sender, RoutedEventArgs e)
@@ -4055,7 +4139,19 @@ public partial class TodoWindow : Window
             var scale = e.NewValue / 100;
             if (_petSizeAdjustmentActive)
             {
-                QueuePetSizeScaleChanged(scale);
+                if (!_petSizeFirstScalePublishedDuringAdjustment)
+                {
+                    // Publish only the first real change synchronously while
+                    // still inside the input event. MainWindow can prepare its
+                    // one-time transparent preview envelope before Rendering;
+                    // later high-frequency samples remain coalesced.
+                    _petSizeFirstScalePublishedDuringAdjustment = true;
+                    PetSizeScaleChanged?.Invoke(scale);
+                }
+                else
+                {
+                    QueuePetSizeScaleChanged(scale);
+                }
             }
             else
             {
@@ -4112,5 +4208,6 @@ public partial class TodoWindow : Window
     }
 
     private readonly record struct ScheduledPickerOutsideProbe(
-        long InteractionGeneration);
+        long InteractionGeneration,
+        ScheduledPickerState StateAtQueue);
 }

@@ -78,6 +78,11 @@ internal static class Program
                 return RunTodoInteractionPreview(application);
             }
 
+            if (args.Contains("--pet-size-preview", StringComparer.OrdinalIgnoreCase))
+            {
+                return RunPetSizePreview(application);
+            }
+
             if (args.Contains("--roam-preview", StringComparer.OrdinalIgnoreCase))
             {
                 return RunEdgeRoamPreview(application);
@@ -222,6 +227,9 @@ internal static class Program
                 if (args.Contains("--pet-size-only", StringComparer.OrdinalIgnoreCase))
                 {
                     RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
+                    RunCheck(
+                        nameof(AssertPetSizeMoveToPointGestureContract),
+                        () => AssertPetSizeMoveToPointGestureContract(window));
                     RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
                     return 0;
                 }
@@ -319,6 +327,9 @@ internal static class Program
                     () => AssertScheduledTaskEditContract(window));
                 RunCheck(nameof(AssertScheduledReminderOccurrenceStackContract),
                     () => AssertScheduledReminderOccurrenceStackContract(window));
+                RunCheck(
+                    nameof(AssertPetSizeMoveToPointGestureContract),
+                    () => AssertPetSizeMoveToPointGestureContract(window));
                 RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
             }
             finally
@@ -421,6 +432,110 @@ internal static class Program
         application.ShutdownMode = ShutdownMode.OnMainWindowClose;
         application.Run(preview);
         return 0;
+    }
+
+    private static int RunPetSizePreview(Application application)
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-size-preview-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var preview = new MainWindow
+        {
+            Left = 900,
+            Top = 520,
+            ShowActivated = true,
+            ShowInTaskbar = true,
+            Title = "小鲁班桌宠大小滑轨实机预览（关闭桌宠结束）"
+        };
+
+        SetField(
+            preview,
+            "_todoStore",
+            new TodoStore(Path.Combine(tempDirectory, "todos.json")));
+        SetField(
+            preview,
+            "_settingsStore",
+            new AppSettingsStore(Path.Combine(tempDirectory, "settings.json")));
+        SetField(
+            preview,
+            "_scheduledTaskStore",
+            new ScheduledTaskStore(
+                Path.Combine(tempDirectory, "scheduled-tasks.json")));
+        GetField<ObservableCollection<TodoItem>>(preview, "_todos").Clear();
+        GetField<ObservableCollection<ScheduledTaskItem>>(
+            preview,
+            "_scheduledTasks").Clear();
+        GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
+        var todoWindow = GetField<TodoWindow>(preview, "_todoWindow");
+        var motionReplayTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(120)
+        };
+        motionReplayTimer.Tick += (_, _) =>
+        {
+            if (GetRawField(preview, "_activeClip") is null &&
+                GetRawField(preview, "_bubbleMode")?.ToString() == "Todo")
+            {
+                Invoke(preview, "EnterTodoVisualState");
+            }
+        };
+        preview.Closed += (_, _) => motionReplayTimer.Stop();
+
+        preview.Loaded += (_, _) =>
+            preview.Dispatcher.BeginInvoke(
+                DispatcherPriority.ApplicationIdle,
+                new Action(() =>
+                {
+                    try
+                    {
+                        SetField(preview, "_automaticAnimationEnabled", false);
+                        SetField(preview, "_edgeRoamingEnabled", false);
+                        GetField<DispatcherTimer>(
+                            preview,
+                            "_automaticTimer").Stop();
+                        Invoke(
+                            preview,
+                            "ApplyPetSizeScale",
+                            1d,
+                            false,
+                            false);
+                        todoWindow.ShowInTaskbar = true;
+                        todoWindow.Topmost = false;
+                        Invoke(
+                            preview,
+                            "SetBubbleMode",
+                            GetNestedEnum("BubbleMode", "Todo"));
+                        todoWindow.ShowDefaultTab();
+                        motionReplayTimer.Start();
+                        Console.WriteLine(
+                            "[PREVIEW] 小鲁班会持续播放Todo进入动画；请连续点击桌宠大小滑轨的相同/不同位置，" +
+                            "再拖动圆形Thumb，观察是否还有闪帧。关闭桌宠窗口结束。");
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine(exception);
+                        application.Shutdown(1);
+                    }
+                }));
+
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        try
+        {
+            return application.Run(preview);
+        }
+        finally
+        {
+            motionReplayTimer.Stop();
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // Diagnostic-only preview cleanup must not hide its UI result.
+            }
+        }
     }
 
     private static int RunEdgeRoamPreview(Application application)
@@ -9430,11 +9545,24 @@ internal static class Program
         var enterTodoIndex = setBubbleModeSource.IndexOf(
             "EnterTodoVisualState();",
             StringComparison.Ordinal);
+        var freezeTodoClockIndex = setBubbleModeSource.IndexOf(
+            "StopVisualClock();",
+            enterTodoIndex + 1,
+            StringComparison.Ordinal);
+        var prepareEnvelopeIndex = setBubbleModeSource.IndexOf(
+            "EnsureTodoPetSizePreviewEnvelope();",
+            StringComparison.Ordinal);
+        var resumeClockIndex = setBubbleModeSource.IndexOf(
+            "UpdateVisualClockSubscription();",
+            StringComparison.Ordinal);
         Assert(stopClockIndex >= 0 &&
-               showWindowIndex > stopClockIndex &&
-               enterTodoIndex > showWindowIndex,
-            "显示 Owned TodoWindow 前必须先停止旧视觉时钟，显示完成后再启动Todo入场，" +
-            "避免Show()重入合成回调把当前动作闪到最终思考姿势");
+               enterTodoIndex > stopClockIndex &&
+               freezeTodoClockIndex > enterTodoIndex &&
+               prepareEnvelopeIndex > freezeTodoClockIndex &&
+               showWindowIndex > prepareEnvelopeIndex &&
+               resumeClockIndex > showWindowIndex,
+            "显示 Owned TodoWindow 前必须先准备并冻结Todo入场首帧，再原子准备主窗口包络；" +
+            "Show()完成后才恢复视觉时钟，避免重入合成旧动作或跳过入场帧");
 
         // 这项测试会打开真实的可激活 Owned Window。测试运行期间终端或
         // 其他进程抢焦点不应被误判为用户在待办外部点击。
@@ -9488,14 +9616,93 @@ internal static class Program
             // the entire short wake-to-think segment before the assertion runs.
             PrimeSpritePageForFrame(window, requestedTodoEntryFrame);
 
-            var originalRight = window.Left + window.Width;
-            var originalBottom = window.Top + window.Height;
-            Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
-            var ordinaryTodoStartIndex = GetField<int>(window, "_activeFrameIndex");
+            var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+            var originalPetPhysicalBounds =
+                GetVisualPhysicalBounds(petSizeViewbox);
+            var todoVisibleSnapshotCaptured = false;
+            var todoVisibleSnapshotValid = false;
+            var todoVisibleSnapshotDetail = string.Empty;
+            DependencyPropertyChangedEventHandler todoVisibleChanged = (_, e) =>
+            {
+                if (todoVisibleSnapshotCaptured ||
+                    e.NewValue is not true)
+                {
+                    return;
+                }
+
+                todoVisibleSnapshotCaptured = true;
+                var visibleClip = GetRawField(window, "_activeClip");
+                var visibleFrameIndex = GetField<int>(
+                    window,
+                    "_activeFrameIndex");
+                var visibleFrame = GetRawField(window, "_currentSpriteFrame");
+                var visiblePendingFrame = GetRawField(
+                    window,
+                    "_pendingSpriteFrame");
+                var visibleDeadline = GetField<long>(
+                    window,
+                    "_activeFrameDeadlineTimestamp");
+                var visibleClockSubscribed = GetField<bool>(
+                    window,
+                    "_isVisualClockSubscribed");
+                var visibleEnvelopePrepared = GetField<bool>(
+                    window,
+                    "_petSizeEnvelopePrepared");
+                todoVisibleSnapshotValid =
+                    ReferenceEquals(visibleClip, todoEnterClip) &&
+                    visibleFrameIndex == wakeFrameCount &&
+                    Equals(visibleFrame, requestedTodoEntryFrame) &&
+                    visiblePendingFrame is null &&
+                    visibleDeadline == long.MaxValue &&
+                    !visibleClockSubscribed &&
+                    visibleEnvelopePrepared;
+                todoVisibleSnapshotDetail =
+                    $"index={visibleFrameIndex}, pending={visiblePendingFrame is not null}, " +
+                    $"deadline={visibleDeadline}, clock={visibleClockSubscribed}, " +
+                    $"envelope={visibleEnvelopePrepared}";
+            };
+            using var ownerGeometryChanges =
+                new WindowPositionChangeRecorder(window);
+            var ordinaryTodoStartIndex = -1;
+            todoWindow.IsVisibleChanged += todoVisibleChanged;
+            try
+            {
+                Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
+                ordinaryTodoStartIndex = GetField<int>(
+                    window,
+                    "_activeFrameIndex");
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            }
+            finally
+            {
+                todoWindow.IsVisibleChanged -= todoVisibleChanged;
+            }
+
             Assert(ReferenceEquals(GetRawField(window, "_activeClip"), todoEnterClip),
                 "打开待办必须把活动片段切换为唯一的 Todo 入场片段实例");
+            Assert(todoVisibleSnapshotCaptured && todoVisibleSnapshotValid,
+                "Owned TodoWindow 首次可见时必须已经准备首个Todo姿势、固定最大包络且冻结时钟：" +
+                todoVisibleSnapshotDetail);
+            Assert(GetField<bool>(window, "_isVisualClockSubscribed"),
+                "Owned TodoWindow 的Show()返回后必须恢复Todo入场视觉时钟");
+            var ownerGeometryRecords = ownerGeometryChanges.GeometryChanges;
+            Assert(ownerGeometryRecords.Count == 1,
+                $"右键打开待办时透明主窗口必须只有一次原子几何提交，实际 {ownerGeometryRecords.Count}");
+            var ownerGeometryRecord = ownerGeometryRecords[0];
+            Assert((ownerGeometryRecord.Flags &
+                    (WindowPositionChangeRecorder.SwpNoMove |
+                     WindowPositionChangeRecorder.SwpNoSize)) == 0,
+                $"右键打开待办的唯一几何提交必须同时包含位置和尺寸，flags=0x{ownerGeometryRecord.Flags:X}");
+            var ownerDpiAtOpen = VisualTreeHelper.GetDpi(window);
+            Assert(ownerGeometryRecord.Width == (int)Math.Round(
+                       LogicalPetWidth * 1.40d * ownerDpiAtOpen.DpiScaleX,
+                       MidpointRounding.AwayFromZero) &&
+                   ownerGeometryRecord.Height == (int)Math.Round(
+                       LogicalPetHeight * 1.40d * ownerDpiAtOpen.DpiScaleY,
+                       MidpointRounding.AwayFromZero),
+                $"右键打开待办的原子包络物理尺寸不正确：" +
+                $"{ownerGeometryRecord.Width}×{ownerGeometryRecord.Height}");
             Invoke(window, "TryShowPendingSpriteFrame");
-            PumpDispatcher(TimeSpan.FromMilliseconds(30));
 
             Assert(todoWindow.IsVisible, "进入 Todo 模式应显示独立 modeless 待办窗口");
             Assert(ReferenceEquals(todoWindow.Owner, window), "显示后 Owner 关系必须保持");
@@ -9532,10 +9739,28 @@ internal static class Program
                 Math.Max(18, todoWindow.ActualHeight - 36),
                 "待办箭头下边界钳制");
             Invoke(window, "UpdateTodoWindowPosition");
-            AssertClose(window.Width, 190, "显示待办时主窗口宽度");
-            AssertClose(window.Height, 242, "显示待办时主窗口高度");
-            AssertClose(window.Left + window.Width, originalRight, "显示待办时主窗口右边界");
-            AssertClose(window.Top + window.Height, originalBottom, "显示待办时主窗口下边界");
+            var ownerDpi = VisualTreeHelper.GetDpi(window);
+            var expectedEnvelopeWidth = Math.Round(
+                    LogicalPetWidth * 1.40d * ownerDpi.DpiScaleX,
+                    MidpointRounding.AwayFromZero) /
+                ownerDpi.DpiScaleX;
+            var expectedEnvelopeHeight = Math.Round(
+                    LogicalPetHeight * 1.40d * ownerDpi.DpiScaleY,
+                    MidpointRounding.AwayFromZero) /
+                ownerDpi.DpiScaleY;
+            AssertClose(
+                window.Width,
+                expectedEnvelopeWidth,
+                "显示待办时主窗口宽度");
+            AssertClose(
+                window.Height,
+                expectedEnvelopeHeight,
+                "显示待办时主窗口高度");
+            AssertPhysicalBoundsClose(
+                GetVisualPhysicalBounds(petSizeViewbox),
+                originalPetPhysicalBounds,
+                1,
+                "右键打开待办时透明包络可以避让屏幕，但可见小鲁班不得跳位");
 
             var idleFrame = GetSpriteFrameInfo(GetField<object>(window, "_idleFrame"));
             var todoFrameObject = GetField<object>(window, "_todoFrame");
@@ -10321,9 +10546,13 @@ internal static class Program
             var todoTab = GetField<RadioButton>(todoWindow, "TodoTabButton");
             var scheduledTab = GetField<RadioButton>(todoWindow, "ScheduledTaskTabButton");
             var todoPage = GetField<Grid>(todoWindow, "TodoPage");
+            var todoInput = GetField<TextBox>(todoWindow, "TodoInput");
             var scheduledPage = GetField<Grid>(todoWindow, "ScheduledTaskPage");
             var scheduledList = GetField<ListBox>(todoWindow, "ScheduledTaskItemsControl");
             var scheduledInput = GetField<TextBox>(todoWindow, "ScheduledTaskInput");
+            var scheduledRepeatEditor = GetField<Grid>(
+                todoWindow,
+                "ScheduledRepeatEditor");
             var scheduledDatePickerHost = GetField<Border>(
                 todoWindow,
                 "ScheduledDatePickerHost");
@@ -10388,6 +10617,89 @@ internal static class Program
             var validationText = GetField<TextBlock>(
                 todoWindow,
                 "ScheduledTaskValidationText");
+
+            Rect BoundsInTodo(FrameworkElement element)
+            {
+                var origin = element.TranslatePoint(
+                    new Point(0, 0),
+                    todoWindow);
+                return new Rect(
+                    origin,
+                    new Size(element.ActualWidth, element.ActualHeight));
+            }
+
+            void AssertScheduledFormLayout(string stage)
+            {
+                todoWindow.UpdateLayout();
+                var rowHeights = scheduledPage.RowDefinitions
+                    .Select(row => row.Height)
+                    .ToArray();
+                var statusRowHost =
+                    VisualTreeHelper.GetParent(validationText) as Grid;
+                var inputRowHost =
+                    VisualTreeHelper.GetParent(scheduledInput) as Grid;
+                var dateRowHost =
+                    VisualTreeHelper.GetParent(
+                        scheduledDatePickerHost) as Grid;
+                Assert(rowHeights.Length == 5 &&
+                       rowHeights[0].IsStar &&
+                       rowHeights[1].GridUnitType ==
+                           GridUnitType.Pixel &&
+                       Math.Abs(rowHeights[1].Value - 18) <= 0.01 &&
+                       Math.Abs(rowHeights[2].Value - 36) <= 0.01 &&
+                       Math.Abs(rowHeights[3].Value - 28) <= 0.01 &&
+                       Math.Abs(rowHeights[4].Value - 34) <= 0.01 &&
+                       statusRowHost is not null &&
+                       Grid.GetRow(statusRowHost) == 1 &&
+                       inputRowHost is not null &&
+                       Grid.GetRow(inputRowHost) == 2 &&
+                       Grid.GetRow(scheduledRepeatEditor) == 3 &&
+                       dateRowHost is not null &&
+                       Grid.GetRow(dateRowHost) == 4,
+                    $"{stage}定时页行顺序必须固定为 */18校验/36输入/28循环/34日期");
+
+                var todoInputBounds = BoundsInTodo(todoInput);
+                var scheduledInputBounds = BoundsInTodo(scheduledInput);
+                var repeatBounds = BoundsInTodo(scheduledRepeatEditor);
+                var dateBounds = BoundsInTodo(scheduledDatePickerHost);
+                var timeBounds = BoundsInTodo(scheduledTimePickerHost);
+                var submitBounds = BoundsInTodo(scheduledSubmit);
+                var footerBottoms = new[]
+                {
+                    dateBounds.Bottom,
+                    timeBounds.Bottom,
+                    submitBounds.Bottom,
+                    todoInputBounds.Bottom
+                };
+                Assert(footerBottoms.Max() - footerBottoms.Min() <= 0.5,
+                    $"{stage}定时日期/时间/新增底边必须与TodoInput齐平：" +
+                    string.Join(
+                        ", ",
+                        footerBottoms.Select(value =>
+                            value.ToString(
+                                "F2",
+                                CultureInfo.InvariantCulture))));
+                Assert(scheduledInputBounds.Bottom <=
+                           repeatBounds.Top + 0.5 &&
+                       repeatBounds.Bottom <= dateBounds.Top + 0.5,
+                    $"{stage}定时输入、循环和日期三行不得垂直重叠");
+
+                var statusBounds = scheduledRepeatRulePreview.Visibility ==
+                        Visibility.Visible
+                    ? BoundsInTodo(scheduledRepeatRulePreview)
+                    : BoundsInTodo(validationText);
+                Assert(statusBounds.Bottom <=
+                           scheduledInputBounds.Top + 0.5,
+                    $"{stage}校验/循环预览行不得覆盖定时任务输入框");
+                if (scheduledEditCancel.Visibility == Visibility.Visible)
+                {
+                    var cancelBounds = BoundsInTodo(scheduledEditCancel);
+                    Assert(cancelBounds.Bottom <=
+                               scheduledInputBounds.Top + 0.5 &&
+                           statusBounds.Right <= cancelBounds.Left + 0.5,
+                        $"{stage}编辑取消按钮不得覆盖校验/循环预览或输入框");
+                }
+            }
 
             Assert(todoTab.IsChecked == true &&
                    scheduledTab.IsChecked != true &&
@@ -10502,6 +10814,7 @@ internal static class Program
             todoWindow.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(50));
             todoWindow.UpdateLayout();
+            AssertScheduledFormLayout("默认新增态");
             scheduledInput.ApplyTemplate();
             var scheduledInputBorder = scheduledInput.Template.FindName(
                 "ScheduledInputBorder",
@@ -11103,9 +11416,13 @@ internal static class Program
             var completionBeforeOutsideClick =
                 transientCompletionCount;
             Invoke(todoWindow, "OpenScheduledTimePicker");
-            PumpDispatcher(TimeSpan.FromMilliseconds(20));
             Assert(scheduledTimePickerPopup.IsOpen,
                 "真实外点回归必须先重新打开时间窗口");
+            // This window is intentionally off-screen and non-activating.
+            // Pumping the real desktop message queue here lets the unrelated
+            // foreground application look like an OS-level outside click.
+            // Raise the in-form outside press in the same input transaction;
+            // its PreviewMouseDown path is the behavior under test.
             RaisePreviewMouseDown(scheduledInput);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(!scheduledTimePickerPopup.IsOpen &&
@@ -11177,6 +11494,8 @@ internal static class Program
                     scheduledRepeatRulePreview.Text ==
                         previewCase.Expected,
                     $"循环规则预览必须简单直白：{previewCase.Expected}");
+                AssertScheduledFormLayout(
+                    $"循环预览“{previewCase.Expected}”");
             }
 
             Invoke(todoWindow, "ResetScheduledRepeatDraft");
@@ -11226,6 +11545,12 @@ internal static class Program
                 "MainWindow 的外部点击收起判定必须显式保护自定义日期和时间 transient popup");
             Assert(queuePickerOutsideProbeSource.Contains(
                        "DispatcherPriority.ApplicationIdle",
+                       StringComparison.Ordinal) &&
+                   queuePickerOutsideProbeSource.Contains(
+                       "_scheduledPickerState",
+                       StringComparison.Ordinal) &&
+                   processPickerOutsideProbeSource.Contains(
+                       "probe.StateAtQueue == ScheduledPickerState.InternalCommit",
                        StringComparison.Ordinal) &&
                    processPickerOutsideProbeSource.Contains(
                        "var currentForegroundWindow = GetForegroundWindow()",
@@ -12136,6 +12461,7 @@ internal static class Program
                    Equals(scheduledSubmit.Content, "确定修改") &&
                    scheduledEditCancel.Visibility == Visibility.Visible,
                 "兼容编辑草稿入口仍须完整回填原任务，避免旧状态恢复路径丢失调度数据");
+            AssertScheduledFormLayout("编辑态");
 
             var savedLocal = DateTime.Now.AddHours(6);
             savedLocal = new DateTime(
@@ -12230,6 +12556,7 @@ internal static class Program
                    Equals(scheduledSubmit.Content, "新增") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed,
                 "取消修改不得触发保存或改动原任务，并必须清空草稿、恢复新增状态");
+            AssertScheduledFormLayout("取消编辑后新增态");
 
             Invoke(
                 todoWindow,
@@ -12261,6 +12588,7 @@ internal static class Program
                    validationText.Text.Contains("晚于现在", StringComparison.Ordinal) &&
                    editItem.Text == "要修改的定时任务",
                 "编辑到过去时间必须保留编辑态、显示校验提示并且不得改变原任务");
+            AssertScheduledFormLayout("编辑校验提示态");
 
             todoWindow.ShowDefaultTab();
             Assert(GetRawField(todoWindow, "_editingScheduledTask") is null &&
@@ -15424,24 +15752,24 @@ internal static class Program
                     : 75.1 + inputIndex * (48.2 / 238d);
             }
 
-            Assert(sizeEventCount == 0,
-                "连续240次手势输入在MainWindow合成帧消费前不得直接发布尺寸事件");
-            Invoke(todoWindow, "FlushPendingPetSizeScaleChanged");
             Assert(sizeEventCount == 1,
-                "MainWindow一次合成帧必须把连续240次输入折叠为一个最终尺寸事件");
+                "连续240次手势输入只能同步发布首个真实值，以便在Rendering前准备透明包络");
+            Invoke(todoWindow, "FlushPendingPetSizeScaleChanged");
+            Assert(sizeEventCount == 2,
+                "除首个同步值外，MainWindow一次合成帧必须把其余239次输入折叠为一个最终尺寸事件");
             AssertClose(sizeEventValue, 1.234,
                 "合成帧必须发布240次输入中的最终123.4%值");
 
             sizeSlider.Value = 124.5;
             Invoke(todoWindow, "FlushPendingPetSizeScaleChanged");
-            Assert(sizeEventCount == 2,
+            Assert(sizeEventCount == 3,
                 "下一次合成帧必须发布新输入且不能重播上一帧");
             AssertClose(sizeEventValue, 1.245,
                 "下一次合成帧必须发布新的124.5%最终值");
 
             sizeSlider.Value = 126.5;
             Invoke(todoWindow, "EndPetSizeAdjustment");
-            Assert(sizeEventCount == 3,
+            Assert(sizeEventCount == 4,
                 "松开滑块必须在完成事件前显式冲刷尚未被合成帧消费的最终值");
             AssertClose(sizeEventValue, 1.265,
                 "松手最终冲刷必须保留最新126.5%值");
@@ -15449,7 +15777,7 @@ internal static class Program
                 "尺寸滑块必须明确发出按下与松开手势边界");
 
             sizeSlider.Value = 127.5;
-            Assert(sizeEventCount == 4,
+            Assert(sizeEventCount == 5,
                 "非手势的程序化ValueChanged仍必须立即且仅发布一次");
             AssertClose(sizeEventValue, 1.275,
                 "非手势程序化ValueChanged必须发布其最终值");
@@ -16146,6 +16474,701 @@ internal static class Program
         target.RaiseEvent(mouseEvent);
     }
 
+    private static void RaisePreviewMouseUp(UIElement target)
+    {
+        var mouseEvent = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseUpEvent,
+            Source = target
+        };
+        target.RaiseEvent(mouseEvent);
+    }
+
+    private static void AssertPetSizeMoveToPointGestureContract(
+        MainWindow window)
+    {
+        var todoSource = File.ReadAllText(
+            FindWorkspaceFile("TodoWindow.xaml.cs"));
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        var normalizedTodoSource = todoSource.Replace("\r\n", "\n");
+        var previewMouseDownSource = ExtractPrivateMethodSource(
+            todoSource,
+            "TodoWindow_PreviewMouseDown");
+        var previewMouseUpSource = ExtractPrivateMethodSource(
+            todoSource,
+            "PetSizeSlider_PreviewMouseLeftButtonUp");
+        var lostCaptureSource = ExtractPrivateMethodSource(
+            todoSource,
+            "PetSizeSlider_LostMouseCapture");
+        var sliderValueChangedSource = ExtractPrivateMethodSource(
+            todoSource,
+            "PetSizeSlider_ValueChanged");
+        var beginMainAdjustmentSource = ExtractPrivateMethodSource(
+            mainSource,
+            "TodoWindow_PetSizeAdjustmentStarted");
+        var queueMainTargetSource = ExtractPrivateMethodSource(
+            mainSource,
+            "QueuePetSizeScaleTargetAt");
+        var setBubbleModeSource = ExtractPrivateMethodSource(
+            mainSource,
+            "SetBubbleMode");
+        var commitStableTodoExitSource = ExtractPrivateMethodSource(
+            mainSource,
+            "CommitStableTodoPetSizePreviewBeforeExit");
+        var completeMainAdjustmentSource = ExtractPrivateMethodSource(
+            mainSource,
+            "CompletePetSizeAdjustmentAt");
+        var persistTimerSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetSizePersistTimer_Tick");
+        const string exactWindowRegistration = """
+        AddHandler(
+            Mouse.PreviewMouseDownEvent,
+            new MouseButtonEventHandler(TodoWindow_PreviewMouseDown),
+            handledEventsToo: true);
+""";
+        Assert(normalizedTodoSource.Contains(
+                   exactWindowRegistration,
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "e.ChangedButton == MouseButton.Left",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "IsWithin(originalSource, PetSizeSlider)",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.IndexOf(
+                   "BeginPetSizeAdjustment()",
+                   StringComparison.Ordinal) <
+               previewMouseDownSource.IndexOf(
+                   "IsPetSizeSliderThumbInteraction",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "CaptureMode.SubTree",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "!Mouse.Capture(",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "DispatcherPriority.Input",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "EndPetSizeAdjustmentIfCurrent(",
+                   StringComparison.Ordinal) &&
+               todoSource.Contains(
+                   "expectedGeneration != _petSizeAdjustmentGeneration",
+                   StringComparison.Ordinal) &&
+               previewMouseUpSource.IndexOf(
+                   "EndPetSizeAdjustment()",
+                   StringComparison.Ordinal) <
+               previewMouseUpSource.IndexOf(
+                   "ReleaseMouseCapture()",
+                   StringComparison.Ordinal) &&
+               lostCaptureSource.Contains(
+                   "EndPetSizeAdjustment()",
+                   StringComparison.Ordinal) &&
+               todoSource.Contains(
+                   "PetSizeSlider.PreviewMouseLeftButtonDown +=",
+                   StringComparison.Ordinal) &&
+               sliderValueChangedSource.IndexOf(
+                   "PetSizeScaleChanged?.Invoke(scale)",
+                   StringComparison.Ordinal) <
+               sliderValueChangedSource.IndexOf(
+                   "QueuePetSizeScaleChanged(scale)",
+                   StringComparison.Ordinal) &&
+               !beginMainAdjustmentSource.Contains(
+                   "BeginPetSizePreviewSession(",
+                   StringComparison.Ordinal) &&
+               !beginMainAdjustmentSource.Contains(
+                   "PreparePetSizePreviewEnvelope()",
+                   StringComparison.Ordinal) &&
+               queueMainTargetSource.Contains(
+                   "PreparePetSizePreviewEnvelope()",
+                   StringComparison.Ordinal) &&
+               setBubbleModeSource.IndexOf(
+                   "EnterTodoVisualState()",
+                   StringComparison.Ordinal) <
+               setBubbleModeSource.IndexOf(
+                   "EnsureTodoPetSizePreviewEnvelope()",
+                   StringComparison.Ordinal) &&
+               setBubbleModeSource.IndexOf(
+                   "EnsureTodoPetSizePreviewEnvelope()",
+                   StringComparison.Ordinal) <
+               setBubbleModeSource.IndexOf(
+                   "ShowBubbleVisuals(mode)",
+                   StringComparison.Ordinal) &&
+               setBubbleModeSource.IndexOf(
+                   "CommitStableTodoPetSizePreviewBeforeExit()",
+                   StringComparison.Ordinal) <
+               setBubbleModeSource.IndexOf(
+                   "StartTodoExitTransition()",
+                   StringComparison.Ordinal) &&
+               commitStableTodoExitSource.IndexOf(
+                   "StopVisualClock()",
+                   StringComparison.Ordinal) <
+               commitStableTodoExitSource.IndexOf(
+                   "CommitPetSizePreviewSession(persist: true)",
+                   StringComparison.Ordinal) &&
+               commitStableTodoExitSource.Contains(
+                   "_edgeDock != EdgeDock.None",
+                   StringComparison.Ordinal) &&
+               commitStableTodoExitSource.Contains(
+                   "_isEdgeRoaming",
+                   StringComparison.Ordinal) &&
+               completeMainAdjustmentSource.Contains(
+                   "!_petSizePreviewEnvelopePinnedForTodo",
+                   StringComparison.Ordinal) &&
+               persistTimerSource.IndexOf(
+                   "_petSizePreviewEnvelopePinnedForTodo",
+                   StringComparison.Ordinal) <
+               persistTimerSource.IndexOf(
+                   "CommitPetSizePreviewSession(persist: true)",
+                   StringComparison.Ordinal),
+            "move-to-point Track 必须由祖先 PreviewMouseDown 在 WPF Slider " +
+            "handled 更新前开始手势；首次真实值同步准备包络，Todo动画前固定包络，" +
+            "MouseUp先完成再释放捕获，且普通Todo退出必须在首帧前提交稳定包络并保留Thumb拖动入口");
+
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var slider = GetField<Slider>(todoWindow, "PetSizeSlider");
+        var persistTimer = GetField<DispatcherTimer>(
+            window,
+            "_petSizePersistTimer");
+        var originalWindowVisible = window.IsVisible;
+        var originalTodoVisible = todoWindow.IsVisible;
+        var originalSuppressDeactivate = GetField<bool>(
+            window,
+            "_suppressTodoWindowDeactivate");
+        var startedCount = 0;
+        var completedCount = 0;
+        var scaleChangedCount = 0;
+        var eventOrder = new List<string>();
+        Action started = () =>
+        {
+            startedCount++;
+            eventOrder.Add("started");
+        };
+        Action completed = () =>
+        {
+            completedCount++;
+            eventOrder.Add("completed");
+        };
+        Action<double> scaleChanged = _ =>
+        {
+            scaleChangedCount++;
+            eventOrder.Add("scale");
+        };
+        todoWindow.PetSizeAdjustmentStarted += started;
+        todoWindow.PetSizeAdjustmentCompleted += completed;
+        todoWindow.PetSizeScaleChanged += scaleChanged;
+
+        try
+        {
+            SetField(window, "_suppressTodoWindowDeactivate", true);
+            if (!window.IsVisible)
+            {
+                window.Show();
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            }
+
+            Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+            SetField(todoWindow, "_petSizeAdjustmentActive", false);
+            SetField(
+                todoWindow,
+                "_petSizeFirstScalePublishedDuringAdjustment",
+                false);
+            SetField(todoWindow, "_petSizeScaleNotificationQueued", false);
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "Todo"));
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            slider.ApplyTemplate();
+            var track = slider.Template.FindName(
+                    "PART_Track",
+                    slider) as Track
+                ?? throw new InvalidOperationException(
+                    "move-to-point回归找不到桌宠大小Track");
+            var trackSource = track.IncreaseRepeatButton
+                ?? throw new InvalidOperationException(
+                    "move-to-point回归找不到Track增加按钮");
+            var thumb = track.Thumb
+                ?? throw new InvalidOperationException(
+                    "move-to-point回归找不到滑块Thumb");
+            Assert(GetField<bool>(
+                       window,
+                       "_petSizePreviewEnvelopePinnedForTodo") &&
+                   GetField<bool>(
+                       window,
+                       "_isPetSizePreviewSessionActive") &&
+                   GetField<bool>(
+                       window,
+                       "_petSizeEnvelopePrepared") &&
+                   Math.Abs(window.Width - 266) <= 0.5 &&
+                   Math.Abs(window.Height - 338.8) <= 0.5,
+                "Todo进入动画开始前必须只建立一次140%透明包络并固定到面板关闭");
+
+            var sizeChangedCount = 0;
+            var locationChangedCount = 0;
+            SizeChangedEventHandler sizeChanged = (_, _) =>
+                sizeChangedCount++;
+            EventHandler locationChanged = (_, _) =>
+                locationChangedCount++;
+            window.SizeChanged += sizeChanged;
+            window.LocationChanged += locationChanged;
+            try
+            {
+                var envelopeWidth = window.Width;
+                var envelopeHeight = window.Height;
+                var envelopeLeft = window.Left;
+                var envelopeTop = window.Top;
+
+                // Let WPF's real move-to-point class handler resolve this
+                // RepeatButton to the current pointer coordinate once. Every
+                // later routed press targets that exact same value.
+                RaisePreviewMouseDown(trackSource);
+                RaisePreviewMouseUp(trackSource);
+                PumpDispatcher(TimeSpan.FromMilliseconds(460));
+                startedCount = 0;
+                completedCount = 0;
+                scaleChangedCount = 0;
+                eventOrder.Clear();
+                sizeChangedCount = 0;
+                locationChangedCount = 0;
+                var frameBeforeNoOpStress =
+                    GetField<int>(window, "_activeFrameIndex");
+
+                for (var clickNumber = 1; clickNumber <= 30; clickNumber++)
+                {
+                    RaisePreviewMouseDown(trackSource);
+                    Assert(GetField<bool>(
+                               todoWindow,
+                               "_petSizeAdjustmentActive") &&
+                           GetField<bool>(
+                               window,
+                               "_isPetSizeAdjustmentActive") &&
+                           startedCount == clickNumber,
+                        $"第{clickNumber}次同值Track按下必须先进入真实路由手势");
+                    RaisePreviewMouseUp(trackSource);
+                }
+
+                PumpDispatcher(TimeSpan.FromMilliseconds(180));
+                Assert(GetField<bool>(
+                           window,
+                           "_petSizePreviewEnvelopePinnedForTodo") &&
+                       !GetField<bool>(
+                           todoWindow,
+                           "_petSizeAdjustmentActive") &&
+                       !GetField<bool>(
+                           window,
+                           "_isPetSizeAdjustmentActive") &&
+                       GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       sizeChangedCount == 0 &&
+                       locationChangedCount == 0 &&
+                       Math.Abs(window.Width - envelopeWidth) <= 0.001 &&
+                       Math.Abs(window.Height - envelopeHeight) <= 0.001 &&
+                       Math.Abs(window.Left - envelopeLeft) <= 0.001 &&
+                       Math.Abs(window.Top - envelopeTop) <= 0.001 &&
+                       scaleChangedCount == 0 &&
+                       completedCount == 30 &&
+                       !persistTimer.IsEnabled &&
+                       GetField<int>(window, "_activeFrameIndex") >
+                           frameBeforeNoOpStress,
+                    "Todo动画期间连续30次同值Track点击必须保持动画前进，且Width/Height/Left/Top零改写、零落盘提交；" +
+                    $"pinned={GetField<bool>(window, "_petSizePreviewEnvelopePinnedForTodo")}, " +
+                    $"todoActive={GetField<bool>(todoWindow, "_petSizeAdjustmentActive")}, " +
+                    $"mainActive={GetField<bool>(window, "_isPetSizeAdjustmentActive")}, " +
+                    $"session={GetField<bool>(window, "_isPetSizePreviewSessionActive")}, " +
+                    $"sizeChanged={sizeChangedCount}, locationChanged={locationChangedCount}, " +
+                    $"scaleEvents={scaleChangedCount}, completed={completedCount}, " +
+                    $"timer={persistTimer.IsEnabled}, frame={frameBeforeNoOpStress}->{GetField<int>(window, "_activeFrameIndex")}");
+
+                var petSizeViewbox = GetField<Viewbox>(
+                    window,
+                    "PetSizeViewbox");
+                var visibleBoundsBeforeTodoExit =
+                    GetVisualPhysicalBounds(petSizeViewbox);
+                Invoke(
+                    window,
+                    "SetBubbleMode",
+                    GetNestedEnum("BubbleMode", "None"));
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                var stableTodoExitClip = GetRawField(window, "_activeClip")
+                    ?? throw new InvalidOperationException(
+                        "稳定Todo收起未启动todo-close");
+                var settledScale = GetField<double>(
+                    window,
+                    "_petSizeTargetScale");
+                var visibleBoundsAfterTodoExitStart =
+                    GetVisualPhysicalBounds(petSizeViewbox);
+                Assert(!GetField<bool>(
+                           window,
+                           "_petSizePreviewEnvelopePinnedForTodo") &&
+                       !GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       !GetField<bool>(
+                           window,
+                           "_petSizeCommitPending") &&
+                       !persistTimer.IsEnabled &&
+                       GetProperty<string>(
+                           stableTodoExitClip,
+                           "ActionName") == "todo-close" &&
+                       Math.Abs(window.Width -
+                                190d * settledScale) <= 0.5 &&
+                       Math.Abs(window.Height -
+                                242d * settledScale) <= 0.5,
+                    "稳定Todo退出必须在todo-close首帧前一次性收紧透明包络，末帧后不得再提交原生尺寸");
+                AssertPhysicalBoundsClose(
+                    visibleBoundsAfterTodoExitStart,
+                    visibleBoundsBeforeTodoExit,
+                    1,
+                    "Todo退出前置包络提交必须保持人物可见物理边界");
+
+                var stableTodoExitFrames =
+                    GetClipFrames(stableTodoExitClip);
+                var stableTodoExitFinalIndex =
+                    stableTodoExitFrames.Length - 1;
+                var stableTodoExitFinalFrame =
+                    stableTodoExitFrames.GetValue(
+                        stableTodoExitFinalIndex)!;
+                SetField(
+                    window,
+                    "_activeFrameIndex",
+                    stableTodoExitFinalIndex);
+                Invoke(
+                    window,
+                    "ShowStableFrame",
+                    GetProperty<object>(
+                        stableTodoExitFinalFrame,
+                        "Image"));
+                var snoreCover = GetField<UIElement>(
+                    window,
+                    "SnoreBubbleBakedCover");
+                var snoreHost = GetField<UIElement>(
+                    window,
+                    "SnoreBubbleHost");
+                Assert(GetField<bool>(
+                           window,
+                           "_isSnoreBubbleAnimating") &&
+                       Math.Abs(snoreCover.Opacity - 1) <=
+                           0.000001 &&
+                       Math.Abs(snoreHost.Opacity - 1) <=
+                           0.000001,
+                    "todo-close最终idle首次呈现时必须同步接管透明呼噜泡泡，不能等clip结束后再切换像素");
+                var nativeSizeChangesAtExitEndpoint =
+                    sizeChangedCount;
+                var nativeLocationChangesAtExitEndpoint =
+                    locationChangedCount;
+                var finalVisibleBoundsBeforeCompletion =
+                    GetVisualPhysicalBounds(petSizeViewbox);
+                Invoke(
+                    window,
+                    "CompleteActiveClip",
+                    stableTodoExitClip);
+                PumpDispatcher(TimeSpan.FromMilliseconds(460));
+                Assert(!persistTimer.IsEnabled &&
+                       sizeChangedCount ==
+                           nativeSizeChangesAtExitEndpoint &&
+                       locationChangedCount ==
+                           nativeLocationChangesAtExitEndpoint &&
+                       GetRawField(window, "_activeClip") is null &&
+                       GetField<bool>(
+                           window,
+                           "_isSnoreBubbleAnimating") &&
+                       Math.Abs(snoreCover.Opacity - 1) <=
+                           0.000001 &&
+                       Math.Abs(snoreHost.Opacity - 1) <=
+                           0.000001,
+                    "todo-close最终idle到clip完成后至少460ms内，原生几何和呼噜泡泡可见状态都必须保持连续");
+                AssertPhysicalBoundsClose(
+                    GetVisualPhysicalBounds(petSizeViewbox),
+                    finalVisibleBoundsBeforeCompletion,
+                    0,
+                    "todo-close末帧后人物物理边界不得再抖动");
+
+                Invoke(
+                    window,
+                    "SetBubbleMode",
+                    GetNestedEnum("BubbleMode", "Todo"));
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+                Assert(GetField<bool>(
+                           window,
+                           "_petSizePreviewEnvelopePinnedForTodo") &&
+                       GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       GetField<bool>(
+                           window,
+                           "_petSizeEnvelopePrepared") &&
+                       Math.Abs(window.Width - envelopeWidth) <=
+                           0.001 &&
+                       Math.Abs(window.Height - envelopeHeight) <=
+                           0.001,
+                    "末帧连续性回归后重新打开Todo必须重新建立且只建立一次最大包络");
+                startedCount = 0;
+                completedCount = 0;
+                scaleChangedCount = 0;
+                eventOrder.Clear();
+                sizeChangedCount = 0;
+                locationChangedCount = 0;
+
+                eventOrder.Clear();
+                RaisePreviewMouseDown(trackSource);
+                slider.Value = 118.4d;
+                Assert(scaleChangedCount == 1 &&
+                       GetField<bool>(
+                           window,
+                           "_petSizeTargetUpdatePending") &&
+                       !GetField<bool>(
+                           todoWindow,
+                           "_petSizeScaleNotificationQueued") &&
+                       eventOrder.SequenceEqual(["started", "scale"]),
+                    "首次真实Track值变化必须在原始输入事件内同步通知Main，不能等到Rendering才建立包络");
+                RaisePreviewMouseUp(trackSource);
+                Assert(eventOrder.SequenceEqual(
+                           ["started", "scale", "completed"]) &&
+                       persistTimer.IsEnabled,
+                    "首次真实Track点击必须按Started→Scale→Completed闭合");
+                var previewBaseScale = GetField<double>(
+                    window,
+                    "_petSizePreviewBaseScale");
+
+                eventOrder.Clear();
+                RaisePreviewMouseDown(trackSource);
+                slider.Value = 132.7d;
+                RaisePreviewMouseUp(trackSource);
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+                Assert(eventOrder.SequenceEqual(
+                           ["started", "scale", "scale", "completed"]) &&
+                       Math.Abs(GetField<double>(
+                           window,
+                           "_petSizePreviewBaseScale") -
+                           previewBaseScale) <= 0.000001 &&
+                       sizeChangedCount == 0 &&
+                       locationChangedCount == 0 &&
+                       Math.Abs(window.Width - envelopeWidth) <= 0.001 &&
+                       Math.Abs(window.Height - envelopeHeight) <= 0.001,
+                    "动画期间不同值Track点击必须复用面板包络，只允许Scale/Translate变化；" +
+                    $"order={string.Join(",", eventOrder)}, base={GetField<double>(window, "_petSizePreviewBaseScale"):F4}/{previewBaseScale:F4}, " +
+                    $"sizeChanged={sizeChangedCount}, locationChanged={locationChangedCount}");
+
+                RaisePreviewMouseDown(trackSource);
+                RaisePreviewMouseUp(trackSource);
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+                var scaleChangedBeforeRepeatedSameValue =
+                    scaleChangedCount;
+                var finalExpectedScale = slider.Value / 100d;
+                for (var clickNumber = 0; clickNumber < 30; clickNumber++)
+                {
+                    RaisePreviewMouseDown(trackSource);
+                    RaisePreviewMouseUp(trackSource);
+                }
+
+                PumpDispatcher(TimeSpan.FromMilliseconds(460));
+                Assert(scaleChangedCount ==
+                           scaleChangedBeforeRepeatedSameValue &&
+                       sizeChangedCount == 0 &&
+                       locationChangedCount == 0 &&
+                       GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       GetField<bool>(
+                           window,
+                           "_petSizePreviewEnvelopePinnedForTodo") &&
+                       !persistTimer.IsEnabled &&
+                       Math.Abs(window.Width - envelopeWidth) <= 0.001 &&
+                       Math.Abs(window.Height - envelopeHeight) <= 0.001,
+                    "真实改值后的400ms提交点与连续同值点击交错时，Todo包络不得先缩回再扩张");
+
+                eventOrder.Clear();
+                var staleTrackFallbackGeneration = GetField<long>(
+                    todoWindow,
+                    "_petSizeAdjustmentGeneration");
+                RaisePreviewMouseDown(thumb);
+                InvokeOverload(
+                    todoWindow,
+                    "EndPetSizeAdjustmentIfCurrent",
+                    staleTrackFallbackGeneration);
+                Assert(GetField<bool>(
+                           todoWindow,
+                           "_petSizeAdjustmentActive") &&
+                       GetField<bool>(
+                           window,
+                           "_isPetSizeAdjustmentActive") &&
+                       !ReferenceEquals(Mouse.Captured, slider) &&
+                       eventOrder.Count(entry => entry == "started") == 1 &&
+                       !eventOrder.Contains("completed"),
+                    "Thumb按下必须保留自己的拖动生命周期，祖先不得抢占为Slider捕获，" +
+                    "上一笔Track的延迟捕获失败回调也不得提前结束新手势；" +
+                    $"todoActive={GetField<bool>(todoWindow, "_petSizeAdjustmentActive")}, " +
+                    $"mainActive={GetField<bool>(window, "_isPetSizeAdjustmentActive")}, " +
+                    $"captured={Mouse.Captured?.GetType().Name ?? "null"}, order={string.Join(",", eventOrder)}");
+                RaisePreviewMouseUp(thumb);
+                Assert(!GetField<bool>(
+                           todoWindow,
+                           "_petSizeAdjustmentActive") &&
+                       !GetField<bool>(
+                           window,
+                           "_isPetSizeAdjustmentActive") &&
+                       eventOrder.FirstOrDefault() == "started" &&
+                       eventOrder.LastOrDefault() == "completed" &&
+                       eventOrder.Count(entry => entry == "started") == 1 &&
+                       eventOrder.Count(entry => entry == "completed") == 1 &&
+                       eventOrder.All(entry =>
+                           entry is "started" or "scale" or "completed"),
+                    "Thumb松手必须只完成一次，不得被Track的单击收尾路径提前结束；" +
+                    $"todoActive={GetField<bool>(todoWindow, "_petSizeAdjustmentActive")}, " +
+                    $"mainActive={GetField<bool>(window, "_isPetSizeAdjustmentActive")}, " +
+                    $"captured={Mouse.Captured?.GetType().Name ?? "null"}, order={string.Join(",", eventOrder)}");
+
+                var racePercent = slider.Value <= 135
+                    ? slider.Value + 2
+                    : slider.Value - 2;
+                eventOrder.Clear();
+                RaisePreviewMouseDown(thumb);
+                slider.Value = racePercent;
+                RaisePreviewMouseUp(thumb);
+                Assert(persistTimer.IsEnabled &&
+                       eventOrder.SequenceEqual(
+                           ["started", "scale", "completed"]),
+                    "关闭竞态前必须先建立一个刚松手、等待400ms提交的真实尺寸调整");
+                var nativeSizeChangesBeforeClose = sizeChangedCount;
+                var nativeLocationChangesBeforeClose =
+                    locationChangedCount;
+
+                Invoke(
+                    window,
+                    "SetBubbleMode",
+                    GetNestedEnum("BubbleMode", "None"));
+                Assert(!GetField<bool>(
+                           window,
+                           "_petSizePreviewEnvelopePinnedForTodo") &&
+                       GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       GetField<bool>(
+                           window,
+                           "_petSizeCommitPending") &&
+                       !persistTimer.IsEnabled &&
+                       sizeChangedCount ==
+                           nativeSizeChangesBeforeClose &&
+                       locationChangedCount ==
+                           nativeLocationChangesBeforeClose,
+                    "刚松手即关闭Todo必须停止旧400ms计时器，并把原生尺寸提交推迟到退出动画后");
+                Invoke(
+                    window,
+                    "PetSizePersistTimer_Tick",
+                    null,
+                    EventArgs.Empty);
+                Assert(GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       GetField<bool>(
+                           window,
+                           "_petSizeCommitPending") &&
+                       sizeChangedCount ==
+                           nativeSizeChangesBeforeClose &&
+                       locationChangedCount ==
+                           nativeLocationChangesBeforeClose,
+                    "即使陈旧Timer在退出动画中被强制触发，也不得收紧透明窗口");
+
+                Invoke(
+                    window,
+                    "SetBubbleMode",
+                    GetNestedEnum("BubbleMode", "Todo"));
+                Assert(GetField<bool>(
+                           window,
+                           "_petSizePreviewEnvelopePinnedForTodo") &&
+                       GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       !GetField<bool>(
+                           window,
+                           "_petSizeCommitPending") &&
+                       !persistTimer.IsEnabled &&
+                       sizeChangedCount ==
+                           nativeSizeChangesBeforeClose &&
+                       locationChangedCount ==
+                           nativeLocationChangesBeforeClose,
+                    "退出后400ms内重新打开Todo必须复用原包络，不能先缩后扩");
+                Invoke(
+                    window,
+                    "SetBubbleMode",
+                    GetNestedEnum("BubbleMode", "None"));
+                var exitClip = GetRawField(window, "_activeClip")
+                    ?? throw new InvalidOperationException(
+                        "关闭Todo后未建立退出动画");
+                Invoke(window, "CompleteActiveClip", exitClip);
+                Assert(persistTimer.IsEnabled,
+                    "退出动画稳定帧完成后才允许重新启动最终原生尺寸提交计时器");
+                PumpDispatcher(TimeSpan.FromMilliseconds(460));
+                Assert(!GetField<bool>(
+                           window,
+                           "_isPetSizePreviewSessionActive") &&
+                       !GetField<bool>(
+                           window,
+                           "_petSizeEnvelopePrepared") &&
+                       Math.Abs(window.Width - 190 * racePercent / 100d) <= 0.5 &&
+                       Math.Abs(window.Height - 242 * racePercent / 100d) <= 0.5,
+                    "Todo退出稳定帧后必须只提交一次最终滑轨值对应的原生窗口尺寸");
+            }
+            finally
+            {
+                window.SizeChanged -= sizeChanged;
+                window.LocationChanged -= locationChanged;
+            }
+        }
+        finally
+        {
+            todoWindow.PetSizeAdjustmentStarted -= started;
+            todoWindow.PetSizeAdjustmentCompleted -= completed;
+            todoWindow.PetSizeScaleChanged -= scaleChanged;
+            if (ReferenceEquals(Mouse.Captured, slider))
+            {
+                slider.ReleaseMouseCapture();
+            }
+
+            persistTimer.Stop();
+            Invoke(window, "StopVisualClock");
+            if (GetField<bool>(
+                    window,
+                    "_petSizePreviewEnvelopePinnedForTodo"))
+            {
+                SetField(
+                    window,
+                    "_petSizePreviewEnvelopePinnedForTodo",
+                    false);
+            }
+            if (GetField<bool>(
+                    window,
+                    "_isPetSizePreviewSessionActive"))
+            {
+                Invoke(window, "CommitPetSizePreviewSession", false);
+            }
+
+            Invoke(window, "ApplyPetSizeScale", 1d, false, true);
+            if (!originalTodoVisible)
+            {
+                todoWindow.Hide();
+            }
+
+            if (!originalWindowVisible)
+            {
+                window.Hide();
+            }
+
+            SetField(
+                window,
+                "_suppressTodoWindowDeactivate",
+                originalSuppressDeactivate);
+        }
+    }
+
     private static void AssertPetSizeScaleContract(MainWindow window)
     {
         AssertClose(
@@ -16208,16 +17231,16 @@ internal static class Program
             Invoke(window, "TodoWindow_PetSizeAdjustmentStarted");
             var gestureStartElapsed = Stopwatch.GetElapsedTime(gestureStartedAt);
             Assert(GetField<bool>(window, "_isPetSizeAdjustmentActive") &&
-                   GetField<bool>(window, "_isPetSizePreviewSessionActive") &&
-                   GetField<bool>(window, "_petSizeEnvelopePrepared") &&
+                   !GetField<bool>(window, "_isPetSizePreviewSessionActive") &&
+                   !GetField<bool>(window, "_petSizeEnvelopePrepared") &&
                    GetField<bool>(window, "_isVisualClockSubscribed"),
-                "滑块按下必须同步建立一次最大预览包络，并让MainWindow保持唯一合成订阅");
-            Assert(Math.Abs(window.Width - 266) <= 0.5 &&
-                   Math.Abs(window.Height - 338.8) <= 0.5,
-                "滑块手势开始阶段必须一次性准备最大透明包络");
+                "滑块按下必须建立合成手势，但同值点击不得创建预览会话或透明包络");
+            Assert(Math.Abs(window.Width - originalWidth) <= 0.001 &&
+                   Math.Abs(window.Height - originalHeight) <= 0.001,
+                "无真实值变化的滑块按下必须保持原生窗口尺寸零改写");
             Console.WriteLine(
                 $"[METRIC] pet-size gesture-start={gestureStartElapsed.TotalMilliseconds:F3}ms; " +
-                "native envelope prepared before composition");
+                "no native envelope write before a real value change");
 
             Invoke(window, "TodoWindow_PetSizeAdjustmentCompleted");
             var unchangedScale = GetField<ScaleTransform>(window, "PetUserSizeScale");
@@ -16411,7 +17434,7 @@ internal static class Program
         {
             foreach (var refreshRate in new[] { 59, 60, 120, 144 })
             {
-                Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+                Invoke(window, "ApplyPetSizeScale", 1d, false, true);
                 var settingsBeforeGesture = File.ReadAllText(store.FilePath);
                 var gestureStartedAt = Stopwatch.GetTimestamp();
                 Invoke(window, "TodoWindow_PetSizeAdjustmentStarted");
@@ -16420,10 +17443,26 @@ internal static class Program
                 // between two synthetic samples and inflate the write count.
                 Invoke(window, "StopVisualClock");
                 var gestureStartElapsed = Stopwatch.GetElapsedTime(gestureStartedAt);
+                Assert(!GetField<bool>(window, "_petSizeEnvelopePrepared") &&
+                       Math.Abs(window.Width - 190) <= 0.5 &&
+                       Math.Abs(window.Height - 242) <= 0.5,
+                    $"{refreshRate}Hz同值按下不得改写原生窗口包络");
+
+                var controlledStart = Stopwatch.GetTimestamp();
+                Invoke(
+                    window,
+                    "QueuePetSizeScaleTargetAt",
+                    ResolveHighFrequencyPetSizeTarget(
+                        1,
+                        inputRate,
+                        finalScale),
+                    controlledStart + StopwatchTicksFromSeconds(
+                        1d / inputRate));
+                Invoke(window, "StopVisualClock");
                 Assert(GetField<bool>(window, "_petSizeEnvelopePrepared") &&
                        Math.Abs(window.Width - 266) <= 0.5 &&
                        Math.Abs(window.Height - 338.8) <= 0.5,
-                    $"{refreshRate}Hz手势开始必须在Rendering前一次性完成最大原生窗口包络");
+                    $"{refreshRate}Hz首次真实输入必须在Rendering前一次性完成最大原生窗口包络");
 
                 var envelopeLeft = window.Left;
                 var envelopeTop = window.Top;
@@ -16431,8 +17470,7 @@ internal static class Program
                 var envelopeHeight = window.Height;
                 var baseViewboxWidth = viewbox.Width;
                 var baseViewboxHeight = viewbox.Height;
-                var controlledStart = Stopwatch.GetTimestamp();
-                var inputIndex = 1;
+                var inputIndex = 2;
                 var renderIndex = 1;
                 var renderFrames = 0;
                 var framesWithScaleChange = 0;
@@ -16945,6 +17983,7 @@ internal static class Program
             var frozenTrackOrigin = sliderTrack.PointToScreen(new Point(0, 0));
 
             Invoke(window, "TodoWindow_PetSizeAdjustmentStarted");
+            Invoke(window, "EnsureTodoPetSizePreviewEnvelope");
             Invoke(window, "AdvancePetSizeCompositionFrame", Stopwatch.GetTimestamp());
             window.UpdateLayout();
             var firstPreviewBounds = GetVisualPhysicalBounds(viewbox);
@@ -17033,18 +18072,29 @@ internal static class Program
             window.UpdateLayout();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             var committedBounds = GetVisualPhysicalBounds(viewbox);
+            Assert(GetField<bool>(
+                       window,
+                       "_petSizePreviewEnvelopePinnedForTodo") &&
+                   GetField<bool>(
+                       window,
+                       "_isPetSizePreviewSessionActive"),
+                "Todo显示期间延迟保存只能落盘，不能收紧正在复用的透明包络");
             Assert(Math.Abs(committedBounds.Left - finalPreviewBounds.Left) <= 1.000001 &&
                    Math.Abs(committedBounds.Top - finalPreviewBounds.Top) <= 1.000001 &&
                    Math.Abs(committedBounds.Right - finalPreviewBounds.Right) <= 1.000001 &&
                    Math.Abs(committedBounds.Bottom - finalPreviewBounds.Bottom) <= 1.000001,
                 "近边预览提交不得跳回；只允许最终物理像素对齐误差");
-            AssertTodoWindowFollowsPet(positionCache, committedBounds, "127.3%提交后");
+            AssertTodoWindowFollowsPet(positionCache, committedBounds, "127.3%保存后");
 
             Console.WriteLine(
                 "[METRIC] pet-size near-edge Todo follow: gesture-hwnd=frozen, release-frame<=1px, commit<=1px");
         }
         finally
         {
+            SetField(
+                window,
+                "_petSizePreviewEnvelopePinnedForTodo",
+                false);
             if (GetField<bool>(window, "_isPetSizePreviewSessionActive"))
             {
                 Invoke(window, "CommitPetSizePreviewSession", false);
@@ -17068,6 +18118,20 @@ internal static class Program
             Math.Min(topLeft.Y, bottomRight.Y),
             Math.Abs(bottomRight.X - topLeft.X),
             Math.Abs(bottomRight.Y - topLeft.Y));
+    }
+
+    private static void AssertPhysicalBoundsClose(
+        Rect actual,
+        Rect expected,
+        double tolerancePixels,
+        string message)
+    {
+        Assert(Math.Abs(actual.Left - expected.Left) <= tolerancePixels &&
+               Math.Abs(actual.Top - expected.Top) <= tolerancePixels &&
+               Math.Abs(actual.Right - expected.Right) <= tolerancePixels &&
+               Math.Abs(actual.Bottom - expected.Bottom) <= tolerancePixels,
+            $"{message}：actual={actual}, expected={expected}, " +
+            $"tolerance={tolerancePixels:F1}px");
     }
 
     private static void AssertTodoWindowFollowsPet(
@@ -17149,9 +18213,228 @@ internal static class Program
         AssertClose(store.Load().PetSizeScale, 1.219,
             "显示器切换中断后必须保存而不是吞掉最后尺寸目标");
 
+        AssertPinnedTodoReminderEnvelopeContract(window, store);
+
         Invoke(window, "ApplyPetSizeScale", 1d, false, false);
         SetField(window, "_isPetSizeAdjustmentActive", false);
         SetField(window, "_petSizeAdjustmentValueChanged", false);
+    }
+
+    private static void AssertPinnedTodoReminderEnvelopeContract(
+        MainWindow window,
+        AppSettingsStore store)
+    {
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var slider = GetField<Slider>(todoWindow, "PetSizeSlider");
+        Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+        Invoke(
+            window,
+            "SetBubbleMode",
+            GetNestedEnum("BubbleMode", "Todo"));
+        PumpDispatcher(TimeSpan.FromMilliseconds(40));
+
+        Assert(GetField<bool>(
+                   window,
+                   "_petSizePreviewEnvelopePinnedForTodo") &&
+               GetField<bool>(
+                   window,
+                   "_isPetSizePreviewSessionActive") &&
+               GetField<bool>(
+                   window,
+                   "_petSizeEnvelopePrepared"),
+            "提醒打断回归必须先建立Todo固定最大透明包络");
+
+        Invoke(todoWindow, "BeginPetSizeAdjustment");
+        slider.Value = 123d;
+        var previewBaseScale = GetField<double>(
+            window,
+            "_petSizePreviewBaseScale");
+        var previewAnchor = GetRawField(window, "_petSizePreviewAnchor");
+        var envelopeWidth = window.Width;
+        var envelopeHeight = window.Height;
+        var envelopeLeft = window.Left;
+        var envelopeTop = window.Top;
+        var widthChanges = 0;
+        var heightChanges = 0;
+        var leftChanges = 0;
+        var topChanges = 0;
+        EventHandler widthChanged = (_, _) => widthChanges++;
+        EventHandler heightChanged = (_, _) => heightChanges++;
+        EventHandler leftChanged = (_, _) => leftChanges++;
+        EventHandler topChanged = (_, _) => topChanges++;
+        var widthDescriptor = DependencyPropertyDescriptor.FromProperty(
+            Window.WidthProperty,
+            typeof(MainWindow)) ??
+            throw new InvalidOperationException("无法监听桌宠Width依赖属性");
+        var heightDescriptor = DependencyPropertyDescriptor.FromProperty(
+            Window.HeightProperty,
+            typeof(MainWindow)) ??
+            throw new InvalidOperationException("无法监听桌宠Height依赖属性");
+        var leftDescriptor = DependencyPropertyDescriptor.FromProperty(
+            Window.LeftProperty,
+            typeof(MainWindow)) ??
+            throw new InvalidOperationException("无法监听桌宠Left依赖属性");
+        var topDescriptor = DependencyPropertyDescriptor.FromProperty(
+            Window.TopProperty,
+            typeof(MainWindow)) ??
+            throw new InvalidOperationException("无法监听桌宠Top依赖属性");
+
+        widthDescriptor.AddValueChanged(window, widthChanged);
+        heightDescriptor.AddValueChanged(window, heightChanged);
+        leftDescriptor.AddValueChanged(window, leftChanged);
+        topDescriptor.AddValueChanged(window, topChanged);
+        try
+        {
+            var reminderTimestamp = Stopwatch.GetTimestamp();
+            Invoke(
+                window,
+                "BeginReminderPetSizeOverrideAt",
+                reminderTimestamp);
+            Assert(widthChanges == 0 &&
+                   heightChanges == 0 &&
+                   leftChanges == 0 &&
+                   topChanges == 0 &&
+                   Math.Abs(window.Width - envelopeWidth) <= 0.001 &&
+                   Math.Abs(window.Height - envelopeHeight) <= 0.001 &&
+                   Math.Abs(window.Left - envelopeLeft) <= 0.001 &&
+                   Math.Abs(window.Top - envelopeTop) <= 0.001,
+                "提醒打断动画中的尺寸调整时必须复用Todo透明包络，不能同步缩回再放大：" +
+                $"writes=({widthChanges},{heightChanges},{leftChanges},{topChanges})");
+            Assert(GetField<bool>(
+                       window,
+                       "_petSizePreviewEnvelopePinnedForTodo") &&
+                   GetField<bool>(
+                       window,
+                       "_isPetSizePreviewSessionActive") &&
+                   GetField<bool>(
+                       window,
+                       "_petSizeEnvelopePrepared") &&
+                   Math.Abs(GetField<double>(
+                       window,
+                       "_petSizePreviewBaseScale") - previewBaseScale) <=
+                       0.000001 &&
+                   Equals(
+                       GetRawField(window, "_petSizePreviewAnchor"),
+                       previewAnchor),
+                "提醒打断不得替换Todo预览会话、基础比例或锚点");
+            Assert(GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   !GetField<bool>(
+                       window,
+                       "_isPetSizeAdjustmentActive") &&
+                   !GetField<bool>(
+                       todoWindow,
+                       "_petSizeAdjustmentActive") &&
+                   Math.Abs(GetField<double>(
+                       window,
+                       "_reminderRestoreScale") - 1.23d) <= 0.000001 &&
+                   Math.Abs(GetField<double>(
+                       window,
+                       "_pendingPetSizeTargetScale") - 1.4d) <= 0.000001 &&
+                   GetField<bool>(
+                       window,
+                       "_petSizeTargetUpdatePending"),
+                "提醒必须记住用户最终123%目标并接管同一会话到140%，且完整结束滑轨手势");
+            AssertClose(
+                store.Load().PetSizeScale,
+                1.23d,
+                "提醒接管前必须保存滑轨最后一个用户目标");
+
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "Reminder"));
+            Assert(!slider.IsEnabled,
+                "提醒显示期间尺寸滑轨必须禁用，避免迟到输入污染transient会话");
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            AssertClose(
+                GetField<double>(window, "_petSizeScale"),
+                1.4d,
+                "复用Todo包络后的提醒最大视觉比例");
+
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "Todo"));
+            Assert(slider.IsEnabled,
+                "提醒关闭并恢复Todo后尺寸滑轨必须重新启用");
+            Invoke(
+                window,
+                "RestoreReminderPetSizeAt",
+                Stopwatch.GetTimestamp());
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Assert(!GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   GetField<bool>(
+                       window,
+                       "_petSizePreviewEnvelopePinnedForTodo") &&
+                   GetField<bool>(
+                       window,
+                       "_isPetSizePreviewSessionActive") &&
+                   GetField<bool>(
+                       window,
+                       "_petSizeEnvelopePrepared") &&
+                   widthChanges == 0 &&
+                   heightChanges == 0 &&
+                   leftChanges == 0 &&
+                   topChanges == 0,
+                "提醒恢复到仍显示的Todo时必须继续复用同一包络，全程不得写原生窗口几何");
+            AssertClose(
+                GetField<double>(window, "_petSizeScale"),
+                1.23d,
+                "提醒结束后恢复用户最终视觉比例");
+            AssertClose(
+                store.Load().PetSizeScale,
+                1.23d,
+                "提醒结束不得把临时140%写回设置");
+        }
+        finally
+        {
+            widthDescriptor.RemoveValueChanged(window, widthChanged);
+            heightDescriptor.RemoveValueChanged(window, heightChanged);
+            leftDescriptor.RemoveValueChanged(window, leftChanged);
+            topDescriptor.RemoveValueChanged(window, topChanged);
+            GetField<DispatcherTimer>(
+                window,
+                "_reminderSizeCommitTimer").Stop();
+            GetField<DispatcherTimer>(
+                window,
+                "_petSizePersistTimer").Stop();
+            SetField(window, "_isTransientPetSizeOverride", false);
+            SetField(window, "_isRestoringReminderSize", false);
+            SetField(window, "_isPetSizeAdjustmentActive", false);
+            Invoke(
+                todoWindow,
+                "CompletePetSizeAdjustmentForInterruption");
+            slider.IsEnabled = true;
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "None"));
+            var activeClip = GetRawField(window, "_activeClip");
+            if (activeClip is not null)
+            {
+                Invoke(window, "CompleteActiveClip", activeClip);
+            }
+
+            SetField(
+                window,
+                "_petSizePreviewEnvelopePinnedForTodo",
+                false);
+            if (GetField<bool>(
+                    window,
+                    "_isPetSizePreviewSessionActive"))
+            {
+                Invoke(window, "CommitPetSizePreviewSession", false);
+            }
+        }
     }
 
     private static long StopwatchTicksFromSeconds(double seconds) =>
@@ -18149,6 +19432,47 @@ internal static class Program
         var ownedWindowPositionerType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.OwnedWindowPositioner",
             throwOnError: true)!;
+        var trySetBoundsSource = ExtractPrivateMethodSource(
+            positionerSource,
+            "TrySetBounds");
+        var applyPetSizeWindowBoundsSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ApplyPetSizeWindowBounds");
+        Assert(trySetBoundsSource.Contains(
+                   "PresentationSource.FromVisual(window) is not HwndSource source",
+                   StringComparison.Ordinal) &&
+               trySetBoundsSource.Contains(
+                   "RoundPhysicalPixel(logicalBounds.Width, scaleX)",
+                   StringComparison.Ordinal) &&
+               trySetBoundsSource.Contains(
+                   "RoundPhysicalPixel(logicalBounds.Height, scaleY)",
+                   StringComparison.Ordinal) &&
+               trySetBoundsSource.Contains(
+                   "SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder",
+                   StringComparison.Ordinal) &&
+               !trySetBoundsSource.Contains("SwpNoMove", StringComparison.Ordinal) &&
+               !trySetBoundsSource.Contains("SwpNoSize", StringComparison.Ordinal) &&
+               applyPetSizeWindowBoundsSource.Contains(
+                   "if (!OwnedWindowPositioner.TrySetBounds(this, bounds))",
+                   StringComparison.Ordinal),
+            "主透明窗口的尺寸预览包络必须用一次同时移动和缩放的原生提交，" +
+            "仅在无HWND或调用失败时回退到WPF属性写入");
+        Assert((int)InvokeStatic(
+                   ownedWindowPositionerType,
+                   "RoundPhysicalPixel",
+                   -20.4,
+                   1.25)! == -26 &&
+               (int)InvokeStatic(
+                   ownedWindowPositionerType,
+                   "RoundPhysicalPixel",
+                   266d,
+                   1.25)! == 333 &&
+               (int)InvokeStatic(
+                   ownedWindowPositionerType,
+                   "RoundPhysicalPixel",
+                   338.8d,
+                   1.5)! == 508,
+            "原子窗口包络必须在负坐标与125%/150%DPI下独立执行AwayFromZero物理像素取整");
         Assert((bool)InvokeStatic(
                    ownedWindowPositionerType,
                    "IsChildActuallyOnLeft",
@@ -18176,8 +19500,11 @@ internal static class Program
         var prepareEnvelope = ExtractPrivateMethodSource(
             mainSource,
             "PreparePetSizePreviewEnvelope");
-        Assert(beginPetSizeGesture.Contains(
+        Assert(!beginPetSizeGesture.Contains(
                    "PreparePetSizePreviewEnvelope()",
+                   StringComparison.Ordinal) &&
+               !beginPetSizeGesture.Contains(
+                   "BeginPetSizePreviewSession(",
                    StringComparison.Ordinal) &&
                queuePetSizeTarget.Contains(
                    "PreparePetSizePreviewEnvelope()",
@@ -18188,7 +19515,7 @@ internal static class Program
                advancePetSizeComposition.Contains(
                    "_todoWindow.FlushPendingPetSizeScaleChanged()",
                    StringComparison.Ordinal),
-            "最大预览包络必须在手势开始或非手势目标排队阶段准备，MainWindow须在整个手势期间保持唯一合成合帧器");
+            "最大预览包络只能在真实尺寸值变化后准备；空点滑轨不得改透明窗口尺寸，MainWindow须在整个手势期间保持唯一合成合帧器");
         var petSizeRenderLayoutWrites = new[]
         {
             "PreparePetSizePreviewEnvelope",
@@ -19110,6 +20437,87 @@ internal static class Program
         string DecodedSha256,
         IDictionary Frames,
         object RuntimeValue);
+
+    private sealed class WindowPositionChangeRecorder : IDisposable
+    {
+        private const int WindowPositionChangedMessage = 0x0047;
+        internal const uint SwpNoSize = 0x0001;
+        internal const uint SwpNoMove = 0x0002;
+        private readonly HwndSource _source;
+        private readonly HwndSourceHook _hook;
+        private bool _disposed;
+
+        internal WindowPositionChangeRecorder(Window window)
+        {
+            _source = PresentationSource.FromVisual(window) as HwndSource
+                ?? throw new InvalidOperationException(
+                    "主窗口必须在记录原生几何消息前创建HWND");
+            _hook = WindowProcedure;
+            _source.AddHook(_hook);
+        }
+
+        internal List<WindowPositionChange> GeometryChanges { get; } = [];
+
+        private IntPtr WindowProcedure(
+            IntPtr windowHandle,
+            int message,
+            IntPtr wParam,
+            IntPtr lParam,
+            ref bool handled)
+        {
+            if (message != WindowPositionChangedMessage ||
+                lParam == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            var nativePosition =
+                Marshal.PtrToStructure<NativeWindowPosition>(lParam);
+            if ((nativePosition.Flags & (SwpNoMove | SwpNoSize)) ==
+                (SwpNoMove | SwpNoSize))
+            {
+                return IntPtr.Zero;
+            }
+
+            GeometryChanges.Add(new WindowPositionChange(
+                nativePosition.X,
+                nativePosition.Y,
+                nativePosition.Width,
+                nativePosition.Height,
+                nativePosition.Flags));
+            return IntPtr.Zero;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _source.RemoveHook(_hook);
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeWindowPosition
+        {
+            public IntPtr WindowHandle;
+            public IntPtr InsertAfter;
+            public int X;
+            public int Y;
+            public int Width;
+            public int Height;
+            public uint Flags;
+        }
+
+        internal readonly record struct WindowPositionChange(
+            int X,
+            int Y,
+            int Width,
+            int Height,
+            uint Flags);
+    }
 
     private sealed class CallbackDisposable(Action dispose) : IDisposable
     {

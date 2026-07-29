@@ -299,6 +299,7 @@ public partial class MainWindow : Window
     private long _pendingPetSizeTargetTimestamp;
     private bool _isPetSizeTransitioning;
     private bool _isPetSizePreviewSessionActive;
+    private bool _petSizePreviewEnvelopePinnedForTodo;
     private bool _petSizeEnvelopePrepared;
     private bool _petSizeTargetUpdatePending;
     private bool _isPetSizeAdjustmentActive;
@@ -1544,6 +1545,12 @@ public partial class MainWindow : Window
                 _petSizeCommitPending = !_isTransientPetSizeOverride;
             }
         }
+        if (_petSizePreviewEnvelopePinnedForTodo &&
+            _bubbleMode == BubbleMode.Todo &&
+            _todoWindow.IsVisible)
+        {
+            EnsureTodoPetSizePreviewEnvelope();
+        }
 
         StopEdgeRoaming(
             scheduleNext: false,
@@ -1891,6 +1898,7 @@ public partial class MainWindow : Window
         _spritePageCollectionTimer.Tick -= SpritePageCollectionTimer_Tick;
         _isPetSizeTransitioning = false;
         _isPetSizePreviewSessionActive = false;
+        _petSizePreviewEnvelopePinnedForTodo = false;
         _petSizeEnvelopePrepared = false;
         _petSizeTargetUpdatePending = false;
         StopVisualClock();
@@ -1949,7 +1957,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_isPetSizePreviewSessionActive)
+        if (_isPetSizePreviewSessionActive &&
+            !_petSizePreviewEnvelopePinnedForTodo)
         {
             CommitPetSizePreviewSession(persist: true);
         }
@@ -2541,6 +2550,7 @@ public partial class MainWindow : Window
             RestartAutomaticCountdown();
         }
 
+        ScheduleUnpinnedPetSizePreviewCommit();
         UpdateVisualClockSubscription();
     }
 
@@ -4287,11 +4297,15 @@ public partial class MainWindow : Window
 
     private void RefreshSnoreBubbleAnimationState()
     {
+        var isTodoExitIdleEndpoint =
+            ReferenceEquals(_activeClip, _todoExitClip) &&
+            _activeFrameIndex == _todoExitClip.Frames.Length - 1;
         var shouldAnimate = IsLoaded &&
                             !_isClosing &&
                             _currentSpriteFrame is SpriteFrame currentFrame &&
                             currentFrame == _idleFrame &&
-                            _activeClip is null &&
+                            (_activeClip is null ||
+                             isTodoExitIdleEndpoint) &&
                             !_isReminderActive &&
                             !_isEdgeRoaming &&
                             _edgeDock == EdgeDock.None;
@@ -4546,6 +4560,7 @@ public partial class MainWindow : Window
         }
         RequestIdleSpritePageTrim();
         RestartAutomaticCountdown();
+        ScheduleUnpinnedPetSizePreviewCommit();
         UpdateVisualClockSubscription();
     }
 
@@ -7089,14 +7104,31 @@ public partial class MainWindow : Window
             mode is BubbleMode.Todo or BubbleMode.Reminder;
         HideBubbleVisuals(preserveTodoWindow);
         _bubbleMode = mode;
-        ShowBubbleVisuals(mode);
         if (mode == BubbleMode.Todo)
         {
+            // Materialize the exact pose currently on screen and publish the
+            // first Todo-entry pose before the transparent owner changes
+            // bounds or the owned panel can pump a nested layout/render pass.
+            // Keep the clip frozen until Show() returns, so the right-click
+            // path cannot expose an old transform or skip an entry pose.
             EnterTodoVisualState();
+            StopVisualClock();
+
+            // Resize the layered owner once while the prepared first pose is
+            // frozen. The panel then keeps this envelope for its whole
+            // lifetime, so slider input and sprite presentation never resize
+            // the same transparent HWND in one visual frame.
+            EnsureTodoPetSizePreviewEnvelope();
+            ShowBubbleVisuals(mode);
+            UpdateVisualClockSubscription();
         }
-        else if (mode == BubbleMode.Reminder)
+        else
         {
-            EnterReminderVisualState();
+            ShowBubbleVisuals(mode);
+            if (mode == BubbleMode.Reminder)
+            {
+                EnterReminderVisualState();
+            }
         }
 
         if (previousMode == BubbleMode.Reminder &&
@@ -7110,6 +7142,7 @@ public partial class MainWindow : Window
             mode != BubbleMode.Reminder &&
             previousMode == BubbleMode.Todo)
         {
+            CommitStableTodoPetSizePreviewBeforeExit();
             StartTodoExitTransition();
         }
         else if (mode != BubbleMode.Reminder &&
@@ -7118,6 +7151,37 @@ public partial class MainWindow : Window
         {
             StartReminderExitTransition();
         }
+
+        if (mode is not BubbleMode.Todo and not BubbleMode.Reminder)
+        {
+            ReleaseTodoPetSizePreviewEnvelope();
+        }
+    }
+
+    private void CommitStableTodoPetSizePreviewBeforeExit()
+    {
+        ConsumeLatestPetSizeInputAt(Stopwatch.GetTimestamp());
+        if (!_petSizePreviewEnvelopePinnedForTodo ||
+            !_isPetSizePreviewSessionActive ||
+            _isTransientPetSizeOverride ||
+            _isPetSizeAdjustmentActive ||
+            _isPetSizeTransitioning ||
+            _petSizeTargetUpdatePending ||
+            _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
+        {
+            return;
+        }
+
+        // A Todo panel opens one maximum transparent envelope before its entry
+        // animation. If that envelope is tightened only after todo-close reaches
+        // its idle endpoint, the otherwise still final pose visibly nudges once.
+        // Tighten while the current Todo pose is frozen, then start the exit
+        // clip inside the final native bounds. No native geometry is left to
+        // change after the last animation frame.
+        StopVisualClock();
+        _petSizePreviewEnvelopePinnedForTodo = false;
+        CommitPetSizePreviewSession(persist: true);
     }
 
     private void EnterTodoVisualState()
@@ -7625,20 +7689,23 @@ public partial class MainWindow : Window
         _petSizeCommitPending = false;
         _petSizePersistTimer.Stop();
 
-        if (!_isPetSizePreviewSessionActive)
-        {
-            var currentScale = GetPetSizeMotionStateAt(Stopwatch.GetTimestamp()).Scale;
-            BeginPetSizePreviewSession(currentScale);
-            PreparePetSizePreviewEnvelope();
-        }
-
-        // The one-time native envelope is ready before the first slider value.
-        // Rendering can now stay transform-only for the entire gesture.
+        // Do not resize the transparent HWND merely because the Track was
+        // pressed. A move-to-point click can legitimately resolve to the value
+        // it already has; eagerly opening and immediately committing the
+        // maximum preview envelope made those no-op clicks flash while an
+        // animation frame was being presented. The first real ValueChanged
+        // reaches QueuePetSizeScaleTargetAt, which prepares the envelope once.
         UpdateVisualClockSubscription();
     }
 
     private void TodoWindow_PetSizeAdjustmentCompleted()
     {
+        if (_isTransientPetSizeOverride ||
+            !_isPetSizeAdjustmentActive)
+        {
+            return;
+        }
+
         CompletePetSizeAdjustmentAt(Stopwatch.GetTimestamp());
     }
 
@@ -7655,7 +7722,10 @@ public partial class MainWindow : Window
         {
             _petSizeCommitPending = false;
             _petSizePersistTimer.Stop();
-            CommitPetSizePreviewSession(persist: false);
+            if (!_petSizePreviewEnvelopePinnedForTodo)
+            {
+                CommitPetSizePreviewSession(persist: false);
+            }
             return;
         }
 
@@ -7834,6 +7904,65 @@ public partial class MainWindow : Window
             _petSizePersistTimer.Start();
         }
         UpdateVisualClockSubscription();
+    }
+
+    private void EnsureTodoPetSizePreviewEnvelope()
+    {
+        _petSizePreviewEnvelopePinnedForTodo = true;
+        if (_isClosing || _isTransientPetSizeOverride)
+        {
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        ConsumeLatestPetSizeInputAt(timestamp);
+        if (!_isPetSizePreviewSessionActive)
+        {
+            var currentScale = GetPetSizeMotionStateAt(timestamp).Scale;
+            BeginPetSizePreviewSession(currentScale);
+        }
+
+        PreparePetSizePreviewEnvelope();
+        _petSizePersistTimer.Stop();
+        _petSizeCommitPending = false;
+    }
+
+    private void ReleaseTodoPetSizePreviewEnvelope()
+    {
+        if (!_petSizePreviewEnvelopePinnedForTodo)
+        {
+            return;
+        }
+
+        _petSizePreviewEnvelopePinnedForTodo = false;
+        ScheduleUnpinnedPetSizePreviewCommit();
+    }
+
+    private void ScheduleUnpinnedPetSizePreviewCommit()
+    {
+        if (_isClosing ||
+            _petSizePreviewEnvelopePinnedForTodo ||
+            _isTransientPetSizeOverride ||
+            !_isPetSizePreviewSessionActive)
+        {
+            return;
+        }
+
+        _petSizeCommitPending = true;
+        // A timer started by the last slider MouseUp must never survive into
+        // the Todo exit animation. Otherwise its 400 ms Tick can shrink the
+        // layered window while exit poses are still being presented.
+        _petSizePersistTimer.Stop();
+        if (_isPetSizeAdjustmentActive ||
+            _activeClip is not null ||
+            _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
+        {
+            return;
+        }
+
+        _petSizePersistTimer.Interval = PetSizePersistDelay;
+        _petSizePersistTimer.Start();
     }
 
     private void BeginPetSizePreviewSession(double currentScale)
@@ -8122,10 +8251,10 @@ public partial class MainWindow : Window
         _isApplyingPetSizeLayout = true;
         try
         {
-            Width = displayedWidth;
-            Height = displayedHeight;
             if (anchor is not { } fixedAnchor)
             {
+                Width = displayedWidth;
+                Height = displayedHeight;
                 return;
             }
 
@@ -8142,8 +8271,15 @@ public partial class MainWindow : Window
                 fixedAnchor,
                 dpiScaleX,
                 dpiScaleY);
-            Left = bounds.Left;
-            Top = bounds.Top;
+            if (!OwnedWindowPositioner.TrySetBounds(this, bounds))
+            {
+                // Before SourceInitialized (or if the native call fails), keep
+                // the ordinary WPF dependency-property path as a safe fallback.
+                Width = displayedWidth;
+                Height = displayedHeight;
+                Left = bounds.Left;
+                Top = bounds.Top;
+            }
             _petSizeLogicalAnchor = fixedAnchor;
         }
         finally
@@ -8206,7 +8342,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Close a Track/Thumb gesture before reminder sizing takes ownership.
+        // A later MouseUp is then idempotent and cannot commit the reminder's
+        // transient preview session as if it belonged to the slider.
+        _todoWindow.CompletePetSizeAdjustmentForInterruption();
         ConsumeLatestPetSizeInputAt(timestamp);
+        var reuseTodoPreviewEnvelope =
+            _petSizePreviewEnvelopePinnedForTodo &&
+            _todoWindow.IsVisible &&
+            _isPetSizePreviewSessionActive &&
+            _petSizeEnvelopePrepared;
         if (_isPetSizeAdjustmentActive)
         {
             _isPetSizeAdjustmentActive = false;
@@ -8214,20 +8359,38 @@ public partial class MainWindow : Window
             _petSizeCommitPending = false;
         }
 
-        if (_isPetSizePreviewSessionActive)
+        if (reuseTodoPreviewEnvelope)
         {
-            CommitPetSizePreviewSession(persist: true);
+            // The Todo panel already owns a maximum transparent envelope. Keep
+            // that exact HWND surface while the reminder grows to 140%; a
+            // commit followed by a new preview would synchronously shrink and
+            // re-expand the layered window and could be composed as a flash.
+            _reminderRestoreScale =
+                NormalizePetSizeScale(_petSizeTargetScale);
+            if (_petSizeSettingsDirty)
+            {
+                SaveSettings();
+            }
         }
-        else if (_petSizeSettingsDirty)
+        else
         {
-            SaveSettings();
+            _petSizePreviewEnvelopePinnedForTodo = false;
+            if (_isPetSizePreviewSessionActive)
+            {
+                CommitPetSizePreviewSession(persist: true);
+            }
+            else if (_petSizeSettingsDirty)
+            {
+                SaveSettings();
+            }
+
+            // A non-Todo slider preview owns an anchor captured at its old
+            // screen position. Commit it first, then establish the reminder
+            // corner before the temporary preview captures its new anchor.
+            MovePetToReminderCorner();
+            _reminderRestoreScale = NormalizePetSizeScale(_petSizeScale);
         }
 
-        // A slider preview owns an anchor captured at its old screen position.
-        // Commit that preview first, then establish the reminder corner before
-        // the temporary 140% preview captures its bottom-right anchor.
-        MovePetToReminderCorner();
-        _reminderRestoreScale = NormalizePetSizeScale(_petSizeScale);
         _isTransientPetSizeOverride = true;
         _isRestoringReminderSize = false;
         _petSizeSettingsDirty = false;
@@ -8289,7 +8452,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_isPetSizePreviewSessionActive)
+        var keepTodoPreviewEnvelope =
+            _petSizePreviewEnvelopePinnedForTodo &&
+            _bubbleMode == BubbleMode.Todo &&
+            _todoWindow.IsVisible;
+        if (!keepTodoPreviewEnvelope &&
+            (_activeClip is not null ||
+             _edgeDock != EdgeDock.None ||
+             _isEdgeRoaming))
+        {
+            _reminderSizeCommitTimer.Interval =
+                TimeSpan.FromMilliseconds(16);
+            _reminderSizeCommitTimer.Start();
+            return;
+        }
+
+        if (_isPetSizePreviewSessionActive && !keepTodoPreviewEnvelope)
         {
             CommitPetSizePreviewSession(persist: false);
         }
@@ -8299,6 +8477,14 @@ public partial class MainWindow : Window
         _petSizeSettingsDirty = false;
         _petSizeCommitPending = false;
         _petSizePersistTimer.Stop();
+        if (keepTodoPreviewEnvelope)
+        {
+            // The reminder restore already ended at the user's scale inside a
+            // maximum-size envelope. Reuse that exact surface for the visible
+            // Todo panel instead of shrinking and immediately expanding the
+            // layered HWND underneath its restored editor.
+            _petSizeSettingsDirty = false;
+        }
         UpdateVisualClockSubscription();
     }
 
@@ -8312,6 +8498,27 @@ public partial class MainWindow : Window
 
         if (_isPetSizeAdjustmentActive)
         {
+            _petSizeCommitPending = true;
+            return;
+        }
+
+        if (_petSizePreviewEnvelopePinnedForTodo)
+        {
+            if (_petSizeSettingsDirty && SaveSettings())
+            {
+                _petSizeSettingsDirty = false;
+            }
+
+            _petSizeCommitPending = false;
+            return;
+        }
+
+        if (_activeClip is not null ||
+            _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
+        {
+            // Defensive guard for a stale/externally fired timer: native
+            // bounds are committed only after the active visual state settles.
             _petSizeCommitPending = true;
             return;
         }

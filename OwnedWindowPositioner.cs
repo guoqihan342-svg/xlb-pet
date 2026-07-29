@@ -211,6 +211,99 @@ internal static class OwnedWindowPositioner
         }
     }
 
+    internal static bool TrySetBounds(Window window, Rect logicalBounds)
+    {
+        try
+        {
+            if (!window.IsLoaded ||
+                PresentationSource.FromVisual(window) is not HwndSource source ||
+                source.Handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var transform = source.CompositionTarget.TransformToDevice;
+            var scaleX = transform.M11;
+            var scaleY = transform.M22;
+            if (!double.IsFinite(scaleX) ||
+                !double.IsFinite(scaleY) ||
+                scaleX <= 0 ||
+                scaleY <= 0 ||
+                !IsFinitePositiveBounds(logicalBounds))
+            {
+                return false;
+            }
+
+            // Width and height are rounded independently from the origin.
+            // Subtracting rounded right/bottom coordinates can lose one pixel
+            // on a negative-coordinate, mixed-DPI monitor.
+            var left = RoundPhysicalPixel(logicalBounds.Left, scaleX);
+            var top = RoundPhysicalPixel(logicalBounds.Top, scaleY);
+            var width = RoundPhysicalPixel(logicalBounds.Width, scaleX);
+            var height = RoundPhysicalPixel(logicalBounds.Height, scaleY);
+            if (width <= 0 || height <= 0)
+            {
+                return false;
+            }
+
+            if (!GetWindowRect(source.Handle, out var currentBounds))
+            {
+                return false;
+            }
+
+            if (currentBounds.Left == left &&
+                currentBounds.Top == top &&
+                currentBounds.Right - currentBounds.Left == width &&
+                currentBounds.Bottom - currentBounds.Top == height)
+            {
+                return true;
+            }
+
+            // A shown WPF Window normally turns separate Width, Height, Left
+            // and Top writes into four SetWindowPos calls. A transparent
+            // layered window can expose those intermediate rectangles for one
+            // DWM composition, which looks like a flash. One native move-size
+            // is atomic; synchronous WM_MOVE/WM_SIZE messages also update the
+            // WPF dependency properties, so no duplicate property writes are
+            // needed after this succeeds.
+            return SetWindowPos(
+                source.Handle,
+                IntPtr.Zero,
+                left,
+                top,
+                width,
+                height,
+                SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsFinitePositiveBounds(Rect bounds) =>
+        double.IsFinite(bounds.Left) &&
+        double.IsFinite(bounds.Top) &&
+        double.IsFinite(bounds.Width) &&
+        double.IsFinite(bounds.Height) &&
+        bounds.Width > 0 &&
+        bounds.Height > 0;
+
+    private static int RoundPhysicalPixel(double logicalValue, double dpiScale)
+    {
+        var physicalValue = logicalValue * dpiScale;
+        if (!double.IsFinite(physicalValue) ||
+            physicalValue < int.MinValue ||
+            physicalValue > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(logicalValue));
+        }
+
+        return checked((int)Math.Round(
+            physicalValue,
+            MidpointRounding.AwayFromZero));
+    }
+
     private static NativePoint CalculateDesiredPosition(
         int anchorLeft,
         int anchorRight,
