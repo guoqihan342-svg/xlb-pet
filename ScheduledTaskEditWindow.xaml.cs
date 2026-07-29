@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace LubanDesktopPet;
@@ -35,6 +37,9 @@ public partial class ScheduledTaskEditWindow : Window
     private bool _scheduleEdited;
     private bool _repeatEdited;
     private bool _internalPopupOpen;
+    private bool _repeatUnitSelectionCommitted;
+    private bool _updatingTimePickerSelection;
+    private DateTime _displayedScheduledCalendarMonth;
     private bool _positionBesideOwnerQueued;
 
     public ScheduledTaskEditWindow(ScheduledTaskItem item)
@@ -55,6 +60,9 @@ public partial class ScheduledTaskEditWindow : Window
             HourComboBox.ItemsSource = HourOptions;
             MinuteComboBox.ItemsSource = MinuteSecondOptions;
             SecondComboBox.ItemsSource = MinuteSecondOptions;
+            ScheduledHourComboBox.ItemsSource = HourOptions;
+            ScheduledMinuteComboBox.ItemsSource = MinuteSecondOptions;
+            ScheduledSecondComboBox.ItemsSource = MinuteSecondOptions;
             RepeatUnitComboBox.ItemsSource = RepeatUnitOptions;
 
             var localDueAt = item.DueAt.ToLocalTime();
@@ -63,6 +71,11 @@ public partial class ScheduledTaskEditWindow : Window
             HourComboBox.SelectedIndex = localDueAt.Hour;
             MinuteComboBox.SelectedIndex = localDueAt.Minute;
             SecondComboBox.SelectedIndex = localDueAt.Second;
+            SetScheduledTimePickerSelection(
+                localDueAt.Hour,
+                localDueAt.Minute,
+                localDueAt.Second);
+            UpdateScheduledTimeTextFromPicker();
             SetRepeatDraft(item.RepeatInterval, item.RepeatRule);
         }
         finally
@@ -90,6 +103,7 @@ public partial class ScheduledTaskEditWindow : Window
     public void CloseWithoutSaving()
     {
         _allowClose = true;
+        CloseScheduledPickers();
         if (IsLoaded)
         {
             Close();
@@ -336,6 +350,23 @@ public partial class ScheduledTaskEditWindow : Window
     {
         if (e.Key == Key.Escape)
         {
+            if (ScheduledTimePickerPopup.IsOpen ||
+                IsAnyTimePickerDropDownOpen())
+            {
+                CloseScheduledTimePicker();
+                FocusScheduledTimeInput();
+                e.Handled = true;
+                return;
+            }
+
+            if (ScheduledDatePickerPopup.IsOpen)
+            {
+                CloseScheduledDatePicker();
+                FocusScheduledDateInput();
+                e.Handled = true;
+                return;
+            }
+
             CloseWithoutSaving();
             e.Handled = true;
             return;
@@ -346,6 +377,49 @@ public partial class ScheduledTaskEditWindow : Window
         {
             CommitAndClose();
             e.Handled = true;
+        }
+    }
+
+    private void Window_PreviewMouseDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (!ScheduledDatePickerPopup.IsOpen &&
+            !ScheduledTimePickerPopup.IsOpen)
+        {
+            return;
+        }
+
+        var originalSource = e.OriginalSource as DependencyObject;
+        var isRepeatEditorInteraction =
+            IsWithin(originalSource, RepeatToggle) ||
+            IsWithin(originalSource, RepeatCountTextBox) ||
+            IsWithin(originalSource, RepeatUnitComboBox) ||
+            IsWithinComboBoxPopup(originalSource, RepeatUnitComboBox);
+        var isDatePickerInteraction =
+            IsWithin(originalSource, ScheduledDatePickerHost) ||
+            IsWithinPopup(originalSource, ScheduledDatePickerPopup);
+        var isTimePickerInteraction =
+            IsWithin(originalSource, ScheduledTimePickerHost) ||
+            IsWithinPopup(originalSource, ScheduledTimePickerPopup) ||
+            IsWithinComboBoxPopup(originalSource, ScheduledHourComboBox) ||
+            IsWithinComboBoxPopup(originalSource, ScheduledMinuteComboBox) ||
+            IsWithinComboBoxPopup(originalSource, ScheduledSecondComboBox);
+
+        if (ScheduledDatePickerPopup.IsOpen &&
+            !isDatePickerInteraction)
+        {
+            CloseScheduledDatePicker();
+        }
+
+        // The repeat controls are part of the reminder-time editor. Just like
+        // the create form, changing the repeat rule must not dismiss the outer
+        // time picker while the user is still choosing hour/minute/second.
+        if (ScheduledTimePickerPopup.IsOpen &&
+            !isTimePickerInteraction &&
+            !isRepeatEditorInteraction)
+        {
+            CloseScheduledTimePicker();
         }
     }
 
@@ -362,6 +436,11 @@ public partial class ScheduledTaskEditWindow : Window
             ReferenceEquals(sender, RepeatUnitComboBox))
         {
             _repeatEdited = true;
+            if (ReferenceEquals(sender, RepeatUnitComboBox) &&
+                RepeatUnitComboBox.IsDropDownOpen)
+            {
+                _repeatUnitSelectionCommitted = true;
+            }
         }
         else if (!ReferenceEquals(sender, TaskTextBox))
         {
@@ -381,25 +460,508 @@ public partial class ScheduledTaskEditWindow : Window
         e.Handled = !DigitsOnlyRegex.IsMatch(e.Text);
     }
 
-    private void DueDatePicker_CalendarOpened(
+    private void DueDatePicker_SelectedDateChanged(
         object? sender,
+        SelectionChangedEventArgs e)
+    {
+        if (DueDatePicker.SelectedDate is not { } selectedDate)
+        {
+            ScheduledDateInput.Text = string.Empty;
+            return;
+        }
+
+        ScheduledDateInput.Text = selectedDate.ToString(
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture);
+        ValidationText.Text = string.Empty;
+        if (!_initializing)
+        {
+            _scheduleEdited = true;
+        }
+
+        if (ScheduledDatePickerPopup.IsOpen)
+        {
+            RefreshScheduledCalendar(selectedDate);
+        }
+    }
+
+    private void ScheduledDateInput_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        OpenScheduledDatePicker();
+        e.Handled = true;
+    }
+
+    private void ScheduledDateInput_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key is Key.Space or Key.Enter or Key.Down or Key.F4)
+        {
+            OpenScheduledDatePicker();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape && ScheduledDatePickerPopup.IsOpen)
+        {
+            CloseScheduledDatePicker();
+            e.Handled = true;
+        }
+    }
+
+    private void OpenScheduledDatePicker()
+    {
+        var selectedDate = DueDatePicker.SelectedDate ?? DateTime.Today;
+        RefreshScheduledCalendar(selectedDate);
+        CloseScheduledTimePicker();
+        ScheduledDatePickerPopup.IsOpen = true;
+        UpdateInternalPopupState();
+        ScheduledDatePickerTodayButton.Focus();
+        Keyboard.Focus(ScheduledDatePickerTodayButton);
+    }
+
+    private void CloseScheduledDatePicker()
+    {
+        if (ScheduledDatePickerPopup.IsOpen)
+        {
+            ScheduledDatePickerPopup.IsOpen = false;
+        }
+
+        UpdateInternalPopupState();
+    }
+
+    private void ScheduledDatePickerPopup_Opened(
+        object sender,
+        EventArgs e)
+    {
+        UpdateInternalPopupState();
+    }
+
+    private void ScheduledDatePickerPopup_Closed(
+        object sender,
+        EventArgs e)
+    {
+        UpdateInternalPopupState();
+        QueueCommitAfterDeactivation();
+    }
+
+    private void ScheduledDatePickerPopup_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Escape:
+                CloseScheduledDatePicker();
+                FocusScheduledDateInput();
+                e.Handled = true;
+                break;
+            case Key.PageUp:
+                ChangeScheduledCalendarMonth(-1);
+                e.Handled = true;
+                break;
+            case Key.PageDown:
+                ChangeScheduledCalendarMonth(1);
+                e.Handled = true;
+                break;
+            case Key.Home:
+                SelectScheduledDate(DateTime.Today);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void ScheduledDatePreviousMonthButton_Click(
+        object sender,
         RoutedEventArgs e)
+    {
+        ChangeScheduledCalendarMonth(-1);
+        e.Handled = true;
+    }
+
+    private void ScheduledDateNextMonthButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ChangeScheduledCalendarMonth(1);
+        e.Handled = true;
+    }
+
+    private void ChangeScheduledCalendarMonth(int monthOffset)
+    {
+        var selectedDate = DueDatePicker.SelectedDate ?? DateTime.Today;
+        var displayedMonth = _displayedScheduledCalendarMonth == default
+            ? new DateTime(selectedDate.Year, selectedDate.Month, 1)
+            : _displayedScheduledCalendarMonth;
+
+        if ((monthOffset < 0 &&
+             displayedMonth.Year == DateTime.MinValue.Year &&
+             displayedMonth.Month == 1) ||
+            (monthOffset > 0 &&
+             displayedMonth.Year == DateTime.MaxValue.Year &&
+             displayedMonth.Month == 12))
+        {
+            return;
+        }
+
+        RefreshScheduledCalendar(displayedMonth.AddMonths(monthOffset));
+    }
+
+    private void RefreshScheduledCalendar(DateTime month)
+    {
+        var firstOfMonth = new DateTime(month.Year, month.Month, 1);
+        _displayedScheduledCalendarMonth = firstOfMonth;
+        ScheduledDateMonthText.Text = firstOfMonth.ToString(
+            "yyyy年M月",
+            CultureInfo.GetCultureInfo("zh-CN"));
+
+        var mondayOffset = ((int)firstOfMonth.DayOfWeek + 6) % 7;
+        var firstCellDate = firstOfMonth.AddDays(-mondayOffset);
+        var selectedDate = DueDatePicker.SelectedDate?.Date;
+        var today = DateTime.Today;
+        var cells = new List<ScheduledCalendarDateCell>(42);
+        for (var index = 0; index < 42; index++)
+        {
+            var date = firstCellDate.AddDays(index);
+            cells.Add(new ScheduledCalendarDateCell
+            {
+                Date = date,
+                DayText = date.Day.ToString(CultureInfo.InvariantCulture),
+                AccessibleName = date.ToString(
+                    "yyyy年M月d日 dddd",
+                    CultureInfo.GetCultureInfo("zh-CN")),
+                IsCurrentMonth = date.Month == firstOfMonth.Month &&
+                                 date.Year == firstOfMonth.Year,
+                IsSelected = selectedDate == date,
+                IsToday = today == date,
+                IsWeekend = date.DayOfWeek is DayOfWeek.Saturday or
+                    DayOfWeek.Sunday
+            });
+        }
+
+        ScheduledDateItemsControl.ItemsSource = cells;
+    }
+
+    private void ScheduledDateDayButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: DateTime date })
+        {
+            SelectScheduledDate(date);
+        }
+
+        e.Handled = true;
+    }
+
+    private void ScheduledDatePickerTodayButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        SelectScheduledDate(DateTime.Today);
+        e.Handled = true;
+    }
+
+    private void SelectScheduledDate(DateTime date)
+    {
+        DueDatePicker.SelectedDate = date.Date;
+        ScheduledDateInput.Text = date.ToString(
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture);
+        if (!_initializing)
+        {
+            _scheduleEdited = true;
+        }
+
+        CloseScheduledDatePicker();
+        FocusScheduledDateInput();
+    }
+
+    private void FocusScheduledDateInput()
+    {
+        ScheduledDateInput.Focus();
+        Keyboard.Focus(ScheduledDateInput);
+    }
+
+    private void ScheduledTimeInput_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        OpenScheduledTimePicker();
+        e.Handled = true;
+    }
+
+    private void ScheduledTimeInput_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key is Key.Space or Key.Enter or Key.Down or Key.F4)
+        {
+            OpenScheduledTimePicker();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape && ScheduledTimePickerPopup.IsOpen)
+        {
+            CloseScheduledTimePicker();
+            e.Handled = true;
+        }
+    }
+
+    private void OpenScheduledTimePicker()
+    {
+        CloseScheduledDatePicker();
+        SynchronizeScheduledTimePickerSelection();
+        ScheduledTimePickerPopup.IsOpen = true;
+        UpdateInternalPopupState();
+        ScheduledHourComboBox.Focus();
+        Keyboard.Focus(ScheduledHourComboBox);
+    }
+
+    private void CloseScheduledTimePicker()
+    {
+        ScheduledHourComboBox.IsDropDownOpen = false;
+        ScheduledMinuteComboBox.IsDropDownOpen = false;
+        ScheduledSecondComboBox.IsDropDownOpen = false;
+        HourComboBox.IsDropDownOpen = false;
+        MinuteComboBox.IsDropDownOpen = false;
+        SecondComboBox.IsDropDownOpen = false;
+        RepeatUnitComboBox.IsDropDownOpen = false;
+        if (ScheduledTimePickerPopup.IsOpen)
+        {
+            ScheduledTimePickerPopup.IsOpen = false;
+        }
+
+        UpdateInternalPopupState();
+    }
+
+    private void CloseScheduledPickers()
+    {
+        CloseScheduledDatePicker();
+        CloseScheduledTimePicker();
+    }
+
+    private void ScheduledTimePickerPopup_Opened(
+        object sender,
+        EventArgs e)
+    {
+        UpdateInternalPopupState();
+    }
+
+    private void ScheduledTimePickerPopup_Closed(
+        object sender,
+        EventArgs e)
+    {
+        UpdateInternalPopupState();
+        QueueCommitAfterDeactivation();
+    }
+
+    private void ScheduledPickerPopup_PreviewMouseDown(
+        object sender,
+        MouseButtonEventArgs e)
     {
         _internalPopupOpen = true;
     }
 
-    private void DueDatePicker_CalendarClosed(
-        object? sender,
+    private void ScheduledTimePickerPopup_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+        {
+            return;
+        }
+
+        CloseScheduledTimePicker();
+        FocusScheduledTimeInput();
+        e.Handled = true;
+    }
+
+    private void ScheduledTimePartComboBox_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_updatingTimePickerSelection ||
+            ScheduledHourComboBox.SelectedIndex < 0 ||
+            ScheduledMinuteComboBox.SelectedIndex < 0 ||
+            ScheduledSecondComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        SetScheduledTimePickerSelection(
+            ScheduledHourComboBox.SelectedIndex,
+            ScheduledMinuteComboBox.SelectedIndex,
+            ScheduledSecondComboBox.SelectedIndex);
+        ValidationText.Text = string.Empty;
+        if (!_initializing)
+        {
+            _scheduleEdited = true;
+        }
+    }
+
+    private void ScheduledTimePartComboBox_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape ||
+            !ScheduledTimePickerPopup.IsOpen)
+        {
+            return;
+        }
+
+        CloseScheduledTimePicker();
+        FocusScheduledTimeInput();
+        e.Handled = true;
+    }
+
+    private void LegacyTimeComboBox_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_updatingTimePickerSelection ||
+            HourComboBox.SelectedIndex < 0 ||
+            MinuteComboBox.SelectedIndex < 0 ||
+            SecondComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        SetScheduledTimePickerSelection(
+            HourComboBox.SelectedIndex,
+            MinuteComboBox.SelectedIndex,
+            SecondComboBox.SelectedIndex);
+        ValidationText.Text = string.Empty;
+        if (!_initializing)
+        {
+            _scheduleEdited = true;
+        }
+    }
+
+    private void ScheduledTimePartItem_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not ComboBoxItem item ||
+            ItemsControl.ItemsControlFromItemContainer(item) is not
+                ComboBox comboBox)
+        {
+            return;
+        }
+
+        comboBox.SelectedItem =
+            comboBox.ItemContainerGenerator.ItemFromContainer(item);
+        comboBox.IsDropDownOpen = false;
+        UpdateScheduledTimeTextFromPicker();
+        _scheduleEdited = true;
+        Activate();
+        comboBox.Focus();
+        Keyboard.Focus(comboBox);
+        UpdateInternalPopupState();
+        e.Handled = true;
+    }
+
+    private void ScheduledTimePickerNowButton_Click(
+        object sender,
         RoutedEventArgs e)
     {
-        _internalPopupOpen = IsAnyComboDropDownOpen();
-        QueueCommitAfterDeactivation();
+        var now = DateTimeOffset.Now.LocalDateTime;
+        DueDatePicker.SelectedDate = now.Date;
+        SetScheduledTimePickerSelection(
+            now.Hour,
+            now.Minute,
+            now.Second);
+        _scheduleEdited = true;
+        e.Handled = true;
+    }
+
+    private void ScheduledTimePickerConfirmButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        UpdateScheduledTimeTextFromPicker();
+        CloseScheduledTimePicker();
+        FocusScheduledTimeInput();
+        e.Handled = true;
+    }
+
+    private void SetScheduledTimePickerSelection(
+        int hour,
+        int minute,
+        int second)
+    {
+        _updatingTimePickerSelection = true;
+        try
+        {
+            HourComboBox.SelectedIndex = Math.Clamp(hour, 0, 23);
+            MinuteComboBox.SelectedIndex = Math.Clamp(minute, 0, 59);
+            SecondComboBox.SelectedIndex = Math.Clamp(second, 0, 59);
+            ScheduledHourComboBox.SelectedIndex =
+                Math.Clamp(hour, 0, 23);
+            ScheduledMinuteComboBox.SelectedIndex =
+                Math.Clamp(minute, 0, 59);
+            ScheduledSecondComboBox.SelectedIndex =
+                Math.Clamp(second, 0, 59);
+            UpdateScheduledTimeTextFromPicker();
+        }
+        finally
+        {
+            _updatingTimePickerSelection = false;
+        }
+    }
+
+    private void SynchronizeScheduledTimePickerSelection()
+    {
+        SetScheduledTimePickerSelection(
+            HourComboBox.SelectedIndex,
+            MinuteComboBox.SelectedIndex,
+            SecondComboBox.SelectedIndex);
+    }
+
+    private void UpdateScheduledTimeTextFromPicker()
+    {
+        if (HourComboBox.SelectedIndex < 0 ||
+            MinuteComboBox.SelectedIndex < 0 ||
+            SecondComboBox.SelectedIndex < 0)
+        {
+            ScheduledTimeInput.Text = string.Empty;
+            return;
+        }
+
+        ScheduledTimeInput.Text = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:00}:{1:00}:{2:00}",
+            HourComboBox.SelectedIndex,
+            MinuteComboBox.SelectedIndex,
+            SecondComboBox.SelectedIndex);
+    }
+
+    private void FocusScheduledTimeInput()
+    {
+        ScheduledTimeInput.Focus();
+        Keyboard.Focus(ScheduledTimeInput);
     }
 
     private void InternalComboBox_DropDownOpened(
         object sender,
         EventArgs e)
     {
+        if (ReferenceEquals(sender, RepeatUnitComboBox))
+        {
+            _repeatUnitSelectionCommitted = false;
+        }
+
+        if ((ReferenceEquals(sender, ScheduledHourComboBox) ||
+             ReferenceEquals(sender, ScheduledMinuteComboBox) ||
+             ReferenceEquals(sender, ScheduledSecondComboBox)) &&
+            !ScheduledTimePickerPopup.IsOpen)
+        {
+            ScheduledTimePickerPopup.IsOpen = true;
+        }
+
         _internalPopupOpen = true;
     }
 
@@ -407,9 +969,19 @@ public partial class ScheduledTaskEditWindow : Window
         object sender,
         EventArgs e)
     {
-        _internalPopupOpen =
-            DueDatePicker.IsDropDownOpen ||
-            IsAnyComboDropDownOpen();
+        if (ReferenceEquals(sender, RepeatUnitComboBox))
+        {
+            if (_repeatUnitSelectionCommitted)
+            {
+                Activate();
+                RepeatUnitComboBox.Focus();
+                Keyboard.Focus(RepeatUnitComboBox);
+            }
+
+            _repeatUnitSelectionCommitted = false;
+        }
+
+        UpdateInternalPopupState();
         QueueCommitAfterDeactivation();
     }
 
@@ -417,7 +989,27 @@ public partial class ScheduledTaskEditWindow : Window
         HourComboBox.IsDropDownOpen ||
         MinuteComboBox.IsDropDownOpen ||
         SecondComboBox.IsDropDownOpen ||
+        ScheduledHourComboBox.IsDropDownOpen ||
+        ScheduledMinuteComboBox.IsDropDownOpen ||
+        ScheduledSecondComboBox.IsDropDownOpen ||
         RepeatUnitComboBox.IsDropDownOpen;
+
+    private bool IsAnyTimePickerDropDownOpen() =>
+        HourComboBox.IsDropDownOpen ||
+        MinuteComboBox.IsDropDownOpen ||
+        SecondComboBox.IsDropDownOpen ||
+        ScheduledHourComboBox.IsDropDownOpen ||
+        ScheduledMinuteComboBox.IsDropDownOpen ||
+        ScheduledSecondComboBox.IsDropDownOpen ||
+        RepeatUnitComboBox.IsDropDownOpen;
+
+    private void UpdateInternalPopupState()
+    {
+        _internalPopupOpen =
+            ScheduledDatePickerPopup.IsOpen ||
+            ScheduledTimePickerPopup.IsOpen ||
+            IsAnyComboDropDownOpen();
+    }
 
     private bool CommitAndClose()
     {
@@ -441,6 +1033,7 @@ public partial class ScheduledTaskEditWindow : Window
         }
 
         _allowClose = true;
+        CloseScheduledPickers();
         EditAccepted?.Invoke(
             text,
             dueAt,
@@ -481,7 +1074,7 @@ public partial class ScheduledTaskEditWindow : Window
             SecondComboBox.SelectedIndex is < 0 or > 59)
         {
             SetValidation("请选择完整的提醒日期和时分秒");
-            DueDatePicker.Focus();
+            FocusScheduledDateInput();
             return false;
         }
 
@@ -494,7 +1087,7 @@ public partial class ScheduledTaskEditWindow : Window
         if (TimeZoneInfo.Local.IsInvalidTime(selectedLocal))
         {
             SetValidation("这个本地时间不存在，请换一个时间");
-            DueDatePicker.Focus();
+            FocusScheduledDateInput();
             return false;
         }
 
@@ -525,7 +1118,7 @@ public partial class ScheduledTaskEditWindow : Window
         if (dueAt <= DateTimeOffset.Now)
         {
             SetValidation("提醒时间要晚于现在哦");
-            DueDatePicker.Focus();
+            FocusScheduledDateInput();
             return false;
         }
 
@@ -601,7 +1194,58 @@ public partial class ScheduledTaskEditWindow : Window
         object? sender,
         EventArgs e)
     {
+        if (_internalPopupOpen &&
+            !IsAnyComboDropDownOpen() &&
+            !IsPointerInsideScheduledPicker())
+        {
+            CloseScheduledPickers();
+        }
+
         QueueCommitAfterDeactivation();
+    }
+
+    private bool IsPointerInsideScheduledPicker() =>
+        ScheduledDatePickerHost.IsMouseOver ||
+        ScheduledTimePickerHost.IsMouseOver ||
+        ScheduledDatePickerPopup.Child?.IsMouseOver == true ||
+        ScheduledTimePickerPopup.Child?.IsMouseOver == true ||
+        RepeatToggle.IsMouseOver ||
+        RepeatCountTextBox.IsMouseOver ||
+        RepeatUnitComboBox.IsMouseOver;
+
+    private static bool IsWithinPopup(
+        DependencyObject? source,
+        System.Windows.Controls.Primitives.Popup popup) =>
+        popup.Child is DependencyObject popupChild &&
+        IsWithin(source, popupChild);
+
+    private static bool IsWithinComboBoxPopup(
+        DependencyObject? source,
+        ComboBox comboBox) =>
+        comboBox.Template.FindName("PART_Popup", comboBox) is
+            System.Windows.Controls.Primitives.Popup
+            {
+                Child: DependencyObject popupChild
+            } &&
+        IsWithin(source, popupChild);
+
+    private static bool IsWithin(
+        DependencyObject? source,
+        DependencyObject ancestor)
+    {
+        while (source is not null)
+        {
+            if (ReferenceEquals(source, ancestor))
+            {
+                return true;
+            }
+
+            source = source is Visual
+                ? VisualTreeHelper.GetParent(source)
+                : LogicalTreeHelper.GetParent(source);
+        }
+
+        return false;
     }
 
     private void ScheduledTaskEditWindow_Activated(
@@ -619,20 +1263,31 @@ public partial class ScheduledTaskEditWindow : Window
         }
 
         _ = Dispatcher.BeginInvoke(
-            DispatcherPriority.ContextIdle,
+            DispatcherPriority.ApplicationIdle,
             _commitAfterDeactivationAction);
     }
 
     private void CommitAfterDeactivation()
     {
         if (_allowClose ||
-            _internalPopupOpen ||
             IsActive ||
             IsKeyboardFocusWithin)
         {
             return;
         }
 
+        // A real outside click can deactivate the owner before the ComboBox
+        // child popup reports DropDownClosed. Re-check the settled input state
+        // at ApplicationIdle: an open child or a pointer still over an editor
+        // surface is internal, otherwise close the transient picker and save.
+        if (IsAnyComboDropDownOpen() ||
+            IsPointerInsideScheduledPicker())
+        {
+            return;
+        }
+
+        CloseScheduledPickers();
+        UpdateInternalPopupState();
         CommitAndClose();
     }
 
@@ -654,5 +1309,22 @@ public partial class ScheduledTaskEditWindow : Window
         Closed -= ScheduledTaskEditWindow_Closed;
         Loaded -= ScheduledTaskEditWindow_Loaded;
         DpiChanged -= ScheduledTaskEditWindow_DpiChanged;
+    }
+
+    private sealed class ScheduledCalendarDateCell
+    {
+        public DateTime Date { get; init; }
+
+        public string DayText { get; init; } = string.Empty;
+
+        public string AccessibleName { get; init; } = string.Empty;
+
+        public bool IsCurrentMonth { get; init; }
+
+        public bool IsSelected { get; init; }
+
+        public bool IsToday { get; init; }
+
+        public bool IsWeekend { get; init; }
     }
 }

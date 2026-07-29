@@ -209,6 +209,7 @@ public partial class MainWindow : Window
     private bool _pointerDown;
     private bool _dragStarted;
     private bool _dragInteractionActive;
+    private EdgeDockDragContext? _edgeDockDragContext;
     private AnimationClip? _activeClip;
     private int _activeFrameIndex = -1;
     private long _activeClipStartedTimestamp;
@@ -1902,6 +1903,7 @@ public partial class MainWindow : Window
         _dragInteractionActive = true;
         _pointerDown = true;
         _dragStarted = false;
+        _edgeDockDragContext = null;
         _pointerDownPosition = e.GetPosition(this);
         PetHost.CaptureMouse();
         e.Handled = true;
@@ -1928,7 +1930,18 @@ public partial class MainWindow : Window
 
         _dragStarted = true;
         _pointerDown = false;
+        var dragOriginDock = _edgeDock;
         ExitEdgePeek(restartAutomaticCountdown: false);
+        var startWindowBounds = new Rect(
+            Left,
+            Top,
+            ActualWidth > 0 ? ActualWidth : Width,
+            ActualHeight > 0 ? ActualHeight : Height);
+        _edgeDockDragContext = new EdgeDockDragContext(
+            dragOriginDock,
+            MonitorWorkArea.GetForWindow(this),
+            startWindowBounds,
+            GetDragReleaseContactBounds(startWindowBounds, dragOriginDock));
         PetHost.ReleaseMouseCapture();
 
         try
@@ -1948,6 +1961,7 @@ public partial class MainWindow : Window
             }
             finally
             {
+                _edgeDockDragContext = null;
                 _dragInteractionActive = false;
                 RestartAutomaticCountdown();
             }
@@ -1963,12 +1977,22 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_dragStarted && _dragInteractionActive)
+        {
+            // DragMove owns the gesture until its nested message loop returns.
+            // A fast mouse-up can be routed during that loop; keep the saved
+            // edge origin/trajectory intact for the finally dock check.
+            e.Handled = true;
+            return;
+        }
+
         var wasSimpleClick = _pointerDown && !_dragStarted;
         var shouldActCute = wasSimpleClick &&
                             _edgeDock == EdgeDock.None &&
                             !_suppressClickReactionAfterRoamInterruption;
         _pointerDown = false;
         _dragInteractionActive = false;
+        _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
         PetHost.ReleaseMouseCapture();
 
@@ -1991,14 +2015,22 @@ public partial class MainWindow : Window
 
     private void PetHost_LostMouseCapture(object sender, MouseEventArgs e)
     {
-        if (!_dragStarted || Mouse.LeftButton != MouseButtonState.Pressed)
+        // ReleaseMouseCapture is part of handing the gesture to DragMove.
+        // A fast mouse-up can make LeftButton appear released in this
+        // synchronous callback; the DragMove finally block still owns the
+        // saved origin/trajectory context until it performs the last dock
+        // check.
+        if (_dragStarted)
         {
-            _pointerDown = false;
-            _dragStarted = false;
-            _dragInteractionActive = false;
-            _suppressClickReactionAfterRoamInterruption = false;
-            RestartAutomaticCountdown();
+            return;
         }
+
+        _pointerDown = false;
+        _dragStarted = false;
+        _dragInteractionActive = false;
+        _edgeDockDragContext = null;
+        _suppressClickReactionAfterRoamInterruption = false;
+        RestartAutomaticCountdown();
     }
 
     private void PetHost_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -2033,12 +2065,41 @@ public partial class MainWindow : Window
             Top,
             ActualWidth > 0 ? ActualWidth : Width,
             ActualHeight > 0 ? ActualHeight : Height);
-        var contactBounds = GetPetContactBounds(windowBounds);
+        var dragContext = _edgeDockDragContext;
+        EdgeDockDragContext? applicableDragContext =
+            dragContext is { } candidateContext &&
+            AreEquivalentWorkAreas(candidateContext.WorkArea, workArea)
+                ? dragContext
+                : null;
+        var contactBounds = GetDragReleaseContactBounds(
+            windowBounds,
+            applicableDragContext?.OriginDock ?? EdgeDock.None);
+        var touchedEdges = FindTouchedEdges(
+                workArea,
+                contactBounds,
+                EdgeDockActivationDistance)
+            .ToList();
+        if (applicableDragContext is { } context)
+        {
+            foreach (var sweptEdge in FindSweptTouchedEdges(
+                         workArea,
+                         context.StartWindowBounds,
+                         windowBounds,
+                         context.StartContactBounds,
+                         contactBounds))
+            {
+                if (!touchedEdges.Contains(sweptEdge))
+                {
+                    touchedEdges.Add(sweptEdge);
+                }
+            }
+        }
+
         var touchedEdge = EdgeDock.None;
-        foreach (var candidate in FindTouchedEdges(
-                     workArea,
-                     contactBounds,
-                     EdgeDockActivationDistance))
+        foreach (var candidate in PrioritizeTouchedEdgesAfterDrag(
+                     touchedEdges,
+                     applicableDragContext,
+                     windowBounds))
         {
             var screenEdge = candidate switch
             {
@@ -2087,9 +2148,39 @@ public partial class MainWindow : Window
         EnterEdgePeek(touchedEdge);
     }
 
+    private Rect GetDragReleaseContactBounds(
+        Rect windowBounds,
+        EdgeDock dragOriginDock)
+    {
+        // Exiting an edge pose can leave that atlas frame visible for one
+        // background-decode turn. Drag hit-testing must follow the idle/todo
+        // pose and pillow that the interaction has already requested,
+        // otherwise a fast Right -> Bottom toss samples the old short
+        // side-peek silhouette and misses the lower edge.
+        return dragOriginDock == EdgeDock.None
+            ? GetPetContactBounds(windowBounds)
+            : GetPetContactBoundsForFrame(
+                windowBounds,
+                _bubbleMode == BubbleMode.Todo
+                    ? _todoFrame
+                    : _idleFrame,
+                includePillow: true);
+    }
+
     private Rect GetPetContactBounds(Rect windowBounds)
     {
-        if (_currentSpriteFrame is not { } frame ||
+        return GetPetContactBoundsForFrame(
+            windowBounds,
+            _currentSpriteFrame,
+            PillowImage.Opacity > 0.5);
+    }
+
+    private Rect GetPetContactBoundsForFrame(
+        Rect windowBounds,
+        SpriteFrame? sourceFrame,
+        bool includePillow)
+    {
+        if (sourceFrame is not { } frame ||
             windowBounds.Width <= 0 || windowBounds.Height <= 0)
         {
             return windowBounds;
@@ -2106,7 +2197,7 @@ public partial class MainWindow : Window
             0,
             DisplayPixelHeight);
 
-        if (PillowImage.Opacity > 0.5)
+        if (includePillow)
         {
             // Tight non-transparent bounds of luban-pillow-layer.png. Contact
             // follows the pixels the user can actually see instead of the
@@ -2175,6 +2266,105 @@ public partial class MainWindow : Window
             .ThenBy(candidate => (int)candidate.Dock)
             .Select(candidate => candidate.Dock);
     }
+
+    private static IEnumerable<EdgeDock> FindSweptTouchedEdges(
+        Rect workArea,
+        Rect startWindowBounds,
+        Rect endWindowBounds,
+        Rect startContactBounds,
+        Rect endContactBounds)
+    {
+        var movedLeft = endWindowBounds.Left < startWindowBounds.Left;
+        var movedRight = endWindowBounds.Left > startWindowBounds.Left;
+        var movedDown = endWindowBounds.Top > startWindowBounds.Top;
+        var endContactOverlapsVertically =
+            endContactBounds.Bottom > workArea.Top &&
+            endContactBounds.Top < workArea.Bottom;
+        var endContactOverlapsHorizontally =
+            endContactBounds.Right > workArea.Left &&
+            endContactBounds.Left < workArea.Right;
+
+        if (movedLeft &&
+            endContactOverlapsVertically &&
+            startContactBounds.Right > workArea.Left &&
+            endContactBounds.Right <= workArea.Left)
+        {
+            yield return EdgeDock.Left;
+        }
+
+        if (movedRight &&
+            endContactOverlapsVertically &&
+            startContactBounds.Left < workArea.Right &&
+            endContactBounds.Left >= workArea.Right)
+        {
+            yield return EdgeDock.Right;
+        }
+
+        if (movedDown &&
+            endContactOverlapsHorizontally &&
+            startContactBounds.Top < workArea.Bottom &&
+            endContactBounds.Top >= workArea.Bottom)
+        {
+            yield return EdgeDock.Bottom;
+        }
+    }
+
+    private static IEnumerable<EdgeDock> PrioritizeTouchedEdgesAfterDrag(
+        IReadOnlyList<EdgeDock> candidates,
+        EdgeDockDragContext? dragContext,
+        Rect endWindowBounds)
+    {
+        if (candidates.Count <= 1 || dragContext is not { } context)
+        {
+            return candidates;
+        }
+
+        var deltaX =
+            endWindowBounds.Left - context.StartWindowBounds.Left;
+        var deltaY =
+            endWindowBounds.Top - context.StartWindowBounds.Top;
+        var preferredDock = EdgeDock.None;
+        if (deltaY > 0 &&
+            Math.Abs(deltaY) >= Math.Abs(deltaX) &&
+            candidates.Contains(EdgeDock.Bottom))
+        {
+            preferredDock = EdgeDock.Bottom;
+        }
+        else if (Math.Abs(deltaX) > Math.Abs(deltaY))
+        {
+            var horizontalDock = deltaX < 0
+                ? EdgeDock.Left
+                : EdgeDock.Right;
+            if (candidates.Contains(horizontalDock))
+            {
+                preferredDock = horizontalDock;
+            }
+        }
+
+        if (preferredDock == EdgeDock.None &&
+            context.OriginDock != EdgeDock.None &&
+            candidates.Contains(context.OriginDock))
+        {
+            preferredDock = context.OriginDock;
+        }
+
+        return candidates
+            .Select((dock, index) => (Dock: dock, Index: index))
+            .OrderBy(candidate =>
+                candidate.Dock == preferredDock
+                    ? 0
+                    : candidate.Dock == context.OriginDock
+                        ? 2
+                        : 1)
+            .ThenBy(candidate => candidate.Index)
+            .Select(candidate => candidate.Dock);
+    }
+
+    private static bool AreEquivalentWorkAreas(Rect first, Rect second) =>
+        Math.Abs(first.Left - second.Left) <= EdgeContactTolerance &&
+        Math.Abs(first.Top - second.Top) <= EdgeContactTolerance &&
+        Math.Abs(first.Right - second.Right) <= EdgeContactTolerance &&
+        Math.Abs(first.Bottom - second.Bottom) <= EdgeContactTolerance;
 
     private void EnterEdgePeek(EdgeDock dock)
     {
@@ -8877,6 +9067,12 @@ public partial class MainWindow : Window
         Right,
         Bottom
     }
+
+    private readonly record struct EdgeDockDragContext(
+        EdgeDock OriginDock,
+        Rect WorkArea,
+        Rect StartWindowBounds,
+        Rect StartContactBounds);
 
     private readonly record struct ReminderOccurrence(
         Guid TaskId,

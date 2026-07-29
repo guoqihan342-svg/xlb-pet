@@ -7391,6 +7391,32 @@ internal static class Program
                sharedSeamCornerCandidates[1] == "Bottom",
             "双屏共享右缝比底边更近时必须保留 Bottom 作为后备外边缘候选");
 
+        var sweptBottomCandidates = ((IEnumerable)InvokeStatic(
+                typeof(MainWindow),
+                "FindSweptTouchedEdges",
+                workArea,
+                new Rect(workArea.Right - width, safeY, width, height),
+                new Rect(
+                    workArea.Right - width,
+                    workArea.Bottom - 1,
+                    width,
+                    height),
+                new Rect(
+                    workArea.Right - width + 4,
+                    safeY + 40,
+                    width - 8,
+                    height - 80),
+                new Rect(
+                    workArea.Right - width + 4,
+                    workArea.Bottom + 1,
+                    width - 8,
+                    height - 80))!)
+            .Cast<object>()
+            .Select(candidate => candidate.ToString())
+            .ToArray();
+        Assert(sweptBottomCandidates.SequenceEqual(["Bottom"]),
+            "有效拖拽从屏内向下甩过底边时，即使最终可见精灵已完全越界，也必须由扫掠轨迹补回 Bottom 候选");
+
         var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
         var updateDock = ExtractPrivateMethodSource(
             mainSource,
@@ -7398,6 +7424,9 @@ internal static class Program
         var visibleContact = ExtractPrivateMethodSource(
             mainSource,
             "GetPetContactBounds");
+        var visibleContactForFrame = ExtractPrivateMethodSource(
+            mainSource,
+            "GetPetContactBoundsForFrame");
         var findTouchedEdge = ExtractPrivateMethodSource(
             mainSource,
             "FindTouchedEdge");
@@ -7410,13 +7439,19 @@ internal static class Program
             monitorSource,
             "IsExternalWorkAreaEdgeAt");
         Assert(updateDock.Contains(
-                   "GetPetContactBounds(windowBounds)",
+                   "GetDragReleaseContactBounds(",
+                   StringComparison.Ordinal) &&
+               updateDock.Contains(
+                   "FindSweptTouchedEdges(",
+                   StringComparison.Ordinal) &&
+               updateDock.Contains(
+                   "PrioritizeTouchedEdgesAfterDrag(",
                    StringComparison.Ordinal) &&
                updateDock.Contains(
                    "EdgeDockActivationDistance",
                    StringComparison.Ordinal) &&
                updateDock.Contains(
-                   "foreach (var candidate in FindTouchedEdges(",
+                   "foreach (var candidate in PrioritizeTouchedEdgesAfterDrag(",
                    StringComparison.Ordinal) &&
                updateDock.Contains(
                    "IsExternalWorkAreaEdgeAt(",
@@ -7437,9 +7472,12 @@ internal static class Program
                    ".DefaultIfEmpty(EdgeDock.None)",
                    StringComparison.Ordinal) &&
                visibleContact.Contains(
+                   "GetPetContactBoundsForFrame(",
+                   StringComparison.Ordinal) &&
+               visibleContactForFrame.Contains(
                    "frame.DestinationX",
                    StringComparison.Ordinal) &&
-               visibleContact.Contains(
+               visibleContactForFrame.Contains(
                    "frame.DestinationY",
                    StringComparison.Ordinal) &&
                externalEdge.Contains(
@@ -7490,13 +7528,43 @@ internal static class Program
         var finalDockCheck = dragMoveSource.IndexOf(
             "UpdateEdgeDockAfterDrag();",
             StringComparison.Ordinal);
-        Assert(dragMoveCall >= 0 &&
+        var dragOriginCapture = dragMoveSource.IndexOf(
+            "var dragOriginDock = _edgeDock;",
+            StringComparison.Ordinal);
+        var edgeExit = dragMoveSource.IndexOf(
+            "ExitEdgePeek(",
+            StringComparison.Ordinal);
+        var dragContextCapture = dragMoveSource.IndexOf(
+            "_edgeDockDragContext = new EdgeDockDragContext(",
+            StringComparison.Ordinal);
+        var releaseMouseCapture = dragMoveSource.IndexOf(
+            "PetHost.ReleaseMouseCapture();",
+            StringComparison.Ordinal);
+        Assert(dragOriginCapture >= 0 &&
+               edgeExit > dragOriginCapture &&
+               dragContextCapture > edgeExit &&
+               releaseMouseCapture > dragContextCapture &&
+               dragMoveCall > releaseMouseCapture &&
                dragMoveCatch > dragMoveCall &&
                finalDockCheck > dragMoveCatch &&
                dragMoveSource.Contains(
                    "finally",
                    StringComparison.Ordinal),
-            "系统 DragMove 快速松手或异常返回后仍必须在统一结束路径补做边缘吸附判定");
+            "系统 DragMove 必须在退出旧吸附前保存来源边和起点，并在快速松手或异常返回后的统一路径做轨迹吸附判定");
+
+        var lostCaptureSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_LostMouseCapture");
+        Assert(lostCaptureSource.Contains(
+                   "if (_dragStarted)",
+                   StringComparison.Ordinal) &&
+               lostCaptureSource.IndexOf(
+                   "return;",
+                   StringComparison.Ordinal) <
+               lostCaptureSource.IndexOf(
+                   "_edgeDockDragContext = null;",
+                   StringComparison.Ordinal),
+            "把拖动交给 DragMove 时同步触发 LostMouseCapture 不得提前清空右→下轨迹上下文");
     }
 
     private static void AssertSupportedEdgeDockIntegration(MainWindow window)
@@ -7871,15 +7939,188 @@ internal static class Program
                         $"{scale:P0} 桌宠快速越过 {edge} 外边缘后仍必须吸附并夹回准确边界");
                 }
             }
+
+            AssertRightToBottomFastToss(
+                window,
+                monitorType,
+                edgeLeftFrames,
+                edgeBottomFrames);
         }
         finally
         {
+            SetField(window, "_dragStarted", false);
+            SetField(window, "_dragInteractionActive", false);
+            SetField(window, "_edgeDockDragContext", null);
             Invoke(window, "ExitEdgePeek", false, true);
             Invoke(window, "ApplyPetSizeScale", originalScale, false, false);
             window.Left = originalLeft;
             window.Top = originalTop;
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
         }
+    }
+
+    private static void AssertRightToBottomFastToss(
+        MainWindow window,
+        Type monitorType,
+        Array edgeLeftFrames,
+        Array edgeBottomFrames)
+    {
+        Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+        PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        var workArea = (Rect)InvokeStatic(
+            monitorType,
+            "GetForWindow",
+            window)!;
+        var width = window.ActualWidth;
+        var height = window.ActualHeight;
+        var startWindowBounds = new Rect(
+            workArea.Right - width,
+            workArea.Top + Math.Max(20, (workArea.Height - height) / 2),
+            width,
+            height);
+        window.Left = startWindowBounds.Left;
+        window.Top = startWindowBounds.Top;
+
+        var rightDock = GetNestedEnum("EdgeDock", "Right");
+        var rightRestFrame = edgeLeftFrames.GetValue(
+            edgeLeftFrames.Length - 1)!;
+        var bottomRestFrame = edgeBottomFrames.GetValue(
+            edgeBottomFrames.Length - 1)!;
+        PrimeSpritePageForFrame(window, rightRestFrame);
+        Invoke(window, "EnterEdgePeek", rightDock);
+        Assert(GetField<object>(window, "_edgeDock").ToString() == "Right",
+            "右→下快速甩动回归必须先真实进入 Right 吸附状态");
+
+        var startContactBounds = (Rect)Invoke(
+            window,
+            "GetDragReleaseContactBounds",
+            startWindowBounds,
+            rightDock)!;
+        Invoke(window, "ExitEdgePeek", false, true);
+        PrimeSpritePageForFrame(window, bottomRestFrame);
+
+        var dragContextType = typeof(MainWindow).GetNestedType(
+                "EdgeDockDragContext",
+                BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "找不到 MainWindow.EdgeDockDragContext");
+        var dragContext = Activator.CreateInstance(
+                dragContextType,
+                InstanceFlags,
+                binder: null,
+                args:
+                [
+                    rightDock,
+                    workArea,
+                    startWindowBounds,
+                    startContactBounds
+                ],
+                culture: null)
+            ?? throw new InvalidOperationException(
+                "无法创建右→下拖拽上下文");
+        SetField(window, "_edgeDockDragContext", dragContext);
+        SetField(window, "_dragStarted", true);
+        SetField(window, "_dragInteractionActive", true);
+        var nestedMouseUp = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = UIElement.MouseLeftButtonUpEvent,
+            Source = window
+        };
+        Invoke(
+            window,
+            "PetHost_MouseLeftButtonUp",
+            window,
+            nestedMouseUp);
+        Assert(nestedMouseUp.Handled &&
+               GetRawField(window, "_edgeDockDragContext") is not null,
+            "DragMove 嵌套消息循环中的快速 MouseUp 不得提前清空右→下轨迹上下文");
+        Invoke(
+            window,
+            "PetHost_LostMouseCapture",
+            window,
+            new MouseEventArgs(
+                Mouse.PrimaryDevice,
+                Environment.TickCount));
+        Assert(GetRawField(window, "_edgeDockDragContext") is not null,
+            "快速松手同步触发 LostMouseCapture 时必须保留拖拽来源和轨迹，直到 DragMove finally 完成吸附");
+
+        var finalWindowBounds = new Rect(
+            workArea.Right - width,
+            workArea.Bottom - height + 20,
+            width,
+            height);
+        window.Left = finalWindowBounds.Left;
+        window.Top = finalWindowBounds.Top;
+        var finalContactBounds = (Rect)Invoke(
+            window,
+            "GetDragReleaseContactBounds",
+            finalWindowBounds,
+            rightDock)!;
+        var rawCandidates = ((IEnumerable)InvokeStatic(
+                typeof(MainWindow),
+                "FindTouchedEdges",
+                workArea,
+                finalContactBounds,
+                12d)!)
+            .Cast<object>()
+            .Select(candidate => candidate.ToString())
+            .ToArray();
+        Assert(rawCandidates.Length >= 2 &&
+               rawCandidates[0] == "Right" &&
+               rawCandidates[1] == "Bottom",
+            "右下角回归前置必须复现旧算法优先 Right、Bottom 仅为后备的候选竞争");
+
+        var cornerCandidates = Array.CreateInstance(rightDock.GetType(), 2);
+        cornerCandidates.SetValue(rightDock, 0);
+        cornerCandidates.SetValue(GetNestedEnum("EdgeDock", "Bottom"), 1);
+        var downPriority = ((IEnumerable)InvokeStatic(
+                typeof(MainWindow),
+                "PrioritizeTouchedEdgesAfterDrag",
+                cornerCandidates,
+                dragContext,
+                finalWindowBounds)!)
+            .Cast<object>()
+            .Select(candidate => candidate.ToString())
+            .ToArray();
+        var upwardPriority = ((IEnumerable)InvokeStatic(
+                typeof(MainWindow),
+                "PrioritizeTouchedEdgesAfterDrag",
+                cornerCandidates,
+                dragContext,
+                new Rect(
+                    startWindowBounds.Left,
+                    startWindowBounds.Top - 20,
+                    width,
+                    height))!)
+            .Cast<object>()
+            .Select(candidate => candidate.ToString())
+            .ToArray();
+        Assert(downPriority.SequenceEqual(["Bottom", "Right"]) &&
+               upwardPriority.SequenceEqual(["Right", "Bottom"]),
+            "Right 角落候选必须按实际向下手势切换 Bottom；向上或无向下证据时仍保留 Right");
+
+        Invoke(window, "UpdateEdgeDockAfterDrag");
+        var deadline =
+            GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
+        Assert(GetField<object>(window, "_edgeDock").ToString() == "Bottom" &&
+               Math.Abs(window.Top + window.ActualHeight -
+                        workArea.Bottom) <= 0.5 &&
+               Math.Abs(
+                   GetField<ScaleTransform>(window, "PetFacingScale").ScaleX -
+                   1) <= 0.000001 &&
+               Equals(
+                   GetRawField(window, "_currentSpriteFrame"),
+                   bottomRestFrame) &&
+               GetRawField(window, "_pendingSpriteFrame") is null &&
+               deadline > Stopwatch.GetTimestamp(),
+            "从 Right 吸附沿右边向下甩到右下角时必须切换为 Bottom，并使用底边姿势和新时钟");
+        SetField(window, "_dragStarted", false);
+        SetField(window, "_dragInteractionActive", false);
+        SetField(window, "_edgeDockDragContext", null);
+        Invoke(window, "ExitEdgePeek", false, true);
     }
 
     private static void AssertAutomaticDeadlineContract(MainWindow window)
@@ -10522,6 +10763,21 @@ internal static class Program
             var scheduledEditorSecond = GetField<ComboBox>(
                 scheduledEditor,
                 "SecondComboBox");
+            var scheduledEditorTimeInput = GetField<TextBox>(
+                scheduledEditor,
+                "ScheduledTimeInput");
+            var scheduledEditorTimePickerPopup = GetField<Popup>(
+                scheduledEditor,
+                "ScheduledTimePickerPopup");
+            var scheduledEditorHourPicker = GetField<ComboBox>(
+                scheduledEditor,
+                "ScheduledHourComboBox");
+            var scheduledEditorMinutePicker = GetField<ComboBox>(
+                scheduledEditor,
+                "ScheduledMinuteComboBox");
+            var scheduledEditorSecondPicker = GetField<ComboBox>(
+                scheduledEditor,
+                "ScheduledSecondComboBox");
             var scheduledEditorRepeatToggle = GetField<CheckBox>(
                 scheduledEditor,
                 "RepeatToggle");
@@ -10551,6 +10807,154 @@ internal static class Program
                    scheduledEditCancel.Visibility == Visibility.Collapsed &&
                    todoWindow.IsTransientPopupOpen,
                 "点击定时任务铅笔必须打开独立 378×208 DIP 橘色 Owned Window，并在同一外窗回填正文、日期、时分秒和循环；新增表单不得被改写");
+
+            Invoke(scheduledEditor, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible &&
+                   GetRawField(
+                       scheduledEditor,
+                       "_internalPopupOpen") is true &&
+                   editRequestedCount == 0,
+                "修改定时任务必须真实打开独立的选择提醒时间 Popup，打开过程不得提交或关闭编辑窗");
+            foreach (var (picker, selectedIndex) in new[]
+                     {
+                         (scheduledEditorHourPicker, 11),
+                         (scheduledEditorMinutePicker, 22),
+                         (scheduledEditorSecondPicker, 33)
+                     })
+            {
+                picker.IsDropDownOpen = true;
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                var option = picker.ItemContainerGenerator
+                    .ContainerFromIndex(selectedIndex) as ComboBoxItem
+                    ?? throw new InvalidOperationException(
+                        $"定时编辑窗时分秒选择器未生成第 {selectedIndex} 个可点击选项");
+                var optionClick = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent =
+                        UIElement.PreviewMouseLeftButtonDownEvent,
+                    Source = option
+                };
+                option.RaiseEvent(optionClick);
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                Assert(optionClick.Handled &&
+                       picker.SelectedIndex == selectedIndex &&
+                       !picker.IsDropDownOpen &&
+                       scheduledEditorTimePickerPopup.IsOpen &&
+                       scheduledEditor.IsVisible &&
+                       GetRawField(
+                           scheduledEditor,
+                           "_internalPopupOpen") is true &&
+                       editRequestedCount == 0,
+                    "修改定时任务依次选择时、分、秒时，只能关闭当前下拉层，外层时间 Popup 和编辑窗必须保持");
+            }
+
+            Assert(scheduledEditorTimeInput.Text == "11:22:33" &&
+                   scheduledEditorHour.SelectedIndex == 11 &&
+                   scheduledEditorMinute.SelectedIndex == 22 &&
+                   scheduledEditorSecond.SelectedIndex == 33,
+                "修改定时任务选择完时分秒后，橙色主框和保存数据控件必须同步为 11:22:33");
+
+            foreach (var repeatControl in new UIElement[]
+                     {
+                         scheduledEditorRepeatToggle,
+                         scheduledEditorRepeatCount,
+                         scheduledEditorRepeatUnit
+                     })
+            {
+                var repeatPreviewClick = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent,
+                    Source = repeatControl
+                };
+                repeatControl.RaiseEvent(repeatPreviewClick);
+                PumpDispatcher(TimeSpan.FromMilliseconds(10));
+                Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                       scheduledEditor.IsVisible &&
+                       editRequestedCount == 0,
+                    "修改定时任务真实点击循环勾选、次数或单位时，窗口级 PreviewMouseDown 不得先收起选择提醒时间 Popup");
+            }
+
+            scheduledEditorRepeatToggle.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible &&
+                   scheduledEditorRepeatToggle.IsChecked == true &&
+                   editRequestedCount == 0,
+                "修改定时任务勾选循环时必须保持选择提醒时间 Popup 和编辑窗");
+            scheduledEditorRepeatCount.Text = "3";
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible &&
+                   scheduledEditorRepeatCount.Text == "3" &&
+                   editRequestedCount == 0,
+                "修改定时任务在时间 Popup 打开时修改循环次数，不得触发自动保存或收起窗口");
+            scheduledEditorRepeatUnit.IsDropDownOpen = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledEditorRepeatUnit.IsDropDownOpen &&
+                   scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible,
+                "修改定时任务打开循环单位下拉时，外层时间 Popup 必须保持");
+            scheduledEditorRepeatUnit.SelectedIndex =
+                (int)ScheduledRepeatUnit.Day;
+            scheduledEditorRepeatUnit.IsDropDownOpen = false;
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledEditorRepeatUnit.SelectedIndex ==
+                       (int)ScheduledRepeatUnit.Day &&
+                   !scheduledEditorRepeatUnit.IsDropDownOpen &&
+                   scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible &&
+                   GetRawField(
+                       scheduledEditor,
+                       "_internalPopupOpen") is true &&
+                   editRequestedCount == 0,
+                "修改定时任务选择循环单位后只能关闭单位下拉，选择提醒时间 Popup 和编辑窗必须继续显示");
+
+            var scheduledEditorTimeSource =
+                PresentationSource.FromVisual(scheduledEditorHourPicker)
+                ?? throw new InvalidOperationException(
+                    "定时任务编辑时间浮层没有建立输入源");
+            var scheduledEditorTimeEscape = CreateKeyEvent(
+                scheduledEditorTimeSource,
+                Key.Escape);
+            Invoke(
+                scheduledEditor,
+                "ScheduledTimePickerPopup_PreviewKeyDown",
+                scheduledEditorHourPicker,
+                scheduledEditorTimeEscape);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledEditorTimeEscape.Handled &&
+                   !scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible &&
+                   editRequestedCount == 0,
+                "修改定时任务时间浮层按 Esc 必须只关闭 Popup，不能取消、保存或关闭编辑窗");
+
+            Invoke(scheduledEditor, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible,
+                "验证确定按钮前必须重新打开修改定时任务时间 Popup");
+            var scheduledEditorTimeConfirmButton = new Button();
+            Invoke(
+                scheduledEditor,
+                "ScheduledTimePickerConfirmButton_Click",
+                scheduledEditorTimeConfirmButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    scheduledEditorTimeConfirmButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(!scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditor.IsVisible &&
+                   scheduledEditorTimeInput.Text == "11:22:33" &&
+                   editRequestedCount == 0,
+                "修改定时任务点击时间 Popup 的确定只能收起 Popup，并保留已选时分秒和编辑窗");
 
             scheduledEditorHour.IsDropDownOpen = true;
             Invoke(
