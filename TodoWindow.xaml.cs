@@ -3043,6 +3043,12 @@ public partial class TodoWindow : Window
             return;
         }
 
+        OpenTodoItemEditor(item);
+        e.Handled = true;
+    }
+
+    private void OpenTodoItemEditor(TodoItem item)
+    {
         OpenTaskTextEditor(
             "修改待办",
             item.Text,
@@ -3059,7 +3065,6 @@ public partial class TodoWindow : Window
                 item.Text = updatedText;
                 TodoEdited?.Invoke(item);
             });
-        e.Handled = true;
     }
 
     private void BeginTodoEdit(TextBox textBox, TodoItem item)
@@ -3195,38 +3200,18 @@ public partial class TodoWindow : Window
 
     private void TodoEditTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (sender is not TextBox { DataContext: TodoItem item } textBox)
-        {
-            return;
-        }
-
-        if (textBox.IsReadOnly)
-        {
-            if (e.Key == Key.F2)
+        if (sender is not TextBox
             {
-                BeginTodoEdit(textBox, item);
-                e.Handled = true;
-            }
-
+                IsReadOnly: true,
+                DataContext: TodoItem item
+            } ||
+            e.Key != Key.F2)
+        {
             return;
         }
 
-        if (e.Key == Key.Escape)
-        {
-            if (!IsImeComposing)
-            {
-                CancelTodoEdit();
-                e.Handled = true;
-            }
-
-            return;
-        }
-
-        if (e.Key == Key.Enter && !IsImeComposing)
-        {
-            CommitTodoEdit();
-            e.Handled = true;
-        }
+        OpenTodoItemEditor(item);
+        e.Handled = true;
     }
 
     private void TodoEditTextBox_LostKeyboardFocus(

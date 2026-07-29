@@ -78,6 +78,11 @@ internal static class Program
                 return RunTodoInteractionPreview(application);
             }
 
+            if (args.Contains("--roam-preview", StringComparer.OrdinalIgnoreCase))
+            {
+                return RunEdgeRoamPreview(application);
+            }
+
             AssertLoggingContract();
             RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
             RunCheck(
@@ -168,6 +173,13 @@ internal static class Program
                     "_queuedReminderIds").Clear();
                 GetField<DispatcherTimer>(window, "_scheduledTaskTimer").Stop();
 
+                if (args.Contains("--todo-arrow-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
+                        () => AssertTodoArrowPositionMatrixContract(window));
+                    return 0;
+                }
+
                 if (args.Contains("--edge-dock-only", StringComparer.OrdinalIgnoreCase))
                 {
                     RunCheck(nameof(AssertExactEdgeContactContract),
@@ -236,6 +248,8 @@ internal static class Program
                     Invoke(window, "ApplyPetSizeScale", 1d, false, false);
                     RunCheck(nameof(AssertOwnedTodoWindowContract),
                         () => AssertOwnedTodoWindowContract(window));
+                    RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
+                        () => AssertTodoArrowPositionMatrixContract(window));
                     RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
                     RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
                     RunCheck(nameof(AssertScheduledTaskTabContract),
@@ -286,6 +300,8 @@ internal static class Program
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
                 RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
+                RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
+                    () => AssertTodoArrowPositionMatrixContract(window));
                 RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
                 RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
                 RunCheck(nameof(AssertScheduledTaskTabContract),
@@ -398,6 +414,106 @@ internal static class Program
         application.ShutdownMode = ShutdownMode.OnMainWindowClose;
         application.Run(preview);
         return 0;
+    }
+
+    private static int RunEdgeRoamPreview(Application application)
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-roam-preview-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var preview = new MainWindow
+        {
+            ShowActivated = true,
+            ShowInTaskbar = true,
+            Title = "小鲁班四边绕屏实机预览（关闭窗口结束）"
+        };
+        var restartTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        var firstLapStarted = false;
+
+        SetField(
+            preview,
+            "_todoStore",
+            new TodoStore(Path.Combine(tempDirectory, "todos.json")));
+        SetField(
+            preview,
+            "_settingsStore",
+            new AppSettingsStore(Path.Combine(tempDirectory, "settings.json")));
+        SetField(
+            preview,
+            "_scheduledTaskStore",
+            new ScheduledTaskStore(
+                Path.Combine(tempDirectory, "scheduled-tasks.json")));
+        GetField<ObservableCollection<TodoItem>>(preview, "_todos").Clear();
+        GetField<ObservableCollection<ScheduledTaskItem>>(
+            preview,
+            "_scheduledTasks").Clear();
+        GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
+        Invoke(preview, "ApplyPetSizeScale", 1d, false, false);
+        SetField(preview, "_edgeRoamingEnabled", true);
+
+        void TryStartPreviewLap()
+        {
+            if (GetField<bool>(preview, "_isEdgeRoaming") ||
+                GetField<bool>(preview, "_isClosing"))
+            {
+                return;
+            }
+
+            SetField(preview, "_automaticAnimationEnabled", true);
+            if ((bool)Invoke(preview, "StartEdgeRoaming")!)
+            {
+                Console.WriteLine(
+                    firstLapStarted
+                        ? "[PREVIEW] restarted four-edge roaming lap"
+                        : "[PREVIEW] started production-speed four-edge roaming lap");
+                firstLapStarted = true;
+            }
+        }
+
+        restartTimer.Tick += (_, _) => TryStartPreviewLap();
+        preview.Loaded += (_, _) =>
+            preview.Dispatcher.BeginInvoke(
+                DispatcherPriority.ApplicationIdle,
+                new Action(() =>
+                {
+                    try
+                    {
+                        TryStartPreviewLap();
+                        restartTimer.Start();
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine(exception);
+                        application.Shutdown(1);
+                    }
+                }));
+        preview.Closed += (_, _) => restartTimer.Stop();
+
+        Console.WriteLine(
+            "[PREVIEW] Observe the panda and Luban traverse top/right/bottom/left " +
+            "edges and rounded corners. Close the pet window to finish.");
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        try
+        {
+            return application.Run(preview);
+        }
+        finally
+        {
+            restartTimer.Stop();
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // The preview is diagnostic-only; a locked temp log must not
+                // turn a successful visual review into a failed process.
+            }
+        }
     }
 
     private static void RunCheck(string name, Action check)
@@ -9410,7 +9526,7 @@ internal static class Program
             var persistedAfterEdit = todoStore.Load();
             Assert(persistedAfterEdit.Select(item => item.Text)
                     .SequenceEqual(new[] { "修改后的第三项", "第一项", "第二项" }),
-                "行内编辑事件必须立即保存修改后的文字，同时保持拖拽产生的顺序");
+                "独立修改窗确认事件必须立即保存修改后的文字，同时保持拖拽产生的顺序");
 
             var orderBeforeNoOp = todos.ToArray();
             Invoke(window, "TodoWindow_TodoMoveRequested", third, 0);
@@ -9885,21 +10001,30 @@ internal static class Program
                        editor) ?? true),
                 "只读待办行不得进入自定义 Ctrl+X 路径");
 
-            Invoke(todoWindow, "BeginTodoEdit", editor, item);
-            editor.Text = "甲乙丙";
-            editor.Select(0, 1);
-            Assert(!editor.IsReadOnly &&
-                   (bool)(Invoke(
-                       todoWindow,
-                       "TryCutSelectedText",
-                       editor) ?? false),
-                "只有进入行内编辑后，待办行才允许 Ctrl+X");
+            var editorSource = PresentationSource.FromVisual(editor)
+                ?? throw new InvalidOperationException("F2 待办编辑没有输入源");
+            var f2 = CreateKeyEvent(editorSource, Key.F2);
+            Invoke(
+                todoWindow,
+                "TodoEditTextBox_PreviewKeyDown",
+                editor,
+                f2);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
-            Assert(editor.Text == "乙丙" &&
-                   GetField<string>(
-                       todoWindow,
-                       "_editingTodoDraftText") == "乙丙",
-                "行内首字符剪切必须同步更新待办编辑草稿，供 Enter 或外点准确保存");
+            var independentEditor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var independentTextBox = GetField<TextBox>(
+                independentEditor,
+                "EditorTextBox");
+            independentTextBox.Select(0, 1);
+            Assert(f2.Handled &&
+                   editor.IsReadOnly &&
+                   independentEditor.IsVisible &&
+                   ApplicationCommands.Cut.CanExecute(
+                       parameter: null,
+                       target: independentTextBox),
+                "F2 必须打开独立修改窗；列表行保持只读，独立 TextBox 继续使用原生 Ctrl+X");
+            independentEditor.CloseWithoutSaving();
         }
         finally
         {
@@ -14194,48 +14319,15 @@ internal static class Program
             var endSizeSource = ExtractPrivateMethodSource(
                 todoSource,
                 "EndPetSizeAdjustment");
-            var beginEditSource = ExtractPrivateMethodSource(
+            var openTodoItemEditorSource = ExtractPrivateMethodSource(
                 todoSource,
-                "BeginTodoEdit");
-            var commitEditSource = ExtractPrivateMethodSource(
-                todoSource,
-                "CommitTodoEdit");
-            var cancelEditSource = ExtractPrivateMethodSource(
-                todoSource,
-                "CancelTodoEdit");
-            var outsideClickSource = ExtractPrivateMethodSource(
-                todoSource,
-                "TodoWindow_PreviewMouseDown");
-            var finishOutsideClickSource = ExtractPrivateMethodSource(
-                todoSource,
-                "FinishTodoEditAfterOutsideClick");
-            var scheduleFocusLossSource = ExtractPrivateMethodSource(
-                todoSource,
-                "ScheduleTodoEditAfterFocusLoss");
-            var handleFocusDepartureSource = ExtractPrivateMethodSource(
-                todoSource,
-                "HandleTodoEditAfterFocusDeparture");
-            var finishFocusLossSource = ExtractPrivateMethodSource(
-                todoSource,
-                "FinishTodoEditAfterFocusLoss");
-            var deleteTodoSource = ExtractPrivateMethodSource(
-                todoSource,
-                "DeleteButton_Click");
-            var closingSource = ExtractPrivateMethodSource(
-                todoSource,
-                "TodoWindow_Closing");
+                "OpenTodoItemEditor");
             var visibilityChangedSource = ExtractPrivateMethodSource(
                 todoSource,
                 "TodoWindow_IsVisibleChanged");
             var closeOwnedEditorsSource = ExtractPrivateMethodSource(
                 todoSource,
                 "CloseOwnedEditorsWithoutSaving");
-            var dataContextChangedSource = ExtractPrivateMethodSource(
-                todoSource,
-                "TodoEditTextBox_DataContextChanged");
-            var editorUnloadedSource = ExtractPrivateMethodSource(
-                todoSource,
-                "TodoEditTextBox_Unloaded");
             var editKeySource = ExtractPrivateMethodSource(
                 todoSource,
                 "TodoEditTextBox_PreviewKeyDown");
@@ -14308,105 +14400,33 @@ internal static class Program
                        "LostMouseCapture=\"TodoDragHandle_LostMouseCapture\"",
                        StringComparison.Ordinal) &&
                    todoXaml.Contains(
-                       "DataContextChanged=\"TodoEditTextBox_DataContextChanged\"",
-                       StringComparison.Ordinal) &&
-                   todoXaml.Contains(
-                       "Unloaded=\"TodoEditTextBox_Unloaded\"",
-                       StringComparison.Ordinal) &&
-                   todoXaml.Contains(
                        "PreviewDrop=\"TodoItemsControl_PreviewDrop\"",
                        StringComparison.Ordinal),
-                "待办拖拽必须只从专用手柄发起，行内修改必须使用带无障碍名称的左下笔尖图标按钮，" +
+                "待办拖拽必须只从专用手柄发起，修改必须使用带无障碍名称的左下笔尖图标按钮，" +
                 "不能显示“改”字或占用只读文字的选词与复制手势");
-            Assert(beginEditSource.Contains("IsReadOnly = false", StringComparison.Ordinal) &&
-                   beginEditSource.Contains(
-                       "TextCompositionManager.AddPreviewTextInputStartHandler",
+            Assert(editKeySource.Contains("Key.F2", StringComparison.Ordinal) &&
+                   editKeySource.Contains(
+                       "OpenTodoItemEditor(item)",
                        StringComparison.Ordinal) &&
-                    beginEditSource.Contains(
-                        "textBox.PreviewTextInput += TodoInput_PreviewTextInputCommitted",
-                        StringComparison.Ordinal) &&
-                    commitEditSource.Contains(
-                        "_editingTodoDraftText.Trim()",
-                        StringComparison.Ordinal) &&
-                    todoSource.Contains("CaptureTodoEditDraft", StringComparison.Ordinal) &&
-                    commitEditSource.Contains("TodoEdited?.Invoke", StringComparison.Ordinal) &&
-                   cancelEditSource.Contains("EndTodoEdit", StringComparison.Ordinal) &&
-                   todoSource.Contains("textBox.IsReadOnly = true", StringComparison.Ordinal) &&
-                   editKeySource.Contains("IsImeComposing", StringComparison.Ordinal) &&
-                    editKeySource.Contains("Key.Enter", StringComparison.Ordinal) &&
-                    editKeySource.Contains("Key.Escape", StringComparison.Ordinal),
-                "行内编辑必须支持 Trim 后保存、Esc 取消和空白保护，且微软输入法组合中的 Enter/Esc 不得误提交或取消");
-            Assert(todoSource.Contains(
-                       "Mouse.PreviewMouseDownEvent",
+                   !editKeySource.Contains(
+                       "BeginTodoEdit(",
                        StringComparison.Ordinal) &&
-                   todoSource.Contains(
-                       "handledEventsToo: true",
+                   !editKeySource.Contains(
+                       "Key.Enter",
                        StringComparison.Ordinal) &&
-                   (outsideClickSource.Contains(
-                        "IsWithin(e.OriginalSource as DependencyObject, textBox)",
-                        StringComparison.Ordinal) ||
-                    outsideClickSource.Contains(
-                        "IsWithin(originalSource, textBox)",
-                        StringComparison.Ordinal)) &&
-                   outsideClickSource.Contains(
-                       "ScheduleTodoEditAfterOutsideClick()",
+                   openTodoItemEditorSource.Contains(
+                       "OpenTaskTextEditor(",
                        StringComparison.Ordinal) &&
-                   outsideClickSource.Contains(
-                       "if (!IsImeComposing)",
+                   openTodoItemEditorSource.Contains(
+                       "TodoEdited?.Invoke(item)",
                        StringComparison.Ordinal) &&
-                   outsideClickSource.Contains(
-                       "CommitTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   finishOutsideClickSource.Contains(
-                       "IsImeComposing",
-                       StringComparison.Ordinal) &&
-                   finishOutsideClickSource.Contains(
-                       "CommitTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   scheduleFocusLossSource.Contains(
-                       "DispatcherPriority.ContextIdle",
-                       StringComparison.Ordinal) &&
-                   !scheduleFocusLossSource.Contains(
-                       "DispatcherPriority.Input",
+                   todoSource.IndexOf(
+                       "BeginTodoEdit(",
+                       StringComparison.Ordinal) ==
+                   todoSource.LastIndexOf(
+                       "BeginTodoEdit(",
                        StringComparison.Ordinal),
-                "点击行内编辑框外的任意窗口区域必须先保存再继续按钮事件；微软输入法组合或真实失焦则统一延后到ContextIdle，不能保存半成品");
-            Assert(handleFocusDepartureSource.Contains(
-                       "if (!IsImeComposing)",
-                       StringComparison.Ordinal) &&
-                   handleFocusDepartureSource.Contains(
-                       "CommitTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   deleteTodoSource.Contains(
-                       "ReferenceEquals(item, _editingTodoItem)",
-                       StringComparison.Ordinal) &&
-                   deleteTodoSource.Contains(
-                       "CancelTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   closingSource.Contains(
-                       "if (IsImeComposing)",
-                       StringComparison.Ordinal) &&
-                   closingSource.Contains(
-                       "CancelTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   dataContextChangedSource.Contains(
-                       "if (IsImeComposing)",
-                       StringComparison.Ordinal) &&
-                   dataContextChangedSource.Contains(
-                       "CancelTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   editorUnloadedSource.Contains(
-                       "if (IsImeComposing)",
-                       StringComparison.Ordinal) &&
-                   editorUnloadedSource.Contains(
-                       "CancelTodoEdit()",
-                       StringComparison.Ordinal) &&
-                   finishFocusLossSource.Contains(
-                       "containerWasRecycled && IsImeComposing",
-                       StringComparison.Ordinal) &&
-                   finishFocusLossSource.Contains(
-                       "CancelTodoEdit()",
-                       StringComparison.Ordinal),
-                "Non-IME focus loss must save synchronously; deleting or closing during IME composition must cancel the unconfirmed draft");
+                "F2 必须与铅笔按钮复用独立 TaskTextEditWindow；生产代码不得再从任何用户入口进入会失焦自动保存的行内编辑");
             Assert(dragMoveSource.Contains(
                        "SystemParameters.MinimumHorizontalDragDistance",
                        StringComparison.Ordinal) &&
@@ -14985,252 +15005,91 @@ internal static class Program
             todoTextEditor.CloseWithoutSaving();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
 
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            Assert(!longItemTextBox.IsReadOnly &&
-                   longItemTextBox.IsKeyboardFocusWithin &&
-                   longItemTextBox.VerticalScrollBarVisibility ==
-                       ScrollBarVisibility.Hidden,
-                "点击编辑按钮后必须在同一行 TextBox 内进入可编辑状态并获得焦点，避免 IME 候选框漂移");
-            longItemTextBox.Text = "  修改后的长待办  ";
-            longItemTextBox.Select(2, 4);
-            Assert(ApplicationCommands.Copy.CanExecute(
-                    parameter: null,
-                    target: longItemTextBox),
-                "行内编辑状态必须保留 TextBox 原生 Ctrl+C/V/X/A，不能被窗口级复制兼容逻辑禁用");
-
-            var editPresentationSource = PresentationSource.FromVisual(longItemTextBox)
-                ?? throw new InvalidOperationException("行内编辑 TextBox 未建立输入源");
-            Invoke(todoWindow, "SetImeComposing", true);
-            var composingEditEnter = CreateKeyEvent(editPresentationSource, Key.Enter);
+            var f2PresentationSource =
+                PresentationSource.FromVisual(longItemTextBox)
+                ?? throw new InvalidOperationException("F2 待办编辑没有输入源");
+            var f2Edit = CreateKeyEvent(f2PresentationSource, Key.F2);
             Invoke(
                 todoWindow,
                 "TodoEditTextBox_PreviewKeyDown",
                 longItemTextBox,
-                composingEditEnter);
-            Assert(editedCount == 0 &&
+                f2Edit);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var f2Editor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var f2EditorInput = GetField<TextBox>(
+                f2Editor,
+                "EditorTextBox");
+            Assert(f2Edit.Handled &&
+                   f2Editor.IsVisible &&
+                   ReferenceEquals(f2Editor.Owner, todoWindow) &&
+                   longItemTextBox.IsReadOnly &&
                    longTodoItem.Text == longTodoText &&
-                   !longItemTextBox.IsReadOnly,
-                "微软输入法仍在组合时，行内编辑 Enter 只能选词，不得提交、退出编辑或覆盖原文");
+                   editedCount == 0,
+                "F2 必须与铅笔按钮一样打开独立修改窗，列表正文保持只读且不得提前保存");
 
-            Invoke(todoWindow, "SetImeComposing", false);
-            var committedEditEnter = CreateKeyEvent(editPresentationSource, Key.Enter);
+            f2EditorInput.Text = "  F2 尚未确认的修改  ";
+            todoWindow.Activate();
+            input.Focus();
+            Keyboard.Focus(input);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(f2Editor.IsVisible &&
+                   longTodoItem.Text == longTodoText &&
+                   editedCount == 0,
+                "F2 修改窗失去焦点后必须保留草稿且不保存，只有确定修改才允许提交");
+
+            f2Editor.Activate();
+            f2EditorInput.Focus();
+            Keyboard.Focus(f2EditorInput);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var f2EditorSource = PresentationSource.FromVisual(f2Editor)
+                ?? throw new InvalidOperationException("F2 独立修改窗没有输入源");
+            var f2Escape = CreateKeyEvent(f2EditorSource, Key.Escape);
+            Invoke(
+                f2Editor,
+                "Window_PreviewKeyDown",
+                f2Editor,
+                f2Escape);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(f2Escape.Handled &&
+                   !f2Editor.IsVisible &&
+                   longTodoItem.Text == longTodoText &&
+                   editedCount == 0,
+                "F2 修改窗按 Esc 必须取消草稿，不能修改原待办或触发保存事件");
+
+            var secondF2 = CreateKeyEvent(f2PresentationSource, Key.F2);
             Invoke(
                 todoWindow,
                 "TodoEditTextBox_PreviewKeyDown",
                 longItemTextBox,
-                committedEditEnter);
-            Assert(editedCount == 1 &&
+                secondF2);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var confirmedF2Editor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var confirmedF2Input = GetField<TextBox>(
+                confirmedF2Editor,
+                "EditorTextBox");
+            var confirmedF2Button = GetField<Button>(
+                confirmedF2Editor,
+                "SaveButton");
+            confirmedF2Input.Text = "  F2 独立窗口已确认保存  ";
+            Invoke(
+                confirmedF2Editor,
+                "SaveButton_Click",
+                confirmedF2Button,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    confirmedF2Button));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(secondF2.Handled &&
+                   editedCount == 1 &&
                    ReferenceEquals(lastEditedItem, longTodoItem) &&
-                   longTodoItem.Text == "修改后的长待办" &&
-                   longItemTextBox.IsReadOnly &&
-                   longItemTextBox.VerticalScrollBarVisibility ==
-                       ScrollBarVisibility.Disabled &&
-                   committedEditEnter.Handled,
-                "行内编辑 Enter 必须 Trim 后提交一次 TodoEdited、更新原对象并返回只读选择状态");
+                   longTodoItem.Text == "F2 独立窗口已确认保存" &&
+                   GetRawField(todoWindow, "_taskTextEditWindow") is null,
+                "F2 独立修改窗只能由确定修改提交一次，并与铅笔入口复用相同 TodoEdited 保存链");
 
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "这一版应被取消";
-            var cancelEditEscape = CreateKeyEvent(editPresentationSource, Key.Escape);
-            Invoke(
-                todoWindow,
-                "TodoEditTextBox_PreviewKeyDown",
-                longItemTextBox,
-                cancelEditEscape);
-            Assert(editedCount == 1 &&
-                   longTodoItem.Text == "修改后的长待办" &&
-                   longItemTextBox.Text == "修改后的长待办" &&
-                   longItemTextBox.IsReadOnly &&
-                   cancelEditEscape.Handled,
-                "行内编辑 Esc 必须恢复进入编辑前的文字、退出编辑且不得触发保存事件");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "   \t  ";
-            Invoke(todoWindow, "CommitTodoEdit");
-            Assert(editedCount == 1 &&
-                   longTodoItem.Text == "修改后的长待办" &&
-                   longItemTextBox.Text == "修改后的长待办" &&
-                   longItemTextBox.IsReadOnly,
-                "空白编辑不得删除待办或写入空文本；应取消本次修改并保留原文");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "  修改后的长待办  ";
-            Invoke(todoWindow, "CommitTodoEdit");
-            Assert(editedCount == 1 &&
-                   longTodoItem.Text == "修改后的长待办" &&
-                   longItemTextBox.IsReadOnly,
-                "仅首尾空白不同的编辑应正常结束但不得重复触发 TodoEdited 保存");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "虚拟化回收前保存的草稿";
-            var recycledTodoItem = new TodoItem { Text = "回收容器的新待办" };
-            longItemTextBox.DataContext = recycledTodoItem;
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 2 &&
-                   longTodoItem.Text == "虚拟化回收前保存的草稿" &&
-                   recycledTodoItem.Text == "回收容器的新待办" &&
-                   longItemTextBox.IsReadOnly,
-                "Recycling 复用行容器时必须把已输入草稿提交给原 TodoItem，不能把新行文字写回旧项或污染新项；" +
-                $"edited={editedCount}, old={longTodoItem.Text}, recycled={recycledTodoItem.Text}, readOnly={longItemTextBox.IsReadOnly}");
-            longItemTextBox.ClearValue(FrameworkElement.DataContextProperty);
-            PumpDispatcher(TimeSpan.FromMilliseconds(20));
-            Assert(ReferenceEquals(longItemTextBox.DataContext, longTodoItem),
-                "虚拟化回收模拟完成后 TextBox 必须恢复继承原行 DataContext");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "失去焦点后自动保存";
-            input.Focus();
-            Keyboard.Focus(input);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 3 &&
-                   longTodoItem.Text == "失去焦点后自动保存" &&
-                   longItemTextBox.IsReadOnly,
-                "行内编辑失去键盘焦点后必须延后提交一次，点击窗口其他位置不能丢失修改");
-
-            var textBeforeImeRecycle = longTodoItem.Text;
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "unconfirmed IME text in a recycled container";
-            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
-            var imeRecycledItem = new TodoItem { Text = "new recycled item" };
-            longItemTextBox.DataContext = imeRecycledItem;
-            Assert(editedCount == 3 &&
-                   longTodoItem.Text == textBeforeImeRecycle &&
-                   imeRecycledItem.Text == "new recycled item" &&
-                   longItemTextBox.IsReadOnly &&
-                   !todoWindow.IsImeComposing,
-                "Recycling an editor during IME composition must synchronously discard the unconfirmed candidate and never save it to either item");
-            longItemTextBox.ClearValue(FrameworkElement.DataContextProperty);
-            PumpDispatcher(TimeSpan.FromMilliseconds(20));
-            Assert(ReferenceEquals(longItemTextBox.DataContext, longTodoItem),
-                "The IME recycling test must restore the original inherited DataContext");
-
-            var fallbackOriginalText = longTodoItem.Text;
-            var fallbackRecycledItem = new TodoItem { Text = "fallback item" };
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "half-composed fallback text";
-            SetField(todoWindow, "_editingTodoItem", fallbackRecycledItem);
-            SetField(todoWindow, "_editingTodoOriginalText", fallbackRecycledItem.Text);
-            SetField(todoWindow, "_editingTodoDraftText", longItemTextBox.Text);
-            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
-            Invoke(todoWindow, "FinishTodoEditAfterFocusLoss");
-            Assert(editedCount == 3 &&
-                   longTodoItem.Text == fallbackOriginalText &&
-                   fallbackRecycledItem.Text == "fallback item" &&
-                   longItemTextBox.IsReadOnly &&
-                   !todoWindow.IsImeComposing,
-                "The delayed focus-loss fallback must cancel an IME draft when it discovers that the editor was recycled");
-
-            var todoBorder = GetField<Border>(todoWindow, "TodoBorder");
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "编辑框内部点击不能保存";
-            RaisePreviewMouseDown(longItemTextBox);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 3 &&
-                   longTodoItem.Text == "失去焦点后自动保存" &&
-                   !longItemTextBox.IsReadOnly,
-                "点击当前编辑框或其模板子元素时不得提交，也不能折叠正在编辑的状态");
-
-            longItemTextBox.Text = "  点击空白区域自动保存  ";
-            RaisePreviewMouseDown(todoBorder);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 4 &&
-                   longTodoItem.Text == "点击空白区域自动保存" &&
-                   longItemTextBox.IsReadOnly,
-                "点击不可聚焦 Border/空白区域后必须 Trim 并只触发一次 TodoEdited");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "微软输入法选词完成后保存";
-            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
-            RaisePreviewMouseDown(todoBorder);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 4 &&
-                   longTodoItem.Text == "点击空白区域自动保存" &&
-                   !longItemTextBox.IsReadOnly,
-                "微软输入法仍在组合时点击空白不得保存尚未上屏的半成品");
-            Invoke(todoWindow, "SetImeComposing", false);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 5 &&
-                   longTodoItem.Text == "微软输入法选词完成后保存" &&
-                   longItemTextBox.IsReadOnly,
-                "微软输入法组合结束后，即使焦点仍在编辑框也必须完成一次外点保存");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "旧输入框组合状态结束后保存";
-            SetField(todoWindow, "_imeCompositionOwner", input);
-            Invoke(todoWindow, "SetImeComposing", true);
-            RaisePreviewMouseDown(todoBorder);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 5 &&
-                   longTodoItem.Text == "微软输入法选词完成后保存" &&
-                   !longItemTextBox.IsReadOnly,
-                "IME owner仍指向旧输入框时，外点保存必须保留pending而不能丢失修改");
-            Invoke(todoWindow, "SetImeComposing", false);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(editedCount == 6 &&
-                   longTodoItem.Text == "旧输入框组合状态结束后保存" &&
-                   longItemTextBox.IsReadOnly,
-                "旧输入框的IME组合状态清除后必须重试并只保存一次当前行草稿");
-
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "微软输入法真实失焦后保存";
-            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
-            input.Focus();
-            Keyboard.Focus(input);
-            PumpDispatcher(TimeSpan.FromMilliseconds(60));
-            Assert(editedCount == 7 &&
-                   longTodoItem.Text == "微软输入法真实失焦后保存" &&
-                   longItemTextBox.IsReadOnly &&
-                   !todoWindow.IsImeComposing,
-                "微软输入法组合中的真实焦点转移必须等到ContextIdle捕获最终文字，并只保存一次");
-
-            longItemTextBox.Select(1, 5);
-            Assert((bool)Invoke(todoWindow, "CanCopyFromTextBox", longItemTextBox)! &&
-                   string.Equals(
-                       (string?)Invoke(todoWindow, "GetCopyText", longItemTextBox),
-                       longItemTextBox.SelectedText,
-                       StringComparison.Ordinal),
-                "编辑完成后必须恢复列表只读文字的选中复制契约");
-
-            longItemTextBox.Focus();
-            Keyboard.Focus(longItemTextBox);
-            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
-            Invoke(todoWindow, "ResetImeCompositionAfterFocusLoss");
-            Assert(todoWindow.IsImeComposing,
-                "底部输入框旧的延后失焦回调不得清除已经转移到行内编辑框的微软 IME 组合状态");
-            Invoke(todoWindow, "SetImeComposing", false);
-
-            var deleteRequestCount = 0;
-            TodoItem? deletedItem = null;
-            todoWindow.DeleteRequested += item =>
-            {
-                deleteRequestCount++;
-                deletedItem = item;
-            };
-            var textBeforeDelete = longTodoItem.Text;
-            Invoke(todoWindow, "BeginTodoEdit", longItemTextBox, longTodoItem);
-            longItemTextBox.Text = "unfinished IME edit must not outlive deletion";
-            SetField(todoWindow, "_imeCompositionOwner", longItemTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
-            SetField(
-                todoWindow,
-                "_suppressDeleteConfirmationForSession",
-                true);
-            Invoke(
-                todoWindow,
-                "DeleteButton_Click",
-                new Button { Tag = longTodoItem },
-                new RoutedEventArgs(ButtonBase.ClickEvent));
-            Assert(deleteRequestCount == 1 &&
-                   ReferenceEquals(deletedItem, longTodoItem) &&
-                   editedCount == 7 &&
-                   longTodoItem.Text == textBeforeDelete &&
-                   longItemTextBox.IsReadOnly &&
-                   !todoWindow.IsImeComposing,
-                "Deleting the item currently edited by IME must cancel its unconfirmed draft before DeleteRequested and never emit a later TodoEdited event");
 
             var addCount = 0;
             todoWindow.AddRequested += _ => addCount++;
@@ -15314,21 +15173,32 @@ internal static class Program
 
             var closingTextBox = FindVisualDescendant<TextBox>(firstDragContainer)
                 ?? throw new InvalidOperationException(
-                    "Closing IME test cannot find the first todo editor");
+                    "Closing test cannot find the first todo row");
             var closingItem = dragItems[0];
             var closingOriginalText = closingItem.Text;
             var editedCountBeforeClose = editedCount;
-            Invoke(todoWindow, "BeginTodoEdit", closingTextBox, closingItem);
-            closingTextBox.Text = "unfinished IME text during application shutdown";
-            SetField(todoWindow, "_imeCompositionOwner", closingTextBox);
-            Invoke(todoWindow, "SetImeComposing", true);
+            var closingSource = PresentationSource.FromVisual(closingTextBox)
+                ?? throw new InvalidOperationException(
+                    "Closing test cannot find the todo input source");
+            var closingF2 = CreateKeyEvent(closingSource, Key.F2);
+            Invoke(
+                todoWindow,
+                "TodoEditTextBox_PreviewKeyDown",
+                closingTextBox,
+                closingF2);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var closingEditor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            GetField<TextBox>(closingEditor, "EditorTextBox").Text =
+                "unfinished text during application shutdown";
             todoWindow.CloseForApplication();
             Assert(!todoWindow.IsVisible &&
+                   !closingEditor.IsVisible &&
                    closingTextBox.IsReadOnly &&
-                   !todoWindow.IsImeComposing &&
                    closingItem.Text == closingOriginalText &&
                    editedCount == editedCountBeforeClose,
-                "Application shutdown during IME composition must discard the unconfirmed draft instead of saving stale or half-composed text");
+                "Application shutdown must close the independent editor and discard its unconfirmed draft");
         }
         finally
         {
@@ -17582,6 +17452,280 @@ internal static class Program
             ?? throw new InvalidOperationException(
                 "找不到 RenderingEventArgs(TimeSpan) 内部构造函数");
         return (RenderingEventArgs)constructor.Invoke([renderingTime]);
+    }
+
+    private static void AssertTodoArrowPositionMatrixContract(MainWindow window)
+    {
+        var monitorWorkAreaType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var positionCache = GetRawField(window, "_todoWindowPositionCache")!;
+        var petViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+        var originalBubbleMode = GetRawField(window, "_bubbleMode")!;
+        var noneBubbleMode = GetNestedEnum("BubbleMode", "None");
+        var todoBubbleMode = GetNestedEnum("BubbleMode", "Todo");
+        var originalWindowVisible = window.IsVisible;
+        var originalWindowHitTestVisible = window.IsHitTestVisible;
+        var originalTodoHitTestVisible = todoWindow.IsHitTestVisible;
+        var originalSuppressDeactivate =
+            GetField<bool>(window, "_suppressTodoWindowDeactivate");
+        var originalPetSizeScale = GetField<double>(window, "_petSizeScale");
+        var originalLeft = window.Left;
+        var originalTop = window.Top;
+        var observedTailSides = new HashSet<bool>();
+
+        try
+        {
+            window.IsHitTestVisible = false;
+            todoWindow.IsHitTestVisible = false;
+            SetField(window, "_suppressTodoWindowDeactivate", true);
+            Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+            if (!window.IsVisible)
+            {
+                window.Show();
+            }
+
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Invoke(window, "SetBubbleMode", todoBubbleMode);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(todoWindow.IsVisible,
+                "箭头位置矩阵必须使用真实可见的 Owned TodoWindow");
+
+            var workArea = (Rect)InvokeStatic(
+                monitorWorkAreaType,
+                "GetForWindow",
+                window)!;
+            var windowWidth = window.ActualWidth > 0
+                ? window.ActualWidth
+                : window.Width;
+            var windowHeight = window.ActualHeight > 0
+                ? window.ActualHeight
+                : window.Height;
+            var horizontalInset = Math.Min(
+                24,
+                Math.Max(0, (workArea.Width - windowWidth) / 4));
+            var verticalInset = Math.Min(
+                24,
+                Math.Max(0, (workArea.Height - windowHeight) / 4));
+            var xPositions = new[]
+            {
+                (
+                    Name: "left",
+                    Value: workArea.Left + horizontalInset),
+                (
+                    Name: "center",
+                    Value: workArea.Left + (workArea.Width - windowWidth) / 2),
+                (
+                    Name: "right",
+                    Value: workArea.Right - windowWidth - horizontalInset)
+            };
+            var yPositions = new[]
+            {
+                (
+                    Name: "top",
+                    Value: workArea.Top + verticalInset),
+                (
+                    Name: "middle",
+                    Value: workArea.Top + (workArea.Height - windowHeight) / 2),
+                (
+                    Name: "bottom",
+                    Value: workArea.Bottom - windowHeight - verticalInset)
+            };
+
+            foreach (var xPosition in xPositions)
+            {
+                foreach (var yPosition in yPositions)
+                {
+                    PositionTodoArrowMatrixCase(
+                        window,
+                        todoWindow,
+                        petViewbox,
+                        positionCache,
+                        xPosition.Value,
+                        yPosition.Value);
+                    var result = AssertTodoArrowAtCurrentPosition(
+                        todoWindow,
+                        petViewbox,
+                        $"{xPosition.Name}/{yPosition.Name}");
+                    observedTailSides.Add(result.TailOnRight);
+                    Assert(!result.TopClamped && !result.BottomClamped,
+                        $"{xPosition.Name}/{yPosition.Name}完全位于工作区时，" +
+                        "箭头必须直接指向人物物理中心而不是提前夹紧");
+                }
+            }
+
+            var centerX =
+                workArea.Left + (workArea.Width - windowWidth) / 2;
+            PositionTodoArrowMatrixCase(
+                window,
+                todoWindow,
+                petViewbox,
+                positionCache,
+                centerX,
+                workArea.Top - windowHeight);
+            var topClamp = AssertTodoArrowAtCurrentPosition(
+                todoWindow,
+                petViewbox,
+                "above-work-area clamp");
+            observedTailSides.Add(topClamp.TailOnRight);
+            Assert(topClamp.TopClamped && !topClamp.BottomClamped,
+                "人物中心越过工作区上方时，真实箭头必须夹紧到气泡上安全边界");
+
+            PositionTodoArrowMatrixCase(
+                window,
+                todoWindow,
+                petViewbox,
+                positionCache,
+                centerX,
+                workArea.Bottom + windowHeight * 0.1);
+            var bottomClamp = AssertTodoArrowAtCurrentPosition(
+                todoWindow,
+                petViewbox,
+                "below-work-area clamp");
+            observedTailSides.Add(bottomClamp.TailOnRight);
+            Assert(!bottomClamp.TopClamped && bottomClamp.BottomClamped,
+                "人物中心越过工作区下方时，真实箭头必须夹紧到气泡下安全边界");
+
+            Assert(observedTailSides.SetEquals([false, true]),
+                "3x3真实位置矩阵必须实际覆盖待办位于人物左右两侧，" +
+                "不能只直接调用SetTailPlacement假覆盖翻转");
+        }
+        finally
+        {
+            Invoke(window, "SetBubbleMode", noneBubbleMode);
+            Invoke(
+                window,
+                "ApplyPetSizeScale",
+                originalPetSizeScale,
+                false,
+                false);
+            window.Left = originalLeft;
+            window.Top = originalTop;
+            window.IsHitTestVisible = originalWindowHitTestVisible;
+            todoWindow.IsHitTestVisible = originalTodoHitTestVisible;
+            SetField(
+                window,
+                "_suppressTodoWindowDeactivate",
+                originalSuppressDeactivate);
+            if (!Equals(originalBubbleMode, noneBubbleMode))
+            {
+                Invoke(window, "SetBubbleMode", originalBubbleMode);
+            }
+
+            if (!originalWindowVisible)
+            {
+                window.Hide();
+            }
+
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        }
+    }
+
+    private static void PositionTodoArrowMatrixCase(
+        MainWindow window,
+        TodoWindow todoWindow,
+        Viewbox petViewbox,
+        object positionCache,
+        double left,
+        double top)
+    {
+        window.Left = left;
+        window.Top = top;
+        window.UpdateLayout();
+        PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        Invoke(positionCache, "InvalidateGeometry");
+        Invoke(window, "UpdateTodoWindowPosition");
+        todoWindow.UpdateLayout();
+        PumpDispatcher(TimeSpan.FromMilliseconds(20));
+
+        // A native SetWindowPos can synchronously update the child HWND before
+        // WPF publishes its transform. Re-run the production placement once
+        // after layout so this assertion observes the same settled coordinates
+        // a user sees, rather than a transient test-harness transform.
+        Invoke(positionCache, "InvalidateGeometry");
+        Invoke(window, "UpdateTodoWindowPosition");
+        window.UpdateLayout();
+        todoWindow.UpdateLayout();
+        PumpDispatcher(TimeSpan.FromMilliseconds(10));
+        Assert(petViewbox.IsVisible && todoWindow.IsVisible,
+            "箭头位置矩阵每个样本都必须保持人物和待办窗口真实可见");
+    }
+
+    private static (
+        bool TailOnRight,
+        bool TopClamped,
+        bool BottomClamped) AssertTodoArrowAtCurrentPosition(
+            TodoWindow todoWindow,
+            Viewbox petViewbox,
+            string stage)
+    {
+        var petBounds = GetVisualPhysicalBounds(petViewbox);
+        var petCenterX = petBounds.Left + petBounds.Width / 2;
+        var petCenterY = petBounds.Top + petBounds.Height / 2;
+        var todoOrigin = todoWindow.PointToScreen(new Point(0, 0));
+        var todoBottomRight = todoWindow.PointToScreen(
+            new Point(todoWindow.ActualWidth, todoWindow.ActualHeight));
+        var dpi = VisualTreeHelper.GetDpi(todoWindow);
+        var dpiScaleY = Math.Max(0.01, dpi.DpiScaleY);
+        var todoCenterX = (todoOrigin.X + todoBottomRight.X) / 2;
+        var expectedTailOnRight = todoCenterX <= petCenterX;
+        var actualTailOnRight = GetField<bool>(todoWindow, "_tailOnRight");
+        Assert(actualTailOnRight == expectedTailOnRight,
+            $"{stage}箭头左右方向必须按最终实际Todo HWND中心相对人物中心决定");
+
+        var tailHost = GetField<Grid>(todoWindow, "TailHost");
+        var tailPolygon = GetField<System.Windows.Shapes.Polygon>(
+            todoWindow,
+            "TailPolygon");
+        Assert(tailPolygon.Points.Count == 3,
+            $"{stage}箭头必须保持三角形尖端几何");
+        var localTip = tailPolygon.Points[1];
+        var minimumPointX = tailPolygon.Points.Min(point => point.X);
+        var maximumPointX = tailPolygon.Points.Max(point => point.X);
+        AssertClose(
+            localTip.X,
+            actualTailOnRight ? maximumPointX : minimumPointX,
+            $"{stage}箭头尖端水平朝向");
+        var physicalTip = tailPolygon.PointToScreen(localTip);
+        var expectedContactX = actualTailOnRight
+            ? petBounds.Left
+            : petBounds.Right;
+        Assert(Math.Abs(physicalTip.X - expectedContactX) <= 2.01,
+            $"{stage}箭头尖端必须接触人物当前物理边界：" +
+            $"tip={physicalTip.X:F3}px, pet={expectedContactX:F3}px");
+
+        var minimumTailTop = 18d;
+        var maximumTailTop = Math.Max(
+            minimumTailTop,
+            todoWindow.ActualHeight - 36);
+        var requestedTailCenterDip =
+            (petCenterY - todoOrigin.Y) / dpiScaleY;
+        var expectedTailTop = Math.Clamp(
+            requestedTailCenterDip - 9,
+            minimumTailTop,
+            maximumTailTop);
+        Assert(
+            Math.Abs(tailHost.Margin.Top - expectedTailTop) * dpiScaleY <= 1.01,
+            $"{stage}箭头Y必须由真实人物物理中心换算并夹紧：" +
+            $"expected={expectedTailTop:F3} DIP, actual={tailHost.Margin.Top:F3} DIP");
+        var expectedTipY =
+            todoOrigin.Y + (expectedTailTop + 9) * dpiScaleY;
+        Assert(Math.Abs(physicalTip.Y - expectedTipY) <= 1.01,
+            $"{stage}箭头尖端物理Y必须与动态TailHost中心一致：" +
+            $"expected={expectedTipY:F3}px, actual={physicalTip.Y:F3}px");
+
+        var topClamped = Math.Abs(expectedTailTop - minimumTailTop) < 0.01;
+        var bottomClamped =
+            Math.Abs(expectedTailTop - maximumTailTop) < 0.01;
+        if (!topClamped && !bottomClamped)
+        {
+            Assert(Math.Abs(physicalTip.Y - petCenterY) <= 1.01,
+                $"{stage}未夹紧时箭头尖端必须直接指向人物物理中心：" +
+                $"tip={physicalTip.Y:F3}px, pet={petCenterY:F3}px");
+        }
+
+        return (actualTailOnRight, topClamped, bottomClamped);
     }
 
     private static object GetNestedEnum(string enumName, string valueName)
