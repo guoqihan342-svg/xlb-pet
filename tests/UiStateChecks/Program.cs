@@ -4923,6 +4923,21 @@ internal static class Program
         var failedPage = ExtractPrivateMethodSource(
             mainSource,
             "StopAnimatedStateForFailedSpritePage");
+        var resolveRoamPoseStep = ExtractPrivateMethodSource(
+            mainSource,
+            "ResolveEdgeRoamPoseStep");
+        var startRoamPreload = ExtractPrivateMethodSource(
+            mainSource,
+            "StartEdgeRoamPreloadIfDue");
+        var continueRoamPreload = ExtractPrivateMethodSource(
+            mainSource,
+            "ContinueEdgeRoamPreload");
+        var completePagePrefetch = ExtractPrivateMethodSource(
+            mainSource,
+            "CompleteSpritePagePrefetch");
+        var handlePagePrefetchFailure = ExtractPrivateMethodSource(
+            mainSource,
+            "HandleSpritePagePrefetchFailure");
         var saveSettings = ExtractPrivateMethodSource(mainSource, "SaveSettings");
         var roamingSettingChanged = ExtractPrivateMethodSource(
             mainSource,
@@ -5390,8 +5405,12 @@ internal static class Program
         var roamInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeRoamInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var roamPreloadLeadTime = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeRoamPreloadLeadTime",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         Assert(automaticInterval == TimeSpan.FromMinutes(1) &&
                roamInterval == TimeSpan.FromMinutes(10) &&
+               roamPreloadLeadTime == TimeSpan.FromSeconds(2) &&
                restartAutomaticCountdown.Contains(
                    "_nextAutomaticActivityDueTimestamp = checked(",
                    StringComparison.Ordinal) &&
@@ -5419,8 +5438,97 @@ internal static class Program
                mainSource.Contains("CornerRadius", StringComparison.Ordinal),
             "自动巡游可以经过独立圆角路线的顶部段，但不得恢复手动EdgeDock.Top或edge-top分页");
 
-        Assert(canCollect.Contains("!_isEdgeRoaming", StringComparison.Ordinal) &&
+        Assert(getRoamingPose.Contains(
+                   "ResolveEdgeRoamPoseStep(",
+                   StringComparison.Ordinal) &&
+               resolveRoamPoseStep.Contains(
+                   "+ 0.5",
+                   StringComparison.Ordinal) &&
+               !startRoamTravel.Contains(
+                   "Math.Ceiling(",
+                   StringComparison.Ordinal) &&
+               startRoamTravel.Contains(
+                   "_edgeRoamLandingSeamElapsedSeconds = Math.Max(0, motionDuration)",
+                   StringComparison.Ordinal) &&
+               startRoamTravel.Contains(
+                   "_edgeRoamTravelPoseFramesPerSecond",
+                   StringComparison.Ordinal) &&
+               startRoamPreload.Contains(
+                   "EdgeRoamPreloadLeadTime",
+                   StringComparison.Ordinal) &&
+               continueRoamPreload.Contains(
+                   "_roamBoardingFrames",
+                   StringComparison.Ordinal) &&
+               continueRoamPreload.Contains(
+                   "_roamFlightFrames",
+                   StringComparison.Ordinal) &&
+               continueRoamPreload.Contains(
+                   "RequestSpritePagePrefetch",
+                   StringComparison.Ordinal) &&
+               completePagePrefetch.Contains(
+                   "ContinueEdgeRoamPreload()",
+                   StringComparison.Ordinal) &&
+               handlePagePrefetchFailure.Contains(
+                   "ScheduleNextEdgeRoam(",
+                   StringComparison.Ordinal) &&
+               handlePagePrefetchFailure.Contains(
+                   "EdgeRoamInterval",
+                   StringComparison.Ordinal),
+            "绕屏姿势必须按最近绝对帧采样，路线终点不得等待下一循环接缝；六页资源需提前串行预载，失败后只能延后到下一周期");
+
+        var resolveRoamPoseMethod = typeof(MainWindow).GetMethod(
+            "ResolveEdgeRoamPoseStep",
+            StaticFlags) ?? throw new InvalidOperationException(
+            "找不到绕屏最近绝对姿势采样器");
+        long ResolveRoamPose(double seconds, double poseRate) =>
+            (long)(resolveRoamPoseMethod.Invoke(
+                null,
+                [seconds, poseRate]) ?? -1L);
+
+        const long syntheticQpcFrequency = 10_000_000;
+        var previousSixtyHertzPose = 0L;
+        for (var callback = 1; callback <= 600; callback++)
+        {
+            var timestamp = (long)Math.Round(
+                callback * syntheticQpcFrequency / 60d,
+                MidpointRounding.AwayFromZero);
+            var pose = ResolveRoamPose(
+                timestamp / (double)syntheticQpcFrequency,
+                60d);
+            Assert(pose - previousSixtyHertzPose == 1,
+                $"60Hz量化QPC的绕屏姿势必须每次稳定前进一帧，callback={callback}, previous={previousSixtyHertzPose}, actual={pose}");
+            previousSixtyHertzPose = pose;
+        }
+
+        foreach (var refreshRate in new[] { 59d, 60d, 120d, 144d })
+        {
+            var callbackCount = (int)(refreshRate * 10);
+            for (var callback = 0; callback <= callbackCount; callback++)
+            {
+                var elapsed = callback / refreshRate;
+                var actual = ResolveRoamPose(elapsed, 60d);
+                var expected = (long)Math.Floor(elapsed * 60d + 0.5d);
+                Assert(actual == expected,
+                    $"{refreshRate:F0}Hz绕屏回调必须由同一绝对时间得到同一姿势，t={elapsed:F6}, expected={expected}, actual={actual}");
+            }
+        }
+
+        var beforeStallPose = ResolveRoamPose(0.5d, 60d);
+        var afterStallPose = ResolveRoamPose(0.75d, 60d);
+        var nextVsyncPose = ResolveRoamPose(0.75d + 1d / 60d, 60d);
+        Assert(beforeStallPose == 30 &&
+               afterStallPose == 45 &&
+               nextVsyncPose == 46,
+            "250ms渲染阻塞后必须直接定位正确姿势，下一次回调只前进一帧，不能快速补播积压帧");
+
+        Assert(canCollect.Contains(
+                   "!_edgeRoamPreloadRequested",
+                   StringComparison.Ordinal) &&
+               canCollect.Contains("!_isEdgeRoaming", StringComparison.Ordinal) &&
                isPageProtected.Contains("_isEdgeRoaming", StringComparison.Ordinal) &&
+               isPageProtected.Contains(
+                   "_edgeRoamPreloadRequested",
+                   StringComparison.Ordinal) &&
                isPageProtected.Contains("_roamBoardingFrames", StringComparison.Ordinal) &&
                isPageProtected.Contains("_roamFlightFrames", StringComparison.Ordinal) &&
                failedPage.Contains("StopEdgeRoaming(", StringComparison.Ordinal) &&
@@ -8678,6 +8786,9 @@ internal static class Program
         var roamInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeRoamInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var roamPreloadLeadTime = (TimeSpan)(typeof(MainWindow).GetField(
+                "EdgeRoamPreloadLeadTime",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var timer = GetField<DispatcherTimer>(window, "_automaticTimer");
         var timerWasEnabled = timer.IsEnabled;
         var originalTimerInterval = timer.Interval;
@@ -8692,6 +8803,8 @@ internal static class Program
         var originalReminderActive = GetField<bool>(window, "_isReminderActive");
         var originalDragActive = GetField<bool>(window, "_dragInteractionActive");
         var originalRoaming = GetField<bool>(window, "_isEdgeRoaming");
+        var originalRoamPreloadRequested =
+            GetField<bool>(window, "_edgeRoamPreloadRequested");
         var originalActiveClip = GetRawField(window, "_activeClip");
         var originalBubbleMode = GetRawField(window, "_bubbleMode")!;
         var originalEdgeDock = GetRawField(window, "_edgeDock")!;
@@ -8715,6 +8828,7 @@ internal static class Program
             SetField(window, "_isReminderActive", false);
             SetField(window, "_dragInteractionActive", false);
             SetField(window, "_isEdgeRoaming", false);
+            SetField(window, "_edgeRoamPreloadRequested", false);
             SetField(window, "_activeClip", null);
             SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
             SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
@@ -8787,8 +8901,9 @@ internal static class Program
             Assert(timer.IsEnabled &&
                    Math.Abs(
                        timer.Interval.TotalSeconds -
-                       TimeSpan.FromSeconds(25).TotalSeconds) < 0.01,
-                "共享唤醒 timer 必须选择较早的绕屏绝对截止时间");
+                       (TimeSpan.FromSeconds(25) -
+                        roamPreloadLeadTime).TotalSeconds) < 0.01,
+                "共享唤醒 timer 必须在绕屏截止前按预加载提前量唤醒");
         }
         finally
         {
@@ -8803,6 +8918,10 @@ internal static class Program
             SetField(window, "_isReminderActive", originalReminderActive);
             SetField(window, "_dragInteractionActive", originalDragActive);
             SetField(window, "_isEdgeRoaming", originalRoaming);
+            SetField(
+                window,
+                "_edgeRoamPreloadRequested",
+                originalRoamPreloadRequested);
             SetField(window, "_activeClip", originalActiveClip);
             SetField(window, "_bubbleMode", originalBubbleMode);
             SetField(window, "_edgeDock", originalEdgeDock);
@@ -10110,6 +10229,9 @@ internal static class Program
             todoWindow.Todos = new ObservableCollection<TodoItem> { item };
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             var list = GetField<ListBox>(todoWindow, "TodoItemsControl");
+            todoWindow.UpdateLayout();
+            list.UpdateLayout();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
             var container = list.ItemContainerGenerator.ContainerFromIndex(0)
                 as DependencyObject ??
                 throw new InvalidOperationException("剪切回归找不到待办列表行");
@@ -10380,6 +10502,46 @@ internal static class Program
             todoWindow.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(50));
             todoWindow.UpdateLayout();
+            scheduledInput.ApplyTemplate();
+            var scheduledInputBorder = scheduledInput.Template.FindName(
+                "ScheduledInputBorder",
+                scheduledInput) as Border;
+            var scheduledInputHoverTrigger =
+                scheduledInput.Template.Triggers
+                    .OfType<Trigger>()
+                    .Single(trigger =>
+                        trigger.Property == UIElement.IsMouseOverProperty &&
+                        Equals(trigger.Value, true));
+            var scheduledInputHoverBorder =
+                scheduledInputHoverTrigger.Setters
+                    .OfType<Setter>()
+                    .Single(setter =>
+                        setter.TargetName == "ScheduledInputBorder" &&
+                        setter.Property == Border.BorderBrushProperty)
+                    .Value as SolidColorBrush;
+            var scheduledInputFocusTrigger =
+                scheduledInput.Template.Triggers
+                    .OfType<Trigger>()
+                    .Single(trigger =>
+                        trigger.Property == UIElement.IsKeyboardFocusedProperty &&
+                        Equals(trigger.Value, true));
+            var scheduledInputFocusBorder =
+                scheduledInputFocusTrigger.Setters
+                    .OfType<Setter>()
+                    .Single(setter =>
+                        setter.TargetName == "ScheduledInputBorder" &&
+                        setter.Property == Border.BorderBrushProperty)
+                    .Value as SolidColorBrush;
+            Assert(scheduledInputBorder is not null &&
+                   scheduledInputFocusBorder?.Color ==
+                       Color.FromRgb(0xE8, 0x9D, 0x52) &&
+                   scheduledInputHoverBorder?.Color ==
+                       Color.FromRgb(0xF0, 0xAE, 0x6D) &&
+                   scheduledInput.SelectionBrush is SolidColorBrush
+                       scheduledInputSelection &&
+                   scheduledInputSelection.Color ==
+                       Color.FromRgb(0xFF, 0xD7, 0xA6),
+                "定时任务输入框的悬停、焦点边框和文字选区必须使用橘色系，不能泄露系统蓝色视觉");
             var formattedTime = new FormattedText(
                 scheduledTime.Text,
                 CultureInfo.InvariantCulture,
@@ -10455,16 +10617,23 @@ internal static class Program
 
             var scheduledShortContainer =
                 scheduledList.ItemContainerGenerator.ContainerFromItem(
-                    scheduledShortItem) as DependencyObject
+                    scheduledShortItem) as ListBoxItem
                 ?? throw new InvalidOperationException(
                     "短定时任务没有生成可视容器");
             scheduledScrollViewer.ScrollToTop();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             var scheduledLongContainer =
                 scheduledList.ItemContainerGenerator.ContainerFromItem(
-                    scheduledLongItem) as DependencyObject
+                    scheduledLongItem) as ListBoxItem
                 ?? throw new InvalidOperationException(
                     "长定时任务没有生成可视容器");
+            scheduledShortContainer.ApplyTemplate();
+            Assert(scheduledShortContainer.FocusVisualStyle is null &&
+                   scheduledShortContainer.Template.Triggers.Count == 0 &&
+                   scheduledShortContainer.BorderBrush is SolidColorBrush
+                       scheduledContainerBorder &&
+                   scheduledContainerBorder.Color == Colors.Transparent,
+                "定时任务行容器必须使用无选择触发器的透明自绘模板，不能在橘色行外叠加系统蓝色选择框");
             var scheduledShortRow =
                 FindVisualDescendants<Border>(scheduledShortContainer)
                     .First(border =>
@@ -10479,6 +10648,29 @@ internal static class Program
                             border.Name,
                             "ScheduledTaskRowBorder",
                             StringComparison.Ordinal));
+            var scheduledRowHoverTrigger =
+                scheduledShortRow.Style.Triggers
+                    .OfType<Trigger>()
+                    .Single(trigger =>
+                        trigger.Property == UIElement.IsMouseOverProperty &&
+                        Equals(trigger.Value, true));
+            var scheduledRowHoverBackground =
+                scheduledRowHoverTrigger.Setters
+                    .OfType<Setter>()
+                    .Single(setter =>
+                        setter.Property == Border.BackgroundProperty)
+                    .Value as SolidColorBrush;
+            var scheduledRowHoverBorder =
+                scheduledRowHoverTrigger.Setters
+                    .OfType<Setter>()
+                    .Single(setter =>
+                        setter.Property == Border.BorderBrushProperty)
+                    .Value as SolidColorBrush;
+            Assert(scheduledRowHoverBackground?.Color ==
+                       Color.FromRgb(0xFF, 0xE8, 0xD0) &&
+                   scheduledRowHoverBorder?.Color ==
+                       Color.FromRgb(0xF0, 0xA4, 0x5F),
+                "鼠标移到定时任务行时必须显示橘色底和橘色框，不能继续使用蓝色悬停框");
             var scheduledShortTextBox =
                 FindVisualDescendant<TextBox>(scheduledShortContainer)
                 ?? throw new InvalidOperationException(
@@ -10506,12 +10698,34 @@ internal static class Program
                        scheduledShortTextBox,
                        scheduledShortItem.Text)!,
                 "短定时任务必须被实际识别为完整显示");
+            var scheduledShortVisibleEnd = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowVisibleTextEnd",
+                scheduledShortTextBox)!;
+            var scheduledShortRightEdgeCaret = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowCharacterIndex",
+                scheduledShortTextBox,
+                new Point(
+                    scheduledShortTextBox.ActualWidth + 20,
+                    scheduledShortTextBox.ActualHeight / 2),
+                scheduledShortVisibleEnd)!;
+            Assert(scheduledShortVisibleEnd == scheduledShortTextBox.Text.Length &&
+                   scheduledShortRightEdgeCaret ==
+                       scheduledShortTextBox.Text.Length,
+                "短定时任务拖到行尾时必须落在末字符之后，最后一个字符必须能够选中复制");
             var taskFullTextPopup = GetField<Popup>(
                 todoWindow,
                 "TaskFullTextPopup");
             var taskFullTextPreview = GetField<TextBox>(
                 todoWindow,
                 "TaskFullTextPreviewTextBox");
+            var taskFullTextPopupChrome = GetField<Border>(
+                todoWindow,
+                "TaskFullTextPopupChrome");
+            var taskFullTextTitle = GetField<TextBlock>(
+                todoWindow,
+                "TaskFullTextTitle");
             Invoke(
                 todoWindow,
                 "TaskRow_MouseEnter",
@@ -10528,6 +10742,23 @@ internal static class Program
                        scheduledLongTextBox,
                        scheduledLongItem.Text)!,
                 "长定时任务测试数据必须被实际识别为裁剪显示");
+            var scheduledLongVisibleEnd = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowVisibleTextEnd",
+                scheduledLongTextBox)!;
+            var scheduledLongRightEdgeCaret = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowCharacterIndex",
+                scheduledLongTextBox,
+                new Point(
+                    scheduledLongTextBox.ActualWidth + 20,
+                    Math.Max(0, scheduledLongTextBox.ActualHeight - 1)),
+                scheduledLongVisibleEnd)!;
+            Assert(scheduledLongVisibleEnd > 0 &&
+                   scheduledLongVisibleEnd <
+                       scheduledLongTextBox.Text.Length &&
+                   scheduledLongRightEdgeCaret == scheduledLongVisibleEnd,
+                "两行长定时任务拖到右下边界时必须选中最后一个可见字符，且不能越入隐藏第三行");
             Invoke(
                 todoWindow,
                 "TaskRow_MouseEnter",
@@ -11389,7 +11620,7 @@ internal static class Program
                    ReferenceEquals(scheduledEditor.Item, editItem) &&
                    scheduledEditor.Width == 378 &&
                    scheduledEditor.Height == 414 &&
-                   scheduledEditor.ResizeMode == ResizeMode.NoResize &&
+                   scheduledEditor.ResizeMode == ResizeMode.CanResizeWithGrip &&
                    scheduledEditor.FontFamily.Source == "Microsoft YaHei" &&
                    scheduledEditor.Title == "修改定时任务" &&
                    scheduledEditorText.Text == editItem.Text &&
@@ -11401,13 +11632,27 @@ internal static class Program
                    Math.Abs(scheduledEditorDateHost.ActualWidth - 102) <= 0.1 &&
                    Math.Abs(scheduledEditorTimeHost.ActualWidth - 92) <= 0.1 &&
                    Math.Abs(scheduledEditorSaveButton.Height - 38) <= 0.1 &&
+                   scheduledEditorSaveButton.FontSize >= 13 &&
                    scheduledEditorRepeatToggle.Template is not null &&
+                   scheduledEditorRepeatCount.Template.FindName(
+                       "RepeatCountBorder",
+                       scheduledEditorRepeatCount) is Border &&
+                   scheduledEditorRepeatUnit.Template.FindName(
+                       "RepeatUnitButtonBorder",
+                       scheduledEditorRepeatUnit) is Border &&
                    GetRawField(todoWindow, "_editingScheduledTask") is null &&
                    scheduledInput.Text.Length == 0 &&
                    Equals(scheduledSubmit.Content, "新增") &&
                    scheduledEditCancel.Visibility == Visibility.Collapsed &&
                    todoWindow.IsTransientPopupOpen,
-                $"点击定时任务铅笔必须打开独立 378×414 DIP 橘色 Owned Window，日期/时分秒与新增表单同宽，并使用更高的确定按钮和可爱循环勾选；新增表单不得被改写。实际 size={scheduledEditor.Width}×{scheduledEditor.Height}, date={scheduledEditorDateHost.ActualWidth}, time={scheduledEditorTimeHost.ActualWidth}, button={scheduledEditorSaveButton.Height}, template={scheduledEditorRepeatToggle.Template is not null}");
+                $"点击定时任务铅笔必须以 378×414 DIP 打开可缩放橘色 Owned Window，日期/时分秒与新增表单同宽，循环控件同为萌系橘色；新增表单不得被改写。实际 size={scheduledEditor.Width}×{scheduledEditor.Height}, date={scheduledEditorDateHost.ActualWidth}, time={scheduledEditorTimeHost.ActualWidth}, button={scheduledEditorSaveButton.Height}");
+            scheduledEditor.Width = 450;
+            scheduledEditor.Height = 500;
+            scheduledEditor.UpdateLayout();
+            Invoke(scheduledEditor, "PositionBesideOwner");
+            Assert(Math.Abs(scheduledEditor.Width - 450) <= 0.1 &&
+                   Math.Abs(scheduledEditor.Height - 500) <= 0.1,
+                "定时任务修改窗由用户调整大小后，Owner重新定位不得重置回378×414");
             scheduledEditorText.Focus();
             Keyboard.Focus(scheduledEditorText);
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
@@ -11562,6 +11807,40 @@ internal static class Program
                    editRequestedCount == 0,
                 "修改定时任务选择循环单位后只能关闭单位下拉，选择提醒时间 Popup 和编辑窗必须继续显示");
 
+            scheduledEditorText.Text = "提醒期间必须保留的定时任务草稿";
+            Invoke(todoWindow, "BeginReminderInterruption");
+            Invoke(
+                scheduledEditor,
+                "ScheduledTaskEditWindow_Deactivated",
+                scheduledEditor,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(ReferenceEquals(
+                       GetRawField(todoWindow, "_editorInterruptedByReminder"),
+                       scheduledEditor) &&
+                   GetField<bool>(
+                       scheduledEditor,
+                       "_reminderInterruptionActive") &&
+                   scheduledEditor.IsVisible &&
+                   scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditorText.Text ==
+                       "提醒期间必须保留的定时任务草稿" &&
+                   Math.Abs(scheduledEditor.Width - 450) <= 0.1 &&
+                   Math.Abs(scheduledEditor.Height - 500) <= 0.1,
+                "提醒抢走焦点时必须保留定时任务修改窗口、未保存草稿、用户尺寸和内部时间选择层");
+            Invoke(todoWindow, "EndReminderInterruption", true);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(GetRawField(todoWindow, "_editorInterruptedByReminder") is null &&
+                   !GetField<bool>(
+                       scheduledEditor,
+                       "_reminderInterruptionActive") &&
+                   scheduledEditor.IsVisible &&
+                   scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditorText.Text ==
+                       "提醒期间必须保留的定时任务草稿" &&
+                   scheduledEditor.IsKeyboardFocusWithin,
+                "关闭提醒后必须回到原定时任务修改窗口，不能关闭选择层、清空草稿或留下中断标记");
+
             var scheduledEditorTimeSource =
                 PresentationSource.FromVisual(scheduledEditorHourPicker)
                 ?? throw new InvalidOperationException(
@@ -11699,6 +11978,137 @@ internal static class Program
                    !todoWindow.IsTransientPopupOpen &&
                    scheduledEditorSaveClick.Handled,
                 "独立编辑窗提交必须传回同一个 ScheduledTaskItem，并精确保留秒级时间和循环调度数据");
+
+            // A reminder can already be visible before the user opens an
+            // editor. The newly opened editor must still join that reminder
+            // interruption session so its picker and draft survive.
+            Invoke(todoWindow, "BeginReminderInterruption");
+            Invoke(todoWindow, "OpenScheduledTaskEditor", editItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var lateReminderEditor =
+                GetField<ScheduledTaskEditWindow>(
+                    todoWindow,
+                    "_scheduledTaskEditWindow");
+            var lateReminderEditorText =
+                GetField<TextBox>(lateReminderEditor, "TaskTextBox");
+            var lateReminderEditorPopup =
+                GetField<Popup>(
+                    lateReminderEditor,
+                    "ScheduledTimePickerPopup");
+            lateReminderEditorText.Text =
+                "draft opened after reminder became active";
+            Invoke(lateReminderEditor, "OpenScheduledTimePicker");
+            Invoke(
+                lateReminderEditor,
+                "ScheduledTaskEditWindow_Deactivated",
+                lateReminderEditor,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(GetField<bool>(
+                       todoWindow,
+                       "_isReminderInterruptionActive") &&
+                   ReferenceEquals(
+                       GetRawField(
+                           todoWindow,
+                           "_editorInterruptedByReminder"),
+                       lateReminderEditor) &&
+                   GetField<bool>(
+                       lateReminderEditor,
+                       "_reminderInterruptionActive") &&
+                   lateReminderEditorPopup.IsOpen &&
+                   lateReminderEditorText.Text ==
+                       "draft opened after reminder became active",
+                "Reminder模式下后来打开的定时任务编辑器必须立即加入中断会话，并保留草稿与时间选择Popup");
+            Invoke(todoWindow, "EndReminderInterruption", true);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(!GetField<bool>(
+                       todoWindow,
+                       "_isReminderInterruptionActive") &&
+                   GetRawField(
+                       todoWindow,
+                       "_editorInterruptedByReminder") is null &&
+                   !GetField<bool>(
+                       lateReminderEditor,
+                       "_reminderInterruptionActive") &&
+                   lateReminderEditorPopup.IsOpen &&
+                   lateReminderEditorText.Text ==
+                       "draft opened after reminder became active" &&
+                   lateReminderEditor.IsKeyboardFocusWithin,
+                "关闭提醒后必须恢复后来打开的定时任务编辑器焦点，且不得关闭Popup或丢弃草稿");
+            lateReminderEditor.CloseWithoutSaving();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+
+            // If editor A closes while the reminder is still visible, editor B
+            // must replace it as the session's restoration target.
+            Invoke(todoWindow, "BeginReminderInterruption");
+            Invoke(todoWindow, "OpenScheduledTaskEditor", editItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var reminderEditorA =
+                GetField<ScheduledTaskEditWindow>(
+                    todoWindow,
+                    "_scheduledTaskEditWindow");
+            Invoke(reminderEditorA, "OpenScheduledTimePicker");
+            reminderEditorA.CloseWithoutSaving();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var replacementReminderItem = new ScheduledTaskItem
+            {
+                Id = Guid.NewGuid(),
+                Text = "replacement reminder editor",
+                DueAt = DateTimeOffset.Now.AddHours(8),
+                CreatedAt = DateTimeOffset.Now
+            };
+            Invoke(
+                todoWindow,
+                "OpenScheduledTaskEditor",
+                replacementReminderItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var reminderEditorB =
+                GetField<ScheduledTaskEditWindow>(
+                    todoWindow,
+                    "_scheduledTaskEditWindow");
+            var reminderEditorBText =
+                GetField<TextBox>(reminderEditorB, "TaskTextBox");
+            var reminderEditorBPopup =
+                GetField<Popup>(
+                    reminderEditorB,
+                    "ScheduledTimePickerPopup");
+            reminderEditorBText.Text = "replacement draft must survive";
+            Invoke(reminderEditorB, "OpenScheduledTimePicker");
+            Invoke(
+                reminderEditorB,
+                "ScheduledTaskEditWindow_Deactivated",
+                reminderEditorB,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(!reminderEditorA.IsVisible &&
+                   ReferenceEquals(
+                       GetRawField(
+                           todoWindow,
+                           "_editorInterruptedByReminder"),
+                       reminderEditorB) &&
+                   GetField<bool>(
+                       reminderEditorB,
+                       "_reminderInterruptionActive") &&
+                   reminderEditorBPopup.IsOpen &&
+                   reminderEditorBText.Text ==
+                       "replacement draft must survive",
+                "提醒期间A关闭并打开B后，中断会话必须改为跟踪B并保护B的草稿与Popup");
+            Invoke(todoWindow, "EndReminderInterruption", true);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(GetRawField(
+                       todoWindow,
+                       "_editorInterruptedByReminder") is null &&
+                   !GetField<bool>(
+                       reminderEditorB,
+                       "_reminderInterruptionActive") &&
+                   reminderEditorB.IsVisible &&
+                   reminderEditorBPopup.IsOpen &&
+                   reminderEditorBText.Text ==
+                       "replacement draft must survive" &&
+                   reminderEditorB.IsKeyboardFocusWithin,
+                "关闭提醒后只能恢复替换后的编辑器B，B的草稿、Popup与焦点必须全部保留");
+            reminderEditorB.CloseWithoutSaving();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
 
             editRequestedCount = 0;
             requestedEditItem = null;
@@ -12849,6 +13259,7 @@ internal static class Program
         var firstDueAt = now;
         Func<DateTimeOffset> controlledNow = () => now;
         ReminderWindow? observedReminderWindow = null;
+        TaskTextEditWindow? interruptedTodoEditor = null;
         EventHandler? dismissObserver = null;
         var dismissRequestCount = 0;
 
@@ -12994,12 +13405,43 @@ internal static class Program
                     todoWindow,
                     "ScheduledTaskInput");
             scheduledInput.Text = "正在编辑，提醒不得关闭或清空";
+            var interruptedTodoItem = new TodoItem
+            {
+                Text = "提醒共存测试原文"
+            };
+            Invoke(
+                todoWindow,
+                "OpenTodoItemEditor",
+                interruptedTodoItem);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
-            Assert(todoWindow.IsVisible,
-                "提醒共存测试必须先显示定时任务面板");
+            interruptedTodoEditor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var interruptedTodoEditorText =
+                GetField<TextBox>(
+                    interruptedTodoEditor,
+                    "EditorTextBox");
+            interruptedTodoEditorText.Text =
+                "提醒期间未保存的待办草稿";
+            interruptedTodoEditor.Width = 430;
+            interruptedTodoEditor.Height = 470;
+            interruptedTodoEditor.UpdateLayout();
+            Assert(todoWindow.IsVisible &&
+                   interruptedTodoEditor.IsVisible,
+                "提醒共存测试必须先显示定时任务面板和待办修改窗口");
 
-            var petLeftBeforeReminder = window.Left;
-            var petTopBeforeReminder = window.Top;
+            var reminderSizeAnchor =
+                Invoke(window, "CapturePetSizeAnchor", true)
+                ?? throw new InvalidOperationException(
+                    "提醒尺寸回归无法取得当前桌宠锚点");
+            var reminderDpi = VisualTreeHelper.GetDpi(window);
+            var expectedReminderEnvelope = (Rect)InvokeStatic(
+                typeof(MainWindow),
+                "CalculatePetSizeWindowBounds",
+                1.40d,
+                reminderSizeAnchor,
+                reminderDpi.DpiScaleX,
+                reminderDpi.DpiScaleY)!;
             var recurring = new ScheduledTaskItem
             {
                 Id = Guid.Parse(
@@ -13026,13 +13468,28 @@ internal static class Program
                    todoWindow.IsVisible &&
                    scheduledInput.Text ==
                    "正在编辑，提醒不得关闭或清空" &&
-                   Math.Abs(window.Left - petLeftBeforeReminder) <= 1 &&
-                   Math.Abs(window.Top - petTopBeforeReminder) <= 1 &&
+                   ReferenceEquals(
+                       GetRawField(
+                           todoWindow,
+                           "_editorInterruptedByReminder"),
+                       interruptedTodoEditor) &&
+                   ReferenceEquals(
+                       GetRawField(
+                           todoWindow,
+                           "_taskTextEditWindow"),
+                       interruptedTodoEditor) &&
+                   interruptedTodoEditor.IsVisible &&
+                   interruptedTodoEditorText.Text ==
+                       "提醒期间未保存的待办草稿" &&
+                   Math.Abs(window.Left - expectedReminderEnvelope.Left) <= 1 &&
+                   Math.Abs(window.Top - expectedReminderEnvelope.Top) <= 1 &&
+                   Math.Abs(window.Width - expectedReminderEnvelope.Width) <= 1 &&
+                   Math.Abs(window.Height - expectedReminderEnvelope.Height) <= 1 &&
                    visibleOccurrences.Count == 1 &&
                    GetField<long>(
                        window,
                        "_totalReminderOccurrenceCount") == 1,
-                "面板打开时到点提醒必须显示在旁边，不能关闭面板、清空草稿或把桌宠搬走");
+                "面板打开时到点提醒必须显示在旁边并按原锚点放大，不能关闭面板、清空草稿或跳到屏幕角落");
 
             var todoBounds = new Rect(
                 todoWindow.Left,
@@ -13174,6 +13631,20 @@ internal static class Program
                    todoWindow.IsVisible &&
                    scheduledInput.Text ==
                        "正在编辑，提醒不得关闭或清空" &&
+                   GetRawField(
+                       todoWindow,
+                       "_editorInterruptedByReminder") is null &&
+                   ReferenceEquals(
+                       GetRawField(
+                           todoWindow,
+                           "_taskTextEditWindow"),
+                       interruptedTodoEditor) &&
+                   interruptedTodoEditor.IsVisible &&
+                   interruptedTodoEditorText.Text ==
+                       "提醒期间未保存的待办草稿" &&
+                   Math.Abs(interruptedTodoEditor.Width - 430) <= 0.1 &&
+                   Math.Abs(interruptedTodoEditor.Height - 470) <= 0.1 &&
+                   interruptedTodoEditor.IsKeyboardFocusWithin &&
                    GetField<object>(
                        window,
                        "_bubbleMode").ToString() == "Todo" &&
@@ -13289,6 +13760,25 @@ internal static class Program
                        visibleOccurrences[99]!,
                        "DueAt") == firstDueAt.AddMinutes(99),
                 "前跳105分钟必须保留最早100条完整消息，并明确显示另外6条，不能忙循环或丢提醒");
+            var reminderVerticalScrollBar =
+                FindVisualDescendants<ScrollBar>(reminderWindow)
+                    .FirstOrDefault(scrollBar =>
+                        scrollBar.Orientation == Orientation.Vertical);
+            reminderVerticalScrollBar?.ApplyTemplate();
+            var reminderScrollTrack =
+                reminderVerticalScrollBar?.Template.FindName(
+                    "PART_Track",
+                    reminderVerticalScrollBar) as Track;
+            reminderScrollTrack?.Thumb.ApplyTemplate();
+            Assert(reminderScrollTrack?.Thumb.Template.FindName(
+                       "ReminderThumbPill",
+                       reminderScrollTrack.Thumb) is Border reminderThumbPill &&
+                   reminderThumbPill.CornerRadius.TopLeft == 5 &&
+                   reminderThumbPill.Background is SolidColorBrush
+                       reminderThumbBrush &&
+                   reminderThumbBrush.Color ==
+                       Color.FromRgb(0xF3, 0xA4, 0x5E),
+                "定时提醒长内容的滑动块必须使用带高光的橘色圆润萌系滑块，不能退回系统蓝色滑块");
 
             now = firstDueAt.AddMinutes(4);
             Invoke(window, "AcknowledgeActiveReminder");
@@ -13331,6 +13821,7 @@ internal static class Program
             visibleOccurrences.Clear();
             observedCounts.Clear();
             scheduledStore.Save(scheduledTasks);
+            interruptedTodoEditor?.CloseWithoutSaving();
             if (observedReminderWindow is not null &&
                 dismissObserver is not null)
             {
@@ -14826,6 +15317,7 @@ internal static class Program
                        addButton) == "新增待办事项",
                 "收起、退出、新增必须共用圆润高光按钮模板，并保留各自动化名称和不同语义配色");
             var roamingToggle = GetField<CheckBox>(todoWindow, "EdgeRoamingToggle");
+            var startupToggle = GetField<CheckBox>(todoWindow, "StartupToggle");
             var sizeSlider = GetField<Slider>(todoWindow, "PetSizeSlider");
             var sizeLabel = GetField<TextBlock>(todoWindow, "PetSizeLabel");
             Assert(roamingToggle.IsChecked == true &&
@@ -14841,8 +15333,16 @@ internal static class Program
                    string.Equals(
                        roamingToggle.FontFamily.Source,
                        "Microsoft YaHei",
-                       StringComparison.OrdinalIgnoreCase),
-                "桌宠大小上方必须显示默认勾选的“绕屏动画”，并统一使用微软雅黑和无障碍名称");
+                       StringComparison.OrdinalIgnoreCase) &&
+                   roamingToggle.Template.FindName(
+                       "SwitchTrack",
+                       roamingToggle) is Border roamingSwitchTrack &&
+                   startupToggle.Template.FindName(
+                       "SwitchTrack",
+                       startupToggle) is Border startupSwitchTrack &&
+                   roamingSwitchTrack.CornerRadius.TopLeft == 11 &&
+                   startupSwitchTrack.CornerRadius.TopLeft == 11,
+                "绕屏与开机自启必须使用微软雅黑、无障碍名称和带笑脸圆钮的萌系开关");
             var roamingToggleCenter = roamingToggle.TranslatePoint(
                 new Point(0, roamingToggle.ActualHeight / 2),
                 todoWindow);
@@ -14887,6 +15387,17 @@ internal static class Program
                 "桌宠尺寸滑块必须关闭布局取整和物理像素吸附，避免拖动时逐像素卡顿");
             AssertClose(sizeSlider.SmallChange, 1, "桌宠尺寸键盘小步长");
             AssertClose(sizeSlider.LargeChange, 5, "桌宠尺寸键盘大步长");
+            sizeSlider.ApplyTemplate();
+            var cuteSizeTrack = sizeSlider.Template.FindName(
+                "PART_Track",
+                sizeSlider) as Track;
+            cuteSizeTrack?.Thumb.ApplyTemplate();
+            Assert(cuteSizeTrack?.Thumb is Thumb cuteSizeThumb &&
+                   cuteSizeThumb.Template.FindName(
+                       "ThumbFace",
+                       cuteSizeThumb) is System.Windows.Shapes.Ellipse &&
+                   Math.Abs(cuteSizeThumb.Width - 24) <= 0.1,
+                "桌宠大小必须使用橘色轨道和带表情高光的萌系圆形滑块");
             todoWindow.SetPetSizeScale(2);
             AssertClose(sizeSlider.Value, 140, "尺寸API超过上限时应钳制");
             todoWindow.SetPetSizeScale(0.1);
@@ -15031,6 +15542,12 @@ internal static class Program
             var taskFullTextPreview = GetField<TextBox>(
                 todoWindow,
                 "TaskFullTextPreviewTextBox");
+            var taskFullTextPopupChrome = GetField<Border>(
+                todoWindow,
+                "TaskFullTextPopupChrome");
+            var taskFullTextTitle = GetField<TextBlock>(
+                todoWindow,
+                "TaskFullTextTitle");
             var shortItemContainer =
                 itemsControl.ItemContainerGenerator.ContainerFromIndex(0)
                     as DependencyObject
@@ -15041,6 +15558,24 @@ internal static class Program
                         Math.Abs(border.MaxHeight - 54) < 0.01 &&
                         Math.Abs(border.CornerRadius.TopLeft - 9) < 0.01)
                 ?? throw new InvalidOperationException("短待办找不到行级 hover Border");
+            var shortItemTextBox =
+                FindVisualDescendant<TextBox>(shortItemContainer)
+                ?? throw new InvalidOperationException("短待办找不到只读文字框");
+            var shortVisibleEnd = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowVisibleTextEnd",
+                shortItemTextBox)!;
+            var shortRightEdgeCaret = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowCharacterIndex",
+                shortItemTextBox,
+                new Point(
+                    shortItemTextBox.ActualWidth + 20,
+                    shortItemTextBox.ActualHeight / 2),
+                shortVisibleEnd)!;
+            Assert(shortVisibleEnd == shortItemTextBox.Text.Length &&
+                   shortRightEdgeCaret == shortItemTextBox.Text.Length,
+                "短任务从首字拖到行尾时必须得到末字之后的排他光标，最后一个字符必须可选中");
             Invoke(
                 todoWindow,
                 "TaskRow_MouseEnter",
@@ -15124,6 +15659,16 @@ internal static class Program
             Assert(visibleTextEnd > 0 &&
                    visibleTextEnd < longItemTextBox.Text.Length,
                 "长待办测试数据必须实际产生两行之外的隐藏文字");
+            var longRightEdgeCaret = (int)InvokeStatic(
+                typeof(TodoWindow),
+                "GetTaskRowCharacterIndex",
+                longItemTextBox,
+                new Point(
+                    longItemTextBox.ActualWidth + 20,
+                    Math.Max(0, longItemTextBox.ActualHeight - 1)),
+                visibleTextEnd)!;
+            Assert(longRightEdgeCaret == visibleTextEnd,
+                "两行长任务拖到右下边界时必须选中最后一个可见字符，且不能越入隐藏第三行");
             longItemTextBox.Select(0, longItemTextBox.Text.Length);
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             Assert(longItemTextBox.SelectionStart == 0 &&
@@ -15164,11 +15709,32 @@ internal static class Program
                        taskFullTextPreview.Text,
                        longTodoText,
                        StringComparison.Ordinal) &&
+                   taskFullTextPopupChrome.Background is SolidColorBrush
+                       popupBackground &&
+                   popupBackground.Color == Color.FromRgb(0xFF, 0xF8, 0xF1) &&
+                   taskFullTextPopupChrome.BorderBrush is SolidColorBrush
+                       popupBorder &&
+                   popupBorder.Color == Color.FromRgb(0xEF, 0x94, 0x65) &&
+                   taskFullTextTitle.Foreground is SolidColorBrush popupTitleBrush &&
+                   popupTitleBrush.Color == Color.FromRgb(0xC4, 0x5F, 0x3D) &&
+                   taskFullTextPreview.SelectionBrush is SolidColorBrush
+                       popupSelection &&
+                   popupSelection.Color == Color.FromRgb(0xF5, 0xB0, 0x7D) &&
                    string.Equals(
                        taskFullTextPreview.FontFamily.Source,
                        "Microsoft YaHei",
                        StringComparison.OrdinalIgnoreCase),
                 "悬停待办行必须优先固定显示在左侧、空间不足回退右侧，并提供可滚动复制的完整文字");
+            var popupVerticalScrollBar =
+                FindVisualDescendants<ScrollBar>(taskFullTextPreview)
+                    .FirstOrDefault(scrollBar =>
+                        scrollBar.Orientation == Orientation.Vertical);
+            popupVerticalScrollBar?.ApplyTemplate();
+            Assert(popupVerticalScrollBar is not null &&
+                   popupVerticalScrollBar.Template.FindName(
+                       "PART_Track",
+                       popupVerticalScrollBar) is Track,
+                "橘红全文小窗的长文字滚动条也必须使用圆润自绘模板，不能退回系统蓝色滑块");
             taskFullTextPreview.Select(3, 10);
             Assert((bool)Invoke(
                        todoWindow,
@@ -15243,13 +15809,14 @@ internal static class Program
                    ReferenceEquals(todoTextEditor.Owner, todoWindow) &&
                    Math.Abs(todoTextEditor.Width - 378) <= 0.1 &&
                    Math.Abs(todoTextEditor.Height - 414) <= 0.1 &&
-                   todoTextEditor.ResizeMode == ResizeMode.NoResize &&
+                   todoTextEditor.ResizeMode == ResizeMode.CanResizeWithGrip &&
                    todoTextEditor.WindowStartupLocation ==
                        WindowStartupLocation.Manual &&
                    Math.Abs(todoTextEditor.Opacity - 1) <= 0.01 &&
                    todoTextEditorInput.MaxLength == 5000 &&
-                   Math.Abs(todoTextEditorSaveButton.Height - 38) <= 0.1,
-                "点击待办铅笔必须打开固定378×414 DIP、不可缩放、最多5000字且确定修改按钮足够高的编辑框");
+                   Math.Abs(todoTextEditorSaveButton.Height - 38) <= 0.1 &&
+                   todoTextEditorSaveButton.FontSize >= 13,
+                "点击待办铅笔必须以378×414 DIP打开可缩放编辑框，最多5000字且确定修改字号清晰");
             var taskEditorSource = File.ReadAllText(
                 FindWorkspaceFile("TaskTextEditWindow.xaml.cs"));
             var taskEditorXaml = File.ReadAllText(
@@ -15276,7 +15843,10 @@ internal static class Program
                        ": owner.Left + ownerWidth",
                        StringComparison.Ordinal) &&
                    taskEditorXaml.Contains(
-                       "ResizeMode=\"NoResize\"",
+                       "ResizeMode=\"CanResizeWithGrip\"",
+                       StringComparison.Ordinal) &&
+                   taskEditorXaml.Contains(
+                       "ResizeBorderThickness=\"7\"",
                        StringComparison.Ordinal) &&
                    taskEditorXaml.Contains(
                        "WindowStartupLocation=\"Manual\"",
@@ -15291,6 +15861,32 @@ internal static class Program
                        "CommitAfterDeactivation",
                        StringComparison.Ordinal),
                 "待办/定时编辑窗必须先隐藏定位，固定左侧优先、失活不保存；左侧无空间时再回退到右侧，并适配多屏工作区");
+            todoTextEditor.Width = 430;
+            todoTextEditor.Height = 470;
+            todoTextEditor.UpdateLayout();
+            Invoke(todoTextEditor, "PositionBesideOwner");
+            Assert(Math.Abs(todoTextEditor.Width - 430) <= 0.1 &&
+                   Math.Abs(todoTextEditor.Height - 470) <= 0.1,
+                "待办修改窗由用户调整大小后，Owner移动/重新定位不得把尺寸重置为378×414");
+            todoTextEditorInput.Text = "提醒期间必须保留的待办草稿";
+            Invoke(todoWindow, "BeginReminderInterruption");
+            todoWindow.Activate();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(ReferenceEquals(
+                       GetRawField(todoWindow, "_editorInterruptedByReminder"),
+                       todoTextEditor) &&
+                   todoTextEditor.IsVisible &&
+                   todoTextEditorInput.Text == "提醒期间必须保留的待办草稿" &&
+                   Math.Abs(todoTextEditor.Width - 430) <= 0.1 &&
+                   Math.Abs(todoTextEditor.Height - 470) <= 0.1,
+                "提醒出现时必须保留待办修改窗口、未保存草稿和用户调整后的窗口尺寸");
+            Invoke(todoWindow, "EndReminderInterruption", true);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(GetRawField(todoWindow, "_editorInterruptedByReminder") is null &&
+                   todoTextEditor.IsVisible &&
+                   todoTextEditorInput.Text == "提醒期间必须保留的待办草稿" &&
+                   todoTextEditor.IsKeyboardFocusWithin,
+                "关闭提醒后必须恢复原待办修改窗口的焦点和草稿，不能影响修改框");
             todoTextEditor.CloseWithoutSaving();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
 
@@ -17754,6 +18350,7 @@ internal static class Program
         var originalBubbleMode = GetRawField(window, "_bubbleMode")!;
         var noneBubbleMode = GetNestedEnum("BubbleMode", "None");
         var todoBubbleMode = GetNestedEnum("BubbleMode", "Todo");
+        var cuteBubbleMode = GetNestedEnum("BubbleMode", "Cute");
         var originalWindowVisible = window.IsVisible;
         var originalWindowHitTestVisible = window.IsHitTestVisible;
         var originalTodoHitTestVisible = todoWindow.IsHitTestVisible;
@@ -17879,6 +18476,36 @@ internal static class Program
             Assert(observedTailSides.SetEquals([false, true]),
                 "3x3真实位置矩阵必须实际覆盖待办位于人物左右两侧，" +
                 "不能只直接调用SetTailPlacement假覆盖翻转");
+
+            Invoke(window, "SetBubbleMode", noneBubbleMode);
+            window.Left = workArea.Left + horizontalInset;
+            window.Top =
+                workArea.Top + (workArea.Height - windowHeight) / 2;
+            window.UpdateLayout();
+            SetField(window, "_cuteBubblePlacedOnLeft", null);
+            Invoke(window, "SetBubbleMode", cuteBubbleMode);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var cutePopup = GetField<Popup>(window, "BubblePopup");
+            var cuteTail =
+                GetField<System.Windows.Shapes.Polygon>(
+                    window,
+                    "BubbleTailPolygon");
+            Assert(cutePopup.IsOpen &&
+                   cutePopup.Placement == PlacementMode.Right &&
+                   cuteTail.Points.Count == 3 &&
+                   Math.Abs(cuteTail.Points[1].X) <= 0.01,
+                "人物位于屏幕左侧时，可爱对话框必须放到右边且箭头尖端向左指向人物");
+
+            window.Left =
+                workArea.Right - windowWidth - horizontalInset;
+            window.UpdateLayout();
+            SetField(window, "_cuteBubblePlacedOnLeft", null);
+            Invoke(window, "UpdateCuteBubblePlacementAndTail");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(cutePopup.Placement == PlacementMode.Left &&
+                   cuteTail.Points.Count == 3 &&
+                   Math.Abs(cuteTail.Points[1].X - 12) <= 0.01,
+                "人物位于屏幕右侧时，可爱对话框必须放到左边且箭头尖端向右指向人物");
         }
         finally
         {

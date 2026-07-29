@@ -167,6 +167,34 @@
                TargetType="{x:Type Button}"
                BasedOn="{StaticResource TaskRowIconButtonStyle}">
             <Setter Property="Foreground" Value="#B69275" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ScheduledIconButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#C66E2B" />
+                                <Setter TargetName="ScheduledIconButtonChrome"
+                                        Property="Background"
+                                        Value="#FFFFE7CC" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ScheduledIconButtonChrome"
+                                        Property="Background"
+                                        Value="#FFFFD8AD" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.42" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="TaskListPageButtonStyle"
@@ -297,6 +325,324 @@
                                         Value="0.35" />
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CuteTaskCheckBoxStyle"
+               TargetType="{x:Type CheckBox}">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="Foreground" Value="#73523A" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="CuteCheckShell"
+                                    Width="19"
+                                    Height="19"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Background="#FFFFF7EA"
+                                    BorderBrush="#E8BE89"
+                                    BorderThickness="1.2"
+                                    CornerRadius="7">
+                                <Grid>
+                                    <Ellipse Width="8"
+                                             Height="3"
+                                             Margin="3,2,0,0"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Top"
+                                             Fill="#8FFFFFFF"
+                                             IsHitTestVisible="False" />
+                                    <Path x:Name="CuteCheckMark"
+                                          Width="11"
+                                          Height="8"
+                                          Data="M1,4 L4.2,7 L10,1"
+                                          Fill="Transparent"
+                                          Stroke="White"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round"
+                                          StrokeThickness="2"
+                                          Visibility="Collapsed" />
+                                </Grid>
+                            </Border>
+                            <ContentPresenter Grid.Column="1"
+                                              Margin="6,0,0,0"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="Background"
+                                        Value="#FFFFEACF" />
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="BorderBrush"
+                                        Value="#E49649" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="Background"
+                                        Value="#F2A052" />
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="BorderBrush"
+                                        Value="#D98435" />
+                                <Setter TargetName="CuteCheckMark"
+                                        Property="Visibility"
+                                        Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CuteCheckShell"
+                                        Property="BorderThickness"
+                                        Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CuteSettingsSwitchStyle"
+               TargetType="{x:Type CheckBox}">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#675344" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="41" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="SwitchTrack"
+                                    Width="36"
+                                    Height="21"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Background="#FFF3E3D2"
+                                    BorderBrush="#E2B988"
+                                    BorderThickness="1"
+                                    CornerRadius="11">
+                                <Grid Margin="2">
+                                    <Ellipse x:Name="SwitchKnob"
+                                             Width="15"
+                                             Height="15"
+                                             HorizontalAlignment="Left"
+                                             Fill="#FFFFFCF7"
+                                             Stroke="#E2B27E"
+                                             StrokeThickness="1">
+                                        <Ellipse.Effect>
+                                            <DropShadowEffect BlurRadius="3"
+                                                              Direction="270"
+                                                              Opacity="0.18"
+                                                              ShadowDepth="1"
+                                                              Color="#8A5D38" />
+                                        </Ellipse.Effect>
+                                    </Ellipse>
+                                    <Grid x:Name="KnobFace"
+                                          Width="11"
+                                          Height="9"
+                                          HorizontalAlignment="Left"
+                                          Margin="2,3,0,0"
+                                          IsHitTestVisible="False">
+                                        <Ellipse Width="1.6"
+                                                 Height="1.9"
+                                                 Margin="2,2,0,0"
+                                                 HorizontalAlignment="Left"
+                                                 VerticalAlignment="Top"
+                                                 Fill="#B67845" />
+                                        <Ellipse Width="1.6"
+                                                 Height="1.9"
+                                                 Margin="0,2,2,0"
+                                                 HorizontalAlignment="Right"
+                                                 VerticalAlignment="Top"
+                                                 Fill="#B67845" />
+                                        <Path Width="4"
+                                              Height="2"
+                                              Margin="0,0,0,1"
+                                              VerticalAlignment="Bottom"
+                                              Data="M0,0 C1,2 3,2 4,0"
+                                              Fill="Transparent"
+                                              Stroke="#B67845"
+                                              StrokeEndLineCap="Round"
+                                              StrokeThickness="0.8" />
+                                    </Grid>
+                                    <Ellipse Width="8"
+                                             Height="3"
+                                             Margin="4,1,0,0"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Top"
+                                             Fill="#80FFFFFF"
+                                             IsHitTestVisible="False" />
+                                </Grid>
+                            </Border>
+                            <ContentPresenter Grid.Column="1"
+                                              Margin="5,0,0,0"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="SwitchTrack"
+                                        Property="Background"
+                                        Value="#FFFFE7C9" />
+                                <Setter TargetName="SwitchTrack"
+                                        Property="BorderBrush"
+                                        Value="#E49A50" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="SwitchTrack"
+                                        Property="Background"
+                                        Value="#F7B46E" />
+                                <Setter TargetName="SwitchTrack"
+                                        Property="BorderBrush"
+                                        Value="#DB873B" />
+                                <Setter TargetName="SwitchKnob"
+                                        Property="HorizontalAlignment"
+                                        Value="Right" />
+                                <Setter TargetName="KnobFace"
+                                        Property="HorizontalAlignment"
+                                        Value="Right" />
+                                <Setter TargetName="KnobFace"
+                                        Property="Margin"
+                                        Value="0,3,2,0" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="SwitchTrack"
+                                        Property="BorderThickness"
+                                        Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CutePetSizeSliderStyle"
+               TargetType="{x:Type Slider}">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Slider}">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track"
+                                   Margin="7,0"
+                                   VerticalAlignment="Center"
+                                   IsDirectionReversed="False">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static Slider.DecreaseLarge}"
+                                                  Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="{x:Type RepeatButton}">
+                                                <Border Height="7"
+                                                        Background="#F5AD68"
+                                                        CornerRadius="4,0,0,4" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb x:Name="CuteSizeThumb"
+                                           Width="24"
+                                           Height="24"
+                                           Focusable="False">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Grid RenderTransformOrigin="0.5,0.5">
+                                                    <Ellipse x:Name="ThumbShadow"
+                                                             Margin="1,2,1,0"
+                                                             Fill="#45A85E25" />
+                                                    <Ellipse x:Name="ThumbFace"
+                                                             Margin="1,0,1,2"
+                                                             Fill="#FFFFE7C5"
+                                                             Stroke="#E28E43"
+                                                             StrokeThickness="1.2" />
+                                                    <Ellipse Width="8"
+                                                             Height="3"
+                                                             Margin="5,3,0,0"
+                                                             HorizontalAlignment="Left"
+                                                             VerticalAlignment="Top"
+                                                             Fill="#90FFFFFF" />
+                                                    <Ellipse Width="2.2"
+                                                             Height="2.5"
+                                                             Margin="7,0,0,7"
+                                                             HorizontalAlignment="Left"
+                                                             VerticalAlignment="Bottom"
+                                                             Fill="#A76435" />
+                                                    <Ellipse Width="2.2"
+                                                             Height="2.5"
+                                                             Margin="0,0,7,7"
+                                                             HorizontalAlignment="Right"
+                                                             VerticalAlignment="Bottom"
+                                                             Fill="#A76435" />
+                                                    <Path Width="6"
+                                                          Height="3"
+                                                          Margin="0,0,0,4"
+                                                          VerticalAlignment="Bottom"
+                                                          Data="M0,0 C1.5,3 4.5,3 6,0"
+                                                          Fill="Transparent"
+                                                          Stroke="#A76435"
+                                                          StrokeEndLineCap="Round"
+                                                          StrokeThickness="1" />
+                                                </Grid>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbFace"
+                                                                Property="Fill"
+                                                                Value="#FFFFD9A7" />
+                                                        <Setter TargetName="ThumbFace"
+                                                                Property="Stroke"
+                                                                Value="#D8792C" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbFace"
+                                                                Property="Fill"
+                                                                Value="#FFC98A" />
+                                                        <Setter TargetName="ThumbShadow"
+                                                                Property="Opacity"
+                                                                Value="0.72" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static Slider.IncreaseLarge}"
+                                                  Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="{x:Type RepeatButton}">
+                                                <Border Height="7"
+                                                        Background="#FFF0DDC8"
+                                                        BorderBrush="#E8C39A"
+                                                        BorderThickness="0,1,1,1"
+                                                        CornerRadius="0,4,4,0" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -587,6 +933,7 @@
                                                       Margin="0,0,7,0"
                                                       VerticalAlignment="Center"
                                                       Cursor="Hand"
+                                                      Style="{StaticResource CuteTaskCheckBoxStyle}"
                                                       IsChecked="{Binding IsCompleted, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                       Click="TodoCheckBox_Click" />
                                             <TextBox x:Name="TodoTextBox"
@@ -677,9 +1024,21 @@
                                                     Padding="0"
                                                     FontSize="16"
                                                     Style="{StaticResource TaskRowIconButtonStyle}"
-                                                    Content="×"
                                                     Tag="{Binding}"
-                                                    Click="DeleteButton_Click" />
+                                                    Click="DeleteButton_Click">
+                                                <Viewbox Width="10"
+                                                         Height="10"
+                                                         IsHitTestVisible="False">
+                                                    <Canvas Width="10" Height="10">
+                                                        <Path Data="M1.5,1.5 L8.5,8.5 M8.5,1.5 L1.5,8.5"
+                                                              Fill="Transparent"
+                                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                                                              StrokeEndLineCap="Round"
+                                                              StrokeStartLineCap="Round"
+                                                              StrokeThickness="1.5" />
+                                                    </Canvas>
+                                                </Viewbox>
+                                            </Button>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>
@@ -807,7 +1166,26 @@
                                     <Setter Property="Margin" Value="0" />
                                     <Setter Property="MinHeight" Value="0" />
                                     <Setter Property="Focusable" Value="False" />
+                                    <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="BorderBrush" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="VerticalContentAlignment" Value="Top" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        Padding="{TemplateBinding Padding}">
+                                                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                                      SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
                                 </Style>
                             </ListBox.ItemContainerStyle>
                             <ListBox.ItemsPanel>
@@ -829,9 +1207,12 @@
                                         <Border.Style>
                                             <Style TargetType="Border">
                                                 <Setter Property="Background" Value="#FFF8EF" />
+                                                <Setter Property="BorderBrush" Value="Transparent" />
+                                                <Setter Property="BorderThickness" Value="1" />
                                                 <Style.Triggers>
                                                     <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Background" Value="#EAF3FF" />
+                                                        <Setter Property="Background" Value="#FFFFE8D0" />
+                                                        <Setter Property="BorderBrush" Value="#F0A45F" />
                                                     </Trigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -862,9 +1243,10 @@
                                                          Background="Transparent"
                                                          BorderThickness="0"
                                                           Cursor="IBeam"
-                                                          FontFamily="Microsoft YaHei"
-                                                          FontSize="13"
+                                                         FontFamily="Microsoft YaHei"
+                                                         FontSize="13"
                                                          Foreground="#303744"
+                                                         SelectionBrush="#FFD7A6"
                                                          IsReadOnly="True"
                                                          IsReadOnlyCaretVisible="False"
                                                          HorizontalScrollBarVisibility="Disabled"
@@ -919,12 +1301,24 @@
                                                     HorizontalAlignment="Right"
                                                     VerticalAlignment="Center"
                                                     AutomationProperties.Name="删除定时任务"
-                                                    Content="×"
                                                     FontSize="16"
                                                     Style="{StaticResource ScheduledTaskRowIconButtonStyle}"
                                                     Tag="{Binding}"
                                                     ToolTip="删除定时任务"
-                                                    Click="ScheduledTaskDeleteButton_Click" />
+                                                    Click="ScheduledTaskDeleteButton_Click">
+                                                <Viewbox Width="10"
+                                                         Height="10"
+                                                         IsHitTestVisible="False">
+                                                    <Canvas Width="10" Height="10">
+                                                        <Path Data="M1.5,1.5 L8.5,8.5 M8.5,1.5 L1.5,8.5"
+                                                              Fill="Transparent"
+                                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                                                              StrokeEndLineCap="Round"
+                                                              StrokeStartLineCap="Round"
+                                                              StrokeThickness="1.5" />
+                                                    </Canvas>
+                                                </Viewbox>
+                                            </Button>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>
@@ -967,11 +1361,55 @@
                                     <Setter Property="Background" Value="#FFFFFCF7" />
                                     <Setter Property="BorderBrush" Value="#E4C8AA" />
                                     <Setter Property="BorderThickness" Value="1" />
+                                    <Setter Property="FocusVisualStyle" Value="{x:Null}" />
                                     <Setter Property="SelectionBrush" Value="#FFD7A6" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="{x:Type TextBox}">
+                                                <Border x:Name="ScheduledInputBorder"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        CornerRadius="9">
+                                                    <ScrollViewer x:Name="PART_ContentHost"
+                                                                  Margin="{TemplateBinding Padding}"
+                                                                  Focusable="False"
+                                                                  HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                                                  VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ScheduledInputBorder"
+                                                                Property="Background"
+                                                                Value="#FFFFFAF3" />
+                                                        <Setter TargetName="ScheduledInputBorder"
+                                                                Property="BorderBrush"
+                                                                Value="#F0AE6D" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                                        <Setter TargetName="ScheduledInputBorder"
+                                                                Property="Background"
+                                                                Value="#FFFFF8EE" />
+                                                        <Setter TargetName="ScheduledInputBorder"
+                                                                Property="BorderBrush"
+                                                                Value="#E89D52" />
+                                                        <Setter TargetName="ScheduledInputBorder"
+                                                                Property="BorderThickness"
+                                                                Value="1.5" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
                                     <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#FFFFFAF3" />
+                                            <Setter Property="BorderBrush" Value="#F0AE6D" />
+                                        </Trigger>
                                         <Trigger Property="IsKeyboardFocused" Value="True">
                                             <Setter Property="Background" Value="#FFFFF8EE" />
                                             <Setter Property="BorderBrush" Value="#E89D52" />
+                                            <Setter Property="BorderThickness" Value="1.5" />
                                         </Trigger>
                                         <DataTrigger Binding="{Binding Visibility, ElementName=ScheduledTaskEditCancelButton}"
                                                      Value="Visible">
@@ -1020,6 +1458,7 @@
                                   FontFamily="Microsoft YaHei"
                                   FontSize="11.5"
                                   Foreground="#725B49"
+                                  Style="{StaticResource CuteTaskCheckBoxStyle}"
                                   ToolTip="首次按下方所选时间提醒，此后按天、小时、分钟循环"
                                   Checked="ScheduledRepeatToggle_Changed"
                                   Unchecked="ScheduledRepeatToggle_Changed" />
@@ -2158,6 +2597,7 @@
                                         <Trigger Property="Content" Value="确定修改">
                                             <Setter Property="Background" Value="#E88936" />
                                             <Setter Property="BorderBrush" Value="#C66F27" />
+                                            <Setter Property="FontSize" Value="13.5" />
                                             <Setter Property="Tag"
                                                     Value="{StaticResource CuteOrangeEditHoverBrush}" />
                                         </Trigger>
@@ -2236,6 +2676,7 @@
                               FontFamily="Microsoft YaHei"
                               FontSize="12"
                               Foreground="#515966"
+                              Style="{StaticResource CuteSettingsSwitchStyle}"
                               IsChecked="True"
                               ToolTip="控制小鲁班是否自动绕着屏幕移动"
                               Checked="EdgeRoamingToggle_Changed"
@@ -2250,6 +2691,7 @@
                               FontFamily="Microsoft YaHei"
                               FontSize="12"
                               Foreground="#515966"
+                              Style="{StaticResource CuteSettingsSwitchStyle}"
                               IsChecked="False"
                               ToolTip="登录 Windows 后自动启动小鲁班"
                               Checked="StartupToggle_Changed"
@@ -2273,6 +2715,7 @@
                             VerticalAlignment="Center"
                             Cursor="Hand"
                             FontFamily="Microsoft YaHei"
+                            Style="{StaticResource CutePetSizeSliderStyle}"
                             Minimum="75"
                             Maximum="140"
                             SnapsToDevicePixels="False"
@@ -2317,21 +2760,22 @@
                StaysOpen="True"
                Opened="TaskFullTextPopup_Opened"
                Closed="TaskFullTextPopup_Closed">
-            <Border Width="320"
+            <Border x:Name="TaskFullTextPopupChrome"
+                    Width="320"
                     MaxHeight="228"
                     Padding="11,9,11,10"
-                    Background="#FFFEFEFF"
-                    BorderBrush="#C9DCF7"
-                    BorderThickness="1"
+                    Background="#FFFFF8F1"
+                    BorderBrush="#EF9465"
+                    BorderThickness="1.2"
                     CornerRadius="13"
                     MouseEnter="TaskFullTextPopup_MouseEnter"
                     MouseLeave="TaskFullTextPopup_MouseLeave">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="14"
                                       Direction="270"
-                                      Opacity="0.18"
+                                      Opacity="0.2"
                                       ShadowDepth="3"
-                                      Color="#5B6B86" />
+                                      Color="#A85536" />
                 </Border.Effect>
                 <Grid>
                     <Grid.RowDefinitions>
@@ -2343,24 +2787,31 @@
                                FontFamily="Microsoft YaHei"
                                FontSize="11.5"
                                FontWeight="SemiBold"
-                               Foreground="#5B78A4"
+                               Foreground="#C45F3D"
                                Text="完整内容 · 可选择复制" />
                     <TextBox x:Name="TaskFullTextPreviewTextBox"
                              Grid.Row="1"
                              MinHeight="40"
                              MaxHeight="170"
                              Padding="7,5"
-                             Background="White"
-                             BorderBrush="#DFE9F7"
+                             Background="#FFFFFCF8"
+                             BorderBrush="#F1C19E"
                              BorderThickness="1"
                              Cursor="IBeam"
                              FontFamily="Microsoft YaHei"
                              FontSize="12.5"
-                             Foreground="#303744"
+                             Foreground="#4B342B"
+                             IsInactiveSelectionHighlightEnabled="True"
                              IsReadOnly="True"
                              IsReadOnlyCaretVisible="True"
+                             SelectionBrush="#F5B07D"
                              TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" />
+                             VerticalScrollBarVisibility="Auto">
+                        <TextBox.Resources>
+                            <Style TargetType="{x:Type ScrollBar}"
+                                   BasedOn="{StaticResource TaskListScrollBarStyle}" />
+                        </TextBox.Resources>
+                    </TextBox>
                     <TextBlock x:Name="TaskFullTextCountText"
                                Grid.Row="2"
                                Margin="1,2,1,0"
@@ -2368,7 +2819,7 @@
                                VerticalAlignment="Bottom"
                                FontFamily="Microsoft YaHei"
                                FontSize="10"
-                               Foreground="#98A5B8" />
+                               Foreground="#C18A6C" />
                 </Grid>
             </Border>
         </Popup>

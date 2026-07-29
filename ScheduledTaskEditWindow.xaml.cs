@@ -31,8 +31,10 @@ public partial class ScheduledTaskEditWindow : Window
     private readonly Action _positionBesideOwnerAction;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private Window? _positionOwner;
+    private bool _editorSizeInitialized;
     private bool _initializing;
     private bool _isImeComposing;
+    private bool _reminderInterruptionActive;
     private bool _scheduleEdited;
     private bool _repeatEdited;
     private bool _internalPopupOpen;
@@ -95,6 +97,7 @@ public partial class ScheduledTaskEditWindow : Window
         Deactivated += ScheduledTaskEditWindow_Deactivated;
         Closed += ScheduledTaskEditWindow_Closed;
         Loaded += ScheduledTaskEditWindow_Loaded;
+        SizeChanged += ScheduledTaskEditWindow_SizeChanged;
         DpiChanged += ScheduledTaskEditWindow_DpiChanged;
     }
 
@@ -114,6 +117,33 @@ public partial class ScheduledTaskEditWindow : Window
         {
             Close();
         }
+    }
+
+    internal void SetReminderInterruptionActive(bool active)
+    {
+        _reminderInterruptionActive = active;
+    }
+
+    internal void RestoreAfterReminder()
+    {
+        if (!IsLoaded || !IsVisible)
+        {
+            return;
+        }
+
+        Activate();
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() =>
+            {
+                if (!IsLoaded || !IsVisible)
+                {
+                    return;
+                }
+
+                TaskTextBox.Focus();
+                Keyboard.Focus(TaskTextBox);
+            }));
     }
 
     private static string[] CreateClockPartOptions(int count)
@@ -222,24 +252,43 @@ public partial class ScheduledTaskEditWindow : Window
 
     private void ApplyEditorSizeForOwnerWorkArea()
     {
-        var width = TargetEditorWidth;
-        var height = TargetEditorHeight;
+        var maximumWidth = double.PositiveInfinity;
+        var maximumHeight = double.PositiveInfinity;
         if (_positionOwner is { } owner)
         {
             var workArea = MonitorWorkArea.GetForWindow(owner);
-            width = Math.Min(width, Math.Max(1, workArea.Width));
-            height = Math.Min(height, Math.Max(1, workArea.Height));
+            maximumWidth = Math.Max(MinWidth, workArea.Width);
+            maximumHeight = Math.Max(MinHeight, workArea.Height);
         }
 
-        if (Math.Abs(Width - width) < 0.1 &&
-            Math.Abs(Height - height) < 0.1)
+        MaxWidth = maximumWidth;
+        MaxHeight = maximumHeight;
+
+        var requestedWidth = _editorSizeInitialized
+            ? Width
+            : TargetEditorWidth;
+        var requestedHeight = _editorSizeInitialized
+            ? Height
+            : TargetEditorHeight;
+        var width = Math.Clamp(
+            double.IsFinite(requestedWidth) ? requestedWidth : TargetEditorWidth,
+            MinWidth,
+            maximumWidth);
+        var height = Math.Clamp(
+            double.IsFinite(requestedHeight) ? requestedHeight : TargetEditorHeight,
+            MinHeight,
+            maximumHeight);
+        _editorSizeInitialized = true;
+
+        if (Math.Abs(Width - width) >= 0.1)
         {
-            return;
+            Width = width;
         }
 
-        Width = width;
-        Height = height;
-        _positionCache.InvalidateGeometry();
+        if (Math.Abs(Height - height) >= 0.1)
+        {
+            Height = height;
+        }
     }
 
     private void SchedulePositionBesideOwner()
@@ -336,6 +385,13 @@ public partial class ScheduledTaskEditWindow : Window
     {
         _positionCache.InvalidateGeometry();
         SchedulePositionBesideOwner();
+    }
+
+    private void ScheduledTaskEditWindow_SizeChanged(
+        object sender,
+        SizeChangedEventArgs e)
+    {
+        _positionCache.InvalidateGeometry();
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -1284,6 +1340,11 @@ public partial class ScheduledTaskEditWindow : Window
         object? sender,
         EventArgs e)
     {
+        if (_reminderInterruptionActive)
+        {
+            return;
+        }
+
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.ApplicationIdle,
             _closePickersAfterDeactivationAction);
@@ -1292,6 +1353,7 @@ public partial class ScheduledTaskEditWindow : Window
     private void ClosePickersAfterDeactivation()
     {
         if (!IsLoaded ||
+            _reminderInterruptionActive ||
             IsActive ||
             IsKeyboardFocusWithin ||
             !_internalPopupOpen ||
@@ -1341,6 +1403,7 @@ public partial class ScheduledTaskEditWindow : Window
         Deactivated -= ScheduledTaskEditWindow_Deactivated;
         Closed -= ScheduledTaskEditWindow_Closed;
         Loaded -= ScheduledTaskEditWindow_Loaded;
+        SizeChanged -= ScheduledTaskEditWindow_SizeChanged;
         DpiChanged -= ScheduledTaskEditWindow_DpiChanged;
     }
 

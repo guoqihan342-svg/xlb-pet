@@ -85,6 +85,8 @@ public partial class TodoWindow : Window
     private bool _adjustingTaskRowSelection;
     private TaskTextEditWindow? _taskTextEditWindow;
     private ScheduledTaskEditWindow? _scheduledTaskEditWindow;
+    private Window? _editorInterruptedByReminder;
+    private bool _isReminderInterruptionActive;
     private bool _suppressDeleteConfirmationForSession;
     private bool _isDeleteConfirmationOpen;
     private bool _tailOnRight = true;
@@ -227,6 +229,67 @@ public partial class TodoWindow : Window
         ScheduledDatePickerPopup.IsOpen ||
         ScheduledTimePickerPopup.IsOpen ||
         TaskFullTextPopup.IsOpen;
+
+    internal void BeginReminderInterruption()
+    {
+        _isReminderInterruptionActive = true;
+
+        if (_scheduledTaskEditWindow is { IsVisible: true } scheduledEditor)
+        {
+            TrackEditorDuringReminderInterruption(scheduledEditor);
+            return;
+        }
+
+        if (_taskTextEditWindow is { IsVisible: true } textEditor)
+        {
+            TrackEditorDuringReminderInterruption(textEditor);
+        }
+    }
+
+    internal void EndReminderInterruption(bool restoreEditorFocus)
+    {
+        _isReminderInterruptionActive = false;
+        var interruptedEditor = _editorInterruptedByReminder;
+        _editorInterruptedByReminder = null;
+
+        if (interruptedEditor is ScheduledTaskEditWindow scheduledEditor)
+        {
+            scheduledEditor.SetReminderInterruptionActive(false);
+            if (restoreEditorFocus)
+            {
+                scheduledEditor.RestoreAfterReminder();
+            }
+
+            return;
+        }
+
+        if (restoreEditorFocus &&
+            interruptedEditor is TaskTextEditWindow textEditor)
+        {
+            textEditor.RestoreAfterReminder();
+        }
+    }
+
+    private void TrackEditorDuringReminderInterruption(Window editor)
+    {
+        if (!_isReminderInterruptionActive)
+        {
+            return;
+        }
+
+        if (!ReferenceEquals(_editorInterruptedByReminder, editor) &&
+            _editorInterruptedByReminder is
+                ScheduledTaskEditWindow previousScheduledEditor)
+        {
+            previousScheduledEditor.SetReminderInterruptionActive(false);
+        }
+
+        _editorInterruptedByReminder = editor;
+        if (editor is ScheduledTaskEditWindow scheduledEditor)
+        {
+            scheduledEditor.SetReminderInterruptionActive(true);
+        }
+    }
 
     internal void RecoverAfterSystemResume()
     {
@@ -1146,6 +1209,39 @@ public partial class TodoWindow : Window
         if (characterIndex < 0)
         {
             characterIndex = point.Y <= 0 ? 0 : visibleEnd;
+        }
+        else if (characterIndex < visibleEnd)
+        {
+            // GetCharacterIndexFromPoint returns the character that was hit,
+            // while TextBox.Select expects an exclusive caret end. Resolve
+            // the trailing half of the glyph to the caret after that glyph so
+            // dragging to a row's right edge can include its final visible
+            // character without exposing text on a clipped third line.
+            var leading = textBox.GetRectFromCharacterIndex(
+                characterIndex,
+                trailingEdge: false);
+            var trailing = textBox.GetRectFromCharacterIndex(
+                characterIndex,
+                trailingEdge: true);
+            if (!leading.IsEmpty && !trailing.IsEmpty)
+            {
+                var sameLine =
+                    Math.Abs(leading.Y - trailing.Y) <=
+                    Math.Max(1, Math.Max(leading.Height, trailing.Height) / 2);
+                var isTrailingHalf = sameLine
+                    ? trailing.X >= leading.X
+                        ? clampedPoint.X >= (leading.X + trailing.X) / 2
+                        : clampedPoint.X <= (leading.X + trailing.X) / 2
+                    : clampedPoint.Y >= (leading.Y + trailing.Y) / 2;
+                if (isTrailingHalf)
+                {
+                    characterIndex++;
+                }
+            }
+            else if (point.X >= textBox.ActualWidth - 1)
+            {
+                characterIndex++;
+            }
         }
 
         return Math.Clamp(characterIndex, 0, visibleEnd);
@@ -2239,6 +2335,7 @@ public partial class TodoWindow : Window
         {
             if (ReferenceEquals(existing.Item, item))
             {
+                TrackEditorDuringReminderInterruption(existing);
                 existing.Activate();
                 return;
             }
@@ -2251,6 +2348,7 @@ public partial class TodoWindow : Window
             Owner = this
         };
         _scheduledTaskEditWindow = editor;
+        TrackEditorDuringReminderInterruption(editor);
         editor.EditAccepted += (
             text,
             dueAt,
@@ -3000,6 +3098,7 @@ public partial class TodoWindow : Window
 
         if (_taskTextEditWindow is { IsVisible: true } existing)
         {
+            TrackEditorDuringReminderInterruption(existing);
             existing.Activate();
             return;
         }
@@ -3014,6 +3113,7 @@ public partial class TodoWindow : Window
             Owner = this
         };
         _taskTextEditWindow = editor;
+        TrackEditorDuringReminderInterruption(editor);
         editor.TextAccepted += acceptText;
         if (openAdvancedEditor is not null)
         {

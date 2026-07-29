@@ -5,10 +5,12 @@
         Title="修改定时任务"
         Width="378"
         Height="414"
+        MinWidth="350"
+        MinHeight="320"
         Background="#FFFFF9F2"
         FontFamily="Microsoft YaHei"
         Opacity="0"
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         ShowInTaskbar="False"
         SizeToContent="Manual"
         SnapsToDevicePixels="True"
@@ -22,7 +24,7 @@
         <shell:WindowChrome CaptionHeight="28"
                             CornerRadius="14"
                             GlassFrameThickness="0"
-                            ResizeBorderThickness="0"
+                            ResizeBorderThickness="7"
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
 
@@ -318,6 +320,227 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="CuteRepeatCountTextBoxStyle"
+               TargetType="{x:Type TextBox}"
+               BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Height" Value="31" />
+            <Setter Property="Padding" Value="7,3" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="#FFFFF8EF" />
+            <Setter Property="BorderBrush" Value="#EDBE84" />
+            <Setter Property="SelectionBrush" Value="#FFD9A9" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TextBox}">
+                        <Border x:Name="RepeatCountBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="9">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="{TemplateBinding Padding}"
+                                          Focusable="False" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="Background"
+                                        Value="#FFFFEBCF" />
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="BorderBrush"
+                                        Value="#E29B51" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="Background"
+                                        Value="#FFFFE6C6" />
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="BorderBrush"
+                                        Value="#D98A45" />
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="BorderThickness"
+                                        Value="1.5" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="Background"
+                                        Value="#FFF6F1EA" />
+                                <Setter TargetName="RepeatCountBorder"
+                                        Property="BorderBrush"
+                                        Value="#DFD3C5" />
+                                <Setter Property="Opacity" Value="0.72" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="CuteRepeatUnitComboBoxStyle"
+               TargetType="{x:Type ComboBox}">
+            <Setter Property="Height" Value="31" />
+            <Setter Property="FontFamily" Value="Microsoft YaHei" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Foreground" Value="#70462D" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <Border x:Name="RepeatUnitButtonBorder"
+                                    Background="#FFFFF3DF"
+                                    BorderBrush="#E8BE89"
+                                    BorderThickness="1"
+                                    CornerRadius="9">
+                                <Grid>
+                                    <ContentPresenter Margin="5,1,17,1"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"
+                                                      Content="{Binding SelectionBoxItem,
+                                                                        RelativeSource={RelativeSource TemplatedParent}}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                                      IsHitTestVisible="False" />
+                                    <Path Width="6"
+                                          Height="3"
+                                          Margin="0,0,6,0"
+                                          HorizontalAlignment="Right"
+                                          VerticalAlignment="Center"
+                                          Data="M0,0 L3,3 L6,0"
+                                          IsHitTestVisible="False"
+                                          Stroke="#B47A4E"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round"
+                                          StrokeThickness="1.1" />
+                                    <ToggleButton Background="Transparent"
+                                                  BorderThickness="0"
+                                                  ClickMode="Press"
+                                                  Focusable="False"
+                                                  IsChecked="{Binding IsDropDownOpen,
+                                                                      RelativeSource={RelativeSource TemplatedParent},
+                                                                      Mode=TwoWay}">
+                                        <ToggleButton.Template>
+                                            <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                                <Border Background="Transparent" />
+                                            </ControlTemplate>
+                                        </ToggleButton.Template>
+                                    </ToggleButton>
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   PopupAnimation="Fade">
+                                <Border MinWidth="{Binding ActualWidth,
+                                                          RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="176"
+                                        Margin="0,3,0,0"
+                                        Padding="3"
+                                        Background="#FFFFFCF7"
+                                        BorderBrush="#EAB777"
+                                        BorderThickness="1"
+                                        CornerRadius="9">
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="10"
+                                                          Direction="270"
+                                                          Opacity="0.18"
+                                                          ShadowDepth="2"
+                                                          Color="#7A4B2C" />
+                                    </Border.Effect>
+                                    <ScrollViewer CanContentScroll="True"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="Background"
+                                        Value="#FFFFE8C9" />
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="BorderBrush"
+                                        Value="#E29B51" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="Background"
+                                        Value="#FFFFEBD2" />
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="BorderBrush"
+                                        Value="#D98A45" />
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="BorderThickness"
+                                        Value="1.5" />
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="Background"
+                                        Value="#FFFFE4BE" />
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="BorderBrush"
+                                        Value="#DC8D3F" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="Background"
+                                        Value="#FFF6F1EA" />
+                                <Setter TargetName="RepeatUnitButtonBorder"
+                                        Property="BorderBrush"
+                                        Value="#DFD3C5" />
+                                <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="{x:Type ComboBoxItem}">
+                        <Setter Property="Padding" Value="8,4" />
+                        <Setter Property="FontFamily" Value="Microsoft YaHei" />
+                        <Setter Property="FontSize" Value="11.5" />
+                        <Setter Property="Foreground" Value="#70462D" />
+                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                                    <Border x:Name="RepeatUnitOptionBorder"
+                                            Padding="{TemplateBinding Padding}"
+                                            Background="Transparent"
+                                            BorderBrush="Transparent"
+                                            BorderThickness="1"
+                                            CornerRadius="7">
+                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                          VerticalAlignment="Center" />
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsHighlighted" Value="True">
+                                            <Setter TargetName="RepeatUnitOptionBorder"
+                                                    Property="Background"
+                                                    Value="#FFFFEBD2" />
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="RepeatUnitOptionBorder"
+                                                    Property="Background"
+                                                    Value="#FFFFDCA8" />
+                                            <Setter Property="Foreground" Value="#8A4F21" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="OrangeButtonStyle"
                TargetType="{x:Type Button}">
             <Setter Property="MinHeight" Value="22" />
@@ -375,6 +598,45 @@
             <Setter Property="BorderBrush" Value="#EDC494" />
             <Setter Property="Foreground" Value="#A76531" />
             <Setter Property="FontSize" Value="15" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Grid Background="Transparent">
+                            <Ellipse x:Name="OrangeCloseCircle"
+                                     Fill="{TemplateBinding Background}"
+                                     Stroke="{TemplateBinding BorderBrush}"
+                                     StrokeThickness="1" />
+                            <Viewbox Width="9"
+                                     Height="9"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center">
+                                <Canvas Width="9" Height="9">
+                                    <Path Data="M1.3,1.3 L7.7,7.7 M7.7,1.3 L1.3,7.7"
+                                          Fill="Transparent"
+                                          Stroke="{TemplateBinding Foreground}"
+                                          StrokeEndLineCap="Round"
+                                          StrokeStartLineCap="Round"
+                                          StrokeThickness="1.4" />
+                                </Canvas>
+                            </Viewbox>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="OrangeCloseCircle"
+                                        Property="Fill"
+                                        Value="#FFFFE3C6" />
+                                <Setter Property="Foreground"
+                                        Value="#C46C2D" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="OrangeCloseCircle"
+                                        Property="Fill"
+                                        Value="#FFFFD4A8" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="OrangeScrollBarStyle"
                TargetType="{x:Type ScrollBar}">
@@ -488,7 +750,6 @@
                 </StackPanel>
                 <Button Grid.Column="1"
                         AutomationProperties.Name="取消修改"
-                        Content="×"
                         Style="{StaticResource OrangeCloseButtonStyle}"
                         ToolTip="取消修改"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
@@ -540,6 +801,14 @@
                                                               VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
                                             </Border>
                                             <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="TaskBodyBorder"
+                                                            Property="Background"
+                                                            Value="#FFFFFAF3" />
+                                                    <Setter TargetName="TaskBodyBorder"
+                                                            Property="BorderBrush"
+                                                            Value="#F0AE6D" />
+                                                </Trigger>
                                                 <Trigger Property="IsKeyboardFocused" Value="True">
                                                     <Setter TargetName="TaskBodyBorder"
                                                             Property="Background"
@@ -1307,12 +1576,14 @@
                                  Grid.Column="1"
                                  IsEnabled="{Binding IsChecked, ElementName=RepeatToggle}"
                                  MaxLength="7"
+                                 Style="{StaticResource CuteRepeatCountTextBoxStyle}"
                                  PreviewTextInput="RepeatCountTextBox_PreviewTextInput"
                                  TextChanged="DraftControl_Changed"
                                  shell:WindowChrome.IsHitTestVisibleInChrome="True" />
                         <ComboBox x:Name="RepeatUnitComboBox"
                                   Grid.Column="3"
                                   IsEnabled="{Binding IsChecked, ElementName=RepeatToggle}"
+                                  Style="{StaticResource CuteRepeatUnitComboBoxStyle}"
                                   DropDownClosed="InternalComboBox_DropDownClosed"
                                   DropDownOpened="InternalComboBox_DropDownOpened"
                                   SelectionChanged="DraftControl_Changed"
@@ -1354,10 +1625,12 @@
                         Padding="14,4"
                         AutomationProperties.Name="确定修改"
                         Content="确定修改"
+                        FontSize="13.5"
                         Style="{StaticResource OrangeButtonStyle}"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         Click="SaveButton_Click" />
             </Grid>
+
         </Grid>
     </Border>
 </Window>

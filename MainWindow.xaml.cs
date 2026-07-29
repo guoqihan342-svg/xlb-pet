@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     // Code-only playback setting: 1.0 is the authored 60fps timing; values
     // above 1.0 play character poses faster. Rebuild after changing it.
     private const double AnimationPlaybackSpeed = 1.25;
+    private const double CuteBubbleWidth = 215;
     private const double CuteBubbleHeight = 76;
     private const double ReminderBubbleHeight = 148;
     private const double ScreenEdgeMargin = 12;
@@ -39,10 +40,26 @@ public partial class MainWindow : Window
     private const double EdgeRoamBaseSpeedDipsPerSecond = 160;
     private const double EdgeRoamCornerRadiusDips = 48;
     private const double EdgeRoamSupportAnchorYRatio = 457d / 509d;
+    private static readonly PointCollection CuteTailPointsRight = new()
+    {
+        new Point(0, 0),
+        new Point(12, 9),
+        new Point(0, 18)
+    };
+    private static readonly PointCollection CuteTailPointsLeft = new()
+    {
+        new Point(12, 0),
+        new Point(0, 9),
+        new Point(12, 18)
+    };
+    private static readonly Brush CuteBubbleStrokeBrush =
+        new SolidColorBrush(Color.FromRgb(0xD8, 0xDE, 0xE8));
     // 48 authored poses at the global 1.25x playback setting land exactly on
     // 60fps. A 75fps pose clock on a 60Hz desktop periodically skipped two
     // adjacent in-between frames and made an otherwise smooth path pulse.
     private const double EdgeRoamPoseFramesPerSecond = 48;
+    private static readonly TimeSpan EdgeRoamPreloadLeadTime =
+        TimeSpan.FromSeconds(2);
     private const int EdgeRoamClosestPointSamples = 256;
     private const double SnoreBubbleMinimumScale = 1;
     private const double SnoreBubbleMaximumScale = 1.58;
@@ -206,6 +223,7 @@ public partial class MainWindow : Window
     private readonly Action _processSystemRecoveryAction;
 
     private BubbleMode _bubbleMode;
+    private bool? _cuteBubblePlacedOnLeft;
     private Point _pointerDownPosition;
     private bool _pointerDown;
     private bool _dragStarted;
@@ -241,6 +259,7 @@ public partial class MainWindow : Window
     private bool _edgeRoamClockStarted;
     private bool _edgeRoamBoardingPagesReady;
     private bool _edgeRoamFlightPagesReady;
+    private bool _edgeRoamPreloadRequested;
     private bool _edgeRoamBoardingReverse;
     private bool _edgeRoamStopScheduleNext;
     private bool _edgeRoamStopInterrupted;
@@ -252,6 +271,8 @@ public partial class MainWindow : Window
     private double _edgeRoamApproachLength;
     private double _edgeRoamReturnLength;
     private double _edgeRoamLandingSeamElapsedSeconds;
+    private double _edgeRoamTravelPoseFramesPerSecond =
+        EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
     private double _edgeRoamLogicalLeft;
     private double _edgeRoamLogicalTop;
     private double _edgeRoamFacingScaleX = 1;
@@ -430,8 +451,8 @@ public partial class MainWindow : Window
             "Assets/luban-reminder-hold-",
             expectedFrameCount: 48);
         // Pin the complete idle/wake chain by name, but load only the first idle
-        // page at startup. The remaining pages become resident on first use and
-        // then stay available between reactions, preventing large LOH reloads.
+        // page at startup. Roam pages are preloaded shortly before their due
+        // time and remain evictable during ordinary interactions.
         AddPinnedSpritePageNames(_wakeFrames);
         AddPinnedSpritePageNames([_idleFrame]);
         _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
@@ -581,10 +602,6 @@ public partial class MainWindow : Window
 
     private string[] BuildSpritePageWarmupOrder()
     {
-        // The startup idle page already contains enough wake poses to provide
-        // hundreds of milliseconds for the existing next-page prefetch. Keeping
-        // reminder, edge, or later wake pages resident before they are needed
-        // consumed 55+ MiB without improving presentation quality.
         return [];
     }
 
@@ -1340,6 +1357,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_bubbleMode == BubbleMode.Cute)
+        {
+            UpdateCuteBubblePlacementAndTail();
+        }
+
         // WPF Popup 使用独立 HWND，父窗口移动时不会自行重算屏幕坐标。
         // 轻微重设偏移会在 DragMove 的每次 LocationChanged 中强制它跟随宠物。
         var horizontalOffset = BubblePopup.HorizontalOffset;
@@ -1352,6 +1374,10 @@ public partial class MainWindow : Window
         _todoWindowPositionCache.InvalidateGeometry();
         QueueTodoWindowPositionUpdate();
         RefreshReminderWindowPosition();
+        if (BubblePopup.IsOpen && _bubbleMode == BubbleMode.Cute)
+        {
+            UpdateCuteBubblePlacementAndTail();
+        }
     }
 
     private void TodoWindow_DpiChanged(object sender, DpiChangedEventArgs e)
@@ -1794,14 +1820,16 @@ public partial class MainWindow : Window
         var compositionTarget = PresentationSource.FromVisual(this)?.CompositionTarget;
         if (compositionTarget is null)
         {
-            return Math.Round(value);
+            return Math.Round(value, MidpointRounding.AwayFromZero);
         }
 
         var transform = compositionTarget.TransformToDevice;
         var scale = horizontal ? transform.M11 : transform.M22;
         return double.IsFinite(scale) && scale > 0
-            ? Math.Round(value * scale) / scale
-            : Math.Round(value);
+            ? Math.Round(
+                  value * scale,
+                  MidpointRounding.AwayFromZero) / scale
+            : Math.Round(value, MidpointRounding.AwayFromZero);
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -2775,6 +2803,7 @@ public partial class MainWindow : Window
 
     private void ScheduleNextEdgeRoam(long timestamp, TimeSpan delay)
     {
+        _edgeRoamPreloadRequested = false;
         if (_isClosing || !_edgeRoamingEnabled)
         {
             _nextEdgeRoamDueTimestamp = 0;
@@ -2789,6 +2818,65 @@ public partial class MainWindow : Window
         _edgeRoamingEnabled &&
         _nextEdgeRoamDueTimestamp > 0 &&
         timestamp >= _nextEdgeRoamDueTimestamp;
+
+    private void StartEdgeRoamPreloadIfDue(long timestamp)
+    {
+        if (_edgeRoamPreloadRequested ||
+            !_edgeRoamingEnabled ||
+            _nextEdgeRoamDueTimestamp <= 0 ||
+            timestamp <
+            _nextEdgeRoamDueTimestamp -
+            ToStopwatchTicks(EdgeRoamPreloadLeadTime))
+        {
+            return;
+        }
+
+        _edgeRoamPreloadRequested = true;
+        ContinueEdgeRoamPreload();
+    }
+
+    private void ContinueEdgeRoamPreload()
+    {
+        if (!_edgeRoamPreloadRequested ||
+            _isClosing ||
+            !_edgeRoamingEnabled ||
+            _isEdgeRoaming ||
+            _nextEdgeRoamDueTimestamp <= 0)
+        {
+            return;
+        }
+
+        foreach (var frame in _roamBoardingFrames)
+        {
+            if (!_residentSpritePages.ContainsKey(frame.PageName))
+            {
+                RequestSpritePagePrefetch(frame.PageName, urgent: true);
+                return;
+            }
+        }
+
+        foreach (var frame in _roamFlightFrames)
+        {
+            if (!_residentSpritePages.ContainsKey(frame.PageName))
+            {
+                RequestSpritePagePrefetch(frame.PageName, urgent: true);
+                return;
+            }
+        }
+    }
+
+    private bool AreAllEdgeRoamPreloadPagesResident()
+    {
+        foreach (var frame in _roamBoardingFrames)
+        {
+            if (!_residentSpritePages.ContainsKey(frame.PageName))
+            {
+                return false;
+            }
+        }
+
+        return AreAllSequencePagesResident(_roamFlightFrames);
+    }
 
     private bool StartEdgeRoaming()
     {
@@ -2874,6 +2962,7 @@ public partial class MainWindow : Window
         _edgeRoamPhase = EdgeRoamPhase.None;
         _edgeRoamLandingSeamElapsedSeconds = 0;
         _nextEdgeRoamDueTimestamp = 0;
+        _edgeRoamPreloadRequested = false;
         _isEdgeRoaming = true;
 
         StopPillowBreathing();
@@ -3147,12 +3236,15 @@ public partial class MainWindow : Window
         }
 
         var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
-        var frameStep = (int)Math.Floor(elapsedSeconds * poseSpeed);
         var frameStepCount = _edgeRoamBoardingReverse
             ? _edgeRoamBoardingStartIndex + 1
             : _roamBoardingFrames.Length;
-        if (frameStep < frameStepCount)
+        var boardingDuration = frameStepCount / poseSpeed;
+        if (elapsedSeconds < boardingDuration)
         {
+            var frameStep = Math.Min(
+                frameStepCount - 1,
+                (int)ResolveEdgeRoamPoseStep(elapsedSeconds, poseSpeed));
             var frameIndex = _edgeRoamBoardingReverse
                 ? _edgeRoamBoardingStartIndex - frameStep
                 : frameStep;
@@ -3227,15 +3319,24 @@ public partial class MainWindow : Window
                             _edgeRoamRouteLength +
                             _edgeRoamReturnLength;
         var motionDuration = totalDistance / speed;
-        var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
-        var flightLoopDuration = _roamFlightFrames.Length / poseSpeed;
-        _edgeRoamLandingSeamElapsedSeconds =
-            Math.Ceiling(
-                Math.Max(0, motionDuration / flightLoopDuration) - 1e-9) *
-            flightLoopDuration;
-        if (_edgeRoamLandingSeamElapsedSeconds < motionDuration)
+        var authoredPoseSpeed =
+            EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
+        var authoredLoopCount = motionDuration * authoredPoseSpeed /
+                                _roamFlightFrames.Length;
+        var loopCount = Math.Max(
+            1L,
+            (long)Math.Round(
+                authoredLoopCount,
+                MidpointRounding.AwayFromZero));
+        _edgeRoamLandingSeamElapsedSeconds = Math.Max(0, motionDuration);
+        if (motionDuration > 0 && double.IsFinite(motionDuration))
         {
-            _edgeRoamLandingSeamElapsedSeconds += flightLoopDuration;
+            _edgeRoamTravelPoseFramesPerSecond =
+                loopCount * _roamFlightFrames.Length / motionDuration;
+        }
+        else
+        {
+            _edgeRoamTravelPoseFramesPerSecond = authoredPoseSpeed;
         }
 
         ResetPetVisualTransforms();
@@ -3356,9 +3457,6 @@ public partial class MainWindow : Window
         }
         else
         {
-            // Position has eased to rest; hover for at most one flight loop so
-            // disembarking starts at the exact loop seam instead of an arbitrary
-            // interpolated pose.
             position = _edgeRoamStartPoint;
             lookAhead = _edgeRoamStartPoint;
         }
@@ -3370,16 +3468,38 @@ public partial class MainWindow : Window
 
     private SpriteFrame GetEdgeRoamPose(double elapsedSeconds)
     {
-        var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
         // Flight and wave were authored as independent loops. Switching at a
         // wall-clock interval jumped between unrelated silhouettes. Keep wave
         // available in the atlas for a future seam-authored bridge, but present
         // only the phase-stable flight loop at runtime.
-        var absoluteFrame = Math.Max(
-            0L,
-            (long)Math.Floor(elapsedSeconds * poseSpeed));
+        var absoluteFrame = ResolveEdgeRoamPoseStep(
+            elapsedSeconds,
+            _edgeRoamTravelPoseFramesPerSecond);
         var flightIndex = (int)(absoluteFrame % _roamFlightFrames.Length);
         return _roamFlightFrames[flightIndex];
+    }
+
+    private static long ResolveEdgeRoamPoseStep(
+        double elapsedSeconds,
+        double poseFramesPerSecond)
+    {
+        if (!double.IsFinite(elapsedSeconds) ||
+            elapsedSeconds <= 0 ||
+            !double.IsFinite(poseFramesPerSecond) ||
+            poseFramesPerSecond <= 0)
+        {
+            return 0;
+        }
+
+        // VSync timestamps are integer QPC ticks. At nominal 60Hz that makes a
+        // Floor(elapsed * 60) sampler alternate 1,0,2 as values land a few
+        // microticks either side of an integer boundary. Sampling the nearest
+        // absolute pose keeps 60Hz at a steady one-pose cadence without ever
+        // replaying a backlog after a stalled render callback.
+        return Math.Max(
+            0L,
+            (long)Math.Floor(
+                elapsedSeconds * poseFramesPerSecond + 0.5));
     }
 
     private double AdvanceEdgeRoamClock(long timestamp)
@@ -3953,8 +4073,18 @@ public partial class MainWindow : Window
         }
 
         var timestamp = Stopwatch.GetTimestamp();
+        StartEdgeRoamPreloadIfDue(timestamp);
         if (IsEdgeRoamDue(timestamp))
         {
+            if (_edgeRoamPreloadRequested &&
+                !AreAllEdgeRoamPreloadPagesResident())
+            {
+                ContinueEdgeRoamPreload();
+                _automaticTimer.Interval = TimeSpan.FromMilliseconds(16);
+                _automaticTimer.Start();
+                return;
+            }
+
             StopPillowBreathing();
             if (StartEdgeRoaming())
             {
@@ -3962,6 +4092,12 @@ public partial class MainWindow : Window
             }
 
             ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
+        }
+        else if (_edgeRoamPreloadRequested)
+        {
+            StopPillowBreathing();
+            ArmAutomaticWakeTimer(timestamp);
+            return;
         }
 
         if (_isPillowBreathing)
@@ -4050,6 +4186,14 @@ public partial class MainWindow : Window
         }
         if (_edgeRoamingEnabled && _nextEdgeRoamDueTimestamp > 0)
         {
+            if (!_edgeRoamPreloadRequested)
+            {
+                nextDueTimestamp = Math.Min(
+                    nextDueTimestamp,
+                    _nextEdgeRoamDueTimestamp -
+                    ToStopwatchTicks(EdgeRoamPreloadLeadTime));
+            }
+
             nextDueTimestamp = Math.Min(
                 nextDueTimestamp,
                 _nextEdgeRoamDueTimestamp);
@@ -5642,6 +5786,11 @@ public partial class MainWindow : Window
         {
             _ = completedTask.Exception;
             StartSpritePagePrefetch();
+            if (_spritePagePrefetchTask is null &&
+                _desiredSpritePageName is null)
+            {
+                ContinueEdgeRoamPreload();
+            }
             ResumeSpritePageWarmup();
             return;
         }
@@ -5657,6 +5806,11 @@ public partial class MainWindow : Window
                 ReturnSpritePageBuffer(completedTask.Result.Pixels);
             }
             StartSpritePagePrefetch();
+            if (_spritePagePrefetchTask is null &&
+                _desiredSpritePageName is null)
+            {
+                ContinueEdgeRoamPreload();
+            }
             ResumeSpritePageWarmup();
             return;
         }
@@ -5680,6 +5834,7 @@ public partial class MainWindow : Window
         _failedSpritePageName = null;
         PublishSpritePageLoad(pageName, result, prefetched: true);
         UpdateVisualClockSubscription();
+        ContinueEdgeRoamPreload();
         if (_desiredSpritePageName is not null)
         {
             StartSpritePagePrefetch();
@@ -5725,6 +5880,16 @@ public partial class MainWindow : Window
             _renderDeferredSpritePageUrgent = false;
         }
         _failedSpritePageName = pageName;
+        var edgeRoamPreloadFailed =
+            _edgeRoamPreloadRequested &&
+            IsEdgeRoamSpritePageName(pageName, includeBoarding: true);
+        if (edgeRoamPreloadFailed)
+        {
+            _edgeRoamPreloadRequested = false;
+            ScheduleNextEdgeRoam(
+                Stopwatch.GetTimestamp(),
+                EdgeRoamInterval);
+        }
         if (_pendingSpriteFrame is SpriteFrame pending &&
             string.Equals(pending.PageName, pageName, StringComparison.Ordinal))
         {
@@ -5757,6 +5922,10 @@ public partial class MainWindow : Window
         }
 
         StopAnimatedStateForFailedSpritePage(pageName);
+        if (edgeRoamPreloadFailed)
+        {
+            RestartAutomaticCountdown();
+        }
 
         UpdateVisualClockSubscription();
         if (_spritePageWarmupIndex < _spritePageWarmupOrder.Length &&
@@ -6174,6 +6343,7 @@ public partial class MainWindow : Window
         !_petSizeCommitPending &&
         !_isFrameBlending &&
         !_isPillowBreathing &&
+        !_edgeRoamPreloadRequested &&
         !_isEdgeRoaming &&
         _bubbleMode == BubbleMode.None &&
         !_todoWindow.IsVisible &&
@@ -6368,7 +6538,7 @@ public partial class MainWindow : Window
             return true;
         }
 
-        if (_isEdgeRoaming &&
+        if ((_isEdgeRoaming || _edgeRoamPreloadRequested) &&
             (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
              (_edgeRoamPhase != EdgeRoamPhase.Disembarking &&
               (FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
@@ -6892,6 +7062,12 @@ public partial class MainWindow : Window
         }
 
         var previousMode = _bubbleMode;
+        if (mode == BubbleMode.Reminder &&
+            previousMode != BubbleMode.Reminder)
+        {
+            _todoWindow.BeginReminderInterruption();
+        }
+
         if (mode is BubbleMode.Todo or BubbleMode.Reminder)
         {
             StopEdgeRoaming(
@@ -6921,6 +7097,13 @@ public partial class MainWindow : Window
         else if (mode == BubbleMode.Reminder)
         {
             EnterReminderVisualState();
+        }
+
+        if (previousMode == BubbleMode.Reminder &&
+            mode != BubbleMode.Reminder)
+        {
+            _todoWindow.EndReminderInterruption(
+                restoreEditorFocus: mode == BubbleMode.Todo);
         }
 
         if (mode != BubbleMode.Todo &&
@@ -7242,21 +7425,57 @@ public partial class MainWindow : Window
         var displayedPetHeight = PetHost.ActualHeight > 0
             ? PetHost.ActualHeight
             : PetHost.Height;
-        BubblePopup.Placement = PlacementMode.Left;
-        BubbleBodyColumn.Width = GridLength.Auto;
-        BubbleTailColumn.Width = new GridLength(12);
-        Grid.SetColumn(BubbleHost, 0);
-        Grid.SetColumn(BubbleTailHost, 1);
-        BubbleTailHost.Margin = new Thickness(-1, 0, 0, 0);
-        BubbleTailHost.HorizontalAlignment = HorizontalAlignment.Left;
-        BubbleTailPolygon.Points = PointCollection.Parse("0,0 12,9 0,18");
-        BubbleTailPolygon.Fill = Brushes.White;
-        BubbleTailPolygon.Stroke = new SolidColorBrush(Color.FromRgb(0xD8, 0xDE, 0xE8));
+        UpdateCuteBubblePlacementAndTail();
         BubblePopup.VerticalOffset = displayedPetHeight - CuteBubbleHeight;
         BubbleHost.Visibility = Visibility.Visible;
         BubbleTailHost.Visibility = Visibility.Visible;
         CuteBubble.Visibility = Visibility.Visible;
         BubblePopup.IsOpen = true;
+    }
+
+    private void UpdateCuteBubblePlacementAndTail()
+    {
+        var workArea = MonitorWorkArea.GetForWindow(this);
+        var petTopLeft = PetSizeViewbox.TranslatePoint(new Point(0, 0), this);
+        var petBottomRight = PetSizeViewbox.TranslatePoint(
+            new Point(
+                PetSizeViewbox.ActualWidth,
+                PetSizeViewbox.ActualHeight),
+            this);
+        var petLeft = Left + Math.Min(petTopLeft.X, petBottomRight.X);
+        var petRight = Left + Math.Max(petTopLeft.X, petBottomRight.X);
+        var bubbleWidth = CuteBubbleWidth + 12;
+        var availableLeft = petLeft - workArea.Left;
+        var availableRight = workArea.Right - petRight;
+        var placeOnLeft =
+            availableLeft >= bubbleWidth ||
+            (availableRight < bubbleWidth &&
+             availableLeft >= availableRight);
+        if (_cuteBubblePlacedOnLeft == placeOnLeft)
+        {
+            return;
+        }
+
+        _cuteBubblePlacedOnLeft = placeOnLeft;
+
+        BubblePopup.Placement = placeOnLeft
+            ? PlacementMode.Left
+            : PlacementMode.Right;
+        BubbleBodyColumn.Width = GridLength.Auto;
+        BubbleTailColumn.Width = new GridLength(12);
+        Grid.SetColumn(BubbleHost, placeOnLeft ? 0 : 1);
+        Grid.SetColumn(BubbleTailHost, placeOnLeft ? 1 : 0);
+        BubbleTailHost.Margin = placeOnLeft
+            ? new Thickness(-1, 0, 0, 0)
+            : new Thickness(0, 0, -1, 0);
+        BubbleTailHost.HorizontalAlignment = placeOnLeft
+            ? HorizontalAlignment.Left
+            : HorizontalAlignment.Right;
+        BubbleTailPolygon.Points = placeOnLeft
+            ? CuteTailPointsRight
+            : CuteTailPointsLeft;
+        BubbleTailPolygon.Fill = Brushes.White;
+        BubbleTailPolygon.Stroke = CuteBubbleStrokeBrush;
     }
 
     private ReminderWindow EnsureReminderWindow()
@@ -7354,6 +7573,7 @@ public partial class MainWindow : Window
         }
         else
         {
+            _edgeRoamPreloadRequested = false;
             StopEdgeRoaming(
                 scheduleNext: false,
                 restoreIdleFrame: true,
@@ -7974,8 +8194,10 @@ public partial class MainWindow : Window
 
     private static double SnapDipToPhysicalPixelAtScale(double value, double dpiScale) =>
         double.IsFinite(dpiScale) && dpiScale > 0
-            ? Math.Round(value * dpiScale) / dpiScale
-            : Math.Round(value);
+            ? Math.Round(
+                  value * dpiScale,
+                  MidpointRounding.AwayFromZero) / dpiScale
+            : Math.Round(value, MidpointRounding.AwayFromZero);
 
     private void BeginReminderPetSizeOverrideAt(long timestamp)
     {

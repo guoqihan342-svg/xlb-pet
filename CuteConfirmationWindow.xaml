@@ -214,13 +214,25 @@
                         MinWidth="0"
                         Padding="0"
                         AutomationProperties.Name="取消"
-                        Content="×"
                         FontFamily="Microsoft YaHei"
                         FontSize="17"
                         Style="{StaticResource ConfirmationButtonStyle}"
                         ToolTip="取消"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                        Click="CancelButton_Click" />
+                        Click="CancelButton_Click">
+                    <Viewbox Width="10"
+                             Height="10"
+                             IsHitTestVisible="False">
+                        <Canvas Width="10" Height="10">
+                            <Path Data="M1.5,1.5 L8.5,8.5 M8.5,1.5 L1.5,8.5"
+                                  Fill="Transparent"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                                  StrokeEndLineCap="Round"
+                                  StrokeStartLineCap="Round"
+                                  StrokeThickness="1.5" />
+                        </Canvas>
+                    </Viewbox>
+                </Button>
             </Grid>
 
             <Border Grid.Row="1"
