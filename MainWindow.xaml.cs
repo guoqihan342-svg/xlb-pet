@@ -7588,9 +7588,8 @@ public partial class MainWindow : Window
         if (!_isReminderActive)
         {
             // A 100-item reminder can own a large combined TextBox string.
-            // Release the visual string after acknowledgement or a
-            // presentation-only dismissal. The occurrence records themselves
-            // stay in MainWindow until the user acknowledges them.
+            // Release it after the displayed occurrences have been consumed
+            // or safely carried into the next reminder page.
             _reminderWindow?.ClearPresentation();
         }
 
@@ -7909,7 +7908,7 @@ public partial class MainWindow : Window
         object? sender,
         EventArgs e)
     {
-        DismissActiveReminderPresentation();
+        AcknowledgeActiveReminder();
     }
 
     private void TodoWindow_PetSizeScaleChanged(double scale)
@@ -8818,9 +8817,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        // A recurring reminder may arrive while a dismissed reminder is still
-        // shrinking. Retarget the same temporary override to 140% without
-        // replacing the original user scale that must eventually be restored.
+        // A recurring reminder may arrive while the previous completed page is
+        // still shrinking. Retarget the same temporary override to 140%
+        // without replacing the user's original scale.
         _reminderSizeCommitTimer.Stop();
         _isRestoringReminderSize = false;
         _petSizeSettingsDirty = false;
@@ -9835,28 +9834,6 @@ public partial class MainWindow : Window
                 : BubbleMode.None);
         RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
         ScheduleNextReminderAt(now);
-    }
-
-    private void DismissActiveReminderPresentation()
-    {
-        if (_isClosing ||
-            !_isReminderActive ||
-            _activeReminder is null ||
-            _isReminderPresentationDismissed)
-        {
-            return;
-        }
-
-        // Closing the presentation is deliberately not an acknowledgement:
-        // preserve the task, visible occurrences and persisted due time.
-        _isReminderPresentationDismissed = true;
-        _isReminderActive = false;
-        SetBubbleMode(
-            _todoWindow.IsVisible
-                ? BubbleMode.Todo
-                : BubbleMode.None);
-        RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
-        ScheduleNextReminderAt(_nowProvider());
     }
 
     private void AdvanceAcknowledgedScheduledTask(

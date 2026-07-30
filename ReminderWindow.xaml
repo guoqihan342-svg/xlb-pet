@@ -200,7 +200,7 @@
                             FontFamily="Microsoft YaHei"
                             FontSize="17"
                             Foreground="#94A3B7"
-                            ToolTip="关闭"
+                            ToolTip="关闭并清空当前显示的提醒"
                             Click="CloseButton_Click">
                         <Button.Style>
                             <Style TargetType="Button">

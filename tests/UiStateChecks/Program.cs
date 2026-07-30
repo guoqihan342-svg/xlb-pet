@@ -11081,6 +11081,54 @@ internal static class Program
                     $"{(scheduled ? "橘色" : "蓝色")}主题");
             }
 
+            void AssertPrimaryInputTextViewport(
+                TextBox input,
+                double expectedHeight,
+                string stage)
+            {
+                input.ApplyTemplate();
+                todoWindow.UpdateLayout();
+                var contentHost = input.Template.FindName(
+                    "PART_ContentHost",
+                    input) as ScrollViewer;
+                Assert(input.FontFamily.Source == "Microsoft YaHei" &&
+                       input.FontSize >= 13 &&
+                       input.VerticalContentAlignment ==
+                           VerticalAlignment.Center &&
+                       input.Padding.Top <= 3.01 &&
+                       input.Padding.Bottom <= 4.01 &&
+                       input.Padding.Top + input.Padding.Bottom <= 7.01 &&
+                       contentHost is not null &&
+                       contentHost.UseLayoutRounding &&
+                       contentHost.SnapsToDevicePixels &&
+                       contentHost.VerticalAlignment ==
+                           VerticalAlignment.Stretch &&
+                       contentHost.VerticalContentAlignment ==
+                           VerticalAlignment.Center &&
+                       Math.Abs(input.ActualHeight - expectedHeight) <= 0.5 &&
+                       contentHost.ActualHeight >= input.FontSize * 1.5,
+                    $"{stage}微软雅黑输入文字必须拥有完整下沿视口，不能被圆角框或高DPI像素取整裁掉底部");
+
+                var worstCaseLogicalViewport =
+                    expectedHeight -
+                    input.Padding.Top -
+                    input.Padding.Bottom -
+                    3d;
+                foreach (var dpiScale in new[] { 1d, 1.25d, 1.5d })
+                {
+                    var availablePhysicalPixels =
+                        Math.Floor(worstCaseLogicalViewport * dpiScale) - 1;
+                    var requiredPhysicalPixels = Math.Ceiling(
+                        (input.FontFamily.LineSpacing * input.FontSize + 2d) *
+                        dpiScale);
+                    Assert(availablePhysicalPixels >=
+                               requiredPhysicalPixels,
+                        $"{stage}在{dpiScale:P0} DPI下必须为微软雅黑下沿和物理像素取整保留余量：" +
+                        $"available={availablePhysicalPixels:F0}px, " +
+                        $"required={requiredPhysicalPixels:F0}px");
+                }
+            }
+
             Assert(todoTab.IsChecked == true &&
                    scheduledTab.IsChecked != true &&
                    todoPage.Visibility == Visibility.Visible &&
@@ -11195,6 +11243,10 @@ internal static class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(50));
             todoWindow.ShowDefaultTab();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertPrimaryInputTextViewport(
+                todoInput,
+                38,
+                "待办事项主输入框");
             roamingToggle.ApplyTemplate();
             startupToggle.ApplyTemplate();
             petSizeSlider.ApplyTemplate();
@@ -11218,6 +11270,10 @@ internal static class Program
                 "待办页");
             Invoke(todoWindow, "SelectTaskPage", true, false);
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertPrimaryInputTextViewport(
+                scheduledInput,
+                36,
+                "定时任务主输入框");
             AssertTaskPageSettingsTheme(
                 scheduled: true,
                 "定时任务页");
@@ -14407,7 +14463,7 @@ internal static class Program
             "RestartReminderAttentionAnimation");
         var dismissReminderSource = ExtractPrivateMethodSource(
             mainSource,
-            "DismissActiveReminderPresentation");
+            "ReminderWindow_DismissRequested");
         var deleteScheduledTaskSource = ExtractPrivateMethodSource(
             mainSource,
             "TodoWindow_ScheduledTaskDeleteRequested");
@@ -14457,13 +14513,10 @@ internal static class Program
                     "StartReminderHoldAnimation()",
                     StringComparison.Ordinal) &&
                 dismissReminderSource.Contains(
-                    "_isReminderPresentationDismissed = true",
-                    StringComparison.Ordinal) &&
-                dismissReminderSource.Contains(
-                    "_activeReminder is null",
+                    "AcknowledgeActiveReminder()",
                     StringComparison.Ordinal) &&
                 !dismissReminderSource.Contains(
-                    "SaveScheduledTasks",
+                    "_isReminderPresentationDismissed = true",
                     StringComparison.Ordinal) &&
                 mainSource.Contains(
                     "_reminderWindow.DismissRequested +=",
@@ -14493,6 +14546,9 @@ internal static class Program
                     "x:Name=\"ReminderCloseButton\"",
                     StringComparison.Ordinal) &&
                 reminderXaml.Contains(
+                    "ToolTip=\"关闭并清空当前显示的提醒\"",
+                    StringComparison.Ordinal) &&
+                reminderXaml.Contains(
                     "Click=\"CloseButton_Click\"",
                     StringComparison.Ordinal) &&
                 reminderXaml.Split(
@@ -14517,7 +14573,7 @@ internal static class Program
                     "RestoreReminderPetSizeAt(",
                     StringComparison.Ordinal),
             "提醒必须按 occurrence 建模、未确认时继续布下一次定时器；" +
-            "关闭显示与确认完成必须分流，删除活动任务要同步重整提醒状态，" +
+            "关闭与知道啦必须统一消费当前显示项，删除活动任务要同步重整提醒状态，" +
             "并在单个轻量窗口内最多显示100条");
 
         scheduledTimer.Stop();
@@ -14884,8 +14940,6 @@ internal static class Program
                         }),
                 "循环提醒必须按每次计划时间严格升序堆叠");
 
-            var persistedDueBeforeDismiss =
-                scheduledStore.Load().Single().DueAt;
             var reminderRestoreScale =
                 GetField<double>(window, "_reminderRestoreScale");
             var reminderCloseButton =
@@ -14896,21 +14950,26 @@ internal static class Program
                 new RoutedEventArgs(Button.ClickEvent));
             PumpDispatcher(TimeSpan.FromMilliseconds(40));
             Assert(!GetField<bool>(window, "_isReminderActive") &&
-                   GetField<bool>(
+                   !GetField<bool>(
                        window,
                        "_isReminderPresentationDismissed") &&
-                   ReferenceEquals(
-                       GetField<ScheduledTaskItem>(
-                           window,
-                           "_activeReminder"),
-                       recurring) &&
-                   visibleOccurrences.Count == 3 &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   activeBatch.Count == 0 &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 0 &&
                    scheduledTasks.Count == 1 &&
-                   recurring.DueAt == firstDueAt &&
+                   recurring.DueAt == firstDueAt.AddMinutes(3) &&
+                   recurring.RepeatInterval == TimeSpan.FromMinutes(1) &&
                    scheduledStore.Load().Single().DueAt ==
-                       persistedDueBeforeDismiss &&
+                       firstDueAt.AddMinutes(3) &&
                    !reminderWindow.IsVisible &&
                    !GetField<bool>(reminderWindow, "_hasClosed") &&
+                   reminderTextBox.Text.Length == 0 &&
                    todoWindow.IsVisible &&
                    scheduledInput.Text ==
                        "正在编辑，提醒不得关闭或清空" &&
@@ -14939,18 +14998,20 @@ internal static class Program
                        "_isRestoringReminderSize") &&
                    scheduledTimer.IsEnabled &&
                    dismissRequestCount == 1,
-                "连续点击提醒右上角关闭按钮只能收起显示：不得确认、推进、关闭实例或卡住Todo和尺寸恢复");
+                "连续点击提醒右上角关闭按钮必须只处理一次，清空已显示旧提醒、推进循环并保留Todo草稿和尺寸恢复");
 
             Invoke(window, "ProcessScheduledTasksAt", now);
             Assert(!GetField<bool>(window, "_isReminderActive") &&
-                   GetField<bool>(
+                   !GetField<bool>(
                        window,
                        "_isReminderPresentationDismissed") &&
-                   visibleOccurrences.Count == 3 &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts.Count == 0 &&
                    !reminderWindow.IsVisible &&
                    reminderTextBox.Text.Length == 0 &&
                    dismissRequestCount == 1,
-                "关闭提醒后对同一时刻重复调度不得重弹，也不得在隐藏窗口重新滞留长文本");
+                "关闭并清空提醒后对同一时刻重复调度不得重弹，也不得在隐藏窗口重新滞留旧文本");
 
             CompleteCurrentPetSizeTransitionForReminderTest(window);
             Invoke(
@@ -14975,32 +15036,48 @@ internal static class Program
                    !GetField<bool>(
                        window,
                        "_isReminderPresentationDismissed") &&
-                   visibleOccurrences.Count == 4 &&
+                   visibleOccurrences.Count == 1 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 1 &&
+                   GetProperty<DateTimeOffset>(
+                       visibleOccurrences[0]!,
+                       "DueAt") == firstDueAt.AddMinutes(3) &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 1 &&
                    reminderWindow.IsVisible &&
                    scheduledInput.Text ==
                        "正在编辑，提醒不得关闭或清空",
-                "下一次新的循环 occurrence 到点后，必须带着旧记录重新显示且恢复可操作状态");
+                "下一次新的循环 occurrence 到点后只能显示这一条，关闭前的3条旧提醒不得回流");
 
             reminderWindow.Close();
             PumpDispatcher(TimeSpan.FromMilliseconds(40));
             Assert(!GetField<bool>(window, "_isReminderActive") &&
-                   GetField<bool>(
+                   !GetField<bool>(
                        window,
                        "_isReminderPresentationDismissed") &&
-                   visibleOccurrences.Count == 4 &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   activeBatch.Count == 0 &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
                    !reminderWindow.IsVisible &&
                    !GetField<bool>(reminderWindow, "_hasClosed") &&
                    scheduledTasks.Count == 1 &&
                    scheduledStore.Load().Single().DueAt ==
-                       persistedDueBeforeDismiss &&
+                       firstDueAt.AddMinutes(4) &&
+                   recurring.RepeatInterval == TimeSpan.FromMinutes(1) &&
                    dismissRequestCount == 2,
-                "系统关闭请求也只能收起提醒显示，窗口实例、未确认记录和磁盘任务必须保留");
+                "系统关闭请求也必须清空当前已显示提醒、推进循环并保留可复用窗口实例");
 
             Invoke(window, "ProcessScheduledTasksAt", now);
             Assert(!GetField<bool>(window, "_isReminderActive") &&
-                   visibleOccurrences.Count == 4 &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts.Count == 0 &&
                    !reminderWindow.IsVisible,
-                "系统关闭后同一 occurrence 不得因轮询立即重弹");
+                "系统关闭并清空后同一 occurrence 不得因轮询立即重弹");
 
             now = firstDueAt.AddMinutes(4);
             Invoke(window, "ProcessScheduledTasksAt", now);
@@ -15014,7 +15091,16 @@ internal static class Program
                    !GetField<bool>(
                        window,
                        "_isReminderPresentationDismissed") &&
-                   visibleOccurrences.Count == 5 &&
+                   visibleOccurrences.Count == 1 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 1 &&
+                   GetProperty<DateTimeOffset>(
+                       visibleOccurrences[0]!,
+                       "DueAt") == firstDueAt.AddMinutes(4) &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 1 &&
                    reminderWindow.IsVisible &&
                    GetField<bool>(
                        window,
@@ -15023,7 +15109,7 @@ internal static class Program
                        window,
                        "_isRestoringReminderSize") &&
                    Math.Abs(effectivePetSizeTarget - 1.40d) < 0.001,
-                "尺寸尚在恢复时若新 occurrence 到点，必须取消缩小并重新平滑放大，不能卡在普通尺寸");
+                "关闭旧提醒后新的 occurrence 必须单独显示；尺寸尚在恢复时要取消缩小并重新平滑放大");
 
             now = firstDueAt.AddMinutes(105);
             Invoke(window, "ProcessScheduledTasksAt", now);
@@ -15034,15 +15120,15 @@ internal static class Program
             Assert(visibleOccurrences.Count == 100 &&
                    GetField<long>(
                        window,
-                       "_totalReminderOccurrenceCount") == 106 &&
-                   countText.Contains("另有 6 条", StringComparison.Ordinal) &&
+                       "_totalReminderOccurrenceCount") == 102 &&
+                   countText.Contains("另有 2 条", StringComparison.Ordinal) &&
                    GetProperty<DateTimeOffset>(
                        visibleOccurrences[0]!,
-                       "DueAt") == firstDueAt &&
+                       "DueAt") == firstDueAt.AddMinutes(4) &&
                    GetProperty<DateTimeOffset>(
                        visibleOccurrences[99]!,
-                       "DueAt") == firstDueAt.AddMinutes(99),
-                "前跳105分钟必须保留最早100条完整消息，并明确显示另外6条，不能忙循环或丢提醒");
+                       "DueAt") == firstDueAt.AddMinutes(103),
+                "清空旧提醒后前跳到105分钟，必须从第4分钟起保留最早100条并明确显示另外2条");
             var reminderVerticalScrollBar =
                 FindVisualDescendants<ScrollBar>(reminderWindow)
                     .FirstOrDefault(scrollBar =>
@@ -15064,14 +15150,16 @@ internal static class Program
                 "定时提醒长内容的滑动块必须使用带高光的橘色圆润萌系滑块，不能退回系统蓝色滑块");
 
             now = firstDueAt.AddMinutes(4);
-            Invoke(window, "AcknowledgeActiveReminder");
+            reminderCloseButton.RaiseEvent(
+                new RoutedEventArgs(Button.ClickEvent));
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(GetField<bool>(window, "_isReminderActive") &&
-                   visibleOccurrences.Count == 6 &&
-                   recurring.DueAt == firstDueAt.AddMinutes(100) &&
+                   visibleOccurrences.Count == 2 &&
+                   recurring.DueAt == firstDueAt.AddMinutes(104) &&
                    todoWindow.IsVisible &&
-                   reminderWindow.IsVisible,
-                "累计106条后即使系统时间回拨，确认前100条也必须保持提醒和任务面板打开，立即展示剩余6条");
+                   reminderWindow.IsVisible &&
+                   dismissRequestCount == 3,
+                "超过100条时关闭只清空当前已显示的100条；即使系统时间回拨，也必须立即展示未显示的剩余2条");
 
             Invoke(window, "AcknowledgeActiveReminder");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
@@ -15087,7 +15175,7 @@ internal static class Program
                        window,
                        "_bubbleMode").ToString() == "Todo" &&
                    scheduledTimer.IsEnabled,
-                "第二次确认剩余6条后才可推进到首个未来周期；Todo必须保持原样打开");
+                "确认剩余2条后才可推进到首个未来周期；关闭操作不能丢失未显示提醒，Todo必须保持原样打开");
         }
         finally
         {

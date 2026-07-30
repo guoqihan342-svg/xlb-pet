@@ -1340,7 +1340,7 @@
                         <TextBox x:Name="TodoInput"
                                  Grid.Column="0"
                                  Margin="0,0,7,0"
-                                 Padding="8,5"
+                                 Padding="8,3,8,4"
                                  VerticalContentAlignment="Center"
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
@@ -1368,6 +1368,10 @@
                                                     <ScrollViewer x:Name="PART_ContentHost"
                                                                   Focusable="False"
                                                                   HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                                                  SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"
+                                                                  UseLayoutRounding="True"
+                                                                  VerticalAlignment="Stretch"
+                                                                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
                                                                   VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
                                                 </Border>
                                                 <ControlTemplate.Triggers>
@@ -1675,7 +1679,7 @@
 
                     <Grid Grid.Row="2">
                         <TextBox x:Name="ScheduledTaskInput"
-                                 Padding="8,5"
+                                 Padding="8,3,8,4"
                                  VerticalContentAlignment="Center"
                                  FontFamily="Microsoft YaHei"
                                  FontSize="13"
@@ -1707,6 +1711,10 @@
                                                         <ScrollViewer x:Name="PART_ContentHost"
                                                                       Focusable="False"
                                                                       HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                                                      SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"
+                                                                      UseLayoutRounding="True"
+                                                                      VerticalAlignment="Stretch"
+                                                                      VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
                                                                       VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
                                                     </Border>
                                                     <Border x:Name="ScheduledInputFocusRing"
