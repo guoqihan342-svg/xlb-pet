@@ -89,11 +89,13 @@ public partial class MainWindow : Window
     // 123 MiB; 128 MiB keeps one whole roaming presentation resident without
     // permanently retaining an unrelated reminder/edge hot set.
     private const long SpritePageResidentBudgetBytes = 128L * 1024 * 1024;
-    // Keep the steady idle, Todo/thinking and reminder hot set resident. The
-    // previous 64 MiB target evicted one of those pages after nearly every
-    // interaction and repeatedly allocated/decompressed the same LOH buffers.
-    private const long SpritePageIdleResidentTargetBytes = 104L * 1024 * 1024;
-    private const long SpritePageCollectionThresholdBytes = 24L * 1024 * 1024;
+    // The complete idle/wake chain occupies about 54 MiB. An 80 MiB idle
+    // target keeps that chain plus the current Todo/reminder page or one
+    // recently returned decode buffer, without retaining an entire unrelated
+    // action after the pet has been quiet for a while. The former 64 MiB target
+    // was too tight and caused repeated LOH allocation/decompression.
+    private const long SpritePageIdleResidentTargetBytes = 80L * 1024 * 1024;
+    private const long SpritePageCollectionThresholdBytes = 16L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
     private const int MaximumVisibleReminderOccurrences = 100;
@@ -128,6 +130,10 @@ public partial class MainWindow : Window
     private static readonly TimeSpan PetSizePersistDelay = TimeSpan.FromMilliseconds(400);
     private static readonly TimeSpan SpritePageCollectionDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan SpritePageCollectionRetryDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SpritePageIdleTrimGracePeriod =
+        TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan SpritePageIdleTrimRetryDelay =
+        TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MinimumSpritePageCollectionInterval =
         TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FrameBlendDuration = TimeSpan.Zero;
@@ -208,6 +214,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _scheduledTaskTimer;
     private readonly DispatcherTimer _reminderSizeCommitTimer;
     private readonly DispatcherTimer _spritePagePrefetchDispatchTimer;
+    private readonly DispatcherTimer _spritePageIdleTrimTimer;
     private readonly DispatcherTimer _spritePageCollectionTimer;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
@@ -378,7 +385,6 @@ public partial class MainWindow : Window
     private string? _renderDeferredSpritePageFailureName;
     private string? _renderDeferredSpritePageFailureReason;
     private bool _residentSpritePageTrimPending;
-    private bool _residentSpritePageIdleTrimPending;
     private string? _upcomingReminderPreloadPageName;
     private bool _spritePageCollectionInProgress;
     private long _frameBlendStartedTimestamp;
@@ -403,6 +409,11 @@ public partial class MainWindow : Window
         };
         _spritePagePrefetchDispatchTimer.Tick +=
             SpritePagePrefetchDispatchTimer_Tick;
+        _spritePageIdleTrimTimer = new DispatcherTimer
+        {
+            Interval = SpritePageIdleTrimGracePeriod
+        };
+        _spritePageIdleTrimTimer.Tick += SpritePageIdleTrimTimer_Tick;
         _spritePageCollectionTimer = new DispatcherTimer
         {
             Interval = SpritePageCollectionDelay
@@ -1701,6 +1712,7 @@ public partial class MainWindow : Window
     private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         RestartAutomaticCountdown();
+        DeferIdleSpritePageTrim();
 
         if (_bubbleMode != BubbleMode.Todo)
         {
@@ -1721,6 +1733,7 @@ public partial class MainWindow : Window
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         RestartAutomaticCountdown();
+        DeferIdleSpritePageTrim();
     }
 
     private void Window_Deactivated(object? sender, EventArgs e)
@@ -1993,6 +2006,8 @@ public partial class MainWindow : Window
         _spritePagePrefetchDispatchTimer.Stop();
         _spritePagePrefetchDispatchTimer.Tick -=
             SpritePagePrefetchDispatchTimer_Tick;
+        StopIdleSpritePageTrim();
+        _spritePageIdleTrimTimer.Tick -= SpritePageIdleTrimTimer_Tick;
         _spritePageCollectionTimer.Stop();
         _spritePageCollectionTimer.Tick -= SpritePageCollectionTimer_Tick;
         _isPetSizeTransitioning = false;
@@ -2055,6 +2070,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        DeferIdleSpritePageTrim();
         if (_isReminderActive || _isTransientPetSizeOverride)
         {
             e.Handled = true;
@@ -2206,6 +2222,7 @@ public partial class MainWindow : Window
 
     private void PetHost_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
+        DeferIdleSpritePageTrim();
         if (_isReminderActive || _isTransientPetSizeOverride)
         {
             e.Handled = true;
@@ -5731,7 +5748,6 @@ public partial class MainWindow : Window
                 _renderDeferredSpritePageFailureName = null;
                 _renderDeferredSpritePageFailureReason = null;
                 _residentSpritePageTrimPending = false;
-                _residentSpritePageIdleTrimPending = false;
                 return;
             }
 
@@ -5761,17 +5777,8 @@ public partial class MainWindow : Window
 
             if (_residentSpritePageTrimPending)
             {
-                var reduceToIdleTarget = _residentSpritePageIdleTrimPending;
                 _residentSpritePageTrimPending = false;
-                _residentSpritePageIdleTrimPending = false;
-                if (reduceToIdleTarget)
-                {
-                    TrimResidentSpritePagesToIdleTarget();
-                }
-                else
-                {
-                    TrimResidentSpritePagesToBudget();
-                }
+                TrimResidentSpritePagesToBudget();
             }
         }
         finally
@@ -5788,8 +5795,13 @@ public partial class MainWindow : Window
 
     private void RequestSpritePagePrefetch(string pageName, bool urgent)
     {
-        if (_isClosing ||
-            _residentSpritePages.ContainsKey(pageName))
+        if (_isClosing)
+        {
+            return;
+        }
+
+        DeferIdleSpritePageTrim();
+        if (_residentSpritePages.ContainsKey(pageName))
         {
             return;
         }
@@ -6181,11 +6193,11 @@ public partial class MainWindow : Window
         _renderDeferredSpritePageFailureName = null;
         _renderDeferredSpritePageFailureReason = null;
         _residentSpritePageTrimPending = false;
-        _residentSpritePageIdleTrimPending = false;
         _upcomingReminderPreloadPageName = null;
         _pendingSpriteFrame = null;
         _pendingSpriteFrameBlendDuration = TimeSpan.Zero;
         _spritePagePrefetchDispatchTimer.Stop();
+        StopIdleSpritePageTrim();
         _spritePagePrefetchCancellation?.Cancel();
         _spritePagePrefetchPageName = null;
     }
@@ -6396,7 +6408,7 @@ public partial class MainWindow : Window
             preservePageName: null);
 
         // Resident eviction first returns exact-length LOH arrays to the pool.
-        // Once the pet is idle, retaining free arrays above the same 104 MiB
+        // Once the pet is idle, retaining free arrays above the same 80 MiB
         // hot-set target only preserves fragmentation without improving the
         // next animation. Discard that excess after protected/resident pages
         // have settled, and account only the arrays that were truly released.
@@ -6438,6 +6450,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        DeferIdleSpritePageTrim();
         if (!_isInsideVisualRenderingCallback)
         {
             TrimResidentSpritePagesToBudget();
@@ -6456,23 +6469,56 @@ public partial class MainWindow : Window
 
     private void RequestIdleSpritePageTrim()
     {
+        DeferIdleSpritePageTrim();
+    }
+
+    private void DeferIdleSpritePageTrim()
+    {
         if (_isClosing)
         {
             return;
         }
 
-        if (!_isInsideVisualRenderingCallback)
+        _spritePageIdleTrimTimer.Stop();
+        _spritePageIdleTrimTimer.Interval =
+            SpritePageIdleTrimGracePeriod;
+        _spritePageIdleTrimTimer.Start();
+    }
+
+    private void StopIdleSpritePageTrim()
+    {
+        if (_spritePageIdleTrimTimer.IsEnabled)
         {
-            TrimResidentSpritePagesToIdleTarget();
+            _spritePageIdleTrimTimer.Stop();
+        }
+
+        _spritePageIdleTrimTimer.Interval =
+            SpritePageIdleTrimGracePeriod;
+    }
+
+    private void SpritePageIdleTrimTimer_Tick(object? sender, EventArgs e)
+    {
+        _spritePageIdleTrimTimer.Stop();
+        if (_isClosing)
+        {
             return;
         }
 
-        _residentSpritePageTrimPending = true;
-        _residentSpritePageIdleTrimPending = true;
-        if (!_spritePagePrefetchDispatchTimer.IsEnabled)
+        // Deep trimming is allowed only in the same fully idle window used for
+        // low-frequency collection. A Todo/reminder, drag, size preview, edge
+        // pose or newly started clip therefore keeps the hot pages intact and
+        // simply retries after the interaction has settled.
+        if (!CanRunIdleSpritePageCollection())
         {
-            _spritePagePrefetchDispatchTimer.Start();
+            _spritePageIdleTrimTimer.Interval =
+                SpritePageIdleTrimRetryDelay;
+            _spritePageIdleTrimTimer.Start();
+            return;
         }
+
+        TrimResidentSpritePagesToIdleTarget();
+        _spritePageIdleTrimTimer.Interval =
+            SpritePageIdleTrimGracePeriod;
     }
 
     private void ScheduleSpritePageCollectionIfNeeded()
@@ -7980,6 +8026,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        DeferIdleSpritePageTrim();
         StopEdgeRoaming(
             scheduleNext: true,
             restoreIdleFrame: true,

@@ -34,7 +34,7 @@ internal static class Program
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
     private const long ExpectedResidentSpritePageBudgetBytes = 128L * 1024L * 1024L;
-    private const long ExpectedIdleSpritePageTargetBytes = 104L * 1024L * 1024L;
+    private const long ExpectedIdleSpritePageTargetBytes = 80L * 1024L * 1024L;
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
     private const BindingFlags StaticFlags =
@@ -1324,9 +1324,13 @@ internal static class Program
             "已淘汰的 deferred 冷页即使触发空 Tick 也不得创建 Task/CTS");
         Invoke(window, "ShowStableFrame", hotFrameA1);
 
-        // Repeat the same supersession while an independent idle-trim signal
-        // shares the one-shot timer. Clearing the obsolete page request must
-        // not stop the timer and lose the remaining work.
+        // Repeat the same supersession while an independent 20-second idle
+        // grace timer is armed. Clearing the obsolete page request must stop
+        // only the prefetch dispatcher, not consume or accelerate idle trim.
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
+        idleTrimTimer.Stop();
         SetField(window, "_isInsideVisualRenderingCallback", true);
         try
         {
@@ -1339,26 +1343,23 @@ internal static class Program
         }
 
         Assert(Equals(GetRawField(window, "_pendingSpriteFrame"), coldFrame) &&
-               GetField<bool>(window, "_residentSpritePageTrimPending") &&
-               GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
-               deferredDispatchTimer.IsEnabled,
-            "deferred冷页与idle trim必须能共享同一个dispatcher timer信号");
+               !GetField<bool>(window, "_residentSpritePageTrimPending") &&
+               deferredDispatchTimer.IsEnabled &&
+               idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(20),
+            "deferred冷页与idle trim必须分别使用dispatcher信号和独立20秒宽限timer");
         Invoke(window, "ShowStableFrame", hotFrameA1);
         Assert(GetRawField(window, "_pendingSpriteFrame") is null &&
                GetRawField(window, "_renderDeferredSpritePageName") is null &&
-               GetField<bool>(window, "_residentSpritePageTrimPending") &&
-               GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
-               deferredDispatchTimer.IsEnabled,
-            "热页淘汰obsolete deferred请求时不得停止仍承载idle trim的timer信号");
-        Invoke(window, "SpritePagePrefetchDispatchTimer_Tick", null, EventArgs.Empty);
-        Assert(!GetField<bool>(window, "_residentSpritePageTrimPending") &&
-               !GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
                !deferredDispatchTimer.IsEnabled &&
-               GetField<long>(window, "_residentSpritePageBytes") <=
-               (long)(typeof(MainWindow).GetField(
-                   "SpritePageIdleResidentTargetBytes",
-                   StaticFlags)!.GetValue(null) ?? 0L),
-            "保留下来的dispatcher tick必须消费idle trim信号并完成104MiB热集裁剪");
+               idleTrimTimer.IsEnabled,
+            "热页淘汰obsolete deferred请求时只能停止分页dispatcher，不能提前消费idle宽限期");
+
+        Invoke(window, "RequestSpritePagePrefetch", hotPageName, true);
+        Assert(idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(20) &&
+               GetRawField(window, "_spritePagePrefetchTask") is null,
+            "新的分页活动即使命中resident页，也必须重新计算20秒idle宽限且不得创建后台任务");
         ResetSpritePageCollectionTestState(window);
 
         // A1 -> cold C1: keep A1 visible while C starts decoding in the
@@ -1699,9 +1700,18 @@ internal static class Program
         var residentBudgetBytes = (long)(typeof(MainWindow).GetField(
                 "SpritePageResidentBudgetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
+        var idleTrimGracePeriod = (TimeSpan)(typeof(MainWindow).GetField(
+                "SpritePageIdleTrimGracePeriod",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var idleTrimRetryDelay = (TimeSpan)(typeof(MainWindow).GetField(
+                "SpritePageIdleTrimRetryDelay",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         Assert(idleTargetBytes == ExpectedIdleSpritePageTargetBytes &&
-               residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
-            "动作结束后的idle热集目标必须是104MiB，活动软预算必须保持128MiB");
+               residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes &&
+               idleTrimGracePeriod == TimeSpan.FromSeconds(20) &&
+               idleTrimRetryDelay == TimeSpan.FromSeconds(5),
+            "动作结束后的idle热集目标必须是80MiB，活动软预算必须保持128MiB，" +
+            "idle裁剪必须等待20秒且忙碌时5秒后重试");
 
         var idleFrame = GetField<object>(window, "_idleFrame");
         var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
@@ -1786,14 +1796,14 @@ internal static class Program
             "the exact-buffer hard budget must match the 128 MiB resident " +
             "budget, and this test must establish total storage above idle.");
         Assert(residentBytesBefore > idleTargetBytes,
-            "idle回收测试必须先建立超过104MiB的真实解码页缓存压力");
+            "idle回收测试必须先建立超过80MiB的真实解码页缓存压力");
         var protectedPageNames = pinnedPageNames
             .Append(idlePageName)
             .Append(protectedPageName)
             .ToHashSet(StringComparer.Ordinal);
         Assert(protectedPageNames.Sum(pageName =>
                    GetSpritePageByteCount(pageMap, pageName)) <= idleTargetBytes,
-            "永久idle页、当前idle页和pending保护页必须可共同容纳在104MiB目标内");
+            "永久idle页、当前idle页和pending保护页必须可共同容纳在80MiB目标内");
 
         Invoke(window, "TrimResidentSpritePagesToIdleTarget");
         var residentBytesAfter = GetField<long>(
@@ -1814,11 +1824,11 @@ internal static class Program
             poolAllocatedBefore - poolAllocatedAfter;
         Assert(residentBytesAfter <= idleTargetBytes &&
                protectedPageNames.All(residentPages.Contains),
-            "idle回收必须把缓存裁到104MiB以内，且不得丢失永久、当前或pending保护页");
+            "idle回收必须把缓存裁到80MiB以内，且不得丢失永久、当前或pending保护页");
         Assert(poolAllocatedAfter <= idleTargetBytes &&
                poolAllocatedAfter == poolRentedAfter + poolFreeAfter,
             "idle trim must converge resident plus reusable free exact " +
-            "buffers to the same 104 MiB target.");
+            "buffers to the same 80 MiB target.");
         Assert(poolRentedBefore - poolRentedAfter ==
                    returnedResidentBytes &&
                poolFreeAfter - poolFreeBefore ==
@@ -1829,18 +1839,82 @@ internal static class Program
                    "_spritePageEvictedBytesSinceCollection") ==
                    collectionDebtBefore + discardedPoolBytes,
             "idle淘汰必须把resident像素精确归还复用池；只有池为收敛预算真正丢弃的数组才累计Gen2债");
-        AssertResidentSpriteCacheAccounting(window, "104MiB idle回收与保护");
+        AssertResidentSpriteCacheAccounting(window, "80MiB idle回收与保护");
 
         SetField(window, "_pendingSpriteFrame", null);
         SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
-        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
-        Assert(GetField<long>(window, "_residentSpritePageBytes") <=
-               idleTargetBytes &&
-               GetProperty<long>(
-                   spritePageBufferPool,
-                   "AllocatedBytes") <= idleTargetBytes &&
+        foreach (var pageName in GetDictionaryEntries(pageMap)
+                     .Select(entry => (string)entry.Key)
+                     .Where(pageName => !pinnedPageNames.Contains(pageName))
+                     .OrderByDescending(pageName =>
+                         GetSpritePageByteCount(pageMap, pageName)))
+        {
+            if (GetField<long>(window, "_residentSpritePageBytes") >
+                idleTargetBytes + 12L * 1024L * 1024L)
+            {
+                break;
+            }
+
+            LoadSpritePageForTest(window, pageName);
+        }
+
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        var timerResidentBytesBefore = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var timerPoolAllocatedBefore = GetProperty<long>(
+            spritePageBufferPool,
+            "AllocatedBytes");
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
+        Assert(timerResidentBytesBefore > idleTargetBytes,
+            "idle timer测试必须重新建立超过80MiB的resident压力");
+
+        Invoke(window, "RequestIdleSpritePageTrim");
+        Assert(idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == idleTrimGracePeriod &&
+               GetField<long>(window, "_residentSpritePageBytes") ==
+               timerResidentBytesBefore &&
+               GetProperty<long>(spritePageBufferPool, "AllocatedBytes") ==
+               timerPoolAllocatedBefore,
+            "请求idle裁剪只能启动20秒宽限timer，不能立即淘汰resident页或池数组");
+
+        SetField(window, "_desiredSpritePageName", protectedPageName);
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+        Assert(idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == idleTrimRetryDelay &&
+               GetField<long>(window, "_residentSpritePageBytes") ==
+               timerResidentBytesBefore &&
+               GetProperty<long>(spritePageBufferPool, "AllocatedBytes") ==
+               timerPoolAllocatedBefore,
+            "idle timer到点时若仍有分页活动，只能5秒后重试，不能执行裁剪");
+
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        Assert((bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+            "清除分页活动后必须恢复idle裁剪门禁");
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+        var timerResidentBytesAfter = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var timerPoolAllocatedAfter = GetProperty<long>(
+            spritePageBufferPool,
+            "AllocatedBytes");
+        Assert(!idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == idleTrimGracePeriod &&
+               timerResidentBytesAfter <= idleTargetBytes &&
+               timerPoolAllocatedAfter <= idleTargetBytes &&
                pinnedPageNames.All(residentPages.Contains),
-            "pending保护释放后的idle重试必须保持104MiB目标与永久idle页");
+            "pending保护释放且分页活动结束后，idle timer tick必须裁到80MiB目标，" +
+            "恢复20秒宽限并保留永久idle页");
+        Console.WriteLine(
+            $"[METRIC] idle sprite cache: resident " +
+            $"{timerResidentBytesBefore / (1024d * 1024d):F2}->" +
+            $"{timerResidentBytesAfter / (1024d * 1024d):F2} MiB, pool " +
+            $"{timerPoolAllocatedBefore / (1024d * 1024d):F2}->" +
+            $"{timerPoolAllocatedAfter / (1024d * 1024d):F2} MiB");
         ResetSpritePageCollectionTestState(window);
     }
 
@@ -1880,6 +1954,8 @@ internal static class Program
             ("_petSizeCommitPending", true, "缩放保存待提交"),
             ("_isFrameBlending", true, "帧过渡"),
             ("_isPillowBreathing", true, "枕头呼吸"),
+            ("_edgeRoamPreloadRequested", true, "绕屏预加载"),
+            ("_isEdgeRoaming", true, "绕屏动作"),
             ("_bubbleMode", GetNestedEnum("BubbleMode", "Todo"), "Todo窗口"),
             ("_edgeDock", GetNestedEnum("EdgeDock", "Left"), "边缘探头"),
             ("_pendingSpriteFrame", arbitraryFrame, "待显示冷页"),
@@ -1932,11 +2008,11 @@ internal static class Program
         var collectionTimer = GetField<DispatcherTimer>(
             window,
             "_spritePageCollectionTimer");
-        Assert(thresholdBytes == 24L * 1024L * 1024L &&
+        Assert(thresholdBytes == 16L * 1024L * 1024L &&
                collectionDelay == TimeSpan.FromSeconds(1) &&
                retryDelay == TimeSpan.FromSeconds(5) &&
                minimumInterval == TimeSpan.FromSeconds(30),
-            "idle Gen2门禁必须保持24MiB阈值、1秒延迟、5秒忙重试与30秒最短间隔");
+            "idle Gen2门禁必须保持16MiB阈值、1秒延迟、5秒忙重试与30秒最短间隔");
 
         SetField(
             window,
@@ -1944,13 +2020,13 @@ internal static class Program
             thresholdBytes - 1);
         Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
         Assert(!collectionTimer.IsEnabled,
-            "累计淘汰不足24MiB时不得启动Gen2 timer");
+            "累计淘汰不足16MiB时不得启动Gen2 timer");
 
         SetField(window, "_spritePageEvictedBytesSinceCollection", thresholdBytes);
         SetField(window, "_lastSpritePageCollectionTimestamp", 0L);
         Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
         Assert(collectionTimer.IsEnabled && collectionTimer.Interval == collectionDelay,
-            "累计淘汰达到24MiB且完全空闲时必须先延迟1秒再评估Gen2");
+            "累计淘汰达到16MiB且完全空闲时必须先延迟1秒再评估Gen2");
         collectionTimer.Stop();
 
         SetField(
@@ -1986,7 +2062,7 @@ internal static class Program
         Assert(!collectionTimer.IsEnabled &&
                !GetField<bool>(window, "_spritePageCollectionInProgress") &&
                GetField<long>(window, "_lastSpritePageCollectionTimestamp") == 0,
-            "timer到点时债务低于24MiB必须直接退出，不能发起GC");
+            "timer到点时债务低于16MiB必须直接退出，不能发起GC");
 
         ResetSpritePageCollectionTestState(window);
     }
@@ -2006,6 +2082,8 @@ internal static class Program
         SetField(window, "_petSizeCommitPending", false);
         SetField(window, "_isFrameBlending", false);
         SetField(window, "_isPillowBreathing", false);
+        SetField(window, "_edgeRoamPreloadRequested", false);
+        SetField(window, "_isEdgeRoaming", false);
         SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
         SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
         SetField(window, "_pendingSpriteFrame", null);
@@ -2018,13 +2096,14 @@ internal static class Program
         SetField(window, "_renderDeferredSpritePageFailureReason", null);
         SetField(window, "_renderDeferredSpritePageCancellation", false);
         SetField(window, "_residentSpritePageTrimPending", false);
-        SetField(window, "_residentSpritePageIdleTrimPending", false);
         SetField(window, "_upcomingReminderPreloadPageName", null);
         SetField(window, "_spritePageWarmupEnabled", false);
+        Invoke(window, "StopIdleSpritePageTrim");
     }
 
     private static void ResetSpritePageCollectionTestState(MainWindow window)
     {
+        Invoke(window, "StopIdleSpritePageTrim");
         GetField<DispatcherTimer>(window, "_spritePageCollectionTimer").Stop();
         SetField(window, "_spritePageEvictedBytesSinceCollection", 0L);
         SetField(window, "_lastSpritePageCollectionTimestamp", 0L);
@@ -2225,7 +2304,6 @@ internal static class Program
         SetField(window, "_renderDeferredSpritePageFailureName", null);
         SetField(window, "_renderDeferredSpritePageFailureReason", null);
         SetField(window, "_residentSpritePageTrimPending", false);
-        SetField(window, "_residentSpritePageIdleTrimPending", false);
 
         var pageMap = GetField<IDictionary>(window, "_spritePages");
         var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
@@ -2258,7 +2336,11 @@ internal static class Program
         var dispatchTimer = GetField<DispatcherTimer>(
             window,
             "_spritePagePrefetchDispatchTimer");
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
         dispatchTimer.Stop();
+        idleTrimTimer.Stop();
 
         SetField(window, "_isInsideVisualRenderingCallback", true);
         try
@@ -2277,7 +2359,8 @@ internal static class Program
         }
 
         Assert(GetField<bool>(window, "_residentSpritePageTrimPending") &&
-               GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
+               idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(20) &&
                string.Equals(
                    GetRawField(window, "_renderDeferredSpritePageFailureName")
                        as string,
@@ -2289,7 +2372,8 @@ internal static class Program
                    "synthetic Rendering failure",
                    StringComparison.Ordinal) &&
                dispatchTimer.IsEnabled,
-            "Rendering内普通/idle trim与失败处理只能发布延迟标志并启动既有dispatcher tick");
+            "Rendering内普通trim与失败处理只能发布dispatcher标志，" +
+            "idle trim必须独立启动20秒宽限timer");
         Assert(residentNamesBefore.SetEquals(GetDictionaryEntries(residentPages)
                    .Select(entry => (string)entry.Key)) &&
                residentLru.SequenceEqual(lruBefore) &&
@@ -2308,11 +2392,15 @@ internal static class Program
         var idleTargetBytes = (long)(typeof(MainWindow).GetField(
                 "SpritePageIdleResidentTargetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
+        var residentBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
         Assert(!GetField<bool>(window, "_residentSpritePageTrimPending") &&
-               !GetField<bool>(window, "_residentSpritePageIdleTrimPending") &&
                GetRawField(window, "_renderDeferredSpritePageFailureName") is null &&
                GetRawField(window, "_renderDeferredSpritePageFailureReason") is null &&
                !dispatchTimer.IsEnabled &&
+               idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(20) &&
                GetRawField(window, "_pendingSpriteFrame") is null &&
                GetRawField(window, "_desiredSpritePageName") is null &&
                !GetField<bool>(window, "_desiredSpritePageUrgent") &&
@@ -2321,8 +2409,16 @@ internal static class Program
                    failurePageName,
                    StringComparison.Ordinal) &&
                GetField<long>(window, "_residentSpritePageBytes") <=
+               residentBudgetBytes,
+            "Composition返回后的dispatcher tick必须消费普通trim/失败标志并执行终态更新，" +
+            "不能抢跑独立idle宽限timer");
+
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+        Assert(!idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(20) &&
+               GetField<long>(window, "_residentSpritePageBytes") <=
                idleTargetBytes,
-            "Composition返回后的dispatcher tick必须消费idle trim/失败标志、裁到104MiB并执行终态更新");
+            "idle宽限timer到点且无分页活动时必须执行80MiB热集裁剪并恢复20秒间隔");
 
         SetField(window, "_failedSpritePageName", null);
         AssertResidentSpriteCacheAccounting(window, "Rendering延迟缓存变更");
@@ -20734,6 +20830,18 @@ internal static class Program
         var requestIdleSpritePageTrim = ExtractPrivateMethodSource(
             mainSource,
             "RequestIdleSpritePageTrim");
+        var deferIdleSpritePageTrim = ExtractPrivateMethodSource(
+            mainSource,
+            "DeferIdleSpritePageTrim");
+        var stopIdleSpritePageTrim = ExtractPrivateMethodSource(
+            mainSource,
+            "StopIdleSpritePageTrim");
+        var idleSpritePageTrimTimerTick = ExtractPrivateMethodSource(
+            mainSource,
+            "SpritePageIdleTrimTimer_Tick");
+        var requestResidentSpritePageTrim = ExtractPrivateMethodSource(
+            mainSource,
+            "RequestResidentSpritePageTrim");
         var trimResidentPagesToIdleTarget = ExtractPrivateMethodSource(
             mainSource,
             "TrimResidentSpritePagesToIdleTarget");
@@ -20912,10 +21020,19 @@ internal static class Program
                    "SpritePageResidentBudgetBytes = 128L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
-                    "SpritePageIdleResidentTargetBytes = 104L * 1024 * 1024",
+                    "SpritePageIdleResidentTargetBytes = 80L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
-                   "SpritePageCollectionThresholdBytes = 24L * 1024 * 1024",
+                   "SpritePageCollectionThresholdBytes = 16L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageIdleTrimGracePeriod =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "TimeSpan.FromSeconds(20)",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageIdleTrimRetryDelay =",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
                    "MinimumSpritePageCollectionInterval",
@@ -20933,16 +21050,50 @@ internal static class Program
                    "RecordDiscardedSpritePageBytes(discardedBytes)",
                    StringComparison.Ordinal) &&
                requestIdleSpritePageTrim.Contains(
-                   "_residentSpritePageTrimPending = true",
+                   "DeferIdleSpritePageTrim();",
                    StringComparison.Ordinal) &&
-               requestIdleSpritePageTrim.Contains(
-                   "_residentSpritePageIdleTrimPending = true",
+               deferIdleSpritePageTrim.Contains(
+                   "_spritePageIdleTrimTimer.Stop()",
                    StringComparison.Ordinal) &&
-               prefetchDispatchTick.Contains(
+               deferIdleSpritePageTrim.Contains(
+                   "SpritePageIdleTrimGracePeriod",
+                   StringComparison.Ordinal) &&
+               deferIdleSpritePageTrim.Contains(
+                   "_spritePageIdleTrimTimer.Start()",
+                   StringComparison.Ordinal) &&
+               stopIdleSpritePageTrim.Contains(
+                   "_spritePageIdleTrimTimer.Stop()",
+                   StringComparison.Ordinal) &&
+               stopIdleSpritePageTrim.Contains(
+                   "SpritePageIdleTrimGracePeriod",
+                   StringComparison.Ordinal) &&
+               requestResidentSpritePageTrim.Contains(
+                   "DeferIdleSpritePageTrim();",
+                   StringComparison.Ordinal) &&
+               requestPagePrefetch.Contains(
+                   "DeferIdleSpritePageTrim();",
+                   StringComparison.Ordinal) &&
+               idleSpritePageTrimTimerTick.Contains(
+                   "SpritePageIdleTrimRetryDelay",
+                   StringComparison.Ordinal) &&
+               idleSpritePageTrimTimerTick.Contains(
+                   "_spritePageIdleTrimTimer.Start()",
+                   StringComparison.Ordinal) &&
+               idleSpritePageTrimTimerTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
+                   StringComparison.Ordinal) &&
+               idleSpritePageTrimTimerTick.Contains(
+                   "SpritePageIdleTrimGracePeriod",
+                   StringComparison.Ordinal) &&
+               !prefetchDispatchTick.Contains(
+                   "TrimResidentSpritePagesToIdleTarget()",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "_residentSpritePageIdleTrimPending",
                    StringComparison.Ordinal),
-            "活动resident软预算必须是128MiB、动作终态idle热集目标必须是104MiB；" +
-            "Rendering内只发布idle trim标志并在dispatcher tick执行");
+            "活动resident软预算必须是128MiB、空闲热集目标必须是80MiB、" +
+            "Gen2债务阈值必须是16MiB；idle裁剪应由独立20秒timer执行，" +
+            "忙碌活动必须取消或延后，不能复用分页dispatcher");
         Assert(removeResidentSpritePage.Contains(
                    "ReturnSpritePageBuffer(residentPage.Pixels)",
                    StringComparison.Ordinal) &&
@@ -20982,10 +21133,12 @@ internal static class Program
                canRunIdleSpritePageCollection.Contains("!_isPetSizePreviewSessionActive", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_isPetSizeAdjustmentActive", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_petSizeTargetUpdatePending", StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("!_petSizeCommitPending", StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("!_isFrameBlending", StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("!_isPillowBreathing", StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("_bubbleMode == BubbleMode.None", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("!_petSizeCommitPending", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("!_isFrameBlending", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("!_isPillowBreathing", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("!_edgeRoamPreloadRequested", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("!_isEdgeRoaming", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("_bubbleMode == BubbleMode.None", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_todoWindow.IsVisible", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!BubblePopup.IsOpen", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("_edgeDock == EdgeDock.None", StringComparison.Ordinal) &&
@@ -21042,6 +21195,9 @@ internal static class Program
             StringComparison.Ordinal);
         Assert(stopPillowBeforeDrag >= 0 &&
                markDragActive > stopPillowBeforeDrag &&
+               petHostMouseLeftButtonDown.Contains(
+                   "DeferIdleSpritePageTrim()",
+                   StringComparison.Ordinal) &&
                stopPillowBreathing.Contains("_isPillowBreathing = false", StringComparison.Ordinal) &&
                stopPillowBreathing.Contains("_automaticTimer.Stop()", StringComparison.Ordinal) &&
                stopPillowBreathing.Contains(
