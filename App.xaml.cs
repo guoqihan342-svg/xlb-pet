@@ -58,7 +58,7 @@ public partial class App : Application
 
         try
         {
-            _trayIconService = new TrayIconService();
+            _trayIconService = new TrayIconService(mainWindow);
             _trayIconService.ExitRequested +=
                 TrayIconService_ExitRequested;
         }

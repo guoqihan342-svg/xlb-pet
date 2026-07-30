@@ -5,7 +5,8 @@ using System.Runtime.CompilerServices;
 namespace LubanDesktopPet;
 
 /// <summary>
-/// Reuses exact-length sprite-page pixel buffers across background decodes.
+/// Reuses sprite-page pixel buffers in one-mebibyte capacity buckets across
+/// background decodes.
 /// </summary>
 /// <remarks>
 /// All members are thread-safe. A rented buffer represents either an in-flight
@@ -29,10 +30,11 @@ namespace LubanDesktopPet;
 internal sealed class SpritePageBufferPool
 {
     internal const long DefaultHardBudgetBytes = 128L * 1024 * 1024;
+    internal const int CapacityBucketBytes = 1 * 1024 * 1024;
 
     private readonly object _syncRoot = new();
     private readonly long _hardBudgetBytes;
-    private readonly Dictionary<int, Stack<byte[]>> _freeBuffersByLength = [];
+    private readonly Dictionary<int, Stack<byte[]>> _freeBuffersByCapacity = [];
     private readonly Dictionary<byte[], BufferState> _bufferStates =
         new(ByteArrayReferenceComparer.Instance);
 
@@ -118,8 +120,10 @@ internal sealed class SpritePageBufferPool
     }
 
     /// <summary>
-    /// Rents a buffer whose <see cref="Array.Length"/> exactly equals
-    /// <paramref name="length"/>.
+    /// Rents a buffer whose <see cref="Array.Length"/> is at least
+    /// <paramref name="length"/>. Capacity is rounded up to the next
+    /// one-mebibyte bucket so differently sized pages in the same bucket can
+    /// reuse one another's storage.
     /// </summary>
     public byte[] Rent(int length)
     {
@@ -131,9 +135,10 @@ internal sealed class SpritePageBufferPool
                 "A sprite-page buffer length must be greater than zero.");
         }
 
+        var capacity = GetCapacity(length);
         lock (_syncRoot)
         {
-            if (TryRentFreeBuffer(length, out var reusedBuffer))
+            if (TryRentFreeBuffer(capacity, out var reusedBuffer))
             {
                 return reusedBuffer;
             }
@@ -143,21 +148,21 @@ internal sealed class SpritePageBufferPool
             // be invalidated merely to satisfy the soft retention target.
             var targetBeforeAllocation = Math.Max(
                 0L,
-                _hardBudgetBytes - length);
+                _hardBudgetBytes - capacity);
             _ = TrimFreeBuffersCore(targetBeforeAllocation);
 
             // Allocation remains inside the accounting lock so concurrent Rent
             // calls cannot all observe the same unused budget. Large page
             // allocation is never performed by the render callback.
-            var buffer = new byte[length];
+            var buffer = new byte[capacity];
             if (!_bufferStates.TryAdd(buffer, BufferState.Rented))
             {
                 throw new InvalidOperationException(
                     "A newly allocated sprite-page buffer was already tracked.");
             }
 
-            _allocatedBytes = checked(_allocatedBytes + length);
-            _rentedBytes = checked(_rentedBytes + length);
+            _allocatedBytes = checked(_allocatedBytes + capacity);
+            _rentedBytes = checked(_rentedBytes + capacity);
             _allocationCount = checked(_allocationCount + 1);
             ValidateAccounting();
             return buffer;
@@ -201,12 +206,12 @@ internal sealed class SpritePageBufferPool
             _rentedBytes = checked(_rentedBytes - buffer.LongLength);
             _freeBytes = checked(_freeBytes + buffer.LongLength);
 
-            if (!_freeBuffersByLength.TryGetValue(
+            if (!_freeBuffersByCapacity.TryGetValue(
                     buffer.Length,
                     out var freeBuffers))
             {
                 freeBuffers = new Stack<byte[]>();
-                _freeBuffersByLength.Add(buffer.Length, freeBuffers);
+                _freeBuffersByCapacity.Add(buffer.Length, freeBuffers);
             }
 
             freeBuffers.Push(buffer);
@@ -269,10 +274,28 @@ internal sealed class SpritePageBufferPool
         }
     }
 
-    private bool TryRentFreeBuffer(int length, out byte[] buffer)
+    private static int GetCapacity(int requestedLength)
     {
-        if (!_freeBuffersByLength.TryGetValue(
-                length,
+        var capacity = checked(
+            ((long)requestedLength + CapacityBucketBytes - 1) /
+            CapacityBucketBytes *
+            CapacityBucketBytes);
+        if (capacity > Array.MaxLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(requestedLength),
+                requestedLength,
+                "The rounded sprite-page buffer capacity exceeds the maximum " +
+                "supported array length.");
+        }
+
+        return (int)capacity;
+    }
+
+    private bool TryRentFreeBuffer(int capacity, out byte[] buffer)
+    {
+        if (!_freeBuffersByCapacity.TryGetValue(
+                capacity,
                 out var freeBuffers) ||
             freeBuffers.Count == 0)
         {
@@ -283,11 +306,12 @@ internal sealed class SpritePageBufferPool
         buffer = freeBuffers.Pop();
         if (freeBuffers.Count == 0)
         {
-            _freeBuffersByLength.Remove(length);
+            _freeBuffersByCapacity.Remove(capacity);
         }
 
         if (!_bufferStates.TryGetValue(buffer, out var state) ||
-            state != BufferState.Free)
+            state != BufferState.Free ||
+            buffer.Length != capacity)
         {
             throw new InvalidOperationException(
                 "The sprite-page buffer pool free-list state is inconsistent.");
@@ -306,10 +330,10 @@ internal sealed class SpritePageBufferPool
         var removedBytes = 0L;
         while (_allocatedBytes > targetAllocatedBytes && _freeBytes > 0)
         {
-            var selectedLength = FindLargestFreeBufferLength();
-            if (selectedLength <= 0 ||
-                !_freeBuffersByLength.TryGetValue(
-                    selectedLength,
+            var selectedCapacity = FindLargestFreeBufferCapacity();
+            if (selectedCapacity <= 0 ||
+                !_freeBuffersByCapacity.TryGetValue(
+                    selectedCapacity,
                     out var freeBuffers) ||
                 freeBuffers.Count == 0)
             {
@@ -320,7 +344,7 @@ internal sealed class SpritePageBufferPool
             var buffer = freeBuffers.Pop();
             if (freeBuffers.Count == 0)
             {
-                _freeBuffersByLength.Remove(selectedLength);
+                _freeBuffersByCapacity.Remove(selectedCapacity);
             }
 
             if (!_bufferStates.Remove(buffer, out var state) ||
@@ -338,18 +362,18 @@ internal sealed class SpritePageBufferPool
         return removedBytes;
     }
 
-    private int FindLargestFreeBufferLength()
+    private int FindLargestFreeBufferCapacity()
     {
-        var selectedLength = 0;
-        foreach (var (length, buffers) in _freeBuffersByLength)
+        var selectedCapacity = 0;
+        foreach (var (capacity, buffers) in _freeBuffersByCapacity)
         {
-            if (buffers.Count > 0 && length > selectedLength)
+            if (buffers.Count > 0 && capacity > selectedCapacity)
             {
-                selectedLength = length;
+                selectedCapacity = capacity;
             }
         }
 
-        return selectedLength;
+        return selectedCapacity;
     }
 
     private void ValidateAccounting()

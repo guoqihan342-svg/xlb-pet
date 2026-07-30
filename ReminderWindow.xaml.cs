@@ -633,6 +633,16 @@ public partial class ReminderWindow : Window
         e.Handled = true;
     }
 
+    private void CloseButton_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (e.ClickCount > 1)
+        {
+            e.Handled = true;
+        }
+    }
+
     private void ReminderWindow_PreviewKeyDown(
         object sender,
         KeyEventArgs e)
@@ -643,7 +653,10 @@ public partial class ReminderWindow : Window
         }
 
         e.Handled = true;
-        RequestDismiss(deferUntilClosingCompletes: false);
+        if (!e.IsRepeat)
+        {
+            RequestDismiss(deferUntilClosingCompletes: false);
+        }
     }
 
     private void ReminderWindow_Closing(
@@ -706,8 +719,13 @@ public partial class ReminderWindow : Window
             }
             else
             {
+                // Keep the guard through the current routed-input dispatch so
+                // a physical double-click cannot acknowledge the next batch.
+                // Reset at Input priority (rather than Background), otherwise
+                // continuous rendering can starve the reset and swallow the
+                // next deliberate close click.
                 _ = Dispatcher.BeginInvoke(
-                    DispatcherPriority.Background,
+                    DispatcherPriority.Input,
                     new Action(() => _dismissRequestPending = false));
             }
         }

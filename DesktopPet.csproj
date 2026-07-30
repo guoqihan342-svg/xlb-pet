@@ -7,13 +7,12 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LubanDesktopPet</RootNamespace>
     <AssemblyName>LubanDesktopPet</AssemblyName>
-    <Version>1.0.38</Version>
+    <Version>1.0.39</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\luban-tray.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <Resource Include="Assets\sprite-pages\*.pbgra.br" />
     <Resource Include="Assets\luban-sprite-pages.json" />
     <Resource Include="Assets\luban-pillow-layer.png" />

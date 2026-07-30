@@ -254,7 +254,8 @@
                             FontSize="17"
                             Foreground="#C38352"
                             ToolTip="关闭并清空本批提醒"
-                            Click="CloseButton_Click">
+                            Click="CloseButton_Click"
+                            PreviewMouseLeftButtonDown="CloseButton_PreviewMouseLeftButtonDown">
                         <Button.Style>
                             <Style TargetType="Button">
                                 <Setter Property="Background" Value="Transparent" />

@@ -151,6 +151,8 @@ public partial class TodoWindow : Window
     private bool _updatingScheduledQuietHoursDraft;
     private bool _scheduledQuietHoursDraftEdited;
     private bool _updatingScheduledTimePickerSelection;
+    private ScheduledTimePickerTarget _scheduledTimePickerTarget =
+        ScheduledTimePickerTarget.Reminder;
     private bool _switchingScheduledPickerPopup;
     private bool _isScheduledDatePickerPopupOpen;
     private bool _isScheduledTimePickerPopupOpen;
@@ -1994,19 +1996,65 @@ public partial class TodoWindow : Window
         e.Handled = true;
     }
 
-    private void OpenScheduledTimePicker()
+    private void ScheduledQuietHoursTimeInput_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        OpenScheduledTimePickerForTarget(
+            GetScheduledQuietHoursTimeTarget(sender));
+        e.Handled = true;
+    }
+
+    private void ScheduledQuietHoursTimeInput_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        var target = GetScheduledQuietHoursTimeTarget(sender);
+        if (e.Key is Key.Space or Key.Down or Key.F4 or Key.Enter)
+        {
+            OpenScheduledTimePickerForTarget(target);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape && ScheduledTimePickerPopup.IsOpen)
+        {
+            CloseScheduledTimePicker();
+            e.Handled = true;
+        }
+    }
+
+    private ScheduledTimePickerTarget GetScheduledQuietHoursTimeTarget(
+        object sender) =>
+        ReferenceEquals(sender, ScheduledQuietHoursEndInput)
+            ? ScheduledTimePickerTarget.QuietEnd
+            : ScheduledTimePickerTarget.QuietStart;
+
+    private void OpenScheduledTimePicker() =>
+        OpenScheduledTimePickerForTarget(
+            ScheduledTimePickerTarget.Reminder);
+
+    private void OpenScheduledTimePickerForTarget(
+        ScheduledTimePickerTarget target)
     {
         if (_hasClosed)
         {
             return;
         }
 
+        var targetChanged = _scheduledTimePickerTarget != target;
         BeginScheduledPickerInternalCommit();
-        SynchronizeScheduledTimePickerSelection();
         SwitchScheduledPickerPopup(
             () =>
             {
+                if (targetChanged && ScheduledTimePickerPopup.IsOpen)
+                {
+                    CloseScheduledTimePicker();
+                }
+
                 CloseScheduledDatePicker();
+                ConfigureScheduledTimePickerTarget(target);
+                SynchronizeScheduledTimePickerSelection();
                 ScheduledTimePickerPopup.IsOpen = true;
                 SetTransientPopupState(
                     isDatePicker: false,
@@ -2016,6 +2064,43 @@ public partial class TodoWindow : Window
         Keyboard.Focus(ScheduledHourComboBox);
         ScheduleFinishScheduledPickerInternalCommit();
     }
+
+    private void ConfigureScheduledTimePickerTarget(
+        ScheduledTimePickerTarget target)
+    {
+        _scheduledTimePickerTarget = target;
+        FrameworkElement placementTarget = target switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                ScheduledQuietHoursStartInput,
+            ScheduledTimePickerTarget.QuietEnd =>
+                ScheduledQuietHoursEndInput,
+            _ => ScheduledTimePickerHost
+        };
+        ScheduledTimePickerPopup.PlacementTarget = placementTarget;
+        ScheduledTimePickerPopup.HorizontalOffset =
+            (GetScheduledTimePickerTargetWidth(target) - 222d) / 2d;
+        ScheduledTimePickerTitle.Text = target switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                "选择免打扰开始时间",
+            ScheduledTimePickerTarget.QuietEnd =>
+                "选择免打扰结束时间",
+            _ => "选择提醒时间"
+        };
+        ScheduledQuietHoursStartInput.Tag =
+            target == ScheduledTimePickerTarget.QuietStart
+                ? "Active"
+                : null;
+        ScheduledQuietHoursEndInput.Tag =
+            target == ScheduledTimePickerTarget.QuietEnd
+                ? "Active"
+                : null;
+    }
+
+    private static double GetScheduledTimePickerTargetWidth(
+        ScheduledTimePickerTarget target) =>
+        target == ScheduledTimePickerTarget.Reminder ? 92d : 67d;
 
     private void CloseScheduledTimePicker()
     {
@@ -2041,6 +2126,8 @@ public partial class TodoWindow : Window
         _scheduledTimePartCloseCause = ScheduledTimePartCloseCause.None;
         _scheduledRepeatUnitCommitIsInternal = false;
         _scheduledPickerState = ScheduledPickerState.Closed;
+        ScheduledQuietHoursStartInput.Tag = null;
+        ScheduledQuietHoursEndInput.Tag = null;
     }
 
     private void ScheduledTimePickerPopup_Opened(object sender, EventArgs e)
@@ -2064,6 +2151,8 @@ public partial class TodoWindow : Window
         _scheduledRepeatUnitCommitIsInternal = true;
         ScheduledRepeatUnitComboBox.IsDropDownOpen = false;
         _scheduledRepeatUnitCommitIsInternal = false;
+        ScheduledQuietHoursStartInput.Tag = null;
+        ScheduledQuietHoursEndInput.Tag = null;
         SetTransientPopupState(
             isDatePicker: false,
             isOpen: false);
@@ -2124,8 +2213,7 @@ public partial class TodoWindow : Window
         }
 
         MarkScheduledPickerInteractionIfOpen();
-        _scheduledTaskDraftClockEdited = true;
-        UpdateScheduledTimeTextFromPicker();
+        ApplyScheduledTimePickerSelection();
     }
 
     private void ScheduledTimePartComboBox_DropDownClosed(
@@ -2247,8 +2335,7 @@ public partial class TodoWindow : Window
         comboBox.SelectedItem =
             comboBox.ItemContainerGenerator.ItemFromContainer(item);
         comboBox.IsDropDownOpen = false;
-        _scheduledTaskDraftClockEdited = true;
-        UpdateScheduledTimeTextFromPicker();
+        ApplyScheduledTimePickerSelection();
         Activate();
         comboBox.Focus();
         Keyboard.Focus(comboBox);
@@ -2261,22 +2348,36 @@ public partial class TodoWindow : Window
         RoutedEventArgs e)
     {
         var now = DateTimeOffset.Now.LocalDateTime;
-        _updatingScheduledTaskDraftClock = true;
-        try
+        if (_scheduledTimePickerTarget ==
+            ScheduledTimePickerTarget.Reminder)
         {
-            SetScheduledDate(now.Date, markEdited: false);
+            _updatingScheduledTaskDraftClock = true;
+            try
+            {
+                SetScheduledDate(now.Date, markEdited: false);
+            }
+            finally
+            {
+                _updatingScheduledTaskDraftClock = false;
+            }
+
+            SetScheduledTimePickerSelection(
+                now.Hour,
+                now.Minute,
+                now.Second,
+                updateText: true);
+            _scheduledTaskDraftClockEdited = true;
         }
-        finally
+        else
         {
-            _updatingScheduledTaskDraftClock = false;
+            SetScheduledTimePickerSelection(
+                now.Hour,
+                now.Minute,
+                now.Second,
+                updateText: false);
+            ApplyScheduledTimePickerSelection();
         }
 
-        SetScheduledTimePickerSelection(
-            now.Hour,
-            now.Minute,
-            now.Second,
-            updateText: true);
-        _scheduledTaskDraftClockEdited = true;
         e.Handled = true;
     }
 
@@ -2284,17 +2385,25 @@ public partial class TodoWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        UpdateScheduledTimeTextFromPicker();
+        var target = _scheduledTimePickerTarget;
+        ApplyScheduledTimePickerSelection();
         CloseScheduledTimePicker();
-        ScheduledTimeInput.Focus();
-        Keyboard.Focus(ScheduledTimeInput);
+        FocusScheduledTimePickerTarget(target);
         e.Handled = true;
     }
 
     private void SynchronizeScheduledTimePickerSelection()
     {
+        var sourceText = _scheduledTimePickerTarget switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                ScheduledQuietHoursStartInput.Text,
+            ScheduledTimePickerTarget.QuietEnd =>
+                ScheduledQuietHoursEndInput.Text,
+            _ => ScheduledTimeInput.Text
+        };
         if (!DateTime.TryParseExact(
-                ScheduledTimeInput.Text.Trim(),
+                sourceText.Trim(),
                 "HH:mm:ss",
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.None,
@@ -2348,6 +2457,58 @@ public partial class TodoWindow : Window
             ScheduledHourComboBox.SelectedIndex,
             ScheduledMinuteComboBox.SelectedIndex,
             ScheduledSecondComboBox.SelectedIndex);
+    }
+
+    private void ApplyScheduledTimePickerSelection()
+    {
+        if (ScheduledHourComboBox.SelectedIndex < 0 ||
+            ScheduledMinuteComboBox.SelectedIndex < 0 ||
+            ScheduledSecondComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        if (_scheduledTimePickerTarget ==
+            ScheduledTimePickerTarget.Reminder)
+        {
+            _scheduledTaskDraftClockEdited = true;
+            UpdateScheduledTimeTextFromPicker();
+            return;
+        }
+
+        var value = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:00}:{1:00}:{2:00}",
+            ScheduledHourComboBox.SelectedIndex,
+            ScheduledMinuteComboBox.SelectedIndex,
+            ScheduledSecondComboBox.SelectedIndex);
+        if (_scheduledTimePickerTarget ==
+            ScheduledTimePickerTarget.QuietStart)
+        {
+            ScheduledQuietHoursStartInput.Text = value;
+        }
+        else
+        {
+            ScheduledQuietHoursEndInput.Text = value;
+        }
+
+        _scheduledQuietHoursDraftEdited = true;
+        ClearScheduledTaskValidation();
+    }
+
+    private void FocusScheduledTimePickerTarget(
+        ScheduledTimePickerTarget target)
+    {
+        var input = target switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                ScheduledQuietHoursStartInput,
+            ScheduledTimePickerTarget.QuietEnd =>
+                ScheduledQuietHoursEndInput,
+            _ => ScheduledTimeInput
+        };
+        input.Focus();
+        Keyboard.Focus(input);
     }
 
     private void RequestScheduledTaskSubmit()
@@ -2546,9 +2707,9 @@ public partial class TodoWindow : Window
                 out var start))
         {
             SetScheduledTaskValidation(
-                "免打扰开始时间要写成 HH:mm:ss");
-            ScheduledQuietHoursStartInput.Focus();
-            ScheduledQuietHoursStartInput.SelectAll();
+                "请选择免打扰开始时间");
+            OpenScheduledTimePickerForTarget(
+                ScheduledTimePickerTarget.QuietStart);
             return false;
         }
 
@@ -2560,9 +2721,9 @@ public partial class TodoWindow : Window
                 out var end))
         {
             SetScheduledTaskValidation(
-                "免打扰结束时间要写成 HH:mm:ss");
-            ScheduledQuietHoursEndInput.Focus();
-            ScheduledQuietHoursEndInput.SelectAll();
+                "请选择免打扰结束时间");
+            OpenScheduledTimePickerForTarget(
+                ScheduledTimePickerTarget.QuietEnd);
             return false;
         }
 
@@ -2570,8 +2731,8 @@ public partial class TodoWindow : Window
         {
             SetScheduledTaskValidation(
                 "免打扰开始和结束时间不能相同哦");
-            ScheduledQuietHoursEndInput.Focus();
-            ScheduledQuietHoursEndInput.SelectAll();
+            OpenScheduledTimePickerForTarget(
+                ScheduledTimePickerTarget.QuietEnd);
             return false;
         }
 
@@ -2853,6 +3014,14 @@ public partial class TodoWindow : Window
         RoutedEventArgs e)
     {
         MarkScheduledPickerInteractionIfOpen();
+        if (ScheduledRepeatToggle.IsChecked != true &&
+            _scheduledTimePickerTarget !=
+                ScheduledTimePickerTarget.Reminder &&
+            ScheduledTimePickerPopup.IsOpen)
+        {
+            CloseScheduledTimePicker();
+        }
+
         UpdateScheduledRepeatEditorVisibility();
         if (!_updatingScheduledRepeatDraft)
         {
@@ -2868,6 +3037,14 @@ public partial class TodoWindow : Window
         RoutedEventArgs e)
     {
         MarkScheduledPickerInteractionIfOpen();
+        if (ScheduledQuietHoursToggle.IsChecked != true &&
+            _scheduledTimePickerTarget !=
+                ScheduledTimePickerTarget.Reminder &&
+            ScheduledTimePickerPopup.IsOpen)
+        {
+            CloseScheduledTimePicker();
+        }
+
         if (!_updatingScheduledQuietHoursDraft)
         {
             _scheduledQuietHoursDraftEdited = true;
@@ -2887,14 +3064,6 @@ public partial class TodoWindow : Window
         MarkScheduledPickerInteractionIfOpen();
         _scheduledQuietHoursDraftEdited = true;
         ClearScheduledTaskValidation();
-    }
-
-    private void ScheduledQuietHoursTimeInput_PreviewTextInput(
-        object sender,
-        TextCompositionEventArgs e)
-    {
-        e.Handled = e.Text.Any(
-            character => !char.IsDigit(character) && character != ':');
     }
 
     private void ScheduledRepeatInput_TextChanged(
@@ -4623,6 +4792,13 @@ public partial class TodoWindow : Window
     {
         public int X;
         public int Y;
+    }
+
+    private enum ScheduledTimePickerTarget
+    {
+        Reminder,
+        QuietStart,
+        QuietEnd
     }
 
     private enum ScheduledPickerState

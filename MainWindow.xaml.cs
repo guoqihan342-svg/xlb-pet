@@ -6,6 +6,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Runtime;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
@@ -85,18 +86,18 @@ public partial class MainWindow : Window
     private const int SpriteFrameDescriptorValueCount = 6;
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
-    // Decoded atlas pages are byte-for-byte identical regardless of whether
-    // they are cached. The complete idle/wake chain plus the authored
-    // 121-frame panda boarding and 64-frame flight clips occupy about
-    // 123 MiB; 128 MiB keeps one whole roaming presentation resident without
-    // permanently retaining an unrelated reminder/edge hot set.
-    private const long SpritePageResidentBudgetBytes = 128L * 1024 * 1024;
-    // The complete idle/wake chain occupies about 54 MiB. An 80 MiB idle
-    // target keeps that chain plus the current Todo/reminder page or one
-    // recently returned decode buffer, without retaining an entire unrelated
-    // action after the pet has been quiet for a while. The former 64 MiB target
-    // was too tight and caused repeated LOH allocation/decompression.
-    private const long SpritePageIdleResidentTargetBytes = 80L * 1024 * 1024;
+    // Ordinary clips use rolling current/next-page prefetch, so two hot pages
+    // plus the idle runway fit inside 64 MiB without changing a single source
+    // pixel or animation pose. Roaming intentionally keeps its complete
+    // boarding/flight presentation ready and receives the former 128 MiB
+    // budget only while it is preloading or active.
+    private const long SpritePageResidentBudgetBytes = 64L * 1024 * 1024;
+    private const long SpritePageRoamResidentBudgetBytes = 128L * 1024 * 1024;
+    // Keep the startup idle page and one wake continuation page. Together they
+    // provide more than one second of authored runway while the existing
+    // asynchronous look-ahead decodes the following page. Free buffers and
+    // unrelated completed-action pages converge to the same 32 MiB target.
+    private const long SpritePageIdleResidentTargetBytes = 32L * 1024 * 1024;
     private const long SpritePageCollectionThresholdBytes = 16L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
@@ -482,11 +483,11 @@ public partial class MainWindow : Window
             "action-reminder-hold",
             "Assets/luban-reminder-hold-",
             expectedFrameCount: 48);
-        // Pin the complete idle/wake chain by name, but load only the first idle
-        // page at startup. Roam pages are preloaded shortly before their due
-        // time and remain evictable during ordinary interactions.
-        AddPinnedSpritePageNames(_wakeFrames);
+        // Keep only the idle page and the first continuation page permanently
+        // hot. Remaining wake pages use the same rolling look-ahead as every
+        // other clip, avoiding a permanent 54 MiB wake allocation.
         AddPinnedSpritePageNames([_idleFrame]);
+        AddFirstWakeContinuationPageName();
         _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
         _reactionClips =
         [
@@ -629,6 +630,21 @@ public partial class MainWindow : Window
         foreach (var frame in frames)
         {
             _pinnedSpritePageNames.Add(frame.PageName);
+        }
+    }
+
+    private void AddFirstWakeContinuationPageName()
+    {
+        foreach (var frame in _wakeFrames)
+        {
+            if (!string.Equals(
+                    frame.PageName,
+                    _idleFrame.PageName,
+                    StringComparison.Ordinal))
+            {
+                _pinnedSpritePageNames.Add(frame.PageName);
+                return;
+            }
         }
     }
 
@@ -5945,8 +5961,9 @@ public partial class MainWindow : Window
                 {
                     if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
                     {
-                        ReleaseCompletedSpritePageResult(completedTask);
-                        cancellation.Dispose();
+                        ReleaseCompletedSpritePagePrefetchForShutdown(
+                            cancellation,
+                            completedTask);
                         return;
                     }
 
@@ -5960,13 +5977,36 @@ public partial class MainWindow : Window
                 }
                 catch (InvalidOperationException)
                 {
-                    ReleaseCompletedSpritePageResult(completedTask);
-                    cancellation.Dispose();
+                    ReleaseCompletedSpritePagePrefetchForShutdown(
+                        cancellation,
+                        completedTask);
                 }
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private void ReleaseCompletedSpritePagePrefetchForShutdown(
+        CancellationTokenSource cancellation,
+        Task<SpritePageLoadResult> completedTask)
+    {
+        ReleaseCompletedSpritePageResult(completedTask);
+        if (ReferenceEquals(
+                Interlocked.CompareExchange(
+                    ref _spritePagePrefetchTask,
+                    null,
+                    completedTask),
+                completedTask))
+        {
+            _ = Interlocked.CompareExchange(
+                ref _spritePagePrefetchCancellation,
+                null,
+                cancellation);
+            _spritePagePrefetchPageName = null;
+        }
+
+        cancellation.Dispose();
     }
 
     private void CompleteSpritePagePrefetch(
@@ -6416,10 +6456,17 @@ public partial class MainWindow : Window
 
     private void TrimResidentSpritePagesToBudget(string? preservePageName = null)
     {
+        var targetBytes = GetSpritePageResidentBudgetBytes();
         TrimResidentSpritePagesToTarget(
-            SpritePageResidentBudgetBytes,
+            targetBytes,
             preservePageName);
+        TrimSpritePageBufferPoolToTarget(targetBytes);
     }
+
+    private long GetSpritePageResidentBudgetBytes() =>
+        _isEdgeRoaming || _edgeRoamPreloadRequested
+            ? SpritePageRoamResidentBudgetBytes
+            : SpritePageResidentBudgetBytes;
 
     private void TrimResidentSpritePagesToIdleTarget()
     {
@@ -6427,13 +6474,15 @@ public partial class MainWindow : Window
             SpritePageIdleResidentTargetBytes,
             preservePageName: null);
 
-        // Resident eviction first returns exact-length LOH arrays to the pool.
-        // Once the pet is idle, retaining free arrays above the same 80 MiB
-        // hot-set target only preserves fragmentation without improving the
-        // next animation. Discard that excess after protected/resident pages
-        // have settled, and account only the arrays that were truly released.
-        var discardedBytes = _spritePageBufferPool.TrimFreeBuffers(
-            SpritePageIdleResidentTargetBytes);
+        // Resident eviction returns page arrays to the pool first. Converge
+        // total resident plus reusable storage to the same idle target so LOH
+        // high-water memory cannot grow with each different automatic action.
+        TrimSpritePageBufferPoolToTarget(SpritePageIdleResidentTargetBytes);
+    }
+
+    private void TrimSpritePageBufferPoolToTarget(long targetBytes)
+    {
+        var discardedBytes = _spritePageBufferPool.TrimFreeBuffers(targetBytes);
         if (discardedBytes > 0)
         {
             RecordDiscardedSpritePageBytes(discardedBytes);
@@ -6709,11 +6758,21 @@ public partial class MainWindow : Window
         _spritePageCollectionInProgress = true;
 
         _ = Task.Run(static () =>
+            {
+                // Page arrays live on the LOH. A normal Gen2 collection drops
+                // references but can leave the committed high-water segments
+                // behind indefinitely, which is why Task Manager kept rising
+                // after each different automatic action. This path runs only
+                // after the same fully-idle gate and 30-second rate limit used
+                // above, so compact the LOH once and return those segments.
+                GCSettings.LargeObjectHeapCompactionMode =
+                    GCLargeObjectHeapCompactionMode.CompactOnce;
                 GC.Collect(
                     GC.MaxGeneration,
                     GCCollectionMode.Forced,
-                    blocking: false,
-                    compacting: false))
+                    blocking: true,
+                    compacting: true);
+            })
             .ContinueWith(
                 completedTask =>
                 {
@@ -6772,13 +6831,6 @@ public partial class MainWindow : Window
             return true;
         }
 
-        if (_isReminderActive &&
-            (FrameSequenceUsesSpritePage(_reminderEnterFrames, pageName) ||
-             FrameSequenceUsesSpritePage(_reminderHoldFrames, pageName)))
-        {
-            return true;
-        }
-
         if ((_isEdgeRoaming || _edgeRoamPreloadRequested) &&
             (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
              (_edgeRoamPhase != EdgeRoamPhase.Disembarking &&
@@ -6786,22 +6838,6 @@ public partial class MainWindow : Window
                FrameSequenceUsesSpritePage(_roamWaveFrames, pageName)))))
         {
             return true;
-        }
-
-        if (_activeClip is not { } activeClip)
-        {
-            return false;
-        }
-
-        foreach (var frame in activeClip.Frames)
-        {
-            if (string.Equals(
-                    pageName,
-                    frame.Image.PageName,
-                    StringComparison.Ordinal))
-            {
-                return true;
-            }
         }
 
         return false;
@@ -6849,8 +6885,15 @@ public partial class MainWindow : Window
     {
         var discardedBytes =
             _spritePageBufferPool.ReturnAndGetDiscardedBytes(pixels);
+        if (_isClosing)
+        {
+            // A decode can finish after Closing cleared the resident cache.
+            // Never let that late result repopulate the free LOH pool.
+            _ = _spritePageBufferPool.ClearFreeBuffers();
+            return;
+        }
+
         if (discardedBytes > 0 &&
-            !_isClosing &&
             Dispatcher.CheckAccess())
         {
             RecordDiscardedSpritePageBytes(discardedBytes);
@@ -6985,7 +7028,7 @@ public partial class MainWindow : Window
         }
 
         var expectedAtlasByteCount = checked(atlasWidth * atlasHeight * 4);
-        if (decodedPixels.Length != expectedAtlasByteCount)
+        if (decodedPixels.Length < expectedAtlasByteCount)
         {
             throw new InvalidDataException(
                 $"Sprite page atlas buffer length is invalid: {resourcePath}");
@@ -7006,7 +7049,7 @@ public partial class MainWindow : Window
             var payloadOffset = 0;
             ReadPayloadExactly(
                 payloadStream,
-                decodedPixels,
+                decodedPixels.AsSpan(0, expectedAtlasByteCount),
                 ref payloadOffset,
                 expectedPayloadByteCount,
                 cancellationToken);
@@ -7032,7 +7075,7 @@ public partial class MainWindow : Window
 
         ValidateSpriteAtlasDecodedHash(
             resourcePath,
-            decodedPixels,
+            decodedPixels.AsSpan(0, expectedAtlasByteCount),
             expectedDecodedSha256);
     }
 
@@ -7084,7 +7127,7 @@ public partial class MainWindow : Window
 
 
         var expectedAtlasByteCount = checked(atlasWidth * atlasHeight * 4);
-        if (atlasPixels.Length != expectedAtlasByteCount)
+        if (atlasPixels.Length < expectedAtlasByteCount)
         {
             throw new InvalidDataException("Delta-sub sprite page buffer length is invalid.");
         }
@@ -7097,7 +7140,7 @@ public partial class MainWindow : Window
             throw new InvalidDataException("Delta-sub sprite page payload ended before its headers.");
         }
 
-        Array.Clear(atlasPixels);
+        Array.Clear(atlasPixels, 0, expectedAtlasByteCount);
         var previousDisplayFrameByteCount = DisplayFrameByteCount;
         var previousDisplayFrame = SpriteDecodeScratchPool.Rent(
             previousDisplayFrameByteCount);
@@ -7275,7 +7318,7 @@ public partial class MainWindow : Window
 
     private static void ValidateSpriteAtlasDecodedHash(
         string resourcePath,
-        byte[] decodedPixels,
+        ReadOnlySpan<byte> decodedPixels,
         string expectedSha256)
     {
         if (decodedPixels.Length == 0 || !IsCanonicalSha256(expectedSha256))
@@ -10528,7 +10571,7 @@ public partial class MainWindow : Window
         TimeSpan TotalElapsed,
         TimeSpan ReadElapsed);
 
-    private sealed record AnimationFrame(
+    private readonly record struct AnimationFrame(
         SpriteFrame Image,
         TimeSpan HoldDuration);
 }
