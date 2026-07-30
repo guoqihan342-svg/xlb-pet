@@ -75,6 +75,8 @@ public partial class MainWindow : Window
     private const double SnoreBubbleMaximumScale = 1.58;
     private const int DisplayPixelWidth = 399;
     private const int DisplayPixelHeight = 509;
+    private const int DisplayFrameByteCount =
+        DisplayPixelWidth * DisplayPixelHeight * 4;
     private const string SpriteAtlasManifestPath = "Assets/luban-sprite-pages.json";
     private const string SpriteAtlasCompression = "brotli";
     private const string SpriteAtlasDirectEncoding = "pbgra32";
@@ -144,7 +146,7 @@ public partial class MainWindow : Window
         ActionTransitionDuration > TimeSpan.Zero;
     private static readonly ArrayPool<byte> SpriteDecodeScratchPool =
         ArrayPool<byte>.Create(
-            DisplayPixelWidth * DisplayPixelHeight * 4,
+            DisplayFrameByteCount,
             maxArraysPerBucket: 1);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(10);
@@ -181,18 +183,16 @@ public partial class MainWindow : Window
     private byte[] _spritePagePixels = Array.Empty<byte>();
     private readonly WriteableBitmap _displayFrameBuffer;
     private readonly byte[] _displayFramePixels =
-        new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
+        new byte[DisplayFrameByteCount];
     private readonly byte[] _frameBlendFromPixels = UsesFrameBlendBuffers
-        ? new byte[DisplayPixelWidth * DisplayPixelHeight * 4]
+        ? new byte[DisplayFrameByteCount]
         : Array.Empty<byte>();
     private readonly byte[] _frameBlendTargetPixels = UsesFrameBlendBuffers
-        ? new byte[DisplayPixelWidth * DisplayPixelHeight * 4]
+        ? new byte[DisplayFrameByteCount]
         : Array.Empty<byte>();
     private readonly byte[] _frameBlendOutputPixels = UsesFrameBlendBuffers
-        ? new byte[DisplayPixelWidth * DisplayPixelHeight * 4]
+        ? new byte[DisplayFrameByteCount]
         : Array.Empty<byte>();
-    private readonly byte[] _transformedDisplayFramePixels =
-        new byte[DisplayPixelWidth * DisplayPixelHeight * 4];
     private readonly SpriteFrame _idleFrame;
     private readonly SpriteFrame _todoFrame;
     private readonly SpriteFrame[] _edgeLeftFrames;
@@ -815,8 +815,7 @@ public partial class MainWindow : Window
                     : MotionFrameInterval;
             frames.Add(new AnimationFrame(
                 timeline.Frames[timelineIndex],
-                holdDuration,
-                timeline.Names[timelineIndex]));
+                holdDuration));
         }
 
         // Clip indices omit timeline idle at index 0, so this points to the
@@ -829,8 +828,7 @@ public partial class MainWindow : Window
             {
                 frames.Add(new AnimationFrame(
                     loopFrame,
-                    ActionLoopFrameInterval,
-                    Path.GetFileName(loopFrame.Name)));
+                    ActionLoopFrameInterval));
             }
         }
 
@@ -840,8 +838,7 @@ public partial class MainWindow : Window
         {
             frames.Add(new AnimationFrame(
                 timeline.Frames[timelineIndex],
-                MotionFrameInterval,
-                timeline.Names[timelineIndex]));
+                MotionFrameInterval));
         }
 
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
@@ -889,8 +886,7 @@ public partial class MainWindow : Window
         {
             frames.Add(new AnimationFrame(
                 timeline.Frames[timelineIndex],
-                TodoMotionFrameInterval,
-                timeline.Names[timelineIndex]));
+                TodoMotionFrameInterval));
         }
 
         return new AnimationClip(
@@ -947,8 +943,7 @@ public partial class MainWindow : Window
             var frame = sourceFrames[sourceIndex];
             frames[index] = new AnimationFrame(
                 frame,
-                MotionFrameInterval,
-                Path.GetFileName(frame.Name));
+                MotionFrameInterval);
         }
 
         return new AnimationClip(
@@ -975,12 +970,10 @@ public partial class MainWindow : Window
 
         var frames = new List<SpriteFrame>(
             1 + _wakeFrames.Length + selectedActionFrameCount);
-        var names = new List<string>(frames.Capacity);
 
         void Add(SpriteFrame frame)
         {
             frames.Add(frame);
-            names.Add(Path.GetFileName(frame.Name));
         }
 
         Add(_idleFrame);
@@ -999,7 +992,6 @@ public partial class MainWindow : Window
 
         return new ActionTimeline(
             frames.ToArray(),
-            names.ToArray(),
             actionStartIndex);
     }
 
@@ -5401,13 +5393,24 @@ public partial class MainWindow : Window
         inverseNextMatrix.Invert();
         var relativeMatrix = previousVisualMatrix;
         relativeMatrix.Append(inverseNextMatrix);
-        TransformPremultipliedPixels(
-            _displayFramePixels,
-            _transformedDisplayFramePixels,
-            DisplayPixelWidth,
-            DisplayPixelHeight,
-            relativeMatrix);
-        WriteDisplayFrame(_transformedDisplayFramePixels);
+        var transformedPixels = SpriteDecodeScratchPool.Rent(
+            DisplayFrameByteCount);
+        try
+        {
+            TransformPremultipliedPixels(
+                _displayFramePixels,
+                transformedPixels,
+                DisplayPixelWidth,
+                DisplayPixelHeight,
+                relativeMatrix);
+            WriteDisplayFrame(transformedPixels);
+        }
+        finally
+        {
+            SpriteDecodeScratchPool.Return(
+                transformedPixels,
+                clearArray: false);
+        }
     }
 
     private void BakeCurrentPetVisualTransformIntoDisplayFrame()
@@ -5429,35 +5432,46 @@ public partial class MainWindow : Window
         UpdateFrameBlend(Stopwatch.GetTimestamp(), force: true);
         StopFrameBlend(snapToTarget: false);
 
-        if (visualMatrix.IsIdentity)
+        var transformedPixels = SpriteDecodeScratchPool.Rent(
+            DisplayFrameByteCount);
+        try
         {
-            Array.Copy(
-                _displayFramePixels,
-                _transformedDisplayFramePixels,
-                _displayFramePixels.Length);
-        }
-        else
-        {
-            TransformPremultipliedPixels(
-                _displayFramePixels,
-                _transformedDisplayFramePixels,
-                DisplayPixelWidth,
-                DisplayPixelHeight,
-                visualMatrix);
-        }
-
-        if (opacity < 1)
-        {
-            for (var index = 0; index < _transformedDisplayFramePixels.Length; index++)
+            if (visualMatrix.IsIdentity)
             {
-                _transformedDisplayFramePixels[index] = (byte)Math.Clamp(
-                    Math.Round(_transformedDisplayFramePixels[index] * opacity),
-                    byte.MinValue,
-                    byte.MaxValue);
+                Array.Copy(
+                    _displayFramePixels,
+                    transformedPixels,
+                    _displayFramePixels.Length);
             }
-        }
+            else
+            {
+                TransformPremultipliedPixels(
+                    _displayFramePixels,
+                    transformedPixels,
+                    DisplayPixelWidth,
+                    DisplayPixelHeight,
+                    visualMatrix);
+            }
 
-        WriteDisplayFrame(_transformedDisplayFramePixels);
+            if (opacity < 1)
+            {
+                for (var index = 0; index < DisplayFrameByteCount; index++)
+                {
+                    transformedPixels[index] = (byte)Math.Clamp(
+                        Math.Round(transformedPixels[index] * opacity),
+                        byte.MinValue,
+                        byte.MaxValue);
+                }
+            }
+
+            WriteDisplayFrame(transformedPixels);
+        }
+        finally
+        {
+            SpriteDecodeScratchPool.Return(
+                transformedPixels,
+                clearArray: false);
+        }
     }
 
     private static void TransformPremultipliedPixels(
@@ -5468,7 +5482,8 @@ public partial class MainWindow : Window
         Matrix visualMatrix)
     {
         var expectedLength = checked(width * height * 4);
-        if (sourcePixels.Length != expectedLength || outputPixels.Length != expectedLength)
+        if (sourcePixels.Length != expectedLength ||
+            outputPixels.Length < expectedLength)
         {
             throw new ArgumentException("变换帧缓冲区尺寸必须与完整帧一致。");
         }
@@ -5493,7 +5508,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Array.Clear(outputPixels);
+        Array.Clear(outputPixels, 0, expectedLength);
         for (var destinationY = 0; destinationY < height; destinationY++)
         {
             for (var destinationX = 0; destinationX < width; destinationX++)
@@ -5553,7 +5568,7 @@ public partial class MainWindow : Window
         // Keep that common path out of Matrix.Transform/Sample helper calls so
         // a right-click during a mirrored edge pose does not spend a frame in general affine
         // resampling before the Todo timeline can start.
-        Array.Clear(outputPixels);
+        Array.Clear(outputPixels, 0, checked(width * height * 4));
         for (var destinationY = 0; destinationY < height; destinationY++)
         {
             var sourceY = (destinationY + 0.5) * inverse.M22 +
@@ -7078,8 +7093,7 @@ public partial class MainWindow : Window
         }
 
         Array.Clear(atlasPixels);
-        var previousDisplayFrameByteCount = checked(
-            DisplayPixelWidth * DisplayPixelHeight * 4);
+        var previousDisplayFrameByteCount = DisplayFrameByteCount;
         var previousDisplayFrame = SpriteDecodeScratchPool.Rent(
             previousDisplayFrameByteCount);
         Array.Clear(previousDisplayFrame, 0, previousDisplayFrameByteCount);
@@ -7449,26 +7463,36 @@ public partial class MainWindow : Window
             return 0;
         }
 
-        var exactIndex = Array.FindIndex(
-            _todoEnterClip.Frames,
-            animationFrame => string.Equals(
-                animationFrame.Image.Name,
-                currentFrame.Name,
-                StringComparison.OrdinalIgnoreCase));
-        if (exactIndex >= 0)
+        for (var frameIndex = 0;
+             frameIndex < _todoEnterClip.Frames.Length;
+             frameIndex++)
         {
-            return exactIndex;
+            if (string.Equals(
+                    _todoEnterClip.Frames[frameIndex].Image.Name,
+                    currentFrame.Name,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return frameIndex;
+            }
         }
 
         // Non-think actions and edge-peek poses are already upright. Resume
         // from the final wake pose so a right click never flashes back to the
         // sleeping pillow before entering the think sequence.
-        return Array.FindIndex(
-            _todoEnterClip.Frames,
-            animationFrame => string.Equals(
-                animationFrame.Image.Name,
-                _wakeFrames[^1].Name,
-                StringComparison.Ordinal));
+        for (var frameIndex = 0;
+             frameIndex < _todoEnterClip.Frames.Length;
+             frameIndex++)
+        {
+            if (string.Equals(
+                    _todoEnterClip.Frames[frameIndex].Image.Name,
+                    _wakeFrames[^1].Name,
+                    StringComparison.Ordinal))
+            {
+                return frameIndex;
+            }
+        }
+
+        return -1;
     }
 
     private void StartTodoExitTransition()
@@ -10397,7 +10421,6 @@ public partial class MainWindow : Window
 
     private sealed record ActionTimeline(
         SpriteFrame[] Frames,
-        string[] Names,
         int ActionStartIndex);
 
     private sealed record SpriteAtlasManifest(
@@ -10501,6 +10524,5 @@ public partial class MainWindow : Window
 
     private sealed record AnimationFrame(
         SpriteFrame Image,
-        TimeSpan HoldDuration,
-        string Name);
+        TimeSpan HoldDuration);
 }

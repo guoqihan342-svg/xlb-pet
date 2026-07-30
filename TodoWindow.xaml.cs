@@ -383,6 +383,20 @@ public partial class TodoWindow : Window
         }
     }
 
+    private void ReleaseReminderInterruptedEditor(Window editor)
+    {
+        if (!ReferenceEquals(_editorInterruptedByReminder, editor))
+        {
+            return;
+        }
+
+        _editorInterruptedByReminder = null;
+        if (editor is ScheduledTaskEditWindow scheduledEditor)
+        {
+            scheduledEditor.SetReminderInterruptionActive(false);
+        }
+    }
+
     internal void RecoverAfterSystemResume()
     {
         CloseScheduledPickers();
@@ -912,6 +926,14 @@ public partial class TodoWindow : Window
     private void TodoWindow_Closed(object? sender, EventArgs e)
     {
         _hasClosed = true;
+        if (_editorInterruptedByReminder is
+            ScheduledTaskEditWindow interruptedScheduledEditor)
+        {
+            interruptedScheduledEditor.SetReminderInterruptionActive(false);
+        }
+
+        _editorInterruptedByReminder = null;
+        _isReminderInterruptionActive = false;
         _taskFullTextCloseTimer.Stop();
         _taskFullTextCloseTimer.Tick -=
             TaskFullTextCloseTimer_Tick;
@@ -2703,6 +2725,7 @@ public partial class TodoWindow : Window
         };
         editor.Closed += (_, _) =>
         {
+            ReleaseReminderInterruptedEditor(editor);
             if (!ReferenceEquals(_scheduledTaskEditWindow, editor))
             {
                 return;
@@ -3537,6 +3560,7 @@ public partial class TodoWindow : Window
 
         editor.Closed += (_, _) =>
         {
+            ReleaseReminderInterruptedEditor(editor);
             if (!ReferenceEquals(_taskTextEditWindow, editor))
             {
                 return;

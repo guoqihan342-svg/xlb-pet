@@ -2928,7 +2928,9 @@ internal static class Program
         var fromPixels = GetField<byte[]>(window, "_frameBlendFromPixels");
         var targetPixels = GetField<byte[]>(window, "_frameBlendTargetPixels");
         var outputPixels = GetField<byte[]>(window, "_frameBlendOutputPixels");
-        var transformedPixels = GetField<byte[]>(window, "_transformedDisplayFramePixels");
+        var transformedField = typeof(MainWindow).GetField(
+            "_transformedDisplayFramePixels",
+            InstanceFlags);
         var actionTransitionDuration = (TimeSpan)(typeof(MainWindow).GetField(
                 "ActionTransitionDuration",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.MinValue);
@@ -2945,9 +2947,9 @@ internal static class Program
                fromPixels.Length == 0 &&
                targetPixels.Length == 0 &&
                outputPixels.Length == 0 &&
-               transformedPixels.Length == expectedByteCount,
+               transformedField is null,
             "全部blend duration为Zero时三个淡化缓冲必须为空数组；" +
-            "只保留完整显示帧与变换scratch");
+            "变换scratch必须按需复用而不是永久占用一整帧");
 
         var from = new byte[] { 20, 40, 60, 80 };
         var to = new byte[] { 100, 80, 40, 160 };
@@ -3041,6 +3043,7 @@ internal static class Program
             "单buffer坐标换基必须同时正确处理镜像与视觉平移");
 
         var fullFrameTransform = Matrix.Identity;
+        var transformedPixels = new byte[expectedByteCount + 64];
         fullFrameTransform.ScaleAt(
             -1,
             1,
@@ -4697,6 +4700,21 @@ internal static class Program
 
     private static void AssertMotionTimelineContract(MainWindow window)
     {
+        var animationFrameType = typeof(MainWindow).GetNestedType(
+            "AnimationFrame",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到 AnimationFrame 类型");
+        var actionTimelineType = typeof(MainWindow).GetNestedType(
+            "ActionTimeline",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到 ActionTimeline 类型");
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        Assert(animationFrameType.GetProperty("Name", InstanceFlags) is null &&
+               actionTimelineType.GetProperty("Names", InstanceFlags) is null &&
+               !mainSource.Contains("Path.GetFileName", StringComparison.Ordinal),
+            "动画帧名称必须直接复用 SpriteFrame.Image.Name，不得为每个片段复制冗余文件名");
+
         var motionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "MotionFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
@@ -4746,7 +4764,7 @@ internal static class Program
             var expectedDurations = BuildExpectedMotionFrameDurations(actionName);
             var frames = GetClipFrames(clip).Cast<object>().ToArray();
             var actualMotionNames = frames
-                .Select(frame => GetProperty<string>(frame, "Name"))
+                .Select(GetAnimationFrameName)
                 .ToArray();
             Assert(actualMotionNames.SequenceEqual(expectedMotionNames),
                 $"{actionName} must follow its motion profile exactly");
@@ -4848,9 +4866,9 @@ internal static class Program
                            : $"action-think-part-{entry.frameIndex / 32 + 1:00}")),
             $"Todo 入场必须按 idle→{wakeFrameCount}帧起身→think dense序列跨页播放");
         Assert(todoExitFrames
-                .Select(frame => GetProperty<string>(frame, "Name"))
+                .Select(GetAnimationFrameName)
                 .SequenceEqual(todoEnterFrames
-                    .Select(frame => GetProperty<string>(frame, "Name"))
+                    .Select(GetAnimationFrameName)
                     .Reverse()),
             "Todo 入场和收起必须严格互为反序，快速切换时才能映射到同一姿势");
     }
@@ -5094,6 +5112,11 @@ internal static class Program
 
     private static TimeSpan GetFrameDuration(object frame) =>
         GetProperty<TimeSpan>(frame, "HoldDuration");
+
+    private static string GetAnimationFrameName(object frame) =>
+        Path.GetFileName(
+            GetSpriteFrameInfo(
+                GetProperty<object>(frame, "Image")).Name);
 
     private static Array GetClipFrames(object clip) => GetProperty<Array>(clip, "Frames");
 
@@ -6063,10 +6086,10 @@ internal static class Program
                exitFrames.Length == expectedFrameCount,
             $"Todo 打开/收起必须使用 idle、{wakeFrameCount}个60fps wake及完整think dense序列，共{expectedFrameCount}帧");
         var enterNames = enterFrames
-            .Select(frame => GetProperty<string>(frame, "Name"))
+            .Select(GetAnimationFrameName)
             .ToArray();
         var exitNames = exitFrames
-            .Select(frame => GetProperty<string>(frame, "Name"))
+            .Select(GetAnimationFrameName)
             .ToArray();
         Assert(enterNames.SequenceEqual(expectedEnterNames),
             $"Todo 入场必须按资源名完整覆盖{wakeFrameCount}帧起身与think dense序列");
@@ -6101,7 +6124,7 @@ internal static class Program
         var resumedReactionIndex = Array.FindIndex(
             thinkReactionFrames,
             frame => string.Equals(
-                GetProperty<string>(frame, "Name"),
+                GetAnimationFrameName(frame),
                 resumedFrameName,
                 StringComparison.Ordinal));
         Assert(resumedReactionIndex >= 0,
@@ -13220,6 +13243,19 @@ internal static class Program
             Invoke(reminderEditorA, "OpenScheduledTimePicker");
             reminderEditorA.CloseWithoutSaving();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(GetRawField(
+                       todoWindow,
+                       "_editorInterruptedByReminder") is null &&
+                   GetField<bool>(
+                       todoWindow,
+                       "_isReminderInterruptionActive") &&
+                   !GetField<bool>(
+                       reminderEditorA,
+                       "_reminderInterruptionActive") &&
+                   GetRawField(
+                       todoWindow,
+                       "_scheduledTaskEditWindow") is null,
+                "提醒仍显示时关闭修改窗口，必须立即释放旧窗口引用和中断标记，且提醒会话继续有效");
             var replacementReminderItem = new ScheduledTaskItem
             {
                 Id = Guid.NewGuid(),
