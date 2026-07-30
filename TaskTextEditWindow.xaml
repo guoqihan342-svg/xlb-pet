@@ -353,13 +353,23 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="CharacterCountText"
-                           Margin="2,0,4,0"
-                           VerticalAlignment="Center"
-                           FontFamily="Microsoft YaHei"
-                           FontSize="9.5"
-                           Foreground="#98A5B8"
-                           Text="0/5000" />
+                <StackPanel Grid.Column="0"
+                            Margin="2,0,6,0"
+                            VerticalAlignment="Center">
+                    <TextBlock x:Name="CharacterCountText"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="9.5"
+                               Foreground="#98A5B8"
+                               Text="0/5000" />
+                    <TextBlock x:Name="SavePolicyHintText"
+                               Margin="0,2,0,0"
+                               FontFamily="Microsoft YaHei"
+                               FontSize="9.5"
+                               Foreground="#6F89AD"
+                               Text="仅点击“确定修改”保存 · Esc 取消"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="仅点击“确定修改”保存 · Esc 取消" />
+                </StackPanel>
                 <Button x:Name="AdvancedEditButton"
                         Grid.Column="1"
                         Height="38"

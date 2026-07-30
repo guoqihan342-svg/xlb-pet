@@ -18221,6 +18221,12 @@ internal static class Program
             var todoTextEditorSaveButton = GetField<Button>(
                 todoTextEditor,
                 "SaveButton");
+            var todoTextEditorSavePolicyHint = GetField<TextBlock>(
+                todoTextEditor,
+                "SavePolicyHintText");
+            var todoTextEditorCharacterCount = GetField<TextBlock>(
+                todoTextEditor,
+                "CharacterCountText");
             var todoTextEditorChrome = GetField<Border>(
                 todoTextEditor,
                 "EditorChrome");
@@ -18234,7 +18240,18 @@ internal static class Program
                    Math.Abs(todoTextEditor.Opacity - 1) <= 0.01 &&
                    todoTextEditorInput.MaxLength == 5000 &&
                    Math.Abs(todoTextEditorSaveButton.Height - 38) <= 0.1 &&
+                   todoTextEditorSaveButton.ActualWidth >= 96 &&
                    todoTextEditorSaveButton.FontSize >= 13 &&
+                   todoTextEditorCharacterCount.IsVisible &&
+                   todoTextEditorSavePolicyHint.IsVisible &&
+                   todoTextEditorSavePolicyHint.Text ==
+                       "仅点击“确定修改”保存 · Esc 取消" &&
+                   todoTextEditorSavePolicyHint.FontFamily.Source ==
+                       "Microsoft YaHei" &&
+                   todoTextEditorSavePolicyHint.Foreground is
+                       SolidColorBrush savePolicyHintBrush &&
+                   savePolicyHintBrush.Color ==
+                       Color.FromRgb(0x6F, 0x89, 0xAD) &&
                    todoTextEditorChrome.Margin == new Thickness(0) &&
                    todoTextEditorChrome.Effect is null &&
                    Math.Abs(
@@ -18244,7 +18261,8 @@ internal static class Program
                        todoTextEditorChrome.ActualHeight -
                        todoTextEditor.ActualHeight) <= 0.5,
                 "点击待办铅笔必须以378×414 DIP打开可缩放编辑框，" +
-                "根圆角边框贴满客户区不露白，最多5000字且确定修改字号清晰");
+                "根圆角边框贴满客户区不露白，最多5000字、确定修改字号清晰，" +
+                "并明确提示仅由确定修改保存、Esc取消");
             var taskEditorSource = File.ReadAllText(
                 FindWorkspaceFile("TaskTextEditWindow.xaml.cs"));
             var taskEditorXaml = File.ReadAllText(
