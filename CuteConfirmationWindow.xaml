@@ -1,10 +1,10 @@
 <Window x:Class="LubanDesktopPet.CuteConfirmationWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="请确认"
         Width="368"
         Height="238"
+        AllowsTransparency="True"
         Background="Transparent"
         FontFamily="Microsoft YaHei"
         ResizeMode="NoResize"
@@ -16,42 +16,74 @@
         WindowStartupLocation="CenterOwner"
         WindowStyle="None"
         PreviewKeyDown="Window_PreviewKeyDown">
-    <shell:WindowChrome.WindowChrome>
-        <shell:WindowChrome CaptionHeight="36"
-                            CornerRadius="18"
-                            GlassFrameThickness="0"
-                            ResizeBorderThickness="0"
-                            UseAeroCaptionButtons="False" />
-    </shell:WindowChrome.WindowChrome>
-
     <Window.Resources>
+        <Color x:Key="ConfirmationGradientStartColor">#FFFFFFFF</Color>
+        <Color x:Key="ConfirmationGradientMiddleColor">#FFFFFAF4</Color>
+        <Color x:Key="ConfirmationGradientEndColor">#FFFFEEE2</Color>
+        <SolidColorBrush x:Key="ConfirmationBorderBrush" Color="#EF9465" />
+        <SolidColorBrush x:Key="ConfirmationBadgeBackgroundBrush" Color="#FFFFE6D8" />
+        <SolidColorBrush x:Key="ConfirmationBadgeBorderBrush" Color="#F1AD8B" />
+        <SolidColorBrush x:Key="ConfirmationBadgeTextBrush" Color="#C8563E" />
+        <SolidColorBrush x:Key="ConfirmationTitleBrush" Color="#944727" />
+        <SolidColorBrush x:Key="ConfirmationMessageBackgroundBrush" Color="#CCFFFFFF" />
+        <SolidColorBrush x:Key="ConfirmationMessageBorderBrush" Color="#F1C5AD" />
+        <SolidColorBrush x:Key="ConfirmationMessageTextBrush" Color="#6F4634" />
+        <SolidColorBrush x:Key="ConfirmationNeutralBackgroundBrush" Color="#FFFFF7F1" />
+        <SolidColorBrush x:Key="ConfirmationNeutralBorderBrush" Color="#EDC5AE" />
+        <SolidColorBrush x:Key="ConfirmationNeutralForegroundBrush" Color="#8D5A43" />
+        <SolidColorBrush x:Key="ConfirmationNeutralHoverBackgroundBrush" Color="#FFFFE9DD" />
+        <SolidColorBrush x:Key="ConfirmationNeutralHoverBorderBrush" Color="#E9A27E" />
+        <SolidColorBrush x:Key="ConfirmationFocusBrush" Color="#C8563E" />
+        <SolidColorBrush x:Key="ConfirmationCheckTextBrush" Color="#8A5B46" />
+        <SolidColorBrush x:Key="ConfirmationCheckBackgroundBrush" Color="#FFFFFAF6" />
+        <SolidColorBrush x:Key="ConfirmationCheckBorderBrush" Color="#E7B89E" />
+        <SolidColorBrush x:Key="ConfirmationCheckHoverBackgroundBrush" Color="#FFFFEADD" />
+        <SolidColorBrush x:Key="ConfirmationCheckCheckedBackgroundBrush" Color="#E76F51" />
+        <SolidColorBrush x:Key="ConfirmationCheckCheckedBorderBrush" Color="#C8563E" />
+        <SolidColorBrush x:Key="ConfirmationPrimaryBackgroundBrush" Color="#E76F51" />
+        <SolidColorBrush x:Key="ConfirmationPrimaryBorderBrush" Color="#C8563E" />
+        <SolidColorBrush x:Key="ConfirmationPrimaryHoverBackgroundBrush" Color="#D95D42" />
+        <SolidColorBrush x:Key="ConfirmationPrimaryHoverBorderBrush" Color="#B84833" />
+
         <Style x:Key="ConfirmationButtonStyle"
                TargetType="{x:Type Button}">
             <Setter Property="Height" Value="40" />
             <Setter Property="MinWidth" Value="104" />
             <Setter Property="Padding" Value="16,5" />
-            <Setter Property="Background" Value="#FFF8EBDD" />
-            <Setter Property="BorderBrush" Value="#E8C39C" />
+            <Setter Property="Background"
+                    Value="{DynamicResource ConfirmationNeutralBackgroundBrush}" />
+            <Setter Property="BorderBrush"
+                    Value="{DynamicResource ConfirmationNeutralBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="FontFamily" Value="Microsoft YaHei" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Foreground" Value="#96623C" />
+            <Setter Property="Foreground"
+                    Value="{DynamicResource ConfirmationNeutralForegroundBrush}" />
+            <Setter Property="Tag"
+                    Value="{DynamicResource ConfirmationNeutralHoverBackgroundBrush}" />
+            <Setter Property="CommandParameter"
+                    Value="{DynamicResource ConfirmationNeutralHoverBorderBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type Button}">
-                        <Grid RenderTransformOrigin="0.5,0.5">
+                        <Grid x:Name="ButtonRoot"
+                              RenderTransformOrigin="0.5,0.5">
                             <Border x:Name="ButtonShell"
                                     Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}"
                                     BorderThickness="{TemplateBinding BorderThickness}"
                                     CornerRadius="12">
-                                <ContentPresenter Margin="{TemplateBinding Padding}"
-                                                  HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center" />
                             </Border>
+                            <Border x:Name="HoverTint"
+                                    Background="{TemplateBinding Tag}"
+                                    BorderBrush="{TemplateBinding CommandParameter}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="12"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
                             <Ellipse Width="18"
                                      Height="5"
                                      Margin="7,4,0,0"
@@ -59,25 +91,45 @@
                                      VerticalAlignment="Top"
                                      Fill="#66FFFFFF"
                                      IsHitTestVisible="False" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                            <Border x:Name="KeyboardFocusRing"
+                                    Margin="-2"
+                                    BorderBrush="{DynamicResource ConfirmationFocusBrush}"
+                                    BorderThickness="1.5"
+                                    CornerRadius="14"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                            <Border x:Name="PressedShade"
+                                    Background="#18000000"
+                                    CornerRadius="12"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonShell"
-                                        Property="Background"
-                                        Value="#FFFFE2C4" />
-                                <Setter TargetName="ButtonShell"
-                                        Property="BorderBrush"
-                                        Value="#E79B57" />
+                                <Setter TargetName="HoverTint"
+                                        Property="Opacity"
+                                        Value="1" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonShell"
+                                <Setter TargetName="ButtonRoot"
                                         Property="Opacity"
-                                        Value="0.82" />
+                                        Value="0.96" />
+                                <Setter TargetName="PressedShade"
+                                        Property="Opacity"
+                                        Value="1" />
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="ButtonShell"
-                                        Property="BorderThickness"
-                                        Value="2" />
+                                <Setter TargetName="KeyboardFocusRing"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.42" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -91,7 +143,8 @@
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="FontFamily" Value="Microsoft YaHei" />
             <Setter Property="FontSize" Value="11.5" />
-            <Setter Property="Foreground" Value="#8A6A52" />
+            <Setter Property="Foreground"
+                    Value="{DynamicResource ConfirmationCheckTextBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type CheckBox}">
@@ -105,8 +158,8 @@
                                     Height="19"
                                     HorizontalAlignment="Left"
                                     VerticalAlignment="Center"
-                                    Background="#FFFFF8F0"
-                                    BorderBrush="#E5B886"
+                                    Background="{DynamicResource ConfirmationCheckBackgroundBrush}"
+                                    BorderBrush="{DynamicResource ConfirmationCheckBorderBrush}"
                                     BorderThickness="1.2"
                                     CornerRadius="6">
                                 <Path x:Name="CheckMark"
@@ -132,15 +185,15 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="CheckShell"
                                         Property="Background"
-                                        Value="#FFFFEBD5" />
+                                        Value="{DynamicResource ConfirmationCheckHoverBackgroundBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="CheckShell"
                                         Property="Background"
-                                        Value="#F1A15A" />
+                                        Value="{DynamicResource ConfirmationCheckCheckedBackgroundBrush}" />
                                 <Setter TargetName="CheckShell"
                                         Property="BorderBrush"
-                                        Value="#D7843A" />
+                                        Value="{DynamicResource ConfirmationCheckCheckedBorderBrush}" />
                                 <Setter TargetName="CheckMark"
                                         Property="Visibility"
                                         Value="Visible" />
@@ -152,25 +205,22 @@
         </Style>
     </Window.Resources>
 
-    <Border Margin="1"
+    <Border x:Name="ConfirmationChrome"
+            Margin="2"
             Padding="16,12,16,15"
-            BorderBrush="#E8B980"
+            BorderBrush="{DynamicResource ConfirmationBorderBrush}"
             BorderThickness="1.2"
             CornerRadius="18">
         <Border.Background>
             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Offset="0" Color="#FFFFFFFF" />
-                <GradientStop Offset="0.56" Color="#FFFFFAF3" />
-                <GradientStop Offset="1" Color="#FFFFEBD7" />
+                <GradientStop Offset="0"
+                              Color="{DynamicResource ConfirmationGradientStartColor}" />
+                <GradientStop Offset="0.56"
+                              Color="{DynamicResource ConfirmationGradientMiddleColor}" />
+                <GradientStop Offset="1"
+                              Color="{DynamicResource ConfirmationGradientEndColor}" />
             </LinearGradientBrush>
         </Border.Background>
-        <Border.Effect>
-            <DropShadowEffect BlurRadius="18"
-                              Direction="270"
-                              Opacity="0.22"
-                              ShadowDepth="4"
-                              Color="#80502E" />
-        </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="32" />
@@ -179,33 +229,37 @@
                 <RowDefinition Height="48" />
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0">
+            <Grid Grid.Row="0"
+                  Background="Transparent"
+                  MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="28" />
                 </Grid.ColumnDefinitions>
                 <StackPanel VerticalAlignment="Center"
                             Orientation="Horizontal">
-                    <Border Width="27"
+                    <Border x:Name="ConfirmationBadge"
+                            Width="27"
                             Height="27"
                             Margin="0,0,8,0"
-                            Background="#FFFFE5C7"
-                            BorderBrush="#EDB270"
+                            Background="{DynamicResource ConfirmationBadgeBackgroundBrush}"
+                            BorderBrush="{DynamicResource ConfirmationBadgeBorderBrush}"
                             BorderThickness="1"
                             CornerRadius="14">
-                        <TextBlock HorizontalAlignment="Center"
+                        <TextBlock x:Name="ConfirmationBadgeText"
+                                   HorizontalAlignment="Center"
                                    VerticalAlignment="Center"
                                    FontFamily="Microsoft YaHei"
                                    FontSize="15"
-                                   Foreground="#D57C32"
-                                   Text="?" />
+                                   Foreground="{DynamicResource ConfirmationBadgeTextBrush}"
+                                   Text="!" />
                     </Border>
                     <TextBlock x:Name="TitleText"
                                VerticalAlignment="Center"
                                FontFamily="Microsoft YaHei"
                                FontSize="13"
                                FontWeight="SemiBold"
-                               Foreground="#86512C"
+                               Foreground="{DynamicResource ConfirmationTitleBrush}"
                                Text="请确认" />
                 </StackPanel>
                 <Button Grid.Column="1"
@@ -218,7 +272,6 @@
                         FontSize="17"
                         Style="{StaticResource ConfirmationButtonStyle}"
                         ToolTip="取消"
-                        shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         Click="CancelButton_Click">
                     <Viewbox Width="10"
                              Height="10"
@@ -235,18 +288,19 @@
                 </Button>
             </Grid>
 
-            <Border Grid.Row="1"
+            <Border x:Name="ConfirmationMessageCard"
+                    Grid.Row="1"
                     Margin="0,10,0,8"
                     Padding="13,11"
-                    Background="#B3FFFFFF"
-                    BorderBrush="#F0D5B7"
+                    Background="{DynamicResource ConfirmationMessageBackgroundBrush}"
+                    BorderBrush="{DynamicResource ConfirmationMessageBorderBrush}"
                     BorderThickness="1"
                     CornerRadius="13">
                 <TextBlock x:Name="MessageText"
                            VerticalAlignment="Center"
                            FontFamily="Microsoft YaHei"
                            FontSize="12.5"
-                           Foreground="#5D493A"
+                           Foreground="{DynamicResource ConfirmationMessageTextBrush}"
                            LineHeight="22"
                            Text="确定要继续吗？"
                            TextAlignment="Center"
@@ -277,10 +331,12 @@
                 <Button x:Name="ConfirmButton"
                         Grid.Column="2"
                         AutomationProperties.Name="确认"
-                        Background="#F09A4B"
-                        BorderBrush="#D77B2B"
+                        Background="{DynamicResource ConfirmationPrimaryBackgroundBrush}"
+                        BorderBrush="{DynamicResource ConfirmationPrimaryBorderBrush}"
                         Content="确认"
                         Foreground="White"
+                        Tag="{DynamicResource ConfirmationPrimaryHoverBackgroundBrush}"
+                        CommandParameter="{DynamicResource ConfirmationPrimaryHoverBorderBrush}"
                         Style="{StaticResource ConfirmationButtonStyle}"
                         Click="ConfirmButton_Click" />
             </Grid>

@@ -2711,7 +2711,10 @@ public partial class TodoWindow : Window
         if (sender is Button { Tag: ScheduledTaskItem item })
         {
             CloseTaskFullTextPreview();
-            if (!ConfirmDeleteForSession("定时任务", item.Text))
+            if (!ConfirmDeleteForSession(
+                    "定时任务",
+                    item.Text,
+                    CuteConfirmationTheme.ScheduledWarm))
             {
                 e.Handled = true;
                 return;
@@ -4174,7 +4177,10 @@ public partial class TodoWindow : Window
         if (sender is Button { Tag: TodoItem item })
         {
             CloseTaskFullTextPreview();
-            if (!ConfirmDeleteForSession("待办事项", item.Text))
+            if (!ConfirmDeleteForSession(
+                    "待办事项",
+                    item.Text,
+                    CuteConfirmationTheme.TodoBlue))
             {
                 e.Handled = true;
                 return;
@@ -4199,7 +4205,10 @@ public partial class TodoWindow : Window
         }
     }
 
-    private bool ConfirmDeleteForSession(string itemKind, string text)
+    private bool ConfirmDeleteForSession(
+        string itemKind,
+        string text,
+        CuteConfirmationTheme theme)
     {
         if (_suppressDeleteConfirmationForSession)
         {
@@ -4220,7 +4229,8 @@ public partial class TodoWindow : Window
                 $"删除{itemKind}",
                 $"确定删除“{preview}”吗？\n删除后无法恢复。",
                 confirmText: "删除",
-                showSessionSuppression: true);
+                showSessionSuppression: true,
+                theme: theme);
         }
         finally
         {

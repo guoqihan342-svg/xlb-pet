@@ -10,7 +10,7 @@
         Background="#FFFFF9F2"
         FontFamily="Microsoft YaHei"
         Opacity="0"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="CanResize"
         ShowInTaskbar="False"
         SizeToContent="Manual"
         SnapsToDevicePixels="True"
@@ -707,13 +707,6 @@
                 <GradientStop Offset="1" Color="#FFFFEEDC" />
             </LinearGradientBrush>
         </Border.Background>
-        <Border.Effect>
-            <DropShadowEffect BlurRadius="15"
-                              Direction="270"
-                              Opacity="0.2"
-                              ShadowDepth="3"
-                              Color="#8E5A32" />
-        </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="32" />

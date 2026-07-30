@@ -79,6 +79,13 @@ internal static class Program
                 return RunTodoInteractionPreview(application);
             }
 
+            if (args.Contains(
+                    "--delete-style-preview",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                return RunDeleteStylePreview(application);
+            }
+
             if (args.Contains("--pet-size-preview", StringComparer.OrdinalIgnoreCase))
             {
                 return RunPetSizePreview(application);
@@ -440,6 +447,104 @@ internal static class Program
         application.ShutdownMode = ShutdownMode.OnMainWindowClose;
         application.Run(preview);
         return 0;
+    }
+
+    private static int RunDeleteStylePreview(Application application)
+    {
+        var todoDialog = new CuteConfirmationWindow(
+            "待办删除确认 · 蓝色预览",
+            "确定删除“整理今天的待办事项”吗？\n删除后无法恢复。",
+            "删除待办",
+            theme: CuteConfirmationTheme.TodoBlue)
+        {
+            Left = 360,
+            Top = 260,
+            ShowInTaskbar = true,
+            Topmost = false,
+            WindowStartupLocation = WindowStartupLocation.Manual
+        };
+        var scheduledDialog = new CuteConfirmationWindow(
+            "定时任务删除确认 · 橘红预览",
+            "确定删除“下午三点喝水提醒”吗？\n删除后将不再按时提醒。",
+            "删除提醒",
+            theme: CuteConfirmationTheme.ScheduledWarm)
+        {
+            Left = 760,
+            Top = 260,
+            ShowInTaskbar = true,
+            Topmost = false,
+            WindowStartupLocation = WindowStartupLocation.Manual
+        };
+        var snapshotDirectory = Path.Combine(
+            Environment.CurrentDirectory,
+            ".codex_tmp",
+            "delete-style-preview");
+        Directory.CreateDirectory(snapshotDirectory);
+        var todoSnapshotWritten = false;
+        var scheduledSnapshotWritten = false;
+        todoDialog.ContentRendered += (_, _) =>
+        {
+            if (todoSnapshotWritten)
+            {
+                return;
+            }
+
+            todoSnapshotWritten = true;
+            SaveWindowVisualSnapshot(
+                todoDialog,
+                Path.Combine(snapshotDirectory, "todo-delete-blue.png"));
+        };
+        scheduledDialog.ContentRendered += (_, _) =>
+        {
+            if (scheduledSnapshotWritten)
+            {
+                return;
+            }
+
+            scheduledSnapshotWritten = true;
+            SaveWindowVisualSnapshot(
+                scheduledDialog,
+                Path.Combine(
+                    snapshotDirectory,
+                    "scheduled-delete-warm.png"));
+        };
+        todoDialog.Closed += (_, _) =>
+        {
+            if (scheduledDialog.IsLoaded)
+            {
+                scheduledDialog.Close();
+            }
+        };
+
+        scheduledDialog.Show();
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        application.Run(todoDialog);
+        return 0;
+    }
+
+    private static void SaveWindowVisualSnapshot(
+        Window window,
+        string path)
+    {
+        window.UpdateLayout();
+        var dpi = VisualTreeHelper.GetDpi(window);
+        var pixelWidth = Math.Max(
+            1,
+            (int)Math.Ceiling(window.ActualWidth * dpi.DpiScaleX));
+        var pixelHeight = Math.Max(
+            1,
+            (int)Math.Ceiling(window.ActualHeight * dpi.DpiScaleY));
+        var bitmap = new RenderTargetBitmap(
+            pixelWidth,
+            pixelHeight,
+            dpi.PixelsPerInchX,
+            dpi.PixelsPerInchY,
+            PixelFormats.Pbgra32);
+        bitmap.Render(window);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = File.Create(path);
+        encoder.Save(stream);
     }
 
     private static int RunPetSizePreview(Application application)
@@ -11313,6 +11418,41 @@ internal static class Program
                 FindVisualDescendant<TextBox>(scheduledShortContainer)
                 ?? throw new InvalidOperationException(
                     "短定时任务行缺少只读文字框");
+            var scheduledShortEditButton =
+                FindVisualDescendants<Button>(scheduledShortContainer)
+                    .Single(button =>
+                        button.Name == "ScheduledTaskEditButton");
+            var scheduledShortDeleteButton =
+                FindVisualDescendants<Button>(scheduledShortContainer)
+                    .Single(button =>
+                        button.Name == "ScheduledTaskDeleteButton");
+            scheduledShortDeleteButton.ApplyTemplate();
+            var scheduledDeleteChrome =
+                scheduledShortDeleteButton.Template.FindName(
+                    "ScheduledDeleteChrome",
+                    scheduledShortDeleteButton) as Border;
+            Assert(scheduledShortDeleteButton.Style !=
+                       scheduledShortEditButton.Style &&
+                   scheduledShortDeleteButton.Background is SolidColorBrush
+                       scheduledDeleteBackground &&
+                   scheduledDeleteBackground.Color ==
+                       Color.FromRgb(0xFF, 0xF3, 0xEE) &&
+                   scheduledShortDeleteButton.BorderBrush is SolidColorBrush
+                       scheduledDeleteBorder &&
+                   scheduledDeleteBorder.Color ==
+                       Color.FromRgb(0xF0, 0xC3, 0xB0) &&
+                   scheduledShortDeleteButton.Foreground is SolidColorBrush
+                       scheduledDeleteForeground &&
+                   scheduledDeleteForeground.Color ==
+                       Color.FromRgb(0xC8, 0x56, 0x3E) &&
+                   scheduledDeleteChrome is not null &&
+                   scheduledShortDeleteButton.Content is
+                       Viewbox scheduledDeleteIcon &&
+                   FindVisualDescendants<System.Windows.Shapes.Ellipse>(
+                       scheduledDeleteIcon).Count() == 1 &&
+                   FindVisualDescendants<System.Windows.Shapes.Path>(
+                       scheduledDeleteIcon).Count() == 2,
+                "定时任务删除必须是独立橘红闹钟删除按钮，不能与蓝色待办垃圾桶或铅笔相同");
             var scheduledLongTextBox =
                 FindVisualDescendant<TextBox>(scheduledLongContainer)
                 ?? throw new InvalidOperationException(
@@ -12285,7 +12425,7 @@ internal static class Program
                    ReferenceEquals(scheduledEditor.Item, editItem) &&
                    scheduledEditor.Width == 378 &&
                    scheduledEditor.Height == 360 &&
-                   scheduledEditor.ResizeMode == ResizeMode.CanResizeWithGrip &&
+                   scheduledEditor.ResizeMode == ResizeMode.CanResize &&
                    scheduledEditor.FontFamily.Source == "Microsoft YaHei" &&
                    scheduledEditor.Title == "修改定时任务" &&
                    scheduledEditorText.Text == editItem.Text &&
@@ -12306,6 +12446,7 @@ internal static class Program
                         "RepeatUnitButtonBorder",
                         scheduledEditorRepeatUnit) is Border &&
                    scheduledEditorChrome.Margin == new Thickness(0) &&
+                   scheduledEditorChrome.Effect is null &&
                    Math.Abs(
                        scheduledEditorChrome.ActualWidth -
                        scheduledEditor.ActualWidth) <= 0.5 &&
@@ -13187,7 +13328,8 @@ internal static class Program
             var confirmationWindow = new CuteConfirmationWindow(
                 "删除这条待办？",
                 "删掉以后就找不回来啦，真的要删除吗？",
-                "确认删除")
+                "确认删除",
+                theme: CuteConfirmationTheme.TodoBlue)
             {
                 Left = -10000,
                 Top = -10000,
@@ -13202,11 +13344,19 @@ internal static class Program
             var confirmationButton = GetField<Button>(
                 confirmationWindow,
                 "ConfirmButton");
+            var confirmationChrome = GetField<Border>(
+                confirmationWindow,
+                "ConfirmationChrome");
+            var confirmationBadgeText = GetField<TextBlock>(
+                confirmationWindow,
+                "ConfirmationBadgeText");
             confirmationSuppression.IsChecked = true;
             var confirmationSource = File.ReadAllText(
                 FindWorkspaceFile("CuteConfirmationWindow.xaml.cs"));
             var confirmationXaml = File.ReadAllText(
                 FindWorkspaceFile("CuteConfirmationWindow.xaml"));
+            var confirmationCallerSource = File.ReadAllText(
+                FindWorkspaceFile("TodoWindow.xaml.cs"));
             SetField(todoWindow, "_isDeleteConfirmationOpen", true);
             Assert(todoWindow.IsTransientPopupOpen,
                 "删除确认窗显示期间必须纳入临时交互状态，不能因 Owner 失活把整个待办面板收起");
@@ -13214,8 +13364,18 @@ internal static class Program
             Assert(confirmationWindow.IsVisible &&
                    confirmationWindow.Width == 368 &&
                    confirmationWindow.Height == 238 &&
+                   confirmationWindow.AllowsTransparency &&
                    confirmationWindow.FontFamily.Source ==
                        "Microsoft YaHei" &&
+                   confirmationWindow.Theme ==
+                       CuteConfirmationTheme.TodoBlue &&
+                   confirmationChrome.Margin == new Thickness(2) &&
+                   confirmationChrome.Effect is null &&
+                   confirmationBadgeText.Text == "办" &&
+                   confirmationButton.Background is SolidColorBrush
+                       todoDeleteButtonBackground &&
+                   todoDeleteButtonBackground.Color ==
+                       Color.FromRgb(0x5B, 0x8D, 0xEF) &&
                    confirmationSuppression.Content?.ToString() ==
                        "本次运行不再提示" &&
                    confirmationWindow.SuppressForSession &&
@@ -13227,11 +13387,56 @@ internal static class Program
                    confirmationSource.Contains(
                        "confirmed && dialog.SuppressForSession",
                        StringComparison.Ordinal) &&
+                   confirmationCallerSource.Contains(
+                       "CuteConfirmationTheme.TodoBlue",
+                       StringComparison.Ordinal) &&
+                   confirmationCallerSource.Contains(
+                       "CuteConfirmationTheme.ScheduledWarm",
+                       StringComparison.Ordinal) &&
                    confirmationXaml.Contains(
                        "本次运行不再提示",
+                       StringComparison.Ordinal) &&
+                   confirmationXaml.Contains(
+                       "AllowsTransparency=\"True\"",
+                       StringComparison.Ordinal) &&
+                   !confirmationXaml.Contains(
+                       "WindowChrome.WindowChrome",
                        StringComparison.Ordinal),
-                "可复用删除确认窗必须可爱、使用微软雅黑，并只把“本次运行不再提示”作为当前调用结果返回，不自行持久化");
+                "待办删除确认窗必须使用独立蓝色主题和干净透明圆角，不能残留裁切成黑边的外阴影，" +
+                "并只把“本次运行不再提示”作为当前调用结果返回，不自行持久化");
             confirmationWindow.Close();
+
+            var scheduledConfirmationWindow =
+                new CuteConfirmationWindow(
+                    "删除定时任务？",
+                    "删除后将不再按时提醒。",
+                    "删除任务",
+                    theme: CuteConfirmationTheme.ScheduledWarm)
+                {
+                    Left = -10000,
+                    Top = -10000,
+                    ShowActivated = false,
+                    WindowStartupLocation = WindowStartupLocation.Manual
+                };
+            scheduledConfirmationWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var scheduledConfirmationButton = GetField<Button>(
+                scheduledConfirmationWindow,
+                "ConfirmButton");
+            var scheduledConfirmationBadgeText = GetField<TextBlock>(
+                scheduledConfirmationWindow,
+                "ConfirmationBadgeText");
+            Assert(scheduledConfirmationWindow.Theme ==
+                       CuteConfirmationTheme.ScheduledWarm &&
+                   scheduledConfirmationBadgeText.Text == "时" &&
+                   scheduledConfirmationButton.Background is
+                       SolidColorBrush scheduledDeleteButtonBackground &&
+                   scheduledDeleteButtonBackground.Color ==
+                       Color.FromRgb(0xE7, 0x6F, 0x51) &&
+                   scheduledDeleteButtonBackground.Color !=
+                       Color.FromRgb(0x5B, 0x8D, 0xEF),
+                "定时任务删除确认窗必须使用独立橘红主题和“时”徽章，不能与待办蓝色删除窗相同");
+            scheduledConfirmationWindow.Close();
 
             var manualSaveAcceptedCount = 0;
             var manualSaveEditor = new TaskTextEditWindow(
@@ -13347,6 +13552,13 @@ internal static class Program
                         var dialog = Application.Current.Windows
                             .OfType<CuteConfirmationWindow>()
                             .Single(window => window.IsVisible);
+                        if (dialog.Theme !=
+                            CuteConfirmationTheme.TodoBlue)
+                        {
+                            throw new InvalidOperationException(
+                                "真实待办删除确认窗没有使用独立蓝色主题");
+                        }
+
                         if (!todoWindow.IsTransientPopupOpen)
                         {
                             throw new InvalidOperationException(
@@ -16556,6 +16768,12 @@ internal static class Program
             var longItemEditButton = FindVisualDescendants<Button>(longItemContainer)
                 .SingleOrDefault(button => button.Name == "TodoEditButton")
                 ?? throw new InvalidOperationException("待办列表项必须提供独立编辑按钮");
+            var longItemDeleteButton =
+                FindVisualDescendants<Button>(longItemContainer)
+                    .SingleOrDefault(button =>
+                        button.Name == "TodoDeleteButton")
+                ?? throw new InvalidOperationException(
+                    "待办列表项必须提供独立蓝色删除按钮");
             var longItemDragHandle = FindVisualDescendants<FrameworkElement>(longItemContainer)
                 .SingleOrDefault(element => element.Name == "TodoDragHandle")
                 ?? throw new InvalidOperationException("待办列表项必须提供独立拖拽手柄");
@@ -16596,6 +16814,32 @@ internal static class Program
                    longItemDragHandle.Cursor == Cursors.SizeAll,
                 "编辑按钮必须显示双路径铅笔图标，编辑按钮和拖拽手柄都要绑定当前 TodoItem；" +
                 "文字 TextBox 本身不得兼任拖拽热区");
+            longItemDeleteButton.ApplyTemplate();
+            var todoDeleteChrome =
+                longItemDeleteButton.Template.FindName(
+                    "TodoDeleteChrome",
+                    longItemDeleteButton) as Border;
+            Assert(longItemDeleteButton.Tag is TodoItem &&
+                   longItemDeleteButton.Style != longItemEditButton.Style &&
+                   longItemDeleteButton.Background is SolidColorBrush
+                       todoDeleteBackground &&
+                   todoDeleteBackground.Color ==
+                       Color.FromRgb(0xF3, 0xF8, 0xFF) &&
+                   longItemDeleteButton.BorderBrush is SolidColorBrush
+                       todoDeleteBorder &&
+                   todoDeleteBorder.Color ==
+                       Color.FromRgb(0xC9, 0xDC, 0xF5) &&
+                   longItemDeleteButton.Foreground is SolidColorBrush
+                       todoDeleteForeground &&
+                   todoDeleteForeground.Color ==
+                       Color.FromRgb(0x47, 0x78, 0xD0) &&
+                   todoDeleteChrome is not null &&
+                   longItemDeleteButton.Content is Viewbox todoDeleteIcon &&
+                   FindVisualDescendants<System.Windows.Shapes.Path>(
+                       todoDeleteIcon).Count() == 3 &&
+                   !FindVisualDescendants<System.Windows.Shapes.Ellipse>(
+                       todoDeleteIcon).Any(),
+                "待办删除必须是独立蓝色垃圾桶按钮，不能继续与铅笔或定时任务共用透明X样式");
             Assert(longItemContainer.ActualHeight <= 54.5 &&
                    longItemContainer.ActualWidth <= itemsControl.ActualWidth + 0.5,
                 $"长待办不得撑高或撑宽列表：item={longItemContainer.ActualWidth:F1}x" +
@@ -16766,7 +17010,7 @@ internal static class Program
                    ReferenceEquals(todoTextEditor.Owner, todoWindow) &&
                    Math.Abs(todoTextEditor.Width - 378) <= 0.1 &&
                    Math.Abs(todoTextEditor.Height - 414) <= 0.1 &&
-                   todoTextEditor.ResizeMode == ResizeMode.CanResizeWithGrip &&
+                   todoTextEditor.ResizeMode == ResizeMode.CanResize &&
                    todoTextEditor.WindowStartupLocation ==
                        WindowStartupLocation.Manual &&
                    Math.Abs(todoTextEditor.Opacity - 1) <= 0.01 &&
@@ -16774,6 +17018,7 @@ internal static class Program
                    Math.Abs(todoTextEditorSaveButton.Height - 38) <= 0.1 &&
                    todoTextEditorSaveButton.FontSize >= 13 &&
                    todoTextEditorChrome.Margin == new Thickness(0) &&
+                   todoTextEditorChrome.Effect is null &&
                    Math.Abs(
                        todoTextEditorChrome.ActualWidth -
                        todoTextEditor.ActualWidth) <= 0.5 &&
@@ -16814,7 +17059,7 @@ internal static class Program
                        ": owner.Left + ownerWidth",
                        StringComparison.Ordinal) &&
                    taskEditorXaml.Contains(
-                       "ResizeMode=\"CanResizeWithGrip\"",
+                       "ResizeMode=\"CanResize\"",
                        StringComparison.Ordinal) &&
                    taskEditorXaml.Contains(
                        "ResizeBorderThickness=\"7\"",
