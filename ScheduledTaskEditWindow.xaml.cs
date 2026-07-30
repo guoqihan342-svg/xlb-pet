@@ -12,10 +12,11 @@ namespace LubanDesktopPet;
 
 public partial class ScheduledTaskEditWindow : Window
 {
-    private enum QuietHoursTimeTarget
+    private enum ScheduledTimePickerTarget
     {
-        Start,
-        End
+        Reminder,
+        QuietStart,
+        QuietEnd
     }
 
     private const double TargetEditorWidth = 378;
@@ -49,9 +50,8 @@ public partial class ScheduledTaskEditWindow : Window
     private bool _repeatUnitSelectionCommitted;
     private IInputElement? _focusBeforeReminder;
     private bool _updatingTimePickerSelection;
-    private bool _updatingQuietHoursTimePickerSelection;
-    private QuietHoursTimeTarget _quietHoursTimeTarget =
-        QuietHoursTimeTarget.Start;
+    private ScheduledTimePickerTarget _scheduledTimePickerTarget =
+        ScheduledTimePickerTarget.Reminder;
     private TimeSpan _quietHoursStartDraft = TimeSpan.FromHours(22);
     private TimeSpan _quietHoursEndDraft = TimeSpan.FromHours(7);
     private DateTime _displayedScheduledCalendarMonth;
@@ -80,9 +80,6 @@ public partial class ScheduledTaskEditWindow : Window
             ScheduledHourComboBox.ItemsSource = HourOptions;
             ScheduledMinuteComboBox.ItemsSource = MinuteSecondOptions;
             ScheduledSecondComboBox.ItemsSource = MinuteSecondOptions;
-            QuietHoursHourComboBox.ItemsSource = HourOptions;
-            QuietHoursMinuteComboBox.ItemsSource = MinuteSecondOptions;
-            QuietHoursSecondComboBox.ItemsSource = MinuteSecondOptions;
             RepeatUnitComboBox.ItemsSource = RepeatUnitOptions;
 
             var localDueAt = item.DueAt.ToLocalTime();
@@ -474,20 +471,12 @@ public partial class ScheduledTaskEditWindow : Window
     {
         if (e.Key == Key.Escape && !_isImeComposing)
         {
-            if (QuietHoursTimePickerPopup.IsOpen ||
-                IsAnyQuietHoursTimePickerDropDownOpen())
-            {
-                CloseQuietHoursTimePicker();
-                FocusQuietHoursTimeInput(_quietHoursTimeTarget);
-                e.Handled = true;
-                return;
-            }
-
             if (ScheduledTimePickerPopup.IsOpen ||
                 IsAnyScheduledTimePickerDropDownOpen())
             {
+                var target = _scheduledTimePickerTarget;
                 CloseScheduledTimePicker();
-                FocusScheduledTimeInput();
+                FocusScheduledTimePickerTarget(target);
                 e.Handled = true;
                 return;
             }
@@ -534,8 +523,7 @@ public partial class ScheduledTaskEditWindow : Window
         MouseButtonEventArgs e)
     {
         if (!ScheduledDatePickerPopup.IsOpen &&
-            !ScheduledTimePickerPopup.IsOpen &&
-            !QuietHoursTimePickerPopup.IsOpen)
+            !ScheduledTimePickerPopup.IsOpen)
         {
             return;
         }
@@ -552,17 +540,12 @@ public partial class ScheduledTaskEditWindow : Window
             IsWithinPopup(originalSource, ScheduledDatePickerPopup);
         var isTimePickerInteraction =
             IsWithin(originalSource, ScheduledTimePickerHost) ||
+            IsWithin(originalSource, QuietHoursStartPickerHost) ||
+            IsWithin(originalSource, QuietHoursEndPickerHost) ||
             IsWithinPopup(originalSource, ScheduledTimePickerPopup) ||
             IsWithinComboBoxPopup(originalSource, ScheduledHourComboBox) ||
             IsWithinComboBoxPopup(originalSource, ScheduledMinuteComboBox) ||
             IsWithinComboBoxPopup(originalSource, ScheduledSecondComboBox);
-        var isQuietHoursTimePickerInteraction =
-            IsWithin(originalSource, QuietHoursStartPickerHost) ||
-            IsWithin(originalSource, QuietHoursEndPickerHost) ||
-            IsWithinPopup(originalSource, QuietHoursTimePickerPopup) ||
-            IsWithinComboBoxPopup(originalSource, QuietHoursHourComboBox) ||
-            IsWithinComboBoxPopup(originalSource, QuietHoursMinuteComboBox) ||
-            IsWithinComboBoxPopup(originalSource, QuietHoursSecondComboBox);
 
         if (ScheduledDatePickerPopup.IsOpen &&
             !isDatePickerInteraction)
@@ -578,13 +561,6 @@ public partial class ScheduledTaskEditWindow : Window
             !isRepeatEditorInteraction)
         {
             CloseScheduledTimePicker();
-        }
-
-        if (QuietHoursTimePickerPopup.IsOpen &&
-            !isQuietHoursTimePickerInteraction &&
-            !isRepeatEditorInteraction)
-        {
-            CloseQuietHoursTimePicker();
         }
     }
 
@@ -616,9 +592,12 @@ public partial class ScheduledTaskEditWindow : Window
     private void RepeatToggle_Changed(object sender, RoutedEventArgs e)
     {
         DraftControl_Changed(sender, e);
-        if (RepeatToggle.IsChecked != true)
+        if (RepeatToggle.IsChecked != true &&
+            _scheduledTimePickerTarget is
+                ScheduledTimePickerTarget.QuietStart or
+                ScheduledTimePickerTarget.QuietEnd)
         {
-            CloseQuietHoursTimePicker();
+            CloseScheduledTimePicker();
         }
     }
 
@@ -636,9 +615,12 @@ public partial class ScheduledTaskEditWindow : Window
             _quietHoursEdited = true;
         }
 
-        if (QuietHoursToggle.IsChecked != true)
+        if (QuietHoursToggle.IsChecked != true &&
+            _scheduledTimePickerTarget is
+                ScheduledTimePickerTarget.QuietStart or
+                ScheduledTimePickerTarget.QuietEnd)
         {
-            CloseQuietHoursTimePicker();
+            CloseScheduledTimePicker();
         }
     }
 
@@ -899,15 +881,86 @@ public partial class ScheduledTaskEditWindow : Window
         }
     }
 
-    private void OpenScheduledTimePicker()
+    private void OpenScheduledTimePicker() =>
+        OpenScheduledTimePickerForTarget(
+            ScheduledTimePickerTarget.Reminder);
+
+    private void OpenScheduledTimePickerForTarget(
+        ScheduledTimePickerTarget target)
     {
         CloseScheduledDatePicker();
-        CloseQuietHoursTimePicker();
+        var targetChanged = _scheduledTimePickerTarget != target;
+        if (targetChanged && ScheduledTimePickerPopup.IsOpen)
+        {
+            ScheduledTimePickerPopup.IsOpen = false;
+        }
+
+        ConfigureScheduledTimePickerTarget(target);
         SynchronizeScheduledTimePickerSelection();
         ScheduledTimePickerPopup.IsOpen = true;
         UpdateInternalPopupState();
         ScheduledHourComboBox.Focus();
         Keyboard.Focus(ScheduledHourComboBox);
+    }
+
+    private void ConfigureScheduledTimePickerTarget(
+        ScheduledTimePickerTarget target)
+    {
+        _scheduledTimePickerTarget = target;
+        var host = target switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                QuietHoursStartPickerHost,
+            ScheduledTimePickerTarget.QuietEnd =>
+                QuietHoursEndPickerHost,
+            _ => ScheduledTimePickerHost
+        };
+        ScheduledTimePickerTitle.Text = target switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                "选择免打扰开始时间",
+            ScheduledTimePickerTarget.QuietEnd =>
+                "选择免打扰结束时间",
+            _ => "选择提醒时间"
+        };
+        ScheduledTimePickerPopup.PlacementTarget = host;
+        var fallbackWidth =
+            target == ScheduledTimePickerTarget.Reminder ? 92d : 75d;
+        var hostWidth = host.ActualWidth > 0
+            ? host.ActualWidth
+            : fallbackWidth;
+        ScheduledTimePickerPopup.HorizontalOffset =
+            Math.Round((hostWidth - 222d) / 2d);
+        ScheduledTimePickerHost.Tag =
+            target == ScheduledTimePickerTarget.Reminder
+                ? "Active"
+                : null;
+        QuietHoursStartPickerHost.Tag =
+            target == ScheduledTimePickerTarget.QuietStart
+                ? "Active"
+                : null;
+        QuietHoursEndPickerHost.Tag =
+            target == ScheduledTimePickerTarget.QuietEnd
+                ? "Active"
+                : null;
+
+        var automationPrefix = target switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                "免打扰开始",
+            ScheduledTimePickerTarget.QuietEnd =>
+                "免打扰结束",
+            _ => "提醒"
+        };
+        System.Windows.Automation.AutomationProperties.SetName(
+            ScheduledHourComboBox,
+            $"{automationPrefix}小时");
+        System.Windows.Automation.AutomationProperties.SetName(
+            ScheduledMinuteComboBox,
+            $"{automationPrefix}分钟");
+        System.Windows.Automation.AutomationProperties.SetName(
+            ScheduledSecondComboBox,
+            $"{automationPrefix}秒");
     }
 
     private void CloseScheduledTimePicker()
@@ -924,6 +977,9 @@ public partial class ScheduledTaskEditWindow : Window
             ScheduledTimePickerPopup.IsOpen = false;
         }
 
+        ScheduledTimePickerHost.Tag = null;
+        QuietHoursStartPickerHost.Tag = null;
+        QuietHoursEndPickerHost.Tag = null;
         UpdateInternalPopupState();
     }
 
@@ -931,7 +987,6 @@ public partial class ScheduledTaskEditWindow : Window
     {
         CloseScheduledDatePicker();
         CloseScheduledTimePicker();
-        CloseQuietHoursTimePicker();
     }
 
     private void ScheduledTimePickerPopup_Opened(
@@ -945,6 +1000,9 @@ public partial class ScheduledTaskEditWindow : Window
         object sender,
         EventArgs e)
     {
+        ScheduledTimePickerHost.Tag = null;
+        QuietHoursStartPickerHost.Tag = null;
+        QuietHoursEndPickerHost.Tag = null;
         UpdateInternalPopupState();
     }
 
@@ -964,8 +1022,9 @@ public partial class ScheduledTaskEditWindow : Window
             return;
         }
 
+        var target = _scheduledTimePickerTarget;
         CloseScheduledTimePicker();
-        FocusScheduledTimeInput();
+        FocusScheduledTimePickerTarget(target);
         e.Handled = true;
     }
 
@@ -981,15 +1040,7 @@ public partial class ScheduledTaskEditWindow : Window
             return;
         }
 
-        SetScheduledTimePickerSelection(
-            ScheduledHourComboBox.SelectedIndex,
-            ScheduledMinuteComboBox.SelectedIndex,
-            ScheduledSecondComboBox.SelectedIndex);
-        ValidationText.Text = string.Empty;
-        if (!_initializing)
-        {
-            _scheduleEdited = true;
-        }
+        ApplyScheduledTimePickerSelection();
     }
 
     private void ScheduledTimePartComboBox_PreviewKeyDown(
@@ -1002,8 +1053,9 @@ public partial class ScheduledTaskEditWindow : Window
             return;
         }
 
+        var target = _scheduledTimePickerTarget;
         CloseScheduledTimePicker();
-        FocusScheduledTimeInput();
+        FocusScheduledTimePickerTarget(target);
         e.Handled = true;
     }
 
@@ -1019,10 +1071,16 @@ public partial class ScheduledTaskEditWindow : Window
             return;
         }
 
-        SetScheduledTimePickerSelection(
-            HourComboBox.SelectedIndex,
-            MinuteComboBox.SelectedIndex,
-            SecondComboBox.SelectedIndex);
+        if (_scheduledTimePickerTarget ==
+            ScheduledTimePickerTarget.Reminder)
+        {
+            SetScheduledTimePickerDisplaySelection(
+                HourComboBox.SelectedIndex,
+                MinuteComboBox.SelectedIndex,
+                SecondComboBox.SelectedIndex);
+        }
+
+        UpdateScheduledTimeTextFromPicker();
         ValidationText.Text = string.Empty;
         if (!_initializing)
         {
@@ -1044,22 +1102,7 @@ public partial class ScheduledTaskEditWindow : Window
         comboBox.SelectedItem =
             comboBox.ItemContainerGenerator.ItemFromContainer(item);
         comboBox.IsDropDownOpen = false;
-        if (IsQuietHoursTimePickerComboBox(comboBox))
-        {
-            ApplyQuietHoursTimePickerSelection();
-            if (!_initializing)
-            {
-                _quietHoursEdited = true;
-            }
-        }
-        else
-        {
-            UpdateScheduledTimeTextFromPicker();
-            if (!_initializing)
-            {
-                _scheduleEdited = true;
-            }
-        }
+        ApplyScheduledTimePickerSelection();
 
         Activate();
         comboBox.Focus();
@@ -1073,12 +1116,17 @@ public partial class ScheduledTaskEditWindow : Window
         RoutedEventArgs e)
     {
         var now = DateTimeOffset.Now.LocalDateTime;
-        DueDatePicker.SelectedDate = now.Date;
-        SetScheduledTimePickerSelection(
+        SetScheduledTimePickerDisplaySelection(
             now.Hour,
             now.Minute,
             now.Second);
-        _scheduleEdited = true;
+        if (_scheduledTimePickerTarget ==
+            ScheduledTimePickerTarget.Reminder)
+        {
+            DueDatePicker.SelectedDate = now.Date;
+        }
+
+        ApplyScheduledTimePickerSelection();
         e.Handled = true;
     }
 
@@ -1086,9 +1134,10 @@ public partial class ScheduledTaskEditWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        UpdateScheduledTimeTextFromPicker();
+        ApplyScheduledTimePickerSelection();
+        var target = _scheduledTimePickerTarget;
         CloseScheduledTimePicker();
-        FocusScheduledTimeInput();
+        FocusScheduledTimePickerTarget(target);
         e.Handled = true;
     }
 
@@ -1119,10 +1168,98 @@ public partial class ScheduledTaskEditWindow : Window
 
     private void SynchronizeScheduledTimePickerSelection()
     {
-        SetScheduledTimePickerSelection(
-            HourComboBox.SelectedIndex,
-            MinuteComboBox.SelectedIndex,
-            SecondComboBox.SelectedIndex);
+        var value = _scheduledTimePickerTarget switch
+        {
+            ScheduledTimePickerTarget.QuietStart =>
+                _quietHoursStartDraft,
+            ScheduledTimePickerTarget.QuietEnd =>
+                _quietHoursEndDraft,
+            _ => new TimeSpan(
+                Math.Max(HourComboBox.SelectedIndex, 0),
+                Math.Max(MinuteComboBox.SelectedIndex, 0),
+                Math.Max(SecondComboBox.SelectedIndex, 0))
+        };
+        SetScheduledTimePickerDisplaySelection(
+            value.Hours,
+            value.Minutes,
+            value.Seconds);
+    }
+
+    private void SetScheduledTimePickerDisplaySelection(
+        int hour,
+        int minute,
+        int second)
+    {
+        _updatingTimePickerSelection = true;
+        try
+        {
+            ScheduledHourComboBox.SelectedIndex =
+                Math.Clamp(hour, 0, 23);
+            ScheduledMinuteComboBox.SelectedIndex =
+                Math.Clamp(minute, 0, 59);
+            ScheduledSecondComboBox.SelectedIndex =
+                Math.Clamp(second, 0, 59);
+        }
+        finally
+        {
+            _updatingTimePickerSelection = false;
+        }
+    }
+
+    private void ApplyScheduledTimePickerSelection()
+    {
+        if (ScheduledHourComboBox.SelectedIndex < 0 ||
+            ScheduledMinuteComboBox.SelectedIndex < 0 ||
+            ScheduledSecondComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        var value = new TimeSpan(
+            ScheduledHourComboBox.SelectedIndex,
+            ScheduledMinuteComboBox.SelectedIndex,
+            ScheduledSecondComboBox.SelectedIndex);
+        _updatingTimePickerSelection = true;
+        try
+        {
+            switch (_scheduledTimePickerTarget)
+            {
+                case ScheduledTimePickerTarget.QuietStart:
+                    _quietHoursStartDraft = value;
+                    QuietHoursStartTextBox.Text =
+                        FormatQuietTime(value);
+                    if (!_initializing)
+                    {
+                        _quietHoursEdited = true;
+                    }
+                    break;
+                case ScheduledTimePickerTarget.QuietEnd:
+                    _quietHoursEndDraft = value;
+                    QuietHoursEndTextBox.Text =
+                        FormatQuietTime(value);
+                    if (!_initializing)
+                    {
+                        _quietHoursEdited = true;
+                    }
+                    break;
+                default:
+                    HourComboBox.SelectedIndex = value.Hours;
+                    MinuteComboBox.SelectedIndex = value.Minutes;
+                    SecondComboBox.SelectedIndex = value.Seconds;
+                    UpdateScheduledTimeTextFromPicker();
+                    if (!_initializing)
+                    {
+                        _scheduleEdited = true;
+                    }
+                    break;
+            }
+        }
+        finally
+        {
+            _updatingTimePickerSelection = false;
+        }
+
+        ValidationText.Text = string.Empty;
     }
 
     private void UpdateScheduledTimeTextFromPicker()
@@ -1149,11 +1286,31 @@ public partial class ScheduledTaskEditWindow : Window
         Keyboard.Focus(ScheduledTimeInput);
     }
 
+    private void FocusScheduledTimePickerTarget(
+        ScheduledTimePickerTarget target)
+    {
+        switch (target)
+        {
+            case ScheduledTimePickerTarget.QuietStart:
+                QuietHoursStartTextBox.Focus();
+                Keyboard.Focus(QuietHoursStartTextBox);
+                break;
+            case ScheduledTimePickerTarget.QuietEnd:
+                QuietHoursEndTextBox.Focus();
+                Keyboard.Focus(QuietHoursEndTextBox);
+                break;
+            default:
+                FocusScheduledTimeInput();
+                break;
+        }
+    }
+
     private void QuietHoursTimeInput_PreviewMouseLeftButtonDown(
         object sender,
         MouseButtonEventArgs e)
     {
-        OpenQuietHoursTimePicker(GetQuietHoursTimeTarget(sender));
+        OpenScheduledTimePickerForTarget(
+            GetQuietHoursTimeTarget(sender));
         e.Handled = true;
     }
 
@@ -1164,214 +1321,26 @@ public partial class ScheduledTaskEditWindow : Window
         var target = GetQuietHoursTimeTarget(sender);
         if (e.Key is Key.Space or Key.Enter or Key.Down or Key.F4)
         {
-            OpenQuietHoursTimePicker(target);
+            OpenScheduledTimePickerForTarget(target);
             e.Handled = true;
             return;
         }
 
-        if (e.Key == Key.Escape && QuietHoursTimePickerPopup.IsOpen)
+        if (e.Key == Key.Escape &&
+            ScheduledTimePickerPopup.IsOpen)
         {
-            CloseQuietHoursTimePicker();
-            FocusQuietHoursTimeInput(target);
+            CloseScheduledTimePicker();
+            FocusScheduledTimePickerTarget(target);
             e.Handled = true;
         }
     }
 
-    private QuietHoursTimeTarget GetQuietHoursTimeTarget(object sender) =>
+    private ScheduledTimePickerTarget GetQuietHoursTimeTarget(
+        object sender) =>
         ReferenceEquals(sender, QuietHoursEndPickerHost) ||
         ReferenceEquals(sender, QuietHoursEndTextBox)
-            ? QuietHoursTimeTarget.End
-            : QuietHoursTimeTarget.Start;
-
-    private void OpenQuietHoursTimePicker(QuietHoursTimeTarget target)
-    {
-        CloseScheduledDatePicker();
-        CloseScheduledTimePicker();
-        _quietHoursTimeTarget = target;
-        var host = target == QuietHoursTimeTarget.Start
-            ? QuietHoursStartPickerHost
-            : QuietHoursEndPickerHost;
-        var draft = target == QuietHoursTimeTarget.Start
-            ? _quietHoursStartDraft
-            : _quietHoursEndDraft;
-        QuietHoursTimePickerTitle.Text = target == QuietHoursTimeTarget.Start
-            ? "选择免打扰开始时间"
-            : "选择免打扰结束时间";
-        QuietHoursTimePickerPopup.PlacementTarget = host;
-        var hostWidth = host.ActualWidth > 0 ? host.ActualWidth : 82;
-        QuietHoursTimePickerPopup.HorizontalOffset =
-            Math.Round((hostWidth - 222) / 2);
-        SetQuietHoursTimePickerSelection(draft);
-        QuietHoursStartPickerHost.Tag =
-            target == QuietHoursTimeTarget.Start ? "Active" : null;
-        QuietHoursEndPickerHost.Tag =
-            target == QuietHoursTimeTarget.End ? "Active" : null;
-        QuietHoursTimePickerPopup.IsOpen = true;
-        UpdateInternalPopupState();
-        QuietHoursHourComboBox.Focus();
-        Keyboard.Focus(QuietHoursHourComboBox);
-    }
-
-    private void CloseQuietHoursTimePicker()
-    {
-        QuietHoursHourComboBox.IsDropDownOpen = false;
-        QuietHoursMinuteComboBox.IsDropDownOpen = false;
-        QuietHoursSecondComboBox.IsDropDownOpen = false;
-        if (QuietHoursTimePickerPopup.IsOpen)
-        {
-            QuietHoursTimePickerPopup.IsOpen = false;
-        }
-
-        QuietHoursStartPickerHost.Tag = null;
-        QuietHoursEndPickerHost.Tag = null;
-        UpdateInternalPopupState();
-    }
-
-    private void QuietHoursTimePickerPopup_Opened(
-        object sender,
-        EventArgs e)
-    {
-        UpdateInternalPopupState();
-    }
-
-    private void QuietHoursTimePickerPopup_Closed(
-        object sender,
-        EventArgs e)
-    {
-        QuietHoursStartPickerHost.Tag = null;
-        QuietHoursEndPickerHost.Tag = null;
-        UpdateInternalPopupState();
-    }
-
-    private void QuietHoursTimePickerPopup_PreviewKeyDown(
-        object sender,
-        KeyEventArgs e)
-    {
-        if (e.Key != Key.Escape)
-        {
-            return;
-        }
-
-        var target = _quietHoursTimeTarget;
-        CloseQuietHoursTimePicker();
-        FocusQuietHoursTimeInput(target);
-        e.Handled = true;
-    }
-
-    private void QuietHoursTimePartComboBox_SelectionChanged(
-        object sender,
-        SelectionChangedEventArgs e)
-    {
-        if (_updatingQuietHoursTimePickerSelection ||
-            QuietHoursHourComboBox.SelectedIndex < 0 ||
-            QuietHoursMinuteComboBox.SelectedIndex < 0 ||
-            QuietHoursSecondComboBox.SelectedIndex < 0)
-        {
-            return;
-        }
-
-        ApplyQuietHoursTimePickerSelection();
-        ValidationText.Text = string.Empty;
-        if (!_initializing)
-        {
-            _quietHoursEdited = true;
-        }
-    }
-
-    private void QuietHoursTimePartComboBox_PreviewKeyDown(
-        object sender,
-        KeyEventArgs e)
-    {
-        if (e.Key != Key.Escape ||
-            !QuietHoursTimePickerPopup.IsOpen)
-        {
-            return;
-        }
-
-        var target = _quietHoursTimeTarget;
-        CloseQuietHoursTimePicker();
-        FocusQuietHoursTimeInput(target);
-        e.Handled = true;
-    }
-
-    private void QuietHoursTimePickerNowButton_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        var now = DateTimeOffset.Now.LocalDateTime;
-        SetQuietHoursTimePickerSelection(now.TimeOfDay);
-        ApplyQuietHoursTimePickerSelection();
-        _quietHoursEdited = true;
-        e.Handled = true;
-    }
-
-    private void QuietHoursTimePickerConfirmButton_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        ApplyQuietHoursTimePickerSelection();
-        var target = _quietHoursTimeTarget;
-        CloseQuietHoursTimePicker();
-        FocusQuietHoursTimeInput(target);
-        e.Handled = true;
-    }
-
-    private void SetQuietHoursTimePickerSelection(TimeSpan value)
-    {
-        _updatingQuietHoursTimePickerSelection = true;
-        try
-        {
-            QuietHoursHourComboBox.SelectedIndex =
-                Math.Clamp(value.Hours, 0, 23);
-            QuietHoursMinuteComboBox.SelectedIndex =
-                Math.Clamp(value.Minutes, 0, 59);
-            QuietHoursSecondComboBox.SelectedIndex =
-                Math.Clamp(value.Seconds, 0, 59);
-        }
-        finally
-        {
-            _updatingQuietHoursTimePickerSelection = false;
-        }
-    }
-
-    private void ApplyQuietHoursTimePickerSelection()
-    {
-        if (QuietHoursHourComboBox.SelectedIndex < 0 ||
-            QuietHoursMinuteComboBox.SelectedIndex < 0 ||
-            QuietHoursSecondComboBox.SelectedIndex < 0)
-        {
-            return;
-        }
-
-        var value = new TimeSpan(
-            QuietHoursHourComboBox.SelectedIndex,
-            QuietHoursMinuteComboBox.SelectedIndex,
-            QuietHoursSecondComboBox.SelectedIndex);
-        if (_quietHoursTimeTarget == QuietHoursTimeTarget.Start)
-        {
-            _quietHoursStartDraft = value;
-            QuietHoursStartTextBox.Text = FormatQuietTime(value);
-        }
-        else
-        {
-            _quietHoursEndDraft = value;
-            QuietHoursEndTextBox.Text = FormatQuietTime(value);
-        }
-    }
-
-    private void FocusQuietHoursTimeInput(QuietHoursTimeTarget target)
-    {
-        var input = target == QuietHoursTimeTarget.Start
-            ? QuietHoursStartTextBox
-            : QuietHoursEndTextBox;
-        input.Focus();
-        Keyboard.Focus(input);
-    }
-
-    private bool IsQuietHoursTimePickerComboBox(ComboBox comboBox) =>
-        ReferenceEquals(comboBox, QuietHoursHourComboBox) ||
-        ReferenceEquals(comboBox, QuietHoursMinuteComboBox) ||
-        ReferenceEquals(comboBox, QuietHoursSecondComboBox);
+            ? ScheduledTimePickerTarget.QuietEnd
+            : ScheduledTimePickerTarget.QuietStart;
 
     private void InternalComboBox_DropDownOpened(
         object sender,
@@ -1388,14 +1357,6 @@ public partial class ScheduledTaskEditWindow : Window
             !ScheduledTimePickerPopup.IsOpen)
         {
             ScheduledTimePickerPopup.IsOpen = true;
-        }
-
-        if ((ReferenceEquals(sender, QuietHoursHourComboBox) ||
-             ReferenceEquals(sender, QuietHoursMinuteComboBox) ||
-             ReferenceEquals(sender, QuietHoursSecondComboBox)) &&
-            !QuietHoursTimePickerPopup.IsOpen)
-        {
-            QuietHoursTimePickerPopup.IsOpen = true;
         }
 
         _internalPopupOpen = true;
@@ -1427,9 +1388,6 @@ public partial class ScheduledTaskEditWindow : Window
         ScheduledHourComboBox.IsDropDownOpen ||
         ScheduledMinuteComboBox.IsDropDownOpen ||
         ScheduledSecondComboBox.IsDropDownOpen ||
-        QuietHoursHourComboBox.IsDropDownOpen ||
-        QuietHoursMinuteComboBox.IsDropDownOpen ||
-        QuietHoursSecondComboBox.IsDropDownOpen ||
         RepeatUnitComboBox.IsDropDownOpen;
 
     private bool IsAnyScheduledTimePickerDropDownOpen() =>
@@ -1440,17 +1398,11 @@ public partial class ScheduledTaskEditWindow : Window
         ScheduledMinuteComboBox.IsDropDownOpen ||
         ScheduledSecondComboBox.IsDropDownOpen;
 
-    private bool IsAnyQuietHoursTimePickerDropDownOpen() =>
-        QuietHoursHourComboBox.IsDropDownOpen ||
-        QuietHoursMinuteComboBox.IsDropDownOpen ||
-        QuietHoursSecondComboBox.IsDropDownOpen;
-
     private void UpdateInternalPopupState()
     {
         _internalPopupOpen =
             ScheduledDatePickerPopup.IsOpen ||
             ScheduledTimePickerPopup.IsOpen ||
-            QuietHoursTimePickerPopup.IsOpen ||
             IsAnyComboDropDownOpen();
     }
 
@@ -1628,7 +1580,8 @@ public partial class ScheduledTaskEditWindow : Window
         if (_quietHoursStartDraft == _quietHoursEndDraft)
         {
             SetValidation("免打扰开始和结束时间不能相同哦");
-            FocusQuietHoursTimeInput(QuietHoursTimeTarget.End);
+            OpenScheduledTimePickerForTarget(
+                ScheduledTimePickerTarget.QuietEnd);
             return false;
         }
 
@@ -1781,7 +1734,6 @@ public partial class ScheduledTaskEditWindow : Window
         QuietHoursEndPickerHost.IsMouseOver ||
         ScheduledDatePickerPopup.Child?.IsMouseOver == true ||
         ScheduledTimePickerPopup.Child?.IsMouseOver == true ||
-        QuietHoursTimePickerPopup.Child?.IsMouseOver == true ||
         RepeatToggle.IsMouseOver ||
         RepeatCountTextBox.IsMouseOver ||
         RepeatUnitComboBox.IsMouseOver ||
