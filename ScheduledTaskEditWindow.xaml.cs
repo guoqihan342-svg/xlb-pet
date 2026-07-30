@@ -92,7 +92,6 @@ public partial class ScheduledTaskEditWindow : Window
                 localDueAt.Hour,
                 localDueAt.Minute,
                 localDueAt.Second);
-            UpdateScheduledTimeTextFromPicker();
             SetRepeatDraft(item.RepeatInterval, item.RepeatRule);
             SetQuietHoursDraft(item.QuietHours);
         }

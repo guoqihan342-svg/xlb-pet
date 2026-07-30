@@ -155,10 +155,28 @@
 
 - 系统：Windows 11 x64
 - 框架：x64 `.NET 8 Desktop Runtime 8.0.29`
-- 本地发布结果：`dist\LubanDesktopPet.exe`；超过 GitHub 普通 Git 对象上限的成品 EXE 通过 [GitHub Releases](https://github.com/guoqihan342-svg/xlb-pet/releases) 提供，不再直接塞进仓库历史。
+- 本地发布结果：`dist\LubanDesktopPet.exe`；`dist` 下所有层级的 EXE 都只作为本地或 [GitHub Release](https://github.com/guoqihan342-svg/xlb-pet/releases) 产物，不进入 Git 历史。
 - 为避免把约 56 MiB 的微软安装包重复提交到 GitHub，仓库只记录版本、官方地址和校验信息，详见 [`runtime\dotnet-desktop-runtime-8.0.29-win-x64\README.md`](runtime/dotnet-desktop-runtime-8.0.29-win-x64/README.md)。
 
 首次使用时，如系统尚未安装该运行时，请从微软官方地址下载并安装，再运行本地发布的 `dist\LubanDesktopPet.exe` 或 Release 附件。当前桌宠 EXE 未做商业代码签名，从网络下载后 Windows SmartScreen 可能显示提示。
+
+## 仓库目录边界
+
+| 路径 | 用途 | Git 与清理约定 |
+| --- | --- | --- |
+| 根目录 `*.cs`、`*.xaml`、`DesktopPet.csproj` | WPF 正式源码 | 必须跟踪 |
+| `pic\` | 用户提供的 9 张原始参考图 | 必须跟踪；生成、构建和清理脚本不得写入或删除 |
+| `Assets\` | 已验收的运行时源帧、图集清单和 Brotli 分页 | 正式文件必须跟踪；仅 `sprite-pages\*.png` 人工预览和旧本地预览 `luban.png` 被忽略 |
+| `tools\generated_sources\` | 已甄选的动画创作源 | 根目录只保留受 Git 跟踪的正式源；本地候选放 `_scratch\`，QA 图片放 `_qa\` |
+| `.codex_tmp\`、`tmp\` | 补帧、ImageGen、QA、性能分析和发布冒烟的本地中间产物 | 被忽略，不作为唯一素材备份 |
+| `bin\`、`obj\`、`tests\**\bin\`、`tests\**\obj\` | .NET 构建输出 | 被忽略，可重新构建 |
+| `dist\` | 本地单文件发布结果及历史本地副本 | 所有层级的 EXE 均被忽略；正式交付使用 GitHub Release |
+| `runtime\` | .NET Desktop Runtime 版本、下载地址和校验说明 | 只跟踪说明文件，不跟踪安装包 EXE |
+| `tests\` | UI 与存储契约测试源码和小型验收基线 | 测试源码跟踪，构建输出忽略 |
+
+`pic` 是只读原始素材边界；不要把生成结果写回其中。`Assets` 和
+`tools\generated_sources` 包含正式构建输入，不能按“缓存目录”整体清理。
+判断正式文件时以 `git ls-files Assets pic tools/generated_sources` 为准。
 
 ## 开发、构建与验证
 
@@ -276,7 +294,7 @@ Get-AuthenticodeSignature $exe.FullName | Select-Object Status, StatusMessage
 - [ ] 源 PNG QA、最终 Pbgra 图集 QA、Release 构建、UI 检查和持久化检查全部通过，且没有忽略失败项。
 - [ ] 最终清单声明 `version: 4` 和 `compression: "brotli"`；`sourceFrameCount`、`pageFrameCount`、实际分页和嵌入资源彼此一致，输出目录不再残留 `*.pbgra.lz4`。
 - [ ] 使用上面的框架依赖单文件命令发布；目标机器已安装 x64 .NET 8 Desktop Runtime。
-- [ ] 记录 `LubanDesktopPet.exe` 的最终字节数和 SHA-256；小于 `100,000,000` 字节时可作为普通 Git 对象提交，达到或超过时不要强行提交，改用 GitHub Release 附件或 Git LFS。
+- [ ] 记录 `LubanDesktopPet.exe` 的最终字节数和 SHA-256；无论大小，`dist\**\*.exe` 都不提交到 Git 历史。达到或超过 `100,000,000` 字节时必须使用 GitHub Release 附件，不得尝试绕过 GitHub 限制。
 - [ ] 实机连续触发七种点击动作并观察起身、循环、返回和每分钟随机待机；第八次点击应重新从打哈欠开始。稳定待机时鼻尖只能看到一个半透明泡泡连续变大再缩回，人物、枕头和窗口尺寸保持不变，切换动作时泡泡不得残留或闪烁。默认绕屏不应混入点击动作，取消绕屏也不应关闭七种原地动作。所有动作均无逐帧抖动、透明光纹、忽大忽小或冷页快速补播。
 - [ ] 首次启动确认“绕屏动画”位于桌宠大小上方且默认勾选；空闲约10分钟后完整观察小鲁班骑着带铃铛和竹筒的大头熊猫完成顺/逆方向巡游。横向姿势保持朝前，往上/往下时整体分别旋转90°；不出现跑步、爬行或蠕动。左键或拖动应立即回待机，右键、提醒和取消勾选也应平稳抢占；重新勾选只安排下一次空闲巡游。重启后确认勾选状态与桌宠大小都分别保存。
 - [ ] 放大检查巡游中的小鲁班眼睛：开眼时应保持暖棕色分层虹膜、白色眼缘和清晰主副高光，眨眼应连续闭合再睁开；熊猫眼睛、脸型和坐骑轮廓不得随此修复变化，64帧循环首尾不得出现眼睛跳位、闪点或忽大忽小。
@@ -287,4 +305,4 @@ Get-AuthenticodeSignature $exe.FullName | Select-Object Status, StatusMessage
 - [ ] 待办随人物跨屏拖动，点击其他位置自动收起；左/右/下手动探头、顶部中央不吸附、左上/右上角仍归入侧边均保持原契约。熊猫坐骑路线只锁定出发时的当前屏幕独立工作区：在负坐标副屏及100%/125%/150% DPI各连续运行10秒，逻辑距离与代码速度一致、位置误差不超过1物理像素；共享边界不跳屏，显示器断开后安全夹回有效屏幕。
 - [ ] 用59/60/120/144Hz可控时间戳验证相同绝对时间得到相同鼻泡大小、熊猫坐骑位置和姿势；模拟超过250ms的UI阻塞后不得瞬移或快速补帧。顶部向右与底部向右必须镜像左朝向原画，顶部向左与底部向左保持原向；左右竖边无论顺逆方向都朝屏幕内部。完整圆角路线每个转角只过渡一次，顶部自动路段不产生`EdgeDock.Top`，巡游与手动探头状态永不同时活跃。
 - [ ] 冷启动后立即复测动作、熊猫坐骑巡游和边缘探头，并设置 `2 秒后`提醒，确认按需分页没有可见停顿；普通动作 resident 解码页遵守 `64 MiB` 滚动软预算，只有熊猫坐骑巡游预载或播放期间使用 `128 MiB`，动作结束后保留 `20 秒`热缓存，稳定空闲后 resident 页与空闲缓冲池共同回落到 `32 MiB`。按 `1 MiB` 容量桶复用的缓冲池总分配不超过 `128 MiB`，取消、失效、淘汰和退出后的迟到页都能正确归还，且全部图集哈希与像素不变。连续运行至少10分钟或两圈后内存无持续增长；运行前后均不得生成 `log` 文件夹。
-- [ ] Git 暂存仅包含计划交付文件，不包含 `.codex_tmp`、生成缓存、绿幕中间图或无关历史 QA 文件。
+- [ ] 使用 `git status --short --ignored` 复核暂存范围：不得包含 `.codex_tmp`、`tmp`、`bin/obj`、测试构建输出、`dist` 下任意层级 EXE、绿幕中间图或无关 QA 文件；不得删除或覆盖 `pic` 用户原图和已验收的 `Assets`。

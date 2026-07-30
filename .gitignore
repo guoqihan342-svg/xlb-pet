@@ -1,15 +1,30 @@
+# .NET / Visual Studio build outputs
 bin/
 obj/
-tmp/
-dist-size-check/
-.codex_tmp/
 tests/**/bin/
 tests/**/obj/
-**/__pycache__/
 .vs/
 *.user
 *.suo
-Assets/luban.png
-runtime/**/*.exe
+
+# Local workspaces, caches, and QA outputs
+tmp/
+.codex_tmp/
+dist-size-check/
+artifacts/
+**/__pycache__/
+
+# Local publish outputs and runtime installers
 dist/*.exe
+dist/**/*.exe
+runtime/**/*.exe
+
+# Generated previews and unreviewed local artwork
+Assets/luban.png
 Assets/sprite-pages/*.png
+tools/generated_sources/_qa/
+tools/generated_sources/_scratch/
+
+# User-provided originals are never cache files.
+!pic/
+!pic/**

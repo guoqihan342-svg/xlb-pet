@@ -2550,9 +2550,6 @@ public partial class TodoWindow : Window
         ScheduledTaskInput.Focus();
     }
 
-    // Kept as a small compatibility shim for the existing UI-state contract.
-    private void RequestScheduledTaskAdd() => RequestScheduledTaskSubmit();
-
     private bool TryReadScheduledTaskDraft(
         out string text,
         out DateTimeOffset dueAt,

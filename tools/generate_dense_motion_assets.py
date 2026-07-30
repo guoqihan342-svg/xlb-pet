@@ -917,11 +917,6 @@ def visual_edge_requirements(first_path: Path, second_path: Path) -> dict[str, f
     }
 
 
-def edge_substeps(first_path: Path, second_path: Path) -> tuple[int, float]:
-    requirements = visual_edge_requirements(first_path, second_path)
-    return int(requirements["substeps"]), float(requirements["brim_distance_dip"])
-
-
 def sequence_edge_requirements(
     sequence_name: str,
     pair_index: int,

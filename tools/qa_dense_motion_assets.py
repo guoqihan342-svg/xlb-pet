@@ -543,60 +543,6 @@ def midpoint_linearity(
     }
 
 
-def qa_doubled_sequence(
-    outputs: list[Path], keys: list[Path], *, discarded_first_key: bool
-) -> dict[str, object]:
-    metrics = []
-    exact_key_mismatches = []
-    if discarded_first_key:
-        for pair_index in range(len(keys) - 1):
-            midpoint = load(outputs[pair_index * 2])
-            second_output = load(outputs[pair_index * 2 + 1])
-            first = load(keys[pair_index])
-            second = load(keys[pair_index + 1])
-            if not np.array_equal(second_output, second):
-                exact_key_mismatches.append(pair_index + 1)
-            metrics.append(midpoint_linearity(first, midpoint, second))
-    else:
-        for key_index, key in enumerate(keys):
-            if not np.array_equal(load(outputs[key_index * 2]), load(key)):
-                exact_key_mismatches.append(key_index + 1)
-        for pair_index in range(len(keys) - 1):
-            metrics.append(
-                midpoint_linearity(
-                    load(keys[pair_index]),
-                    load(outputs[pair_index * 2 + 1]),
-                    load(keys[pair_index + 1]),
-                )
-            )
-    return {
-        "pair_count": len(metrics),
-        "exact_key_mismatches": exact_key_mismatches,
-        "max_brim_center_error_source_px": max(
-            value["brim_center_error_source_px"] for value in metrics
-        ),
-        "max_brim_width_error_source_px": max(
-            value["brim_width_error_source_px"] for value in metrics
-        ),
-        "max_legacy_brim_center_error_source_px": max(
-            value["legacy_brim_center_error_source_px"] for value in metrics
-        ),
-        "max_legacy_brim_width_error_source_px": max(
-            value["legacy_brim_width_error_source_px"] for value in metrics
-        ),
-        "max_baseline_error_source_px": max(
-            value["baseline_error_source_px"] for value in metrics
-        ),
-        "max_baseline_error_max_physical_px": max(
-            value["baseline_error_max_physical_px"] for value in metrics
-        ),
-        "max_substep_contour_ratio": max(
-            value["max_substep_contour_ratio"] for value in metrics
-        ),
-        "pairs": metrics,
-    }
-
-
 def qa_adaptive_sequence(
     outputs: list[Path], keys: list[Path], sequence_name: str
 ) -> dict[str, object]:

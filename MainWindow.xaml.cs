@@ -2892,17 +2892,6 @@ public partial class MainWindow : Window
         };
     }
 
-    private static string GetEdgeName(EdgeDock dock)
-    {
-        return dock switch
-        {
-            EdgeDock.Left => "左边缘",
-            EdgeDock.Right => "右边缘",
-            EdgeDock.Bottom => "下边缘",
-            _ => "无"
-        };
-    }
-
     private void ShowCuteReaction()
     {
         RestartAutomaticCountdown();
@@ -4418,22 +4407,6 @@ public partial class MainWindow : Window
 
         _automaticTimer.Interval = interval;
         _automaticTimer.Start();
-    }
-
-    private void PreserveAutomaticActivityDeadlineOrRestart(long timestamp)
-    {
-        if (_nextAutomaticActivityDueTimestamp <= 0)
-        {
-            _nextAutomaticActivityDueTimestamp = checked(
-                timestamp + ToStopwatchTicks(AutomaticAnimationInterval));
-        }
-
-        if (!_isPillowBreathing)
-        {
-            _pillowBreathingDueTimestamp = 0;
-        }
-
-        ArmAutomaticWakeTimer(timestamp);
     }
 
     private AnimationClip? GetNextAutomaticActivity()
@@ -8173,11 +8146,6 @@ public partial class MainWindow : Window
         return Math.Round(clamped, 3, MidpointRounding.AwayFromZero);
     }
 
-    private void StartPetSizeScaleTransition(double scale)
-    {
-        QueuePetSizeScaleTargetAt(scale, Stopwatch.GetTimestamp());
-    }
-
     private void QueuePetSizeScaleTargetAt(double scale, long timestamp)
     {
         if (_isClosing)
@@ -10074,38 +10042,6 @@ public partial class MainWindow : Window
         return repeatInterval is { } interval
             ? 1L + elapsedTicks / interval.Ticks
             : 1L;
-    }
-
-    private static DateTimeOffset? CalculateNextRecurringDueAt(
-        DateTimeOffset dueAt,
-        TimeSpan repeatInterval,
-        DateTimeOffset now)
-    {
-        var normalizedInterval =
-            ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval);
-        if (normalizedInterval is not { } interval)
-        {
-            return null;
-        }
-
-        try
-        {
-            var elapsedTicks =
-                now.UtcDateTime.Ticks - dueAt.UtcDateTime.Ticks;
-            var steps = elapsedTicks >= 0
-                ? checked(elapsedTicks / interval.Ticks + 1)
-                : 1;
-            return ScheduledTaskStore.NormalizeToWholeSecond(
-                dueAt.AddTicks(checked(steps * interval.Ticks)));
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            return null;
-        }
-        catch (OverflowException)
-        {
-            return null;
-        }
     }
 
     private void ScheduleNextReminderAt(DateTimeOffset now)
