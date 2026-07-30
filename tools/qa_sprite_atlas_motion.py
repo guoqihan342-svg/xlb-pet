@@ -44,7 +44,7 @@ FRAME_DESCRIPTOR_KEYS = (
 )
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think", "hide")
+ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 ROAM_LOOP_SEQUENCES = ("flight", "wave")
 ROAM_NON_LOOP_SEQUENCES = ("boarding",)
@@ -63,9 +63,6 @@ MAX_USER_DPI_SCALE = max(USER_SCALES) * max(DPI_SCALES)
 # keeps the exact ratio limits.
 MIN_ALPHA_IOU = 0.92
 MIN_MEAN_ALPHA_IOU = 0.95
-HIDE_SEQUENCE_FRAME_COUNTS = {"hide.smooth": 64, "hide.loop": 48}
-HIDE_MIN_ALPHA_IOU = {"hide.smooth": 0.95, "hide.loop": 0.90}
-HIDE_MIN_MEAN_ALPHA_IOU = {"hide.smooth": 0.97, "hide.loop": 0.95}
 MAX_HEAD_CENTER_STEP_DIP = 2.0
 MAX_HAT_SCALE_STEP = 0.025
 MAX_TORSO_SCALE_STEP = 0.035
@@ -1709,168 +1706,12 @@ def surface_matrix() -> list[Surface]:
     return surfaces
 
 
-def analyze_hide_sequence(
-    name: str,
-    resources: list[str],
-    reader: AtlasReader,
-    failures: list[dict[str, Any]],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Validate an intentional occluder/translation animation.
-
-    The steady-motion profile assumes a character remains near one baseline
-    and therefore correctly rejects accidental head jumps or body scaling.
-    Hide-and-seek deliberately raises a large foreground cover and translates
-    the unchanged character to both sides, so it uses alpha continuity,
-    uniqueness, exact frame counts and cross-DPI stability instead.
-    """
-
-    expected_count = HIDE_SEQUENCE_FRAME_COUNTS[name]
-    if len(resources) != expected_count:
-        add_failure(
-            failures,
-            "hide.frame_count",
-            "hide-and-seek sequence frame count must match its authored contract",
-            sequence=name,
-            expected=expected_count,
-            actual=len(resources),
-        )
-
-    native_frames = [reader.reconstruct(resource) for resource in resources]
-    unique_count = len(
-        {hashlib.sha256(frame.tobytes()).digest() for frame in native_frames}
-    )
-    if unique_count != len(native_frames):
-        add_failure(
-            failures,
-            "hide.unique_frames",
-            "every hide-and-seek runtime frame must be pixel-unique",
-            sequence=name,
-            expected=len(native_frames),
-            actual=unique_count,
-        )
-
-    is_loop = name.endswith(".loop")
-    surfaces: dict[str, Any] = {}
-    for surface in surface_matrix():
-        frames = (
-            native_frames
-            if surface.width == DISPLAY_WIDTH and surface.height == DISPLAY_HEIGHT
-            else [
-                resize_pbgra(frame, surface.width, surface.height)
-                for frame in native_frames
-            ]
-        )
-        pair_indices = [
-            (index, index + 1)
-            for index in range(max(0, len(frames) - 1))
-        ]
-        if is_loop and len(frames) > 1:
-            pair_indices.append((len(frames) - 1, 0))
-        pair_ious = [
-            alpha_iou(frames[first], frames[second])
-            for first, second in pair_indices
-        ]
-        duplicate_pairs = [
-            [first + 1, second + 1]
-            for first, second in pair_indices
-            if np.array_equal(frames[first], frames[second])
-        ]
-        minimum_iou = min(pair_ious, default=1.0)
-        mean_iou = float(np.mean(pair_ious)) if pair_ious else 1.0
-        minimum_limit = HIDE_MIN_ALPHA_IOU[name]
-        mean_limit = HIDE_MIN_MEAN_ALPHA_IOU[name]
-        surface_violations: list[dict[str, Any]] = []
-
-        if minimum_iou + FLOAT_COMPARISON_EPSILON < minimum_limit:
-            surface_violations.append(
-                {
-                    "metric": "alpha_iou",
-                    "value": minimum_iou,
-                    "limit": minimum_limit,
-                }
-            )
-            add_failure(
-                failures,
-                "hide.alpha_iou",
-                "hide-and-seek adjacent alpha continuity is below its contract",
-                sequence=name,
-                surface=surface.name,
-                value=minimum_iou,
-                limit=minimum_limit,
-            )
-        if mean_iou + FLOAT_COMPARISON_EPSILON < mean_limit:
-            surface_violations.append(
-                {
-                    "metric": "mean_alpha_iou",
-                    "value": mean_iou,
-                    "limit": mean_limit,
-                }
-            )
-            add_failure(
-                failures,
-                "hide.mean_alpha_iou",
-                "hide-and-seek mean alpha continuity is below its contract",
-                sequence=name,
-                surface=surface.name,
-                value=mean_iou,
-                limit=mean_limit,
-            )
-        if duplicate_pairs:
-            surface_violations.append(
-                {
-                    "metric": "adjacent_duplicate",
-                    "pairs": duplicate_pairs,
-                }
-            )
-            add_failure(
-                failures,
-                "hide.adjacent_duplicate",
-                "hide-and-seek must not pause on duplicate adjacent frames",
-                sequence=name,
-                surface=surface.name,
-                pairs=duplicate_pairs,
-            )
-
-        surfaces[surface.name] = {
-            "width": surface.width,
-            "height": surface.height,
-            "frame_count": len(frames),
-            "is_loop": is_loop,
-            "gate_profile": "hide_and_seek_occluder_translation",
-            "minimum_alpha_iou": minimum_iou,
-            "minimum_alpha_iou_limit": minimum_limit,
-            "mean_alpha_iou": mean_iou,
-            "minimum_mean_alpha_iou": mean_limit,
-            "adjacent_duplicate_pairs_from_1_based": duplicate_pairs,
-            "violation_count": len(surface_violations),
-            "violations": surface_violations,
-            "report_only_finding_count": 0,
-            "report_only_findings": [],
-            "worst_pairs": [],
-            "worst_centers": [],
-        }
-
-    return (
-        {
-            "resources": resources,
-            "authored_frame_count": expected_count,
-            "native_unique_frame_count": unique_count,
-            "surfaces": surfaces,
-            "applied_exact_waivers": [],
-        },
-        [],
-    )
-
-
 def analyze_sequence(
     name: str,
     resources: list[str],
     reader: AtlasReader,
     failures: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if name in HIDE_SEQUENCE_FRAME_COUNTS:
-        return analyze_hide_sequence(name, resources, reader, failures)
-
     native_frames = [reader.reconstruct(resource) for resource in resources]
     surface_results: dict[str, Any] = {}
     contact_candidates: list[dict[str, Any]] = []
@@ -2162,20 +2003,6 @@ def main() -> int:
                 sequence=name,
             )
 
-    hide_smooth = manifest_sequences.get("hide.smooth", [])
-    hide_loop = manifest_sequences.get("hide.loop", [])
-    if hide_smooth and hide_loop:
-        smooth_endpoint = reader.reconstruct(hide_smooth[-1])
-        loop_rest = reader.reconstruct(hide_loop[-1])
-        if not np.array_equal(smooth_endpoint, loop_rest):
-            add_failure(
-                failures,
-                "hide.endpoint",
-                "hide smooth endpoint must exactly equal the loop rest frame",
-                smooth=hide_smooth[-1],
-                loop=hide_loop[-1],
-            )
-
     runtime_profile_results: dict[str, Any] = {}
     for runtime_name, (source_name, frame_count) in (
         RUNTIME_STABLE_ACTION_PREFIXES.items()
@@ -2326,15 +2153,6 @@ def main() -> int:
                 "pixel_unique_frames": True,
                 "clean_pbgra_required": True,
             },
-            "hide_and_seek_occluder_translation_profile": {
-                "frame_counts": HIDE_SEQUENCE_FRAME_COUNTS,
-                "minimum_alpha_iou": HIDE_MIN_ALPHA_IOU,
-                "minimum_mean_alpha_iou": HIDE_MIN_MEAN_ALPHA_IOU,
-                "pixel_unique_frames": True,
-                "smooth_endpoint_equals_loop_rest": True,
-                "clean_pbgra_required": True,
-                "fixed_silhouette_scale_gate": False,
-            },
         },
         "report_only_metrics": [
             "wide_translucent_trail_pixels",
@@ -2347,20 +2165,6 @@ def main() -> int:
                 "centroid_step_dip",
                 "head_center_step_dip",
                 "wide_translucent_trail_pixels",
-            ],
-            "hide.smooth": [
-                "frame_count",
-                "pixel_unique_frames",
-                "alpha_iou",
-                "mean_alpha_iou",
-                "smooth_endpoint_equals_loop_rest",
-            ],
-            "hide.loop": [
-                "frame_count",
-                "pixel_unique_frames",
-                "alpha_iou",
-                "mean_alpha_iou",
-                "adjacent_duplicate",
             ],
             **{
                 name: [

@@ -13,6 +13,8 @@ namespace LubanDesktopPet;
 internal static class MonitorWorkArea
 {
     private const uint MonitorDefaultToNearest = 0x00000002;
+    private const int SystemMetricPrimaryScreenWidth = 0;
+    private const int SystemMetricPrimaryScreenHeight = 1;
     private const int NativeEdgeTolerancePixels = 1;
 
     internal enum ScreenEdge
@@ -20,6 +22,146 @@ internal static class MonitorWorkArea
         Left,
         Right,
         Bottom
+    }
+
+    internal readonly record struct PhysicalWorkArea(
+        int Left,
+        int Top,
+        int Right,
+        int Bottom,
+        int MonitorLeft,
+        int MonitorTop,
+        int MonitorRight,
+        int MonitorBottom)
+    {
+        internal PhysicalWorkArea(
+            int left,
+            int top,
+            int right,
+            int bottom)
+            : this(
+                left,
+                top,
+                right,
+                bottom,
+                left,
+                top,
+                right,
+                bottom)
+        {
+        }
+
+        internal int Width => Right - Left;
+        internal int Height => Bottom - Top;
+        internal int MonitorWidth => MonitorRight - MonitorLeft;
+        internal int MonitorHeight => MonitorBottom - MonitorTop;
+        internal bool IsValid =>
+            Width > 0 &&
+            Height > 0 &&
+            MonitorWidth > 0 &&
+            MonitorHeight > 0;
+    }
+
+    internal static IReadOnlyList<PhysicalWorkArea> GetAllPhysicalWorkAreas()
+    {
+        var workAreas = new List<PhysicalWorkArea>();
+        try
+        {
+            _ = EnumDisplayMonitors(
+                IntPtr.Zero,
+                IntPtr.Zero,
+                (
+                    IntPtr monitor,
+                    IntPtr monitorHdc,
+                    ref NativeRect monitorRectangle,
+                    IntPtr callbackData) =>
+                {
+                    var monitorInfo = new MonitorInfo
+                    {
+                        Size = (uint)Marshal.SizeOf<MonitorInfo>()
+                    };
+                    if (!GetMonitorInfo(monitor, ref monitorInfo))
+                    {
+                        return true;
+                    }
+
+                    var candidate = new PhysicalWorkArea(
+                        monitorInfo.WorkArea.Left,
+                        monitorInfo.WorkArea.Top,
+                        monitorInfo.WorkArea.Right,
+                        monitorInfo.WorkArea.Bottom,
+                        monitorInfo.MonitorArea.Left,
+                        monitorInfo.MonitorArea.Top,
+                        monitorInfo.MonitorArea.Right,
+                        monitorInfo.MonitorArea.Bottom);
+                    if (candidate.IsValid && !workAreas.Contains(candidate))
+                    {
+                        workAreas.Add(candidate);
+                    }
+
+                    return true;
+                },
+                IntPtr.Zero);
+        }
+        catch
+        {
+            workAreas.Clear();
+        }
+
+        if (workAreas.Count == 0)
+        {
+            var monitor = MonitorFromPoint(
+                new NativePoint { X = 0, Y = 0 },
+                MonitorDefaultToNearest);
+            var monitorInfo = new MonitorInfo
+            {
+                Size = (uint)Marshal.SizeOf<MonitorInfo>()
+            };
+            if (monitor != IntPtr.Zero &&
+                GetMonitorInfo(monitor, ref monitorInfo))
+            {
+                workAreas.Add(new PhysicalWorkArea(
+                    monitorInfo.WorkArea.Left,
+                    monitorInfo.WorkArea.Top,
+                    monitorInfo.WorkArea.Right,
+                    monitorInfo.WorkArea.Bottom,
+                    monitorInfo.MonitorArea.Left,
+                    monitorInfo.MonitorArea.Top,
+                    monitorInfo.MonitorArea.Right,
+                    monitorInfo.MonitorArea.Bottom));
+            }
+            else
+            {
+                var width = GetSystemMetrics(SystemMetricPrimaryScreenWidth);
+                var height = GetSystemMetrics(SystemMetricPrimaryScreenHeight);
+                workAreas.Add(new PhysicalWorkArea(
+                    0,
+                    0,
+                    width > 0 ? width : 1920,
+                    height > 0 ? height : 1080));
+            }
+        }
+
+        workAreas.Sort(static (left, right) =>
+        {
+            var comparison = left.Left.CompareTo(right.Left);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+
+            comparison = left.Top.CompareTo(right.Top);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+
+            comparison = left.Right.CompareTo(right.Right);
+            return comparison != 0
+                ? comparison
+                : left.Bottom.CompareTo(right.Bottom);
+        });
+        return workAreas;
     }
 
     internal static Rect GetForWindow(Window window)
@@ -377,6 +519,9 @@ internal static class MonitorWorkArea
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetMonitorInfo(IntPtr monitorHandle, ref MonitorInfo monitorInfo);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MonitorInfo

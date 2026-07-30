@@ -151,12 +151,28 @@ internal static class Program
                 return 0;
             }
 
-            RunCheck(nameof(AssertEdgeRoamingSourceContract),
-                AssertEdgeRoamingSourceContract);
-            RunCheck(nameof(AssertStartupRegistrationContract),
-                AssertStartupRegistrationContract);
-            RunCheck(nameof(AssertSystemTrayContract),
-                AssertSystemTrayContract);
+            var ambientPeekOnly = args.Contains(
+                "--ambient-peek-only",
+                StringComparer.OrdinalIgnoreCase);
+
+            if (!ambientPeekOnly)
+            {
+                RunCheck(nameof(AssertEdgeRoamingSourceContract),
+                    AssertEdgeRoamingSourceContract);
+            }
+            RunCheck(nameof(AssertAmbientPeekSourceContract),
+                AssertAmbientPeekSourceContract);
+            RunCheck(nameof(AssertAmbientPeekTargetPlannerContract),
+                AssertAmbientPeekTargetPlannerContract);
+            RunCheck(nameof(AssertAmbientPeekTimelineMathContract),
+                AssertAmbientPeekTimelineMathContract);
+            if (!ambientPeekOnly)
+            {
+                RunCheck(nameof(AssertStartupRegistrationContract),
+                    AssertStartupRegistrationContract);
+                RunCheck(nameof(AssertSystemTrayContract),
+                    AssertSystemTrayContract);
+            }
 
             var settingsDirectory = Path.Combine(
                 Path.GetTempPath(),
@@ -192,6 +208,13 @@ internal static class Program
                     window,
                     "_queuedReminderIds").Clear();
                 GetField<DispatcherTimer>(window, "_scheduledTaskTimer").Stop();
+
+                if (ambientPeekOnly)
+                {
+                    RunCheck(nameof(AssertAmbientPeekRuntimeContract),
+                        () => AssertAmbientPeekRuntimeContract(window));
+                    return 0;
+                }
 
                 if (args.Contains("--todo-arrow-only", StringComparer.OrdinalIgnoreCase))
                 {
@@ -323,6 +346,8 @@ internal static class Program
                     AssertEdgeRoamRotationContract);
                 RunCheck(nameof(AssertAutomaticDeadlineContract),
                     () => AssertAutomaticDeadlineContract(window));
+                RunCheck(nameof(AssertAmbientPeekRuntimeContract),
+                    () => AssertAmbientPeekRuntimeContract(window));
                 RunCheck(nameof(AssertSnoreBubbleAnimationContract),
                     () => AssertSnoreBubbleAnimationContract(window));
                 RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
@@ -3302,7 +3327,7 @@ internal static class Program
                 "roam-boarding",
                 "roam-flight"
             }
-            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" }
+            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" }
                 .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
             .Concat(new[] { "action-reminder-enter", "action-reminder-hold" })
             .ToHashSet(StringComparer.Ordinal);
@@ -3319,7 +3344,7 @@ internal static class Program
                !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "还必须动态包含熊猫坐骑登乘与巡游连续分页、八个动作页、八个循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、七个动作页、七个循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -3398,7 +3423,7 @@ internal static class Program
                 "不得把巡游帧塞进点击动作、idle或手动edge分页");
         }
 
-        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" })
+        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
         {
             var pageName = $"action-{actionName}";
             var actionPageEntries = manifestPages.EnumerateObject()
@@ -4392,7 +4417,7 @@ internal static class Program
             paths.AddRange(reminderNames.Select(name => $"Assets/{name}"));
         }
 
-        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" })
+        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
         {
             var actionNames = Directory.EnumerateFiles(
                     assetsDirectory,
@@ -4721,9 +4746,6 @@ internal static class Program
         var actionLoopFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "ActionLoopFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
-        var hideMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
-                "HideMotionFrameInterval",
-                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var todoMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "TodoMotionFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
@@ -4737,18 +4759,16 @@ internal static class Program
         Assert(motionFrameInterval == sixtyFpsInterval &&
                todoMotionFrameInterval == sixtyFpsInterval &&
                actionLoopFrameInterval == sixtyFpsInterval &&
-               hideMotionFrameInterval ==
-                   TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 48) &&
                actionLoopCycleCount == 3,
-            "普通动作与Todo使用精确60fps素材；捉迷藏使用48fps源间隔并经1.25倍播放为60fps，微循环固定3轮");
+            "普通动作、Todo与微循环必须统一使用精确60fps姿势间隔，微循环固定3轮");
         Assert(actionTransitionDuration == TimeSpan.Zero,
             "普通动作相邻姿势必须直接切换，ActionTransitionDuration 必须为 zero");
 
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 8, "删除跑步并新增捉迷藏后应保留 8 组点击动作");
-        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" };
+        Assert(clips.Length == 7, "删除跑步后应保留 7 组点击动作");
+        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" };
         var actualActions = clips
             .Select(clip => GetProperty<string>(clip, "ActionName"))
             .ToArray();
@@ -5111,11 +5131,6 @@ internal static class Program
                 LoopCycleCount: 0,
                 EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
                 FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
-            "hide" => (
-                SmoothFrameCount: null,
-                LoopCycleCount: 3,
-                EndpointHoldDuration: TimeSpan.Zero,
-                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 48)),
             _ => (
                 SmoothFrameCount: null,
                 LoopCycleCount: 3,
@@ -5138,18 +5153,18 @@ internal static class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 8 && clips.All(clip =>
+        Assert(clips.Length == 7 && clips.All(clip =>
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "run", StringComparison.OrdinalIgnoreCase)),
             "运行时点击动作中不得再出现 run");
 
         var activities = GetField<Array>(window, "_automaticActivities")
             .Cast<object?>()
             .ToArray();
-        Assert(activities.Length == 9 && activities.Count(activity => activity is null) == 1,
-            "自动活动袋必须为 8 个角色动作加 1 个待机项");
+        Assert(activities.Length == 8 && activities.Count(activity => activity is null) == 1,
+            "自动活动袋必须为 7 个角色动作加 1 个待机项");
         Assert(activities.Where(activity => activity is not null)
                 .All(activity => clips.Any(clip => ReferenceEquals(clip, activity))),
-            "自动活动袋的非空项必须全部引用保留的 8 个点击动作");
+            "自动活动袋的非空项必须全部引用保留的 7 个点击动作");
 
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainWindowSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
@@ -5179,14 +5194,773 @@ internal static class Program
         Assert(runAssetPaths.Length == 0,
             $"Assets 中不得残留跑步派生资产：{string.Join(", ", runAssetPaths.Select(Path.GetFileName))}");
         var manifestText = File.ReadAllText(Path.Combine(assetsDirectory, "luban-sprite-pages.json"));
+        var forbiddenHideFragments = new[]
+        {
+            "\"hide\"",
+            "HideMotionFrameInterval",
+            "luban-hide",
+            "action-hide",
+            "loop-hide",
+            "generate_hide_action_assets",
+            "hide-toy-box"
+        };
+        var hideAssetPaths = Directory
+            .EnumerateFiles(assetsDirectory, "*", SearchOption.AllDirectories)
+            .Where(path =>
+                Path.GetFileName(path).Contains(
+                    "hide",
+                    StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert(
+            forbiddenHideFragments.All(fragment =>
+                !mainWindowSource.Contains(
+                    fragment,
+                    StringComparison.OrdinalIgnoreCase)) &&
+            toolSources.All(source =>
+                forbiddenHideFragments.All(fragment =>
+                    !source.Contains(
+                        fragment,
+                        StringComparison.OrdinalIgnoreCase))) &&
+            hideAssetPaths.Length == 0 &&
+            !manifestText.Contains(
+                "hide",
+                StringComparison.OrdinalIgnoreCase),
+            "旧玩具箱捉迷藏必须从点击动作、自动活动、生成脚本、Assets与图集清单中完整移除");
         Assert(!manifestText.Contains("action-run", StringComparison.OrdinalIgnoreCase) &&
                !manifestText.Contains("luban-run", StringComparison.OrdinalIgnoreCase),
             "分页图集清单不得登记 run 分页及帧");
 
         Assert(!typeof(MainWindow).Assembly.GetManifestResourceNames()
                 .Any(name => name.Contains("action-run", StringComparison.OrdinalIgnoreCase) ||
-                             name.Contains("luban-run", StringComparison.OrdinalIgnoreCase)),
+                             name.Contains("luban-run", StringComparison.OrdinalIgnoreCase) ||
+                             name.Contains("action-hide", StringComparison.OrdinalIgnoreCase) ||
+                             name.Contains("loop-hide", StringComparison.OrdinalIgnoreCase) ||
+                             name.Contains("luban-hide", StringComparison.OrdinalIgnoreCase)),
             "主程序集不得嵌入 run 资源");
+    }
+
+    private static void AssertAmbientPeekSourceContract()
+    {
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        var monitorSource = File.ReadAllText(
+            FindWorkspaceFile("MonitorWorkArea.cs"));
+        var positionerSource = File.ReadAllText(
+            FindWorkspaceFile("OwnedWindowPositioner.cs"));
+        var manifestSource = File.ReadAllText(
+            FindWorkspaceFile("Assets", "luban-sprite-pages.json"));
+
+        TimeSpan ReadInterval(string fieldName) =>
+            (TimeSpan)(typeof(MainWindow).GetField(
+                    fieldName,
+                    StaticFlags)?.GetValue(null) ??
+                throw new InvalidOperationException(
+                    $"找不到随机冒头时间常量 {fieldName}"));
+
+        Assert(
+            ReadInterval("AmbientPeekMinimumInterval") ==
+                TimeSpan.FromSeconds(45) &&
+            ReadInterval("AmbientPeekMaximumInterval") ==
+                TimeSpan.FromSeconds(90) &&
+            ReadInterval("AmbientPeekBusyRetryDelay") ==
+                TimeSpan.FromSeconds(20) &&
+            ReadInterval("AmbientPeekPreloadLeadTime") ==
+                TimeSpan.FromSeconds(2) &&
+            ReadInterval("AmbientPeekFullyPeekedHold") ==
+                TimeSpan.FromMilliseconds(900) &&
+            ReadInterval("AmbientPeekEntryDuration") ==
+                TimeSpan.FromMilliseconds(120) &&
+            ReadInterval("AmbientPeekExitDuration") ==
+                TimeSpan.FromMilliseconds(120),
+            "随机冒头必须使用45~90秒独立随机间隔、20秒忙碌重试、2秒预加载、900ms探出停留及首尾各120ms收起过渡");
+
+        foreach (var fieldName in new[]
+                 {
+                     "_isAmbientPeeking",
+                     "_ambientPeekPointerInterrupted",
+                     "_ambientPeekDock",
+                     "_ambientPeekStepIndex",
+                     "_ambientPeekStartedTimestamp",
+                     "_isAmbientPeekWindowCloaked",
+                     "_ambientPeekUncloakPending",
+                     "_ambientPeekStartAfterUncloak",
+                     "_ambientPeekCloakedRenderCount",
+                     "_ambientPeekRestoreOriginPending",
+                     "_nextAmbientPeekDueTimestamp",
+                     "_pendingAmbientPeekTarget"
+                 })
+        {
+            Assert(
+                typeof(MainWindow).GetField(fieldName, InstanceFlags) is not null,
+                $"随机冒头状态缺少独立字段 {fieldName}");
+        }
+
+        var getFrames = ExtractPrivateMethodSource(
+            mainSource,
+            "GetEdgeFrames");
+        var visualClock = ExtractPrivateMethodSource(
+            mainSource,
+            "VisualClock_Rendering");
+        var automaticTick = ExtractPrivateMethodSource(
+            mainSource,
+            "AutomaticTimer_Tick");
+        var armTimer = ExtractPrivateMethodSource(
+            mainSource,
+            "ArmAutomaticWakeTimer");
+        var schedule = ExtractPrivateMethodSource(
+            mainSource,
+            "ScheduleNextAmbientPeek");
+        var ensureTarget = ExtractPrivateMethodSource(
+            mainSource,
+            "EnsureAmbientPeekTarget");
+        var tryStart = ExtractPrivateMethodSource(
+            mainSource,
+            "TryStartAmbientPeek");
+        var advance = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceAmbientPeek");
+        var interrupt = ExtractPrivateMethodSource(
+            mainSource,
+            "PauseAmbientPeekForPointer");
+        var complete = ExtractPrivateMethodSource(
+            mainSource,
+            "StopAmbientPeek");
+        var queueUncloak = ExtractPrivateMethodSource(
+            mainSource,
+            "QueueAmbientPeekUncloak");
+        var cloakTransition = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceAmbientPeekCloakTransition");
+        var startReaction = ExtractPrivateMethodSource(
+            mainSource,
+            "TryStartReaction");
+        var startRoaming = ExtractPrivateMethodSource(
+            mainSource,
+            "StartEdgeRoaming");
+        var canCollect = ExtractPrivateMethodSource(
+            mainSource,
+            "CanRunIdleSpritePageCollection");
+        var refreshSnore = ExtractPrivateMethodSource(
+            mainSource,
+            "RefreshSnoreBubbleAnimationState");
+
+        Assert(
+            getFrames.Contains(
+                "EdgeDock.Left or EdgeDock.Right => _edgeLeftFrames",
+                StringComparison.Ordinal) &&
+            getFrames.Contains(
+                "EdgeDock.Bottom => _edgeBottomFrames",
+                StringComparison.Ordinal) &&
+            !getFrames.Contains("EdgeDock.Top", StringComparison.Ordinal) &&
+            ensureTarget.Contains(
+                "MonitorWorkArea.GetAllPhysicalWorkAreas",
+                StringComparison.Ordinal) &&
+            ensureTarget.Contains(
+                "TryCreateAmbientPeekTarget",
+                StringComparison.Ordinal) &&
+            tryStart.Contains(
+                "target.Dock == EdgeDock.Right ? -1 : 1",
+                StringComparison.Ordinal),
+            "随机冒头必须复用edge-left/edge-bottom，右侧镜像左侧，只从全部显示器的左、右、下外露边缘选择");
+        Assert(
+            visualClock.Contains(
+                "AdvanceAmbientPeek(timestamp)",
+                StringComparison.Ordinal) &&
+            advance.Contains(
+                "Stopwatch.GetElapsedTime(",
+                StringComparison.Ordinal) &&
+            advance.Contains(
+                "ResolveAmbientPeekStepIndex(",
+                StringComparison.Ordinal) &&
+            !mainSource.Contains(
+                "_ambientPeekFrameDeadlineTimestamp",
+                StringComparison.Ordinal) &&
+            automaticTick.Contains(
+                "StartAmbientPeekPreloadIfDue(timestamp)",
+                StringComparison.Ordinal) &&
+            automaticTick.Contains(
+                "TryStartAmbientPeek",
+                StringComparison.Ordinal) &&
+            armTimer.Contains(
+                "_nextAmbientPeekDueTimestamp",
+                StringComparison.Ordinal) &&
+            mainSource.Contains(
+                "_nextAmbientPeekDueTimestamp = checked(",
+                StringComparison.Ordinal) &&
+            !schedule.Contains(
+                "_nextAutomaticActivityDueTimestamp =",
+                StringComparison.Ordinal) &&
+            !schedule.Contains(
+                "_nextEdgeRoamDueTimestamp =",
+                StringComparison.Ordinal) &&
+            interrupt.Contains(
+                "_ambientPeekPointerInterrupted",
+                StringComparison.Ordinal) &&
+            complete.Contains(
+                "ScheduleNextAmbientPeek",
+                StringComparison.Ordinal) &&
+            !mainSource.Contains(
+                "DispatcherTimer _ambientPeek",
+                StringComparison.Ordinal),
+            "随机冒头必须使用共享低频唤醒器与唯一Rendering绝对时钟，并保持普通动作和熊猫巡游截止时间独立");
+        var transitionBeforePendingFrame = visualClock.IndexOf(
+            "AdvanceAmbientPeekCloakTransition(timestamp)",
+            StringComparison.Ordinal);
+        var pendingFrameAfterTransition = visualClock.IndexOf(
+            "TryShowPendingSpriteFrameAt(timestamp)",
+            StringComparison.Ordinal);
+        var correctionBeforeSecondRender = cloakTransition.IndexOf(
+            "TryMoveToAmbientPeekTarget(target)",
+            StringComparison.Ordinal);
+        var secondRenderGate = cloakTransition.IndexOf(
+            "_ambientPeekCloakedRenderCount < 2",
+            StringComparison.Ordinal);
+        Assert(
+            positionerSource.Contains(
+                "DwmWindowAttributeCloak = 13",
+                StringComparison.Ordinal) &&
+            positionerSource.Contains(
+                "DwmSetWindowAttribute(",
+                StringComparison.Ordinal) &&
+            tryStart.Contains(
+                "TrySetCloaked(this, cloaked: true)",
+                StringComparison.Ordinal) &&
+            tryStart.Contains(
+                "_ambientPeekStartedTimestamp = 0",
+                StringComparison.Ordinal) &&
+            tryStart.Contains(
+                "QueueAmbientPeekUncloak(startAnimationAfterUncloak: true)",
+                StringComparison.Ordinal) &&
+            queueUncloak.Contains(
+                "_ambientPeekCloakedRenderCount = 0",
+                StringComparison.Ordinal) &&
+            correctionBeforeSecondRender >= 0 &&
+            secondRenderGate > correctionBeforeSecondRender &&
+            cloakTransition.Contains(
+                "TrySetCloaked(this, cloaked: false)",
+                StringComparison.Ordinal) &&
+            cloakTransition.Contains(
+                "_ambientPeekStartedTimestamp = timestamp",
+                StringComparison.Ordinal) &&
+            transitionBeforePendingFrame >= 0 &&
+            pendingFrameAfterTransition > transitionBeforePendingFrame &&
+            visualClock.Contains(
+                "!ambientPeekCloakTransitionActive",
+                StringComparison.Ordinal) &&
+            complete.Contains(
+                "TrySetCloaked(this, cloaked: true)",
+                StringComparison.Ordinal) &&
+            complete.Contains(
+                "QueueAmbientPeekUncloak(startAnimationAfterUncloak: false)",
+                StringComparison.Ordinal),
+            "随机冒头开始与恢复必须在DWM cloak内换帧和移动；首个cloaked Rendering再次校正，第二个Rendering才uncloak并启动绝对时间轴");
+        Assert(
+            startReaction.Contains(
+                "_ambientPeekUncloakPending",
+                StringComparison.Ordinal) &&
+            startReaction.Contains(
+                "_isAmbientPeekWindowCloaked",
+                StringComparison.Ordinal) &&
+            startRoaming.Contains(
+                "_ambientPeekUncloakPending",
+                StringComparison.Ordinal) &&
+            automaticTick.Contains(
+                "_ambientPeekUncloakPending",
+                StringComparison.Ordinal) &&
+            armTimer.Contains(
+                "_isAmbientPeekWindowCloaked",
+                StringComparison.Ordinal) &&
+            canCollect.Contains(
+                "!_ambientPeekUncloakPending",
+                StringComparison.Ordinal) &&
+            refreshSnore.Contains(
+                "!_isAmbientPeekWindowCloaked",
+                StringComparison.Ordinal),
+            "cloak两阶段及恢复期间必须阻止点击动作、巡游、automatic timer、GC和呼噜泡泡抢占，uncloak后再恢复唤醒");
+        Assert(
+            monitorSource.Contains(
+                "GetAllPhysicalWorkAreas",
+                StringComparison.Ordinal) &&
+            monitorSource.Contains(
+                "PhysicalWorkArea",
+                StringComparison.Ordinal) &&
+            monitorSource.Contains(
+                "EnumDisplayMonitors(",
+                StringComparison.Ordinal),
+            "多屏随机冒头必须枚举全部物理工作区，不能只读取桌宠当前显示器");
+        Assert(
+            !manifestSource.Contains(
+                "ambient",
+                StringComparison.OrdinalIgnoreCase) &&
+            !typeof(MainWindow).Assembly.GetManifestResourceNames()
+                .Any(name => name.Contains(
+                    "ambient",
+                    StringComparison.OrdinalIgnoreCase)),
+            "随机冒头只能复用现有edge分页，不得复制ambient专用图集页");
+    }
+
+    private static void AssertAmbientPeekTargetPlannerContract()
+    {
+        var monitorType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
+        var workAreaType = monitorType.GetNestedType(
+                "PhysicalWorkArea",
+                BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "找不到 MonitorWorkArea.PhysicalWorkArea");
+        var workAreaListType = typeof(List<>).MakeGenericType(workAreaType);
+        var workAreas = (IList)(Activator.CreateInstance(workAreaListType)
+            ?? throw new InvalidOperationException("无法建立多屏测试工作区列表"));
+
+        object CreateWorkArea(int left, int top, int right, int bottom) =>
+            Activator.CreateInstance(
+                workAreaType,
+                InstanceFlags,
+                binder: null,
+                args: [left, top, right, bottom],
+                culture: null)
+            ?? throw new InvalidOperationException("无法建立物理工作区");
+
+        object CreateWorkAreaWithMonitor(
+            int left,
+            int top,
+            int right,
+            int bottom,
+            int monitorLeft,
+            int monitorTop,
+            int monitorRight,
+            int monitorBottom) =>
+            Activator.CreateInstance(
+                workAreaType,
+                InstanceFlags,
+                binder: null,
+                args:
+                [
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    monitorLeft,
+                    monitorTop,
+                    monitorRight,
+                    monitorBottom
+                ],
+                culture: null)
+            ?? throw new InvalidOperationException(
+                "无法建立带完整显示器边界的物理工作区");
+
+        var primary = CreateWorkArea(0, 0, 1920, 1080);
+        var negativeLeft = CreateWorkArea(-1600, 120, 0, 1020);
+        var below = CreateWorkArea(320, 1080, 1600, 1980);
+        workAreas.Add(primary);
+        workAreas.Add(negativeLeft);
+        workAreas.Add(below);
+        workAreas.Add(CreateWorkArea(40, 40, 40, 400));
+
+        var segments = ((IEnumerable)(InvokeStatic(
+                typeof(MainWindow),
+                "BuildAmbientPeekEdgeSegments",
+                workAreas)
+            ?? throw new InvalidOperationException("多屏边缘规划未返回结果")))
+            .Cast<object>()
+            .ToArray();
+        Assert(segments.Length > 0,
+            "多屏随机冒头必须得到至少一个外露边缘区间");
+
+        static (int Left, int Top, int Right, int Bottom) ReadArea(
+            object segment)
+        {
+            var workArea = GetProperty<object>(segment, "WorkArea");
+            return (
+                GetProperty<int>(workArea, "Left"),
+                GetProperty<int>(workArea, "Top"),
+                GetProperty<int>(workArea, "Right"),
+                GetProperty<int>(workArea, "Bottom"));
+        }
+
+        Assert(segments.All(segment =>
+            {
+                var dock = GetProperty<object>(segment, "Dock").ToString();
+                var start = GetProperty<double>(segment, "Start");
+                var end = GetProperty<double>(segment, "End");
+                return dock is "Left" or "Right" or "Bottom" &&
+                       dock != "Top" &&
+                       double.IsFinite(start) &&
+                       double.IsFinite(end) &&
+                       end > start &&
+                       ReadArea(segment).Right > ReadArea(segment).Left &&
+                       ReadArea(segment).Bottom > ReadArea(segment).Top;
+            }),
+            "随机冒头边缘区间只能包含有效工作区的左、右、下外露段，绝不能包含顶部");
+        Assert(segments.Any(segment => ReadArea(segment).Left < 0),
+            "随机冒头候选必须覆盖负坐标副屏，不能只选择主屏");
+
+        var primaryLeftSegments = segments
+            .Where(segment =>
+                ReadArea(segment) == (0, 0, 1920, 1080) &&
+                GetProperty<object>(segment, "Dock").ToString() == "Left")
+            .ToArray();
+        Assert(primaryLeftSegments.Length == 2 &&
+               primaryLeftSegments.All(segment =>
+                   GetProperty<double>(segment, "End") <= 120 ||
+                   GetProperty<double>(segment, "Start") >= 1020),
+            "主屏左边与负坐标副屏共享的120..1020接缝必须被精确扣除");
+
+        var primaryBottomSegments = segments
+            .Where(segment =>
+                ReadArea(segment) == (0, 0, 1920, 1080) &&
+                GetProperty<object>(segment, "Dock").ToString() == "Bottom")
+            .ToArray();
+        Assert(primaryBottomSegments.Length == 2 &&
+               primaryBottomSegments.All(segment =>
+                   GetProperty<double>(segment, "End") <= 320 ||
+                   GetProperty<double>(segment, "Start") >= 1600),
+            "主屏底边与下方屏幕共享的320..1600接缝必须被精确扣除");
+        Assert(!segments.Any(segment =>
+                ReadArea(segment) == (-1600, 120, 0, 1020) &&
+                GetProperty<object>(segment, "Dock").ToString() == "Right"),
+            "负坐标副屏与主屏完全相邻的右边不得成为内部接缝冒头点");
+
+        var taskbarWorkAreas = (IList)(Activator.CreateInstance(
+                workAreaListType)
+            ?? throw new InvalidOperationException(
+                "无法建立任务栏多屏测试工作区列表"));
+        var taskbarPrimary = CreateWorkAreaWithMonitor(
+            80,
+            0,
+            1920,
+            1040,
+            0,
+            0,
+            1920,
+            1080);
+        var taskbarRight = CreateWorkAreaWithMonitor(
+            1920,
+            0,
+            3760,
+            1080,
+            1920,
+            0,
+            3840,
+            1080);
+        taskbarWorkAreas.Add(taskbarPrimary);
+        taskbarWorkAreas.Add(taskbarRight);
+        var taskbarSegments = ((IEnumerable)(InvokeStatic(
+                typeof(MainWindow),
+                "BuildAmbientPeekEdgeSegments",
+                taskbarWorkAreas)
+            ?? throw new InvalidOperationException(
+                "任务栏多屏边缘规划未返回结果")))
+            .Cast<object>()
+            .ToArray();
+        Assert(
+            !taskbarSegments.Any(segment =>
+                (ReadArea(segment) == (80, 0, 1920, 1040) &&
+                 GetProperty<object>(segment, "Dock").ToString() ==
+                 "Right") ||
+                (ReadArea(segment) == (1920, 0, 3760, 1080) &&
+                 GetProperty<object>(segment, "Dock").ToString() ==
+                 "Left")),
+            "相邻显示器的真实monitor seam即使两侧工作区被任务栏缩小，也绝不能成为随机冒头目标");
+        Assert(
+            taskbarSegments.Any(segment =>
+                ReadArea(segment) == (80, 0, 1920, 1040) &&
+                GetProperty<object>(segment, "Dock").ToString() == "Left" &&
+                GetProperty<double>(segment, "Start") == 0 &&
+                GetProperty<double>(segment, "End") == 1040) &&
+            taskbarSegments.Any(segment =>
+                ReadArea(segment) == (80, 0, 1920, 1040) &&
+                GetProperty<object>(segment, "Dock").ToString() ==
+                    "Bottom" &&
+                GetProperty<double>(segment, "Start") == 80 &&
+                GetProperty<double>(segment, "End") == 1920) &&
+            taskbarSegments.Any(segment =>
+                ReadArea(segment) == (1920, 0, 3760, 1080) &&
+                GetProperty<object>(segment, "Dock").ToString() ==
+                    "Right" &&
+                GetProperty<double>(segment, "Start") == 0 &&
+                GetProperty<double>(segment, "End") == 1080),
+            "左右或底部任务栏形成的工作区内边必须保留为随机冒头目标");
+
+        var tryCreate = typeof(MainWindow).GetMethod(
+                "TryCreateAmbientPeekTarget",
+                StaticFlags)
+            ?? throw new InvalidOperationException(
+                "找不到 TryCreateAmbientPeekTarget");
+        object CreateTarget(double segmentSelection, double positionSelection)
+        {
+            object?[] arguments =
+            [
+                workAreas,
+                399d,
+                509d,
+                segmentSelection,
+                positionSelection,
+                null
+            ];
+            Assert((bool)(tryCreate.Invoke(null, arguments) ?? false) &&
+                   arguments[5] is not null,
+                $"随机目标应能建立：segment={segmentSelection}, position={positionSelection}");
+            return arguments[5]!;
+        }
+
+        var firstTarget = CreateTarget(0, 0);
+        var middleTarget = CreateTarget(0.5, 0.5);
+        var lastTarget = CreateTarget(1, 1);
+        foreach (var target in new[] { firstTarget, middleTarget, lastTarget })
+        {
+            var dock = GetProperty<object>(target, "Dock").ToString();
+            var targetArea = GetProperty<object>(target, "WorkArea");
+            var segmentStart = GetProperty<double>(target, "SegmentStart");
+            var segmentEnd = GetProperty<double>(target, "SegmentEnd");
+            var positionFraction =
+                GetProperty<double>(target, "PositionFraction");
+            var orthogonalExtent = dock == "Bottom" ? 399d : 509d;
+            var contact = (double)(InvokeStatic(
+                    typeof(MainWindow),
+                    "ResolveAmbientPeekContactCoordinate",
+                    target,
+                    orthogonalExtent)
+                ?? double.NaN);
+            var minimum = segmentStart + 24 + orthogonalExtent / 2;
+            var maximum = segmentEnd - 24 - orthogonalExtent / 2;
+            Assert(
+                dock is "Left" or "Right" or "Bottom" &&
+                GetProperty<int>(targetArea, "Right") >
+                    GetProperty<int>(targetArea, "Left") &&
+                positionFraction is >= 0 and <= 1 &&
+                double.IsFinite(contact) &&
+                contact >= minimum - 0.01 &&
+                contact <= maximum + 0.01,
+                "随机冒头接触点必须避开角落并让整只桌宠落入选中外露边缘区间");
+        }
+
+        Assert(GetProperty<int>(
+                   GetProperty<object>(firstTarget, "WorkArea"),
+                   "Left") < 0,
+            "加权随机选择起点必须可以落到负坐标副屏");
+        AssertClose(
+            GetProperty<double>(firstTarget, "PositionFraction"),
+            0,
+            "随机位置下界");
+        AssertClose(
+            GetProperty<double>(lastTarget, "PositionFraction"),
+            1,
+            "随机位置上界");
+
+        object?[] invalidArguments =
+        [
+            workAreas,
+            double.NaN,
+            509d,
+            0.5d,
+            0.5d,
+            null
+        ];
+        Assert(!(bool)(tryCreate.Invoke(null, invalidArguments) ?? true),
+            "非有限桌宠尺寸不得生成随机冒头目标");
+
+        var targetType = typeof(MainWindow).GetNestedType(
+                "AmbientPeekTarget",
+                BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "找不到 MainWindow.AmbientPeekTarget");
+        var nativePositionType = typeof(MainWindow).Assembly.GetType(
+                "LubanDesktopPet.OwnedWindowPositioner+NativeWindowPosition",
+                throwOnError: true)!;
+        var currentNativePosition = Activator.CreateInstance(
+                nativePositionType,
+                [10, 20])
+            ?? throw new InvalidOperationException("无法建立原生窗口坐标");
+        var edgeDockType = typeof(MainWindow).GetNestedType(
+                "EdgeDock",
+                BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到 MainWindow.EdgeDock");
+        var rightTarget = Activator.CreateInstance(
+                targetType,
+                [
+                    primary,
+                    Enum.Parse(edgeDockType, "Right"),
+                    0d,
+                    1080d,
+                    0.5d
+                ])
+            ?? throw new InvalidOperationException("无法建立右边缘目标");
+        var petBounds = new Rect(110, 220, 399, 509);
+        object?[] positionArguments =
+        [
+            rightTarget,
+            currentNativePosition,
+            petBounds,
+            null
+        ];
+        Assert((bool)(typeof(MainWindow).GetMethod(
+                   "TryResolveAmbientPeekWindowPosition",
+                   StaticFlags)!.Invoke(null, positionArguments) ?? false) &&
+               positionArguments[3] is not null,
+            "右边缘随机目标必须能换算成原生窗口位置");
+        var desiredPosition = positionArguments[3]!;
+        var petOffsetX =
+            petBounds.Left - GetProperty<int>(currentNativePosition, "Left");
+        var petOffsetY =
+            petBounds.Top - GetProperty<int>(currentNativePosition, "Top");
+        var relocatedPetRight =
+            GetProperty<int>(desiredPosition, "Left") +
+            petOffsetX +
+            petBounds.Width;
+        var relocatedPetCenterY =
+            GetProperty<int>(desiredPosition, "Top") +
+            petOffsetY +
+            petBounds.Height / 2;
+        Assert(
+            Math.Abs(relocatedPetRight - 1920) <= 1 &&
+            Math.Abs(relocatedPetCenterY - 540) <= 1,
+            "右边缘冒头必须让人物物理右边精确贴住工作区右边，并保持随机纵向接触点");
+        var dpiSensitiveTarget = Activator.CreateInstance(
+                targetType,
+                InstanceFlags,
+                binder: null,
+                args:
+                [
+                    primary,
+                    Enum.Parse(edgeDockType, "Left"),
+                    0d,
+                    600d,
+                    0.5d
+                ],
+                culture: null)
+            ?? throw new InvalidOperationException(
+                "无法建立混合DPI边段复验目标");
+        var resolvePositionMethod = typeof(MainWindow).GetMethod(
+                "TryResolveAmbientPeekWindowPosition",
+                StaticFlags)
+            ?? throw new InvalidOperationException(
+                "找不到 TryResolveAmbientPeekWindowPosition");
+        object?[] originalDpiArguments =
+        [
+            dpiSensitiveTarget,
+            currentNativePosition,
+            petBounds,
+            null
+        ];
+        object?[] enlargedDpiArguments =
+        [
+            dpiSensitiveTarget,
+            currentNativePosition,
+            new Rect(110, 220, 399, 700),
+            null
+        ];
+        Assert(
+            (bool)(resolvePositionMethod.Invoke(
+                null,
+                originalDpiArguments) ?? false) &&
+            !(bool)(resolvePositionMethod.Invoke(
+                null,
+                enlargedDpiArguments) ?? true),
+            "目标边段在原DPI可容纳、切换高DPI后不足以容纳人物加双侧margin时必须直接失败，不能退化为中心挤压定位");
+    }
+
+    private static void AssertAmbientPeekTimelineMathContract()
+    {
+        const int frameCount = ExpectedEdgePeekFrameCount;
+        var holds = Enumerable.Range(0, frameCount + 1)
+            .Select(stepIndex => (TimeSpan)(InvokeStatic(
+                    typeof(MainWindow),
+                    "GetAmbientPeekStepHoldDuration",
+                    stepIndex,
+                    frameCount)
+                ?? TimeSpan.Zero))
+            .ToArray();
+        var motionInterval =
+            TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
+        Assert(
+            holds.Length == 49 &&
+            holds[0] == TimeSpan.FromMilliseconds(120) &&
+            holds[24] == TimeSpan.FromMilliseconds(900) &&
+            holds[48] == TimeSpan.FromMilliseconds(120) &&
+            holds
+                .Where((_, index) => index is not (0 or 24 or 48))
+                .All(hold => hold == motionInterval),
+            "一次随机冒头必须为首收起120ms、frame1..48、完全探出step24停900ms、末收起step48停120ms");
+
+        var totalTicks = holds.Sum(hold => hold.Ticks);
+        var totalDuration = TimeSpan.FromTicks(totalTicks);
+        var expectedTotal = TimeSpan.FromTicks(
+            TimeSpan.FromMilliseconds(120).Ticks * 2 +
+            TimeSpan.FromMilliseconds(900).Ticks +
+            motionInterval.Ticks * 46);
+        Assert(totalDuration == expectedTotal,
+            $"随机冒头总时长必须由绝对hold动态求和，期望{expectedTotal}，实际{totalDuration}");
+
+        int Resolve(TimeSpan elapsed) =>
+            (int)(InvokeStatic(
+                    typeof(MainWindow),
+                    "ResolveAmbientPeekStepIndex",
+                    elapsed,
+                    frameCount)
+                ?? -1);
+        int ResolveFrame(int stepIndex) =>
+            (int)(InvokeStatic(
+                    typeof(MainWindow),
+                    "ResolveAmbientPeekFrameIndex",
+                    stepIndex,
+                    frameCount)
+                ?? -1);
+
+        Assert(
+            Resolve(TimeSpan.Zero) == 0 &&
+            Resolve(TimeSpan.FromMilliseconds(120) -
+                    TimeSpan.FromTicks(1)) == 0 &&
+            Resolve(TimeSpan.FromMilliseconds(120)) == 1 &&
+            ResolveFrame(0) == frameCount - 1 &&
+            ResolveFrame(1) == 0 &&
+            ResolveFrame(24) == 23 &&
+            ResolveFrame(48) == frameCount - 1,
+            "随机冒头必须先显示完全收起frame48，再连续播放frame1..48；首尾不能重复插入额外停顿帧");
+        Assert(
+            Resolve(totalDuration - TimeSpan.FromTicks(1)) == frameCount &&
+            Resolve(totalDuration) == frameCount + 1,
+            "随机冒头最后一个120ms收起hold结束后必须立即完成，不能再复制一次末帧造成卡点");
+
+        static int ResolveExpected(
+            TimeSpan elapsed,
+            IReadOnlyList<TimeSpan> expectedHolds)
+        {
+            var remainingTicks = elapsed.Ticks;
+            for (var step = 0; step < expectedHolds.Count; step++)
+            {
+                if (remainingTicks < expectedHolds[step].Ticks)
+                {
+                    return step;
+                }
+
+                remainingTicks -= expectedHolds[step].Ticks;
+            }
+
+            return expectedHolds.Count;
+        }
+
+        foreach (var refreshRate in new[] { 59d, 60d, 120d, 144d })
+        {
+            var callbackCount =
+                (int)Math.Ceiling(totalDuration.TotalSeconds * refreshRate);
+            for (var callback = 0; callback <= callbackCount; callback++)
+            {
+                var elapsed = TimeSpan.FromSeconds(callback / refreshRate);
+                Assert(
+                    Resolve(elapsed) == ResolveExpected(elapsed, holds),
+                    $"{refreshRate:F0}Hz随机冒头必须按同一绝对时间定位姿势，callback={callback}, elapsed={elapsed.TotalMilliseconds:F3}ms");
+            }
+        }
+
+        var beforeStall = TimeSpan.FromMilliseconds(400);
+        var afterStall = beforeStall + TimeSpan.FromMilliseconds(250);
+        Assert(
+            Resolve(afterStall) == ResolveExpected(afterStall, holds) &&
+            Resolve(afterStall + motionInterval) ==
+                ResolveExpected(afterStall + motionInterval, holds),
+            "250ms UI阻塞后必须直接定位正确随机冒头姿势，下一次刷新不得快速补播积压帧");
     }
 
     private static void AssertEdgeRoamingSourceContract()
@@ -5718,7 +6492,10 @@ internal static class Program
         Assert(stopBeforeDrag >= 0 &&
                dragBecomesActive > stopBeforeDrag &&
                pointerDown.Contains(
-                   "_suppressClickReactionAfterRoamInterruption = _isEdgeRoaming",
+                   "var interruptedAmbientPeek = PauseAmbientPeekForPointer()",
+                   StringComparison.Ordinal) &&
+               pointerDown.Contains(
+                   "_isEdgeRoaming || interruptedAmbientPeek",
                    StringComparison.Ordinal) &&
                pointerDown.Contains(
                    "immediate: _suppressClickReactionAfterRoamInterruption",
@@ -6080,12 +6857,6 @@ internal static class Program
             clips.Single(clip =>
                 GetProperty<string>(clip, "ActionName") == "wave"),
             "reaction-wave");
-        AssertProductionDiscreteVsyncTimeline(
-            window,
-            clips.Single(clip =>
-                GetProperty<string>(clip, "ActionName") == "hide"),
-            "reaction-hide");
-
         AssertTodoTransitionTimelineContract(window, source);
     }
 
@@ -9416,10 +10187,1092 @@ internal static class Program
         }
     }
 
+    private static void AssertAmbientPeekRuntimeContract(MainWindow window)
+    {
+        if (!window.IsVisible)
+        {
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+        }
+
+        var timer = GetField<DispatcherTimer>(window, "_automaticTimer");
+        var timerWasEnabled = timer.IsEnabled;
+        var originalTimerInterval = timer.Interval;
+        var originalClosing = GetField<bool>(window, "_isClosing");
+        var originalSessionInactive =
+            GetField<bool>(window, "_sessionInactive");
+        var originalAutomaticEnabled =
+            GetField<bool>(window, "_automaticAnimationEnabled");
+        var originalReminderActive =
+            GetField<bool>(window, "_isReminderActive");
+        var originalDragActive =
+            GetField<bool>(window, "_dragInteractionActive");
+        var originalPointerDown = GetField<bool>(window, "_pointerDown");
+        var originalPillowBreathing =
+            GetField<bool>(window, "_isPillowBreathing");
+        var originalPillowOpacity =
+            GetField<Image>(window, "PillowImage").Opacity;
+        var originalPetSizeTransitioning =
+            GetField<bool>(window, "_isPetSizeTransitioning");
+        var originalPetSizePreview =
+            GetField<bool>(window, "_isPetSizePreviewSessionActive");
+        var originalPetSizeAdjustment =
+            GetField<bool>(window, "_isPetSizeAdjustmentActive");
+        var originalActiveClip = GetRawField(window, "_activeClip");
+        var originalBubbleMode = GetRawField(window, "_bubbleMode")!;
+        var originalEdgeDock = GetRawField(window, "_edgeDock")!;
+        var originalRoaming = GetField<bool>(window, "_isEdgeRoaming");
+        var originalEdgeRoamPreload =
+            GetField<bool>(window, "_edgeRoamPreloadRequested");
+        var originalAmbientPeeking =
+            GetField<bool>(window, "_isAmbientPeeking");
+        var originalAmbientPointerInterrupted =
+            GetField<bool>(window, "_ambientPeekPointerInterrupted");
+        var originalAmbientPreload =
+            GetField<bool>(window, "_ambientPeekPreloadRequested");
+        var originalAmbientDock = GetRawField(window, "_ambientPeekDock")!;
+        var originalAmbientStep =
+            GetField<int>(window, "_ambientPeekStepIndex");
+        var originalAmbientStartedTimestamp =
+            GetField<long>(window, "_ambientPeekStartedTimestamp");
+        var originalAmbientWindowCloaked =
+            GetField<bool>(window, "_isAmbientPeekWindowCloaked");
+        var originalAmbientUncloakPending =
+            GetField<bool>(window, "_ambientPeekUncloakPending");
+        var originalAmbientStartAfterUncloak =
+            GetField<bool>(window, "_ambientPeekStartAfterUncloak");
+        var originalAmbientCloakedRenderCount =
+            GetField<int>(window, "_ambientPeekCloakedRenderCount");
+        var originalAmbientTarget =
+            GetRawField(window, "_pendingAmbientPeekTarget");
+        var originalAmbientOrigin =
+            GetRawField(window, "_ambientPeekOrigin");
+        var originalAmbientRestoreOrigin =
+            GetRawField(window, "_ambientPeekRestoreOriginPending");
+        var originalActivityDue =
+            GetField<long>(window, "_nextAutomaticActivityDueTimestamp");
+        var originalRoamDue =
+            GetField<long>(window, "_nextEdgeRoamDueTimestamp");
+        var originalAmbientDue =
+            GetField<long>(window, "_nextAmbientPeekDueTimestamp");
+        var originalPillowDue =
+            GetField<long>(window, "_pillowBreathingDueTimestamp");
+        var originalCurrentFrame =
+            GetRawField(window, "_currentSpriteFrame");
+        var originalPendingFrame =
+            GetRawField(window, "_pendingSpriteFrame");
+        var originalFacingX =
+            GetField<ScaleTransform>(window, "PetFacingScale").ScaleX;
+        var originalFacingY =
+            GetField<ScaleTransform>(window, "PetFacingScale").ScaleY;
+        var originalRotation =
+            GetField<RotateTransform>(window, "PetRoamRotate").Angle;
+        var originalEdgeCadenceSynchronization =
+            GetField<bool>(
+                window,
+                "_synchronizeEdgePeekToRenderingCadence");
+        var originalPetSizeLogicalAnchor =
+            GetRawField(window, "_petSizeLogicalAnchor");
+        var originalApplyingAmbientPeekPosition =
+            GetField<bool>(window, "_isApplyingAmbientPeekPosition");
+
+        var positionerType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.OwnedWindowPositioner",
+            throwOnError: true)!;
+        var getNativePosition = positionerType.GetMethod(
+                "TryGetNativePosition",
+                StaticFlags)
+            ?? throw new InvalidOperationException(
+                "找不到 OwnedWindowPositioner.TryGetNativePosition");
+        object CaptureNativePosition()
+        {
+            object?[] arguments = [window, null];
+            Assert(
+                (bool)(getNativePosition.Invoke(null, arguments) ?? false) &&
+                arguments[1] is not null,
+                "随机冒头中断测试必须能读取桌宠原生物理坐标");
+            return arguments[1]!;
+        }
+        var originalNativePosition = CaptureNativePosition();
+
+        try
+        {
+            timer.Stop();
+            SetField(window, "_isClosing", false);
+            SetField(window, "_sessionInactive", false);
+            SetField(window, "_automaticAnimationEnabled", true);
+            SetField(window, "_isReminderActive", false);
+            SetField(window, "_dragInteractionActive", false);
+            SetField(window, "_pointerDown", false);
+            SetField(window, "_isPillowBreathing", false);
+            SetField(window, "_isPetSizeTransitioning", false);
+            SetField(window, "_isPetSizePreviewSessionActive", false);
+            SetField(window, "_isPetSizeAdjustmentActive", false);
+            SetField(window, "_activeClip", null);
+            SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+            SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+            SetField(window, "_isEdgeRoaming", false);
+            SetField(window, "_edgeRoamPreloadRequested", false);
+            SetField(window, "_isAmbientPeeking", false);
+            SetField(window, "_ambientPeekPointerInterrupted", false);
+            SetField(window, "_ambientPeekPreloadRequested", false);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "None"));
+            SetField(window, "_ambientPeekStepIndex", 0);
+            SetField(window, "_ambientPeekStartedTimestamp", 0L);
+            SetField(window, "_isAmbientPeekWindowCloaked", false);
+            SetField(window, "_ambientPeekUncloakPending", false);
+            SetField(window, "_ambientPeekStartAfterUncloak", false);
+            SetField(window, "_ambientPeekCloakedRenderCount", 0);
+            SetField(window, "_pendingAmbientPeekTarget", null);
+            SetField(window, "_ambientPeekOrigin", null);
+            SetField(window, "_ambientPeekRestoreOriginPending", null);
+            SetField(window, "_pillowBreathingDueTimestamp", 0L);
+
+            var timestamp = Stopwatch.GetTimestamp();
+            var activitySentinel = checked(
+                timestamp +
+                ToProductionStopwatchTicks(TimeSpan.FromSeconds(33)));
+            var roamSentinel = checked(
+                timestamp +
+                ToProductionStopwatchTicks(TimeSpan.FromSeconds(77)));
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                activitySentinel);
+            SetField(window, "_nextEdgeRoamDueTimestamp", roamSentinel);
+
+            for (var sample = 0; sample < 32; sample++)
+            {
+                InvokeOverload(window, "ScheduleNextAmbientPeek", timestamp);
+                var delayTicks =
+                    GetField<long>(window, "_nextAmbientPeekDueTimestamp") -
+                    timestamp;
+                Assert(
+                    delayTicks >= ToProductionStopwatchTicks(
+                        TimeSpan.FromSeconds(45)) &&
+                    delayTicks <= ToProductionStopwatchTicks(
+                        TimeSpan.FromSeconds(90)) &&
+                    GetField<long>(
+                        window,
+                        "_nextAutomaticActivityDueTimestamp") ==
+                        activitySentinel &&
+                    GetField<long>(
+                        window,
+                        "_nextEdgeRoamDueTimestamp") == roamSentinel,
+                    "每次随机冒头必须独立安排在45~90秒内，且不得改写普通动作或十分钟熊猫巡游截止时间");
+            }
+
+            InvokeOverload(
+                window,
+                "ScheduleNextAmbientPeek",
+                timestamp,
+                TimeSpan.FromSeconds(20));
+            Assert(
+                GetField<long>(window, "_nextAmbientPeekDueTimestamp") ==
+                    checked(
+                        timestamp +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromSeconds(20))),
+                "随机冒头到点忙碌时必须精确20秒后重试");
+
+            var ambientSentinel = checked(
+                timestamp +
+                ToProductionStopwatchTicks(TimeSpan.FromSeconds(10)));
+            SetField(
+                window,
+                "_nextAmbientPeekDueTimestamp",
+                ambientSentinel);
+            SetField(window, "_ambientPeekPreloadRequested", false);
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                checked(
+                    timestamp +
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(30))));
+            SetField(
+                window,
+                "_nextEdgeRoamDueTimestamp",
+                checked(
+                    timestamp +
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(50))));
+            Invoke(window, "ArmAutomaticWakeTimer", timestamp);
+            Assert(
+                timer.IsEnabled &&
+                Math.Abs(timer.Interval.TotalSeconds - 8) < 0.02,
+                "共享automaticTimer必须先在随机冒头截止前2秒唤醒预加载");
+
+            SetField(window, "_ambientPeekPreloadRequested", true);
+            Invoke(window, "ArmAutomaticWakeTimer", timestamp);
+            Assert(
+                timer.IsEnabled &&
+                Math.Abs(timer.Interval.TotalSeconds - 10) < 0.02,
+                "随机冒头预加载已经请求后，共享timer必须直接等待其绝对截止时间");
+
+            SetField(window, "_ambientPeekPreloadRequested", false);
+            SetField(
+                window,
+                "_nextAmbientPeekDueTimestamp",
+                checked(
+                    timestamp +
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(40))));
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                checked(
+                    timestamp +
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(7))));
+            Invoke(window, "ArmAutomaticWakeTimer", timestamp);
+            Assert(
+                timer.IsEnabled &&
+                Math.Abs(timer.Interval.TotalSeconds - 7) < 0.02,
+                "普通自动动作更早时仍必须优先唤醒，随机冒头不能劫持原一分钟活动时钟");
+
+            SetField(
+                window,
+                "_nextAmbientPeekDueTimestamp",
+                ambientSentinel);
+            Invoke(
+                window,
+                "ScheduleNextEdgeRoam",
+                timestamp,
+                TimeSpan.FromMinutes(10));
+            Assert(
+                GetField<long>(window, "_nextAmbientPeekDueTimestamp") ==
+                    ambientSentinel,
+                "重新安排熊猫巡游不得推迟或清空随机冒头截止时间");
+
+            void AssertExpiredAmbientDeadlineIsConsumed(
+                bool pillowBreathing,
+                bool edgeRoamPreloaded,
+                string stage)
+            {
+                timer.Stop();
+                var tickStarted = Stopwatch.GetTimestamp();
+                var expiredDue = checked(
+                    tickStarted -
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(1)));
+                SetField(window, "_isPillowBreathing", pillowBreathing);
+                SetField(
+                    window,
+                    "_pillowBreathingDueTimestamp",
+                    pillowBreathing
+                        ? checked(
+                            tickStarted +
+                            ToProductionStopwatchTicks(
+                                TimeSpan.FromSeconds(60)))
+                        : 0L);
+                SetField(
+                    window,
+                    "_edgeRoamPreloadRequested",
+                    edgeRoamPreloaded);
+                SetField(
+                    window,
+                    "_nextEdgeRoamDueTimestamp",
+                    checked(
+                        tickStarted +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromSeconds(60))));
+                SetField(
+                    window,
+                    "_nextAutomaticActivityDueTimestamp",
+                    checked(
+                        tickStarted +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromSeconds(40))));
+                SetField(window, "_isPetSizeAdjustmentActive", true);
+                SetField(window, "_isAmbientPeeking", false);
+                SetField(window, "_ambientPeekPointerInterrupted", false);
+                SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "None"));
+                SetField(window, "_ambientPeekStartedTimestamp", 0L);
+                SetField(window, "_ambientPeekPreloadRequested", true);
+                SetField(window, "_pendingAmbientPeekTarget", null);
+                SetField(
+                    window,
+                    "_nextAmbientPeekDueTimestamp",
+                    expiredDue);
+
+                Invoke(
+                    window,
+                    "AutomaticTimer_Tick",
+                    null,
+                    EventArgs.Empty);
+                var tickFinished = Stopwatch.GetTimestamp();
+                var retryDue =
+                    GetField<long>(
+                        window,
+                        "_nextAmbientPeekDueTimestamp");
+                Assert(
+                    retryDue >= checked(
+                        tickStarted +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromSeconds(20))) &&
+                    retryDue <= checked(
+                        tickFinished +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromSeconds(20))) &&
+                    retryDue > expiredDue &&
+                    !GetField<bool>(window, "_isPillowBreathing") &&
+                    !GetField<bool>(window, "_isAmbientPeeking") &&
+                    timer.IsEnabled &&
+                    timer.Interval > TimeSpan.FromSeconds(17) &&
+                    timer.Interval < TimeSpan.FromSeconds(19),
+                    $"{stage}时，一次AutomaticTimer Tick必须先消费过期随机冒头截止时间并推进20秒忙碌重试，不能反复Arm 1ms自旋");
+
+                timer.Stop();
+                SetField(window, "_isPetSizeAdjustmentActive", false);
+                SetField(window, "_isPillowBreathing", false);
+                SetField(window, "_pillowBreathingDueTimestamp", 0L);
+                SetField(window, "_edgeRoamPreloadRequested", false);
+                SetField(window, "_ambientPeekPreloadRequested", false);
+                SetField(window, "_pendingAmbientPeekTarget", null);
+            }
+
+            AssertExpiredAmbientDeadlineIsConsumed(
+                pillowBreathing: true,
+                edgeRoamPreloaded: false,
+                stage: "枕头呼吸");
+            AssertExpiredAmbientDeadlineIsConsumed(
+                pillowBreathing: false,
+                edgeRoamPreloaded: true,
+                stage: "仅熊猫巡游预加载");
+
+            var nativeOrigin = originalNativePosition;
+            var readPetBoundsMethod = typeof(MainWindow).GetMethod(
+                    "TryGetPetPhysicalBounds",
+                    InstanceFlags)
+                ?? throw new InvalidOperationException(
+                    "找不到 MainWindow.TryGetPetPhysicalBounds");
+            Rect ReadPetPhysicalBounds()
+            {
+                object?[] arguments = [null];
+                Assert(
+                    (bool)(readPetBoundsMethod.Invoke(
+                        window,
+                        arguments) ?? false) &&
+                    arguments[0] is Rect,
+                    "两阶段cloak测试必须能读取桌宠物理边界");
+                return (Rect)arguments[0]!;
+            }
+
+            var transitionInitialBounds = ReadPetPhysicalBounds();
+            var transitionTargetLeft = checked(
+                (int)Math.Round(
+                    transitionInitialBounds.Left,
+                    MidpointRounding.AwayFromZero));
+            var transitionTargetTop = checked(
+                (int)Math.Floor(transitionInitialBounds.Top - 100));
+            var transitionTargetBottom = checked(
+                (int)Math.Ceiling(transitionInitialBounds.Bottom + 100));
+            var transitionTargetRight = checked(
+                transitionTargetLeft +
+                Math.Max(
+                    400,
+                    (int)Math.Ceiling(transitionInitialBounds.Width) + 200));
+            var workAreaType = typeof(MainWindow).Assembly.GetType(
+                    "LubanDesktopPet.MonitorWorkArea+PhysicalWorkArea",
+                    throwOnError: true)!;
+            var transitionWorkArea = Activator.CreateInstance(
+                    workAreaType,
+                    InstanceFlags,
+                    binder: null,
+                    args:
+                    [
+                        transitionTargetLeft,
+                        transitionTargetTop,
+                        transitionTargetRight,
+                        transitionTargetBottom
+                    ],
+                    culture: null)
+                ?? throw new InvalidOperationException(
+                    "无法建立cloak位置校正测试工作区");
+            var ambientTargetType = typeof(MainWindow).GetNestedType(
+                    "AmbientPeekTarget",
+                    BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(
+                    "找不到 MainWindow.AmbientPeekTarget");
+            var edgeDockType = typeof(MainWindow).GetNestedType(
+                    "EdgeDock",
+                    BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(
+                    "找不到 MainWindow.EdgeDock");
+            var transitionTarget = Activator.CreateInstance(
+                    ambientTargetType,
+                    InstanceFlags,
+                    binder: null,
+                    args:
+                    [
+                        transitionWorkArea,
+                        Enum.Parse(edgeDockType, "Left"),
+                        (double)transitionTargetTop,
+                        (double)transitionTargetBottom,
+                        0.5d
+                    ],
+                    culture: null)
+                ?? throw new InvalidOperationException(
+                    "无法建立cloak位置校正测试目标");
+            var resolveAmbientPosition = typeof(MainWindow).GetMethod(
+                    "TryResolveAmbientPeekWindowPosition",
+                    StaticFlags)
+                ?? throw new InvalidOperationException(
+                    "Cannot find MainWindow.TryResolveAmbientPeekWindowPosition.");
+            object?[] resolutionArguments =
+            [
+                transitionTarget,
+                nativeOrigin,
+                transitionInitialBounds,
+                null
+            ];
+            Assert(
+                (bool)(resolveAmbientPosition.Invoke(
+                    null,
+                    resolutionArguments) ?? false) &&
+                resolutionArguments[3] is { } resolvedPosition &&
+                GetProperty<int>(resolvedPosition, "Left") ==
+                    checked(
+                        GetProperty<int>(nativeOrigin, "Left") +
+                        (int)Math.Round(
+                            transitionTargetLeft -
+                            transitionInitialBounds.Left,
+                            MidpointRounding.AwayFromZero)) &&
+                GetProperty<int>(resolvedPosition, "Top") ==
+                    checked(
+                        GetProperty<int>(nativeOrigin, "Top") +
+                        (int)Math.Round(
+                            (transitionTargetTop + transitionTargetBottom) / 2d -
+                            transitionInitialBounds.Height / 2d -
+                            transitionInitialBounds.Top,
+                            MidpointRounding.AwayFromZero)),
+                "Ambient peek position resolution must align the pet bounds with the target edge segment.");
+            var firstCloakedRenderTimestamp = Stopwatch.GetTimestamp();
+            SetField(window, "_isAmbientPeeking", true);
+            SetField(window, "_ambientPeekPointerInterrupted", false);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "Left"));
+            SetField(window, "_ambientPeekStepIndex", 0);
+            SetField(window, "_ambientPeekStartedTimestamp", 0L);
+            SetField(window, "_pendingAmbientPeekTarget", transitionTarget);
+            SetField(window, "_isAmbientPeekWindowCloaked", false);
+            SetField(window, "_ambientPeekUncloakPending", true);
+            SetField(window, "_ambientPeekStartAfterUncloak", true);
+            SetField(window, "_ambientPeekCloakedRenderCount", 0);
+            Assert(
+                (bool)(Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    firstCloakedRenderTimestamp) ?? false),
+                "首个cloaked Rendering必须进入随机冒头位置校正阶段");
+            var firstCorrectedBounds = ReadPetPhysicalBounds();
+            Assert(
+                GetField<int>(
+                    window,
+                    "_ambientPeekCloakedRenderCount") == 1 &&
+                GetField<bool>(window, "_ambientPeekUncloakPending") &&
+                GetField<bool>(
+                    window,
+                    "_ambientPeekStartAfterUncloak") &&
+                GetField<long>(
+                    window,
+                    "_ambientPeekStartedTimestamp") == 0 &&
+                Math.Abs(
+                    firstCorrectedBounds.Left -
+                    transitionTargetLeft) <= 1 &&
+                Math.Abs(
+                    firstCorrectedBounds.Top +
+                    firstCorrectedBounds.Height / 2 -
+                    (transitionTargetTop + transitionTargetBottom) / 2d) <= 1,
+                "首个 cloaked Rendering 必须再次校正物理目标位置，但绝不能提前启动冒头时间轴或 uncloak");
+            var secondCloakedRenderTimestamp = checked(
+                firstCloakedRenderTimestamp +
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromMilliseconds(16)));
+            Assert(
+                (bool)(Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    secondCloakedRenderTimestamp) ?? false) &&
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending") &&
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekStartAfterUncloak") &&
+                GetField<int>(
+                    window,
+                    "_ambientPeekCloakedRenderCount") == 0 &&
+                GetField<long>(
+                    window,
+                    "_ambientPeekStartedTimestamp") ==
+                    secondCloakedRenderTimestamp,
+                "第二个cloaked Rendering才允许完成uncloak，并从该帧时间戳启动绝对动画时间轴");
+            Assert(
+                (bool)(Invoke(
+                    window,
+                    "TryRestoreAmbientPeekOrigin",
+                    nativeOrigin) ?? false),
+                "两阶段 cloak 位置测试结束后必须恢复桌宠原生位置");
+
+            var staleDpiSegmentStart = transitionInitialBounds.Top;
+            var staleDpiSegmentEnd =
+                staleDpiSegmentStart +
+                transitionInitialBounds.Height +
+                40;
+            var staleDpiTarget = Activator.CreateInstance(
+                    ambientTargetType,
+                    InstanceFlags,
+                    binder: null,
+                    args:
+                    [
+                        transitionWorkArea,
+                        Enum.Parse(edgeDockType, "Left"),
+                        staleDpiSegmentStart,
+                        staleDpiSegmentEnd,
+                        0.5d
+                    ],
+                    culture: null)
+                ?? throw new InvalidOperationException(
+                    "无法建立DPI放大后失效的缓存目标");
+            var dpiFailureTimestamp = checked(
+                secondCloakedRenderTimestamp +
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromMilliseconds(16)));
+            SetField(window, "_ambientPeekOrigin", nativeOrigin);
+            SetField(window, "_ambientPeekRestoreOriginPending", null);
+            SetField(window, "_isAmbientPeeking", true);
+            SetField(window, "_ambientPeekPointerInterrupted", false);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "Left"));
+            SetField(window, "_ambientPeekStartedTimestamp", 0L);
+            SetField(window, "_pendingAmbientPeekTarget", staleDpiTarget);
+            SetField(window, "_isAmbientPeekWindowCloaked", true);
+            SetField(window, "_ambientPeekUncloakPending", true);
+            SetField(window, "_ambientPeekStartAfterUncloak", true);
+            SetField(window, "_ambientPeekCloakedRenderCount", 0);
+            SetField(window, "_nextAmbientPeekDueTimestamp", 0L);
+            Assert(
+                (bool)(Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    dpiFailureTimestamp) ?? false) &&
+                !GetField<bool>(window, "_isAmbientPeeking") &&
+                GetField<long>(
+                    window,
+                    "_ambientPeekStartedTimestamp") == 0 &&
+                GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending") &&
+                GetRawField(
+                    window,
+                    "_ambientPeekRestoreOriginPending") is not null &&
+                GetField<long>(
+                    window,
+                    "_nextAmbientPeekDueTimestamp") ==
+                    checked(
+                        dpiFailureTimestamp +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromSeconds(20))),
+                "混合DPI后缓存边段放不下人物时，首个cloaked校正必须放弃启动、保持隐藏恢复原位并精确推进20秒重试");
+            SetField(window, "_isAmbientPeekWindowCloaked", false);
+            var dpiRestoreFirstTimestamp = checked(
+                dpiFailureTimestamp +
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromMilliseconds(16)));
+            var dpiRestoreSecondTimestamp = checked(
+                dpiRestoreFirstTimestamp +
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromMilliseconds(16)));
+            Invoke(
+                window,
+                "AdvanceAmbientPeekCloakTransition",
+                dpiRestoreFirstTimestamp);
+            Invoke(
+                window,
+                "AdvanceAmbientPeekCloakTransition",
+                dpiRestoreSecondTimestamp);
+            var dpiRestoredPosition = CaptureNativePosition();
+            Assert(
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending") &&
+                GetRawField(
+                    window,
+                    "_ambientPeekRestoreOriginPending") is null &&
+                GetProperty<int>(dpiRestoredPosition, "Left") ==
+                    GetProperty<int>(nativeOrigin, "Left") &&
+                GetProperty<int>(dpiRestoredPosition, "Top") ==
+                    GetProperty<int>(nativeOrigin, "Top"),
+                "DPI目标复验失败后的两阶段恢复必须清空临时目标并回到原生物理坐标");
+            timer.Stop();
+
+            var recoveryFirstRenderTimestamp = checked(
+                dpiRestoreSecondTimestamp +
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromMilliseconds(16)));
+            var blockedActivityDue = checked(
+                recoveryFirstRenderTimestamp -
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromSeconds(1)));
+            SetField(window, "_isAmbientPeeking", false);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "None"));
+            SetField(window, "_ambientPeekStartedTimestamp", 0L);
+            SetField(window, "_pendingAmbientPeekTarget", null);
+            SetField(window, "_isAmbientPeekWindowCloaked", false);
+            SetField(window, "_ambientPeekUncloakPending", true);
+            SetField(window, "_ambientPeekStartAfterUncloak", false);
+            SetField(window, "_ambientPeekCloakedRenderCount", 0);
+            SetField(window, "_nextAmbientPeekDueTimestamp", 0L);
+            SetField(
+                window,
+                "_nextEdgeRoamDueTimestamp",
+                checked(
+                    recoveryFirstRenderTimestamp +
+                    ToProductionStopwatchTicks(
+                        TimeSpan.FromMinutes(10))));
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                blockedActivityDue);
+            Assert(
+                (bool)(Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    recoveryFirstRenderTimestamp) ?? false) &&
+                GetField<int>(
+                    window,
+                    "_ambientPeekCloakedRenderCount") == 1 &&
+                GetField<bool>(window, "_ambientPeekUncloakPending"),
+                "恢复原位的首个cloaked Rendering必须保持互斥状态");
+            var reactionClip = GetField<Array>(
+                    window,
+                    "_reactionClips").GetValue(0)
+                ?? throw new InvalidOperationException(
+                    "找不到点击动作片段");
+            Assert(
+                !(bool)(Invoke(
+                    window,
+                    "TryStartReaction",
+                    reactionClip,
+                    false) ?? true),
+                "恢复原位两阶段期间点击动作不得抢占");
+            Invoke(
+                window,
+                "AutomaticTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Assert(
+                GetRawField(window, "_activeClip") is null &&
+                GetField<long>(
+                    window,
+                    "_nextAutomaticActivityDueTimestamp") ==
+                    blockedActivityDue &&
+                GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending") &&
+                GetField<int>(
+                    window,
+                    "_ambientPeekCloakedRenderCount") == 1 &&
+                !timer.IsEnabled,
+                "恢复原位两阶段期间automatic timer不得消费过期普通动作或启动新动画");
+            var recoverySecondRenderTimestamp = checked(
+                recoveryFirstRenderTimestamp +
+                ToProductionStopwatchTicks(
+                    TimeSpan.FromMilliseconds(16)));
+            Assert(
+                (bool)(Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    recoverySecondRenderTimestamp) ?? false) &&
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending") &&
+                GetField<int>(
+                    window,
+                    "_ambientPeekCloakedRenderCount") == 0 &&
+                timer.IsEnabled &&
+                timer.Interval <= TimeSpan.FromMilliseconds(5),
+                "恢复原位第二个Rendering完成uncloak后必须重新Arm automatic timer");
+            timer.Stop();
+
+            var idleFrame = GetRawField(window, "_idleFrame")
+                ?? throw new InvalidOperationException("找不到idle帧");
+            var edgeFrames = GetField<Array>(window, "_edgeLeftFrames")
+                .Cast<object>()
+                .ToArray();
+            Assert(
+                edgeFrames.Length == ExpectedEdgePeekFrameCount,
+                "随机冒头运行时测试必须取得48帧左侧探头序列");
+            foreach (var pageName in edgeFrames
+                         .Select(frame => GetSpriteFrameInfo(frame).PageName)
+                         .Distinct(StringComparer.Ordinal))
+            {
+                if (!GetField<IDictionary>(
+                        window,
+                        "_residentSpritePages").Contains(pageName))
+                {
+                    LoadSpritePageForTest(window, pageName);
+                }
+            }
+
+            int ResolveExpectedStep(TimeSpan elapsed) =>
+                (int)(InvokeStatic(
+                        typeof(MainWindow),
+                        "ResolveAmbientPeekStepIndex",
+                        elapsed,
+                        edgeFrames.Length)
+                    ?? -1);
+
+            var absoluteStart = Stopwatch.GetTimestamp();
+            var shortStall = TimeSpan.FromMilliseconds(250);
+            var longStall = TimeSpan.FromMilliseconds(1600);
+            var expectedShortStep = ResolveExpectedStep(shortStall);
+            var expectedLongStep = ResolveExpectedStep(longStall);
+            var activityBeforeStalls =
+                GetField<long>(
+                    window,
+                    "_nextAutomaticActivityDueTimestamp");
+            var roamBeforeStalls =
+                GetField<long>(window, "_nextEdgeRoamDueTimestamp");
+            SetField(window, "_currentSpriteFrame", edgeFrames[^1]);
+            SetField(window, "_pendingSpriteFrame", null);
+            SetField(window, "_ambientPeekOrigin", nativeOrigin);
+            SetField(window, "_isAmbientPeeking", true);
+            SetField(window, "_ambientPeekPointerInterrupted", false);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "Left"));
+            SetField(window, "_ambientPeekStepIndex", 0);
+            SetField(window, "_ambientPeekStartedTimestamp", absoluteStart);
+            SetField(
+                window,
+                "_synchronizeEdgePeekToRenderingCadence",
+                true);
+            Invoke(
+                window,
+                "AdvanceAmbientPeek",
+                checked(
+                    absoluteStart +
+                    ToProductionStopwatchTicks(shortStall)));
+            Assert(
+                expectedShortStep > 1 &&
+                GetField<int>(window, "_ambientPeekStepIndex") ==
+                    expectedShortStep &&
+                GetField<long>(
+                    window,
+                    "_ambientPeekStartedTimestamp") == absoluteStart &&
+                Equals(
+                    GetRawField(window, "_currentSpriteFrame"),
+                    edgeFrames[expectedShortStep - 1]),
+                "250ms UI阻塞后必须按绝对起始时间直接跳转到正确冒头姿势，不得只补一帧");
+            var stepBeforeLongStall =
+                GetField<int>(window, "_ambientPeekStepIndex");
+            Invoke(
+                window,
+                "AdvanceAmbientPeek",
+                checked(
+                    absoluteStart +
+                    ToProductionStopwatchTicks(longStall)));
+            Assert(
+                expectedLongStep > stepBeforeLongStall + 1 &&
+                GetField<int>(window, "_ambientPeekStepIndex") ==
+                    expectedLongStep &&
+                GetField<long>(
+                    window,
+                    "_ambientPeekStartedTimestamp") == absoluteStart &&
+                Equals(
+                    GetRawField(window, "_currentSpriteFrame"),
+                    edgeFrames[expectedLongStep - 1]) &&
+                GetRawField(window, "_pendingSpriteFrame") is null &&
+                GetField<long>(
+                    window,
+                    "_nextAutomaticActivityDueTimestamp") ==
+                    activityBeforeStalls &&
+                GetField<long>(window, "_nextEdgeRoamDueTimestamp") ==
+                    roamBeforeStalls,
+                "较长UI阻塞后必须一次定位到绝对正确step，不得逐帧补播、生成待播帧或改写其他自动截止时间");
+
+            var edgeFrame = GetField<Array>(window, "_edgeLeftFrames")
+                .GetValue(0)
+                ?? throw new InvalidOperationException("找不到左侧探头帧");
+            Invoke(window, "ShowStableFrame", idleFrame);
+            SetField(window, "_pendingSpriteFrame", edgeFrame);
+            SetField(window, "_ambientPeekOrigin", nativeOrigin);
+            SetField(window, "_isAmbientPeeking", true);
+            SetField(window, "_ambientPeekPointerInterrupted", false);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "Right"));
+            SetField(window, "_ambientPeekStepIndex", 17);
+            SetField(
+                window,
+                "_ambientPeekStartedTimestamp",
+                timestamp);
+            GetField<ScaleTransform>(window, "PetFacingScale").ScaleX = -1;
+            Assert(
+                (bool)(Invoke(window, "PauseAmbientPeekForPointer") ?? false) &&
+                !GetField<bool>(window, "_isAmbientPeeking") &&
+                GetField<bool>(
+                    window,
+                    "_ambientPeekPointerInterrupted") &&
+                GetField<long>(
+                    window,
+                    "_ambientPeekStartedTimestamp") == 0,
+                "点击或拖动按下必须立即冻结随机冒头，但应等指针流程结束后再恢复原位置");
+
+            var interruptionActivitySentinel = checked(
+                Stopwatch.GetTimestamp() +
+                ToProductionStopwatchTicks(TimeSpan.FromSeconds(25)));
+            var interruptionRoamSentinel = checked(
+                Stopwatch.GetTimestamp() +
+                ToProductionStopwatchTicks(TimeSpan.FromSeconds(55)));
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                interruptionActivitySentinel);
+            SetField(
+                window,
+                "_nextEdgeRoamDueTimestamp",
+                interruptionRoamSentinel);
+            // Model an already-cloaked recovery so this regression exercises
+            // the pure two-render transition without depending on DWM support.
+            SetField(window, "_isAmbientPeekWindowCloaked", true);
+            var stopStarted = Stopwatch.GetTimestamp();
+            Invoke(window, "StopAmbientPeek", true, true, true);
+            var stopFinished = Stopwatch.GetTimestamp();
+            if (GetField<bool>(
+                    window,
+                    "_isAmbientPeekWindowCloaked"))
+            {
+                SetField(window, "_isAmbientPeekWindowCloaked", false);
+            }
+            if (GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending"))
+            {
+                var restoreTransitionTimestamp = Stopwatch.GetTimestamp();
+                Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    restoreTransitionTimestamp);
+                Invoke(
+                    window,
+                    "AdvanceAmbientPeekCloakTransition",
+                    checked(
+                        restoreTransitionTimestamp +
+                        ToProductionStopwatchTicks(
+                            TimeSpan.FromMilliseconds(16))));
+            }
+            var restoredPosition = CaptureNativePosition();
+            Assert(
+                !GetField<bool>(window, "_isAmbientPeeking") &&
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekPointerInterrupted") &&
+                GetRawField(window, "_ambientPeekOrigin") is null &&
+                GetRawField(window, "_pendingAmbientPeekTarget") is null &&
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekUncloakPending") &&
+                !GetField<bool>(
+                    window,
+                    "_isAmbientPeekWindowCloaked") &&
+                GetRawField(window, "_pendingSpriteFrame") is null &&
+                GetRawField(window, "_currentSpriteFrame") is { } current &&
+                Equals(current, idleFrame) &&
+                GetField<Image>(window, "PillowImage").Opacity > 0.5 &&
+                GetRawField(window, "_edgeDock")!.ToString() == "None" &&
+                !GetField<bool>(window, "_isEdgeRoaming") &&
+                Math.Abs(
+                    GetField<ScaleTransform>(
+                        window,
+                        "PetFacingScale").ScaleX - 1) < 0.000001 &&
+                GetProperty<int>(restoredPosition, "Left") ==
+                    GetProperty<int>(nativeOrigin, "Left") &&
+                GetProperty<int>(restoredPosition, "Top") ==
+                    GetProperty<int>(nativeOrigin, "Top") &&
+                GetField<long>(
+                    window,
+                    "_nextAutomaticActivityDueTimestamp") ==
+                    interruptionActivitySentinel &&
+                GetField<long>(
+                    window,
+                    "_nextEdgeRoamDueTimestamp") ==
+                    interruptionRoamSentinel,
+                "随机冒头被简单点击、右键或提醒中断后必须清理旧帧、镜像和临时状态，恢复原生坐标且不改变普通动作或熊猫巡游期限");
+            var rescheduledDue =
+                GetField<long>(window, "_nextAmbientPeekDueTimestamp");
+            Assert(
+                rescheduledDue >= checked(
+                    stopStarted +
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(45))) &&
+                rescheduledDue <= checked(
+                    stopFinished +
+                    ToProductionStopwatchTicks(TimeSpan.FromSeconds(90))),
+                "随机冒头正常结束或被用户中断后必须从完成时重新安排45~90秒");
+
+            SetField(window, "_ambientPeekPointerInterrupted", true);
+            SetField(window, "_ambientPeekOrigin", nativeOrigin);
+            SetField(window, "_ambientPeekDock", GetNestedEnum("EdgeDock", "Left"));
+            SetField(window, "_ambientPeekStepIndex", 12);
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                interruptionActivitySentinel);
+            SetField(
+                window,
+                "_nextEdgeRoamDueTimestamp",
+                interruptionRoamSentinel);
+            Invoke(window, "AbandonAmbientPeekOriginForDrag");
+            Assert(
+                !GetField<bool>(
+                    window,
+                    "_ambientPeekPointerInterrupted") &&
+                GetRawField(window, "_ambientPeekOrigin") is null &&
+                GetRawField(window, "_ambientPeekDock")!.ToString() ==
+                    "None" &&
+                GetField<long>(
+                    window,
+                    "_nextAutomaticActivityDueTimestamp") ==
+                    interruptionActivitySentinel &&
+                GetField<long>(
+                    window,
+                    "_nextEdgeRoamDueTimestamp") ==
+                    interruptionRoamSentinel,
+                "真正开始拖动时必须放弃旧屏位置并让拖拽接管，同时保持普通动作和巡游期限不变");
+        }
+        finally
+        {
+            timer.Stop();
+            _ = Invoke(
+                window,
+                "TryRestoreAmbientPeekOrigin",
+                originalNativePosition);
+            SetField(window, "_isClosing", originalClosing);
+            SetField(window, "_sessionInactive", originalSessionInactive);
+            SetField(
+                window,
+                "_automaticAnimationEnabled",
+                originalAutomaticEnabled);
+            SetField(window, "_isReminderActive", originalReminderActive);
+            SetField(window, "_dragInteractionActive", originalDragActive);
+            SetField(window, "_pointerDown", originalPointerDown);
+            SetField(
+                window,
+                "_isPillowBreathing",
+                originalPillowBreathing);
+            GetField<Image>(window, "PillowImage").Opacity =
+                originalPillowOpacity;
+            SetField(
+                window,
+                "_isPetSizeTransitioning",
+                originalPetSizeTransitioning);
+            SetField(
+                window,
+                "_isPetSizePreviewSessionActive",
+                originalPetSizePreview);
+            SetField(
+                window,
+                "_isPetSizeAdjustmentActive",
+                originalPetSizeAdjustment);
+            SetField(window, "_activeClip", originalActiveClip);
+            SetField(window, "_bubbleMode", originalBubbleMode);
+            SetField(window, "_edgeDock", originalEdgeDock);
+            SetField(window, "_isEdgeRoaming", originalRoaming);
+            SetField(
+                window,
+                "_edgeRoamPreloadRequested",
+                originalEdgeRoamPreload);
+            SetField(
+                window,
+                "_isAmbientPeeking",
+                originalAmbientPeeking);
+            SetField(
+                window,
+                "_ambientPeekPointerInterrupted",
+                originalAmbientPointerInterrupted);
+            SetField(
+                window,
+                "_ambientPeekPreloadRequested",
+                originalAmbientPreload);
+            SetField(window, "_ambientPeekDock", originalAmbientDock);
+            SetField(
+                window,
+                "_ambientPeekStepIndex",
+                originalAmbientStep);
+            SetField(
+                window,
+                "_ambientPeekStartedTimestamp",
+                originalAmbientStartedTimestamp);
+            SetField(
+                window,
+                "_isAmbientPeekWindowCloaked",
+                originalAmbientWindowCloaked);
+            SetField(
+                window,
+                "_ambientPeekUncloakPending",
+                originalAmbientUncloakPending);
+            SetField(
+                window,
+                "_ambientPeekStartAfterUncloak",
+                originalAmbientStartAfterUncloak);
+            SetField(
+                window,
+                "_ambientPeekCloakedRenderCount",
+                originalAmbientCloakedRenderCount);
+            SetField(
+                window,
+                "_pendingAmbientPeekTarget",
+                originalAmbientTarget);
+            SetField(
+                window,
+                "_ambientPeekOrigin",
+                originalAmbientOrigin);
+            SetField(
+                window,
+                "_ambientPeekRestoreOriginPending",
+                originalAmbientRestoreOrigin);
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                originalActivityDue);
+            SetField(window, "_nextEdgeRoamDueTimestamp", originalRoamDue);
+            SetField(
+                window,
+                "_nextAmbientPeekDueTimestamp",
+                originalAmbientDue);
+            SetField(
+                window,
+                "_pillowBreathingDueTimestamp",
+                originalPillowDue);
+            SetField(window, "_currentSpriteFrame", originalCurrentFrame);
+            SetField(window, "_pendingSpriteFrame", originalPendingFrame);
+            GetField<ScaleTransform>(
+                window,
+                "PetFacingScale").ScaleX = originalFacingX;
+            GetField<ScaleTransform>(
+                window,
+                "PetFacingScale").ScaleY = originalFacingY;
+            GetField<RotateTransform>(
+                window,
+                "PetRoamRotate").Angle = originalRotation;
+            SetField(
+                window,
+                "_synchronizeEdgePeekToRenderingCadence",
+                originalEdgeCadenceSynchronization);
+            SetField(
+                window,
+                "_petSizeLogicalAnchor",
+                originalPetSizeLogicalAnchor);
+            SetField(
+                window,
+                "_isApplyingAmbientPeekPosition",
+                originalApplyingAmbientPeekPosition);
+            timer.Interval = originalTimerInterval;
+            if (timerWasEnabled)
+            {
+                timer.Start();
+            }
+
+            Invoke(window, "UpdateVisualClockSubscription");
+        }
+    }
+
     private static void AssertRandomActivityBag(MainWindow window)
     {
         var activityCount = GetField<Array>(window, "_automaticActivities").Length;
-        Assert(activityCount == 9, "自动活动袋应包含 8 个角色动作和 1 个待机动作");
+        Assert(activityCount == 8, "自动活动袋应包含 7 个角色动作和 1 个待机动作");
 
         var firstBag = DrainActivityBag(window, activityCount);
         var secondBag = DrainActivityBag(window, activityCount);

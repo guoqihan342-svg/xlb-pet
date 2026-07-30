@@ -113,11 +113,6 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgePeekMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
-    // Global reactions play at AnimationPlaybackSpeed=1.25. Authoring the
-    // hide-and-seek frames at 48fps therefore presents them at exactly 60fps,
-    // avoiding periodic 75->60Hz frame skips while the large cover is visible.
-    private static readonly TimeSpan HideMotionFrameInterval =
-        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 48);
     private static readonly TimeSpan StableReactionEndpointHoldDuration =
         TimeSpan.FromMilliseconds(1875);
     private static readonly long VisualFrameDeadlineToleranceTicks =
@@ -157,6 +152,22 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan EdgeRoamBusyRetryDelay =
         TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan AmbientPeekMinimumInterval =
+        TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan AmbientPeekMaximumInterval =
+        TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan AmbientPeekBusyRetryDelay =
+        TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan AmbientPeekPreloadLeadTime =
+        TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan AmbientPeekFullyPeekedHold =
+        TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan AmbientPeekEntryDuration =
+        TimeSpan.FromMilliseconds(120);
+    private static readonly TimeSpan AmbientPeekExitDuration =
+        TimeSpan.FromMilliseconds(120);
+    private const double AmbientPeekCornerMarginPixels = 24;
+    private const double AmbientPeekEdgeTolerancePixels = 1;
     private static readonly TimeSpan EdgeRoamMaximumClockGap =
         TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan EdgeRoamDisembarkStraightenDuration =
@@ -172,7 +183,7 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(5);
     private static readonly string[] ActionNames =
     [
-        "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide"
+        "yawn", "cry", "cute", "like", "eat", "wave", "think"
     ];
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
@@ -280,6 +291,21 @@ public partial class MainWindow : Window
     private int _edgePeekFrameIndex;
     private long _edgePeekFrameDeadlineTimestamp;
     private EdgeDock _edgeDock;
+    private bool _isAmbientPeeking;
+    private bool _ambientPeekPointerInterrupted;
+    private bool _ambientPeekPreloadRequested;
+    private bool _isApplyingAmbientPeekPosition;
+    private bool _isAmbientPeekWindowCloaked;
+    private bool _ambientPeekUncloakPending;
+    private bool _ambientPeekStartAfterUncloak;
+    private int _ambientPeekCloakedRenderCount;
+    private int _ambientPeekStepIndex;
+    private long _ambientPeekStartedTimestamp;
+    private EdgeDock _ambientPeekDock;
+    private AmbientPeekTarget? _pendingAmbientPeekTarget;
+    private OwnedWindowPositioner.NativeWindowPosition? _ambientPeekOrigin;
+    private OwnedWindowPositioner.NativeWindowPosition?
+        _ambientPeekRestoreOriginPending;
     private bool _edgeRoamingEnabled = true;
     private bool _isEdgeRoaming;
     private bool _isApplyingEdgeRoamPosition;
@@ -308,6 +334,7 @@ public partial class MainWindow : Window
     private long _edgeRoamStartedTimestamp;
     private long _edgeRoamLastRenderingTimestamp;
     private long _nextEdgeRoamDueTimestamp;
+    private long _nextAmbientPeekDueTimestamp;
     private long _nextAutomaticActivityDueTimestamp;
     private long _pillowBreathingDueTimestamp;
     private Rect _edgeRoamRouteBounds;
@@ -501,8 +528,7 @@ public partial class MainWindow : Window
             CreateMotionClip("主人真棒！", "like"),
             CreateMotionClip("吃块饼干，补充能量！", "eat"),
             CreateMotionClip("嗨～我在这里！", "wave"),
-            CreateMotionClip("让我认真想一想……", "think"),
-            CreateMotionClip("嘘……来找我呀～", "hide")
+            CreateMotionClip("让我认真想一想……", "think")
         ];
         _todoExitClip = CreateTodoExitClip();
         _todoEnterClip = CreateTodoEnterClip();
@@ -518,8 +544,7 @@ public partial class MainWindow : Window
             _reactionClips[3],
             _reactionClips[4],
             _reactionClips[5],
-            _reactionClips[6],
-            _reactionClips[7]
+            _reactionClips[6]
         ];
         if (!_spritePages.TryGetValue(_idleFrame.PageName, out var idlePage))
         {
@@ -866,11 +891,6 @@ public partial class MainWindow : Window
                 LoopCycleCount: 0,
                 EndpointHoldDuration: StableReactionEndpointHoldDuration,
                 FrameInterval: MotionFrameInterval),
-            "hide" => new MotionClipProfile(
-                availableSmoothFrameCount,
-                ActionLoopCycleCount,
-                EndpointHoldDuration: TimeSpan.Zero,
-                FrameInterval: HideMotionFrameInterval),
             _ => new MotionClipProfile(
                 availableSmoothFrameCount,
                 ActionLoopCycleCount,
@@ -1404,7 +1424,9 @@ public partial class MainWindow : Window
             Top + workArea.Bottom - ScreenEdgeMargin - visiblePetBounds.Bottom);
         _automaticAnimationEnabled = true;
         RefreshSnoreBubbleAnimationState();
-        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
+        var timestamp = Stopwatch.GetTimestamp();
+        ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
+        ScheduleNextAmbientPeek(timestamp);
         ProcessScheduledTasksAt(_nowProvider());
         RestartAutomaticCountdown();
         _spritePageWarmupEnabled = true;
@@ -1413,7 +1435,9 @@ public partial class MainWindow : Window
 
     private void Window_LocationChanged(object? sender, EventArgs e)
     {
-        if (!_isApplyingPetSizeLayout && !_isApplyingEdgeRoamPosition)
+        if (!_isApplyingPetSizeLayout &&
+            !_isApplyingEdgeRoamPosition &&
+            !_isApplyingAmbientPeekPosition)
         {
             // A drag, monitor recovery, or any other real window
             // movement establishes a new logical anchor. Size-only layout
@@ -1584,6 +1608,10 @@ public partial class MainWindow : Window
                     _suppressTodoWindowDeactivate = true;
                     _outsideTodoCloseGeneration++;
                     _automaticTimer.Stop();
+                    StopAmbientPeek(
+                        scheduleNext: false,
+                        restoreOrigin: true,
+                        restoreIdleFrame: true);
                     StopEdgeRoaming(
                         scheduleNext: false,
                         restoreIdleFrame: true,
@@ -1650,6 +1678,10 @@ public partial class MainWindow : Window
             restoreIdleFrame: true,
             interrupted: true,
             immediate: true);
+        StopAmbientPeek(
+            scheduleNext: false,
+            restoreOrigin: true,
+            restoreIdleFrame: true);
         ExitEdgePeek(restartAutomaticCountdown: false);
 
         _petSizeLogicalAnchor = null;
@@ -1671,6 +1703,7 @@ public partial class MainWindow : Window
         MoveMainWindowTo(
             Left + correctedVisibleLeft - visiblePetBounds.Left,
             Top + correctedVisibleTop - visiblePetBounds.Top);
+        _ambientPeekRestoreOriginPending = null;
 
         if (_todoWindow.IsVisible)
         {
@@ -1681,6 +1714,7 @@ public partial class MainWindow : Window
         _suppressTodoWindowDeactivate = false;
 
         ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
+        ScheduleNextAmbientPeek(timestamp);
         RestartAutomaticCountdown();
         ProcessScheduledTasksAt(_nowProvider());
         if (_isReminderActive)
@@ -2004,6 +2038,7 @@ public partial class MainWindow : Window
         _edgeRoamStopScheduleNext = false;
         _edgeRoamStopInterrupted = false;
         _nextEdgeRoamDueTimestamp = 0;
+        _nextAmbientPeekDueTimestamp = 0;
         _nextAutomaticActivityDueTimestamp = 0;
         _pillowBreathingDueTimestamp = 0;
         _petSizePersistTimer.Stop();
@@ -2052,6 +2087,21 @@ public partial class MainWindow : Window
         _presentedReminderOccurrenceCounts.Clear();
         _totalReminderOccurrenceCount = 0;
         _edgeDock = EdgeDock.None;
+        _isAmbientPeeking = false;
+        _ambientPeekPointerInterrupted = false;
+        _ambientPeekPreloadRequested = false;
+        if (_isAmbientPeekWindowCloaked)
+        {
+            _ = OwnedWindowPositioner.TrySetCloaked(this, cloaked: false);
+        }
+        _isAmbientPeekWindowCloaked = false;
+        _ambientPeekUncloakPending = false;
+        _ambientPeekStartAfterUncloak = false;
+        _ambientPeekCloakedRenderCount = 0;
+        _ambientPeekStartedTimestamp = 0;
+        _pendingAmbientPeekTarget = null;
+        _ambientPeekOrigin = null;
+        _ambientPeekRestoreOriginPending = null;
         PetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         PetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         HideBubbleVisuals();
@@ -2092,7 +2142,9 @@ public partial class MainWindow : Window
             CommitPetSizePreviewSession(persist: true);
         }
 
-        _suppressClickReactionAfterRoamInterruption = _isEdgeRoaming;
+        var interruptedAmbientPeek = PauseAmbientPeekForPointer();
+        _suppressClickReactionAfterRoamInterruption =
+            _isEdgeRoaming || interruptedAmbientPeek;
         StopEdgeRoaming(
             scheduleNext: true,
             restoreIdleFrame: true,
@@ -2130,6 +2182,7 @@ public partial class MainWindow : Window
 
         _dragStarted = true;
         _pointerDown = false;
+        AbandonAmbientPeekOriginForDrag();
         var dragOriginDock = _edgeDock;
         ExitEdgePeek(restartAutomaticCountdown: false);
         var startWindowBounds = GetPetViewboxBoundsInScreenDips();
@@ -2183,6 +2236,13 @@ public partial class MainWindow : Window
         }
 
         var wasSimpleClick = _pointerDown && !_dragStarted;
+        if (wasSimpleClick && _ambientPeekPointerInterrupted)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+        }
         var shouldActCute = wasSimpleClick &&
                             _edgeDock == EdgeDock.None &&
                             !_suppressClickReactionAfterRoamInterruption;
@@ -2226,6 +2286,13 @@ public partial class MainWindow : Window
         _dragInteractionActive = false;
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
+        if (_ambientPeekPointerInterrupted)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+        }
         RestartAutomaticCountdown();
     }
 
@@ -2236,6 +2303,14 @@ public partial class MainWindow : Window
         {
             e.Handled = true;
             return;
+        }
+
+        if (_isAmbientPeeking || _ambientPeekPointerInterrupted)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
         }
 
         SetBubbleMode(_bubbleMode == BubbleMode.Todo ? BubbleMode.None : BubbleMode.Todo);
@@ -2575,6 +2650,317 @@ public partial class MainWindow : Window
         Math.Abs(first.Right - second.Right) <= EdgeContactTolerance &&
         Math.Abs(first.Bottom - second.Bottom) <= EdgeContactTolerance;
 
+    private static AmbientPeekEdgeSegment[] BuildAmbientPeekEdgeSegments(
+        IReadOnlyList<MonitorWorkArea.PhysicalWorkArea> workAreas)
+    {
+        var segments = new List<AmbientPeekEdgeSegment>();
+        foreach (var workArea in workAreas)
+        {
+            if (!workArea.IsValid)
+            {
+                continue;
+            }
+
+            AddAmbientPeekExposedSegments(
+                segments,
+                workAreas,
+                workArea,
+                EdgeDock.Left);
+            AddAmbientPeekExposedSegments(
+                segments,
+                workAreas,
+                workArea,
+                EdgeDock.Right);
+            AddAmbientPeekExposedSegments(
+                segments,
+                workAreas,
+                workArea,
+                EdgeDock.Bottom);
+        }
+
+        return segments
+            .OrderBy(segment => segment.WorkArea.Left)
+            .ThenBy(segment => segment.WorkArea.Top)
+            .ThenBy(segment => (int)segment.Dock)
+            .ThenBy(segment => segment.Start)
+            .ToArray();
+    }
+
+    private static void AddAmbientPeekExposedSegments(
+        List<AmbientPeekEdgeSegment> destination,
+        IReadOnlyList<MonitorWorkArea.PhysicalWorkArea> workAreas,
+        MonitorWorkArea.PhysicalWorkArea workArea,
+        EdgeDock dock)
+    {
+        var spans = new List<(double Start, double End)>
+        {
+            dock == EdgeDock.Bottom
+                ? (workArea.Left, workArea.Right)
+                : (workArea.Top, workArea.Bottom)
+        };
+
+        var workEdgeMatchesMonitorEdge = dock switch
+        {
+            EdgeDock.Left =>
+                Math.Abs(workArea.Left - workArea.MonitorLeft) <=
+                AmbientPeekEdgeTolerancePixels,
+            EdgeDock.Right =>
+                Math.Abs(workArea.Right - workArea.MonitorRight) <=
+                AmbientPeekEdgeTolerancePixels,
+            EdgeDock.Bottom =>
+                Math.Abs(workArea.Bottom - workArea.MonitorBottom) <=
+                AmbientPeekEdgeTolerancePixels,
+            _ => false
+        };
+        if (!workEdgeMatchesMonitorEdge)
+        {
+            destination.Add(new AmbientPeekEdgeSegment(
+                workArea,
+                dock,
+                spans[0].Start,
+                spans[0].End));
+            return;
+        }
+
+        foreach (var other in workAreas)
+        {
+            if (!other.IsValid || other == workArea)
+            {
+                continue;
+            }
+
+            var adjacent = dock switch
+            {
+                EdgeDock.Left =>
+                    Math.Abs(other.MonitorRight - workArea.MonitorLeft) <=
+                    AmbientPeekEdgeTolerancePixels,
+                EdgeDock.Right =>
+                    Math.Abs(other.MonitorLeft - workArea.MonitorRight) <=
+                    AmbientPeekEdgeTolerancePixels,
+                EdgeDock.Bottom =>
+                    Math.Abs(other.MonitorTop - workArea.MonitorBottom) <=
+                    AmbientPeekEdgeTolerancePixels,
+                _ => false
+            };
+            if (!adjacent)
+            {
+                continue;
+            }
+
+            var blockedStart = dock == EdgeDock.Bottom
+                ? Math.Max(workArea.Left, other.MonitorLeft)
+                : Math.Max(workArea.Top, other.MonitorTop);
+            var blockedEnd = dock == EdgeDock.Bottom
+                ? Math.Min(workArea.Right, other.MonitorRight)
+                : Math.Min(workArea.Bottom, other.MonitorBottom);
+            if (blockedEnd - blockedStart <= AmbientPeekEdgeTolerancePixels)
+            {
+                continue;
+            }
+
+            SubtractAmbientPeekSpan(spans, blockedStart, blockedEnd);
+        }
+
+        foreach (var span in spans)
+        {
+            if (span.End - span.Start > AmbientPeekEdgeTolerancePixels)
+            {
+                destination.Add(new AmbientPeekEdgeSegment(
+                    workArea,
+                    dock,
+                    span.Start,
+                    span.End));
+            }
+        }
+    }
+
+    private static void SubtractAmbientPeekSpan(
+        List<(double Start, double End)> spans,
+        double blockedStart,
+        double blockedEnd)
+    {
+        for (var index = spans.Count - 1; index >= 0; index--)
+        {
+            var span = spans[index];
+            if (blockedEnd <= span.Start + AmbientPeekEdgeTolerancePixels ||
+                blockedStart >= span.End - AmbientPeekEdgeTolerancePixels)
+            {
+                continue;
+            }
+
+            spans.RemoveAt(index);
+            if (blockedStart > span.Start + AmbientPeekEdgeTolerancePixels)
+            {
+                spans.Insert(index, (span.Start, Math.Min(blockedStart, span.End)));
+                index++;
+            }
+            if (blockedEnd < span.End - AmbientPeekEdgeTolerancePixels)
+            {
+                spans.Insert(
+                    Math.Min(index, spans.Count),
+                    (Math.Max(blockedEnd, span.Start), span.End));
+            }
+        }
+    }
+
+    private static bool TryCreateAmbientPeekTarget(
+        IReadOnlyList<MonitorWorkArea.PhysicalWorkArea> workAreas,
+        double petWidthPixels,
+        double petHeightPixels,
+        double segmentSelection,
+        double positionSelection,
+        out AmbientPeekTarget target)
+    {
+        target = default;
+        if (workAreas.Count == 0 ||
+            !double.IsFinite(petWidthPixels) || petWidthPixels <= 0 ||
+            !double.IsFinite(petHeightPixels) || petHeightPixels <= 0 ||
+            !double.IsFinite(segmentSelection) ||
+            !double.IsFinite(positionSelection))
+        {
+            return false;
+        }
+
+        var usableSegments = new List<(AmbientPeekEdgeSegment Segment, double Length)>();
+        var totalLength = 0d;
+        foreach (var segment in BuildAmbientPeekEdgeSegments(workAreas))
+        {
+            var orthogonalExtent = segment.Dock == EdgeDock.Bottom
+                ? petWidthPixels
+                : petHeightPixels;
+            var usableLength = segment.End - segment.Start -
+                               orthogonalExtent -
+                               2 * AmbientPeekCornerMarginPixels;
+            if (!double.IsFinite(usableLength) ||
+                usableLength <= AmbientPeekEdgeTolerancePixels)
+            {
+                continue;
+            }
+
+            usableSegments.Add((segment, usableLength));
+            totalLength += usableLength;
+        }
+
+        if (usableSegments.Count == 0 ||
+            !double.IsFinite(totalLength) ||
+            totalLength <= 0)
+        {
+            return false;
+        }
+
+        var normalizedSegment = Math.Clamp(segmentSelection, 0d, 1d);
+        var remaining = normalizedSegment * totalLength;
+        var selected = usableSegments[^1].Segment;
+        for (var index = 0; index < usableSegments.Count; index++)
+        {
+            var candidate = usableSegments[index];
+            if (index == usableSegments.Count - 1 ||
+                remaining <= candidate.Length)
+            {
+                selected = candidate.Segment;
+                break;
+            }
+
+            remaining -= candidate.Length;
+        }
+
+        target = new AmbientPeekTarget(
+            selected.WorkArea,
+            selected.Dock,
+            selected.Start,
+            selected.End,
+            Math.Clamp(positionSelection, 0d, 1d));
+        return true;
+    }
+
+    private static double ResolveAmbientPeekContactCoordinate(
+        AmbientPeekTarget target,
+        double orthogonalPetExtentPixels)
+    {
+        var minimum = target.SegmentStart +
+                      AmbientPeekCornerMarginPixels +
+                      orthogonalPetExtentPixels / 2;
+        var maximum = target.SegmentEnd -
+                      AmbientPeekCornerMarginPixels -
+                      orthogonalPetExtentPixels / 2;
+        if (!double.IsFinite(minimum) ||
+            !double.IsFinite(maximum) ||
+            maximum < minimum)
+        {
+            return (target.SegmentStart + target.SegmentEnd) / 2;
+        }
+
+        return minimum +
+               (maximum - minimum) *
+               Math.Clamp(target.PositionFraction, 0d, 1d);
+    }
+
+    private static int ResolveAmbientPeekStepIndex(
+        TimeSpan elapsed,
+        int frameCount)
+    {
+        if (elapsed < TimeSpan.Zero ||
+            frameCount < 8 ||
+            frameCount % 4 != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(elapsed),
+                $"Invalid ambient-peek timeline: elapsed={elapsed}, frames={frameCount}.");
+        }
+
+        var remainingTicks = elapsed.Ticks;
+        for (var stepIndex = 0; stepIndex <= frameCount; stepIndex++)
+        {
+            var holdTicks = GetAmbientPeekStepHoldDuration(
+                stepIndex,
+                frameCount).Ticks;
+            if (remainingTicks < holdTicks)
+            {
+                return stepIndex;
+            }
+
+            remainingTicks -= holdTicks;
+        }
+
+        return frameCount + 1;
+    }
+
+    private static TimeSpan GetAmbientPeekStepHoldDuration(
+        int stepIndex,
+        int frameCount)
+    {
+        if (frameCount < 8 ||
+            frameCount % 4 != 0 ||
+            stepIndex < 0 ||
+            stepIndex > frameCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(stepIndex),
+                $"Invalid ambient-peek step: {stepIndex}/{frameCount}.");
+        }
+
+        if (stepIndex == 0)
+        {
+            return AmbientPeekEntryDuration;
+        }
+        if (stepIndex == frameCount)
+        {
+            return AmbientPeekExitDuration;
+        }
+
+        var frameIndex = stepIndex - 1;
+        return frameIndex == frameCount / 2 - 1
+            ? AmbientPeekFullyPeekedHold
+            : EdgePeekMotionFrameInterval;
+    }
+
+    private static int ResolveAmbientPeekFrameIndex(
+        int stepIndex,
+        int frameCount) =>
+        stepIndex == 0
+            ? frameCount - 1
+            : stepIndex - 1;
+
     private void EnterEdgePeek(EdgeDock dock)
     {
         if (_isClosing || _isReminderActive || dock == EdgeDock.None)
@@ -2899,6 +3285,610 @@ public partial class MainWindow : Window
         };
     }
 
+    private void ScheduleNextAmbientPeek(long timestamp)
+    {
+        var minimumTicks = AmbientPeekMinimumInterval.Ticks;
+        var rangeTicks = AmbientPeekMaximumInterval.Ticks - minimumTicks;
+        var delayTicks = checked(
+            minimumTicks +
+            (long)Math.Round(
+                _random.NextDouble() * rangeTicks,
+                MidpointRounding.AwayFromZero));
+        ScheduleNextAmbientPeek(timestamp, TimeSpan.FromTicks(delayTicks));
+    }
+
+    private void ScheduleNextAmbientPeek(long timestamp, TimeSpan delay)
+    {
+        _ambientPeekPreloadRequested = false;
+        _pendingAmbientPeekTarget = null;
+        if (_isClosing ||
+            _sessionInactive ||
+            !_automaticAnimationEnabled ||
+            delay <= TimeSpan.Zero)
+        {
+            _nextAmbientPeekDueTimestamp = 0;
+            return;
+        }
+
+        _nextAmbientPeekDueTimestamp = checked(
+            timestamp + ToStopwatchTicks(delay));
+    }
+
+    private bool IsAmbientPeekDue(long timestamp) =>
+        _nextAmbientPeekDueTimestamp > 0 &&
+        timestamp >= _nextAmbientPeekDueTimestamp;
+
+    private void StartAmbientPeekPreloadIfDue(long timestamp)
+    {
+        if (_ambientPeekPreloadRequested ||
+            _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked ||
+            _nextAmbientPeekDueTimestamp <= 0 ||
+            timestamp <
+            _nextAmbientPeekDueTimestamp -
+            ToStopwatchTicks(AmbientPeekPreloadLeadTime))
+        {
+            return;
+        }
+
+        if (!EnsureAmbientPeekTarget())
+        {
+            ScheduleNextAmbientPeek(timestamp, AmbientPeekBusyRetryDelay);
+            return;
+        }
+
+        _ambientPeekPreloadRequested = true;
+        ContinueAmbientPeekPreload();
+    }
+
+    private bool EnsureAmbientPeekTarget()
+    {
+        if (_pendingAmbientPeekTarget is not null)
+        {
+            return true;
+        }
+
+        if (!TryGetPetPhysicalBounds(out var petBounds))
+        {
+            return false;
+        }
+
+        var workAreas = MonitorWorkArea.GetAllPhysicalWorkAreas();
+        if (!TryCreateAmbientPeekTarget(
+                workAreas,
+                petBounds.Width,
+                petBounds.Height,
+                _random.NextDouble(),
+                _random.NextDouble(),
+                out var target))
+        {
+            return false;
+        }
+
+        _pendingAmbientPeekTarget = target;
+        return true;
+    }
+
+    private void ContinueAmbientPeekPreload()
+    {
+        if (!_ambientPeekPreloadRequested ||
+            _pendingAmbientPeekTarget is not { } target ||
+            _isClosing ||
+            _sessionInactive ||
+            _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked)
+        {
+            return;
+        }
+
+        RequestNextMissingSequencePage(GetEdgeFrames(target.Dock));
+    }
+
+    private bool TryStartAmbientPeek(long timestamp)
+    {
+        if (_isClosing ||
+            _sessionInactive ||
+            !_automaticAnimationEnabled ||
+            _isReminderActive ||
+            _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked ||
+            _activeClip is not null ||
+            _isPillowBreathing ||
+            _dragInteractionActive ||
+            _pointerDown ||
+            _isPetSizeTransitioning ||
+            _isPetSizePreviewSessionActive ||
+            _isPetSizeAdjustmentActive ||
+            _bubbleMode != BubbleMode.None ||
+            _todoWindow.IsVisible ||
+            BubblePopup.IsOpen ||
+            _edgeDock != EdgeDock.None ||
+            _isEdgeRoaming)
+        {
+            return false;
+        }
+
+        if (!EnsureAmbientPeekTarget() ||
+            _pendingAmbientPeekTarget is not { } target)
+        {
+            return false;
+        }
+
+        var currentWorkAreas = MonitorWorkArea.GetAllPhysicalWorkAreas();
+        if (!currentWorkAreas.Contains(target.WorkArea))
+        {
+            _pendingAmbientPeekTarget = null;
+            _ambientPeekPreloadRequested = false;
+            return false;
+        }
+
+        var frames = GetEdgeFrames(target.Dock);
+        if (!AreAllSequencePagesResident(frames))
+        {
+            _ambientPeekPreloadRequested = true;
+            ContinueAmbientPeekPreload();
+            return false;
+        }
+
+        if (!OwnedWindowPositioner.TryGetNativePosition(
+                this,
+                out var origin))
+        {
+            return false;
+        }
+
+        StopPillowBreathing();
+        _automaticTimer.Stop();
+        _nextAmbientPeekDueTimestamp = 0;
+        _ambientPeekPreloadRequested = false;
+        _pendingAmbientPeekTarget = target;
+        _ambientPeekOrigin = origin;
+        _ambientPeekRestoreOriginPending = null;
+        _isAmbientPeeking = true;
+        _ambientPeekPointerInterrupted = false;
+        _ambientPeekDock = target.Dock;
+        _ambientPeekStepIndex = 0;
+        _ambientPeekStartedTimestamp = 0;
+        _ambientPeekUncloakPending = false;
+        _ambientPeekStartAfterUncloak = false;
+        _ambientPeekCloakedRenderCount = 0;
+        _isAmbientPeekWindowCloaked =
+            OwnedWindowPositioner.TrySetCloaked(this, cloaked: true);
+
+        ResetPetVisualTransforms();
+        PetFacingScale.ScaleX = target.Dock == EdgeDock.Right ? -1 : 1;
+        PetFacingScale.ScaleY = 1;
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        var firstFrame = frames[^1];
+        ShowStableFrame(firstFrame);
+        if (_currentSpriteFrame is not SpriteFrame displayedFrame ||
+            displayedFrame != firstFrame ||
+            !TryMoveToAmbientPeekTarget(target))
+        {
+            StopAmbientPeek(
+                scheduleNext: false,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+            ScheduleNextAmbientPeek(timestamp, AmbientPeekBusyRetryDelay);
+            return false;
+        }
+
+        QueueAmbientPeekUncloak(startAnimationAfterUncloak: true);
+        RequestResidentSpritePageTrim();
+        UpdateVisualClockSubscription();
+        return true;
+    }
+
+    private bool TryGetPetPhysicalBounds(out Rect bounds)
+    {
+        bounds = Rect.Empty;
+        try
+        {
+            if (!PetSizeViewbox.IsLoaded ||
+                PetSizeViewbox.ActualWidth <= 0 ||
+                PetSizeViewbox.ActualHeight <= 0)
+            {
+                return false;
+            }
+
+            var topLeft = PetSizeViewbox.PointToScreen(new Point(0, 0));
+            var bottomRight = PetSizeViewbox.PointToScreen(
+                new Point(
+                    PetSizeViewbox.ActualWidth,
+                    PetSizeViewbox.ActualHeight));
+            var left = Math.Min(topLeft.X, bottomRight.X);
+            var top = Math.Min(topLeft.Y, bottomRight.Y);
+            var right = Math.Max(topLeft.X, bottomRight.X);
+            var bottom = Math.Max(topLeft.Y, bottomRight.Y);
+            if (!double.IsFinite(left) ||
+                !double.IsFinite(top) ||
+                !double.IsFinite(right) ||
+                !double.IsFinite(bottom) ||
+                right <= left ||
+                bottom <= top)
+            {
+                return false;
+            }
+
+            bounds = new Rect(left, top, right - left, bottom - top);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private bool TryMoveToAmbientPeekTarget(AmbientPeekTarget target)
+    {
+        _isApplyingAmbientPeekPosition = true;
+        try
+        {
+            for (var pass = 0; pass < 2; pass++)
+            {
+                if (!OwnedWindowPositioner.TryGetNativePosition(
+                        this,
+                        out var currentPosition) ||
+                    !TryGetPetPhysicalBounds(out var petBounds) ||
+                    !TryResolveAmbientPeekWindowPosition(
+                        target,
+                        currentPosition,
+                        petBounds,
+                        out var desiredPosition) ||
+                    !OwnedWindowPositioner.TrySetNativePosition(
+                        this,
+                        desiredPosition))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            _isApplyingAmbientPeekPosition = false;
+        }
+    }
+
+    private bool TryRestoreAmbientPeekOrigin(
+        OwnedWindowPositioner.NativeWindowPosition origin)
+    {
+        _isApplyingAmbientPeekPosition = true;
+        try
+        {
+            return OwnedWindowPositioner.TrySetNativePosition(this, origin) &&
+                   OwnedWindowPositioner.TryGetNativePosition(
+                       this,
+                       out var restoredPosition) &&
+                   Math.Abs(restoredPosition.Left - origin.Left) <= 1 &&
+                   Math.Abs(restoredPosition.Top - origin.Top) <= 1;
+        }
+        finally
+        {
+            _isApplyingAmbientPeekPosition = false;
+        }
+    }
+
+    private static bool TryResolveAmbientPeekWindowPosition(
+        AmbientPeekTarget target,
+        OwnedWindowPositioner.NativeWindowPosition currentPosition,
+        Rect petBounds,
+        out OwnedWindowPositioner.NativeWindowPosition desiredPosition)
+    {
+        desiredPosition = default;
+        try
+        {
+            var orthogonalExtent = target.Dock == EdgeDock.Bottom
+                ? petBounds.Width
+                : petBounds.Height;
+            var segmentLength = target.SegmentEnd - target.SegmentStart;
+            if (!double.IsFinite(segmentLength) ||
+                segmentLength + AmbientPeekEdgeTolerancePixels <
+                orthogonalExtent + 2 * AmbientPeekCornerMarginPixels)
+            {
+                return false;
+            }
+
+            var contactCoordinate = ResolveAmbientPeekContactCoordinate(
+                target,
+                orthogonalExtent);
+            var targetPetLeft = target.Dock switch
+            {
+                EdgeDock.Left => target.WorkArea.Left,
+                EdgeDock.Right => target.WorkArea.Right - petBounds.Width,
+                EdgeDock.Bottom => contactCoordinate - petBounds.Width / 2,
+                _ => throw new ArgumentOutOfRangeException()
+            };
+            var targetPetTop = target.Dock switch
+            {
+                EdgeDock.Left or EdgeDock.Right =>
+                    contactCoordinate - petBounds.Height / 2,
+                EdgeDock.Bottom =>
+                    target.WorkArea.Bottom - petBounds.Height,
+                _ => throw new ArgumentOutOfRangeException()
+            };
+            var deltaX = targetPetLeft - petBounds.Left;
+            var deltaY = targetPetTop - petBounds.Top;
+            desiredPosition = new OwnedWindowPositioner.NativeWindowPosition(
+                checked(
+                    currentPosition.Left +
+                    (int)Math.Round(
+                        deltaX,
+                        MidpointRounding.AwayFromZero)),
+                checked(
+                    currentPosition.Top +
+                    (int)Math.Round(
+                        deltaY,
+                        MidpointRounding.AwayFromZero)));
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private void QueueAmbientPeekUncloak(bool startAnimationAfterUncloak)
+    {
+        _ambientPeekStartAfterUncloak = startAnimationAfterUncloak;
+        _ambientPeekCloakedRenderCount = 0;
+        _ambientPeekUncloakPending = _isAmbientPeekWindowCloaked;
+        if (!_ambientPeekUncloakPending)
+        {
+            _ambientPeekRestoreOriginPending = null;
+        }
+    }
+
+    private bool AdvanceAmbientPeekCloakTransition(long timestamp)
+    {
+        if (!_ambientPeekUncloakPending)
+        {
+            return false;
+        }
+
+        _ambientPeekCloakedRenderCount++;
+        if (_ambientPeekStartAfterUncloak &&
+            _isAmbientPeeking &&
+            _pendingAmbientPeekTarget is { } target &&
+            !TryMoveToAmbientPeekTarget(target))
+        {
+            StopAmbientPeek(
+                scheduleNext: false,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+            ScheduleNextAmbientPeek(timestamp, AmbientPeekBusyRetryDelay);
+            return true;
+        }
+
+        if (!_ambientPeekStartAfterUncloak &&
+            _ambientPeekRestoreOriginPending is { } restoreOrigin)
+        {
+            if (!TryRestoreAmbientPeekOrigin(restoreOrigin))
+            {
+                _ambientPeekCloakedRenderCount = 1;
+                return true;
+            }
+        }
+
+        if (_ambientPeekCloakedRenderCount < 2)
+        {
+            return true;
+        }
+
+        if (_isAmbientPeekWindowCloaked &&
+            !OwnedWindowPositioner.TrySetCloaked(this, cloaked: false))
+        {
+            _ambientPeekCloakedRenderCount = 1;
+            return true;
+        }
+
+        _isAmbientPeekWindowCloaked = false;
+        _ambientPeekUncloakPending = false;
+        _ambientPeekCloakedRenderCount = 0;
+        _ambientPeekRestoreOriginPending = null;
+        var startAnimation = _ambientPeekStartAfterUncloak;
+        _ambientPeekStartAfterUncloak = false;
+        if (startAnimation && _isAmbientPeeking)
+        {
+            _ambientPeekStartedTimestamp = timestamp;
+        }
+        else
+        {
+            RefreshSnoreBubbleAnimationState();
+            ArmAutomaticWakeTimer(timestamp);
+            RequestIdleSpritePageTrim();
+        }
+
+        return true;
+    }
+
+    private void AdvanceAmbientPeek(long timestamp)
+    {
+        if (_isClosing ||
+            _sessionInactive ||
+            _isReminderActive ||
+            _bubbleMode != BubbleMode.None)
+        {
+            StopAmbientPeek(
+                scheduleNext: !_isClosing && !_sessionInactive,
+                restoreOrigin: true,
+                restoreIdleFrame: !_isReminderActive);
+            return;
+        }
+
+        if (!_isAmbientPeeking ||
+            _ambientPeekDock == EdgeDock.None)
+        {
+            return;
+        }
+
+        if (_ambientPeekStartedTimestamp <= 0)
+        {
+            _ambientPeekStartedTimestamp = timestamp;
+            return;
+        }
+
+        var frames = GetEdgeFrames(_ambientPeekDock);
+        var elapsed = Stopwatch.GetElapsedTime(
+            _ambientPeekStartedTimestamp,
+            timestamp);
+        var resolvedStepIndex = ResolveAmbientPeekStepIndex(
+            elapsed < TimeSpan.Zero ? TimeSpan.Zero : elapsed,
+            frames.Length);
+        if (resolvedStepIndex > frames.Length)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+            return;
+        }
+
+        if (resolvedStepIndex == _ambientPeekStepIndex)
+        {
+            return;
+        }
+
+        _ambientPeekStepIndex = resolvedStepIndex;
+        var targetFrame = frames[
+            ResolveAmbientPeekFrameIndex(
+                resolvedStepIndex,
+                frames.Length)];
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        ShowStableFrame(targetFrame);
+        if (_currentSpriteFrame is not SpriteFrame displayedFrame ||
+            displayedFrame != targetFrame)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+        }
+    }
+
+    private bool PauseAmbientPeekForPointer()
+    {
+        if (!_isAmbientPeeking)
+        {
+            return false;
+        }
+
+        _isAmbientPeeking = false;
+        _ambientPeekPointerInterrupted = true;
+        _ambientPeekStartedTimestamp = 0;
+        _automaticTimer.Stop();
+        UpdateVisualClockSubscription();
+        return true;
+    }
+
+    private void AbandonAmbientPeekOriginForDrag()
+    {
+        if (!_ambientPeekPointerInterrupted)
+        {
+            return;
+        }
+
+        _ambientPeekPointerInterrupted = false;
+        _ambientPeekDock = EdgeDock.None;
+        _ambientPeekStepIndex = 0;
+        _ambientPeekStartedTimestamp = 0;
+        _ambientPeekOrigin = null;
+        _ambientPeekRestoreOriginPending = null;
+        _ambientPeekPreloadRequested = false;
+        _pendingAmbientPeekTarget = null;
+        ResetPetVisualTransforms();
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        ShowStableFrame(_idleFrame);
+        ScheduleNextAmbientPeek(Stopwatch.GetTimestamp());
+        UpdateVisualClockSubscription();
+    }
+
+    private void StopAmbientPeek(
+        bool scheduleNext,
+        bool restoreOrigin,
+        bool restoreIdleFrame)
+    {
+        var hadVisualState =
+            _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted;
+        var origin = _ambientPeekOrigin;
+        var shouldRestoreNativePosition =
+            hadVisualState &&
+            restoreOrigin &&
+            origin is not null;
+        _ambientPeekRestoreOriginPending =
+            shouldRestoreNativePosition
+                ? origin
+                : null;
+        if (shouldRestoreNativePosition &&
+            !_isAmbientPeekWindowCloaked)
+        {
+            _isAmbientPeekWindowCloaked =
+                OwnedWindowPositioner.TrySetCloaked(this, cloaked: true);
+        }
+
+        _isAmbientPeeking = false;
+        _ambientPeekPointerInterrupted = false;
+        _ambientPeekStartedTimestamp = 0;
+        _ambientPeekUncloakPending = false;
+        _ambientPeekStartAfterUncloak = false;
+        _ambientPeekCloakedRenderCount = 0;
+        _ambientPeekStepIndex = 0;
+        _ambientPeekDock = EdgeDock.None;
+        _ambientPeekPreloadRequested = false;
+        _pendingAmbientPeekTarget = null;
+        _ambientPeekOrigin = null;
+
+        if (hadVisualState)
+        {
+            ResetPetVisualTransforms();
+            if (restoreIdleFrame)
+            {
+                _nextFrameBlendDuration = TimeSpan.Zero;
+                if (_bubbleMode == BubbleMode.Todo)
+                {
+                    ShowStableTodoFrame();
+                }
+                else
+                {
+                    ShowStableFrame(_idleFrame);
+                }
+            }
+
+            if (restoreOrigin && origin is { } savedOrigin)
+            {
+                _ = TryRestoreAmbientPeekOrigin(savedOrigin);
+            }
+        }
+
+        QueueAmbientPeekUncloak(startAnimationAfterUncloak: false);
+        var timestamp = Stopwatch.GetTimestamp();
+        if (scheduleNext)
+        {
+            ScheduleNextAmbientPeek(timestamp);
+        }
+        else
+        {
+            _nextAmbientPeekDueTimestamp = 0;
+        }
+
+        RequestIdleSpritePageTrim();
+        RefreshSnoreBubbleAnimationState();
+        ArmAutomaticWakeTimer(timestamp);
+        UpdateVisualClockSubscription();
+    }
+
     private void ShowCuteReaction()
     {
         RestartAutomaticCountdown();
@@ -2924,7 +3914,11 @@ public partial class MainWindow : Window
             _isReminderActive ||
             _bubbleMode == BubbleMode.Todo ||
             _edgeDock != EdgeDock.None ||
-            _isEdgeRoaming)
+            _isEdgeRoaming ||
+            _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked)
         {
             return false;
         }
@@ -3035,11 +4029,17 @@ public partial class MainWindow : Window
             _isPetSizeTransitioning || _isPetSizePreviewSessionActive ||
             _isPetSizeAdjustmentActive || _bubbleMode != BubbleMode.None ||
             _todoWindow.IsVisible || BubblePopup.IsOpen ||
-            _edgeDock != EdgeDock.None)
+            _edgeDock != EdgeDock.None ||
+            _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked)
         {
             return false;
         }
 
+        _ambientPeekPreloadRequested = false;
+        _pendingAmbientPeekTarget = null;
         CenterPetViewboxForRotation();
         var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
         var routeLeft = workArea.Left + ScreenEdgeMargin;
@@ -4268,6 +5268,7 @@ public partial class MainWindow : Window
 
         var timestamp = Stopwatch.GetTimestamp();
         StartEdgeRoamPreloadIfDue(timestamp);
+        StartAmbientPeekPreloadIfDue(timestamp);
         if (IsEdgeRoamDue(timestamp))
         {
             if (_edgeRoamPreloadRequested &&
@@ -4290,7 +5291,30 @@ public partial class MainWindow : Window
             // whole ten-minute cycle.
             ScheduleNextEdgeRoam(timestamp, EdgeRoamBusyRetryDelay);
         }
-        else if (_edgeRoamPreloadRequested)
+        if (IsAmbientPeekDue(timestamp))
+        {
+            StopPillowBreathing();
+            if (_pendingAmbientPeekTarget is { } target &&
+                !AreAllSequencePagesResident(GetEdgeFrames(target.Dock)))
+            {
+                _ambientPeekPreloadRequested = true;
+                ContinueAmbientPeekPreload();
+                _automaticTimer.Interval = TimeSpan.FromMilliseconds(16);
+                _automaticTimer.Start();
+                return;
+            }
+
+            if (TryStartAmbientPeek(timestamp))
+            {
+                return;
+            }
+
+            ScheduleNextAmbientPeek(timestamp, AmbientPeekBusyRetryDelay);
+            ArmAutomaticWakeTimer(timestamp);
+            return;
+        }
+
+        if (_edgeRoamPreloadRequested)
         {
             StopPillowBreathing();
             ArmAutomaticWakeTimer(timestamp);
@@ -4312,7 +5336,10 @@ public partial class MainWindow : Window
 
         if (_activeClip is not null || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
-            _isEdgeRoaming)
+            _isEdgeRoaming || _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked)
         {
             return;
         }
@@ -4348,7 +5375,10 @@ public partial class MainWindow : Window
             _isReminderActive ||
             _activeClip is not null || _isPillowBreathing || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
-            _isEdgeRoaming)
+            _isEdgeRoaming || _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked)
         {
             return;
         }
@@ -4362,7 +5392,10 @@ public partial class MainWindow : Window
             _isReminderActive ||
             _activeClip is not null || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
-            _isEdgeRoaming)
+            _isEdgeRoaming || _isAmbientPeeking ||
+            _ambientPeekPointerInterrupted ||
+            _ambientPeekUncloakPending ||
+            _isAmbientPeekWindowCloaked)
         {
             _automaticTimer.Stop();
             return;
@@ -4380,6 +5413,20 @@ public partial class MainWindow : Window
             nextDueTimestamp = Math.Min(
                 nextDueTimestamp,
                 _pillowBreathingDueTimestamp);
+        }
+        if (_nextAmbientPeekDueTimestamp > 0)
+        {
+            if (!_ambientPeekPreloadRequested)
+            {
+                nextDueTimestamp = Math.Min(
+                    nextDueTimestamp,
+                    _nextAmbientPeekDueTimestamp -
+                    ToStopwatchTicks(AmbientPeekPreloadLeadTime));
+            }
+
+            nextDueTimestamp = Math.Min(
+                nextDueTimestamp,
+                _nextAmbientPeekDueTimestamp);
         }
         if (_edgeRoamingEnabled && _nextEdgeRoamDueTimestamp > 0)
         {
@@ -4495,6 +5542,10 @@ public partial class MainWindow : Window
                              isTodoExitIdleEndpoint) &&
                             !_isReminderActive &&
                             !_isEdgeRoaming &&
+                            !_isAmbientPeeking &&
+                            !_ambientPeekPointerInterrupted &&
+                            !_ambientPeekUncloakPending &&
+                            !_isAmbientPeekWindowCloaked &&
                             _edgeDock == EdgeDock.None;
         if (shouldAnimate == _isSnoreBubbleAnimating)
         {
@@ -5204,6 +6255,8 @@ public partial class MainWindow : Window
         try
         {
             var timestamp = Stopwatch.GetTimestamp();
+            var ambientPeekCloakTransitionActive =
+                AdvanceAmbientPeekCloakTransition(timestamp);
             TryShowPendingSpriteFrameAt(timestamp);
             AdvancePetSizeCompositionFrame(timestamp);
             AdvanceSnoreBubble(timestamp);
@@ -5216,6 +6269,12 @@ public partial class MainWindow : Window
             if (_edgeDock != EdgeDock.None)
             {
                 AdvanceEdgePeek(timestamp);
+            }
+
+            if (_isAmbientPeeking &&
+                !ambientPeekCloakTransitionActive)
+            {
+                AdvanceAmbientPeek(timestamp);
             }
 
             if (_isEdgeRoaming)
@@ -5256,6 +6315,8 @@ public partial class MainWindow : Window
                            _isSnoreBubbleAnimating ||
                            _activeClip is not null ||
                             _edgeDock != EdgeDock.None ||
+                           _isAmbientPeeking ||
+                           _ambientPeekUncloakPending ||
                            _isEdgeRoaming ||
                            _isFrameBlending ||
                            _pendingSpriteFrame is not null ||
@@ -6009,6 +7070,7 @@ public partial class MainWindow : Window
                 _desiredSpritePageName is null)
             {
                 ContinueEdgeRoamPreload();
+                ContinueAmbientPeekPreload();
             }
             ResumeSpritePageWarmup();
             return;
@@ -6029,6 +7091,7 @@ public partial class MainWindow : Window
                 _desiredSpritePageName is null)
             {
                 ContinueEdgeRoamPreload();
+                ContinueAmbientPeekPreload();
             }
             ResumeSpritePageWarmup();
             return;
@@ -6054,6 +7117,7 @@ public partial class MainWindow : Window
         PublishSpritePageLoad(pageName, result, prefetched: true);
         UpdateVisualClockSubscription();
         ContinueEdgeRoamPreload();
+        ContinueAmbientPeekPreload();
         if (_desiredSpritePageName is not null)
         {
             StartSpritePagePrefetch();
@@ -6102,12 +7166,25 @@ public partial class MainWindow : Window
         var edgeRoamPreloadFailed =
             _edgeRoamPreloadRequested &&
             IsEdgeRoamSpritePageName(pageName, includeBoarding: true);
+        var ambientPeekPreloadFailed =
+            _pendingAmbientPeekTarget is { } ambientTarget &&
+            FrameSequenceUsesSpritePage(
+                GetEdgeFrames(ambientTarget.Dock),
+                pageName);
         if (edgeRoamPreloadFailed)
         {
             _edgeRoamPreloadRequested = false;
             ScheduleNextEdgeRoam(
                 Stopwatch.GetTimestamp(),
                 EdgeRoamInterval);
+        }
+        if (ambientPeekPreloadFailed)
+        {
+            _ambientPeekPreloadRequested = false;
+            _pendingAmbientPeekTarget = null;
+            ScheduleNextAmbientPeek(
+                Stopwatch.GetTimestamp(),
+                AmbientPeekBusyRetryDelay);
         }
         if (_pendingSpriteFrame is SpriteFrame pending &&
             string.Equals(pending.PageName, pageName, StringComparison.Ordinal))
@@ -6145,6 +7222,10 @@ public partial class MainWindow : Window
         {
             RestartAutomaticCountdown();
         }
+        else if (ambientPeekPreloadFailed)
+        {
+            ArmAutomaticWakeTimer(Stopwatch.GetTimestamp());
+        }
 
         UpdateVisualClockSubscription();
         if (_spritePageWarmupIndex < _spritePageWarmupOrder.Length &&
@@ -6167,6 +7248,12 @@ public partial class MainWindow : Window
             (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
              FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
              FrameSequenceUsesSpritePage(_roamWaveFrames, pageName));
+        var failedAmbientPeekPage =
+            (_isAmbientPeeking || _ambientPeekPointerInterrupted) &&
+            _ambientPeekDock != EdgeDock.None &&
+            FrameSequenceUsesSpritePage(
+                GetEdgeFrames(_ambientPeekDock),
+                pageName);
         if (_edgeDock != EdgeDock.None)
         {
             var edgeFrames = GetEdgeFrames(_edgeDock);
@@ -6178,7 +7265,9 @@ public partial class MainWindow : Window
                                     StringComparison.Ordinal);
         }
 
-        if (!failedCurrentEdge && !failedRoamingPage)
+        if (!failedCurrentEdge &&
+            !failedRoamingPage &&
+            !failedAmbientPeekPage)
         {
             return false;
         }
@@ -6203,8 +7292,15 @@ public partial class MainWindow : Window
                 interrupted: true,
                 immediate: true);
         }
+        if (failedAmbientPeekPage)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+        }
 
-        if (!failedRoamingPage)
+        if (!failedRoamingPage && !failedAmbientPeekPage)
         {
             ResetPetVisualTransforms();
         }
@@ -6598,6 +7694,11 @@ public partial class MainWindow : Window
         !_isPillowBreathing &&
         !_edgeRoamPreloadRequested &&
         !_isEdgeRoaming &&
+        !_ambientPeekPreloadRequested &&
+        !_isAmbientPeeking &&
+        !_ambientPeekPointerInterrupted &&
+        !_ambientPeekUncloakPending &&
+        !_isAmbientPeekWindowCloaked &&
         _bubbleMode == BubbleMode.None &&
         !_todoWindow.IsVisible &&
         !BubblePopup.IsOpen &&
@@ -6796,6 +7897,17 @@ public partial class MainWindow : Window
              (_edgeRoamPhase != EdgeRoamPhase.Disembarking &&
               (FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
                FrameSequenceUsesSpritePage(_roamWaveFrames, pageName)))))
+        {
+            return true;
+        }
+
+        if ((_isAmbientPeeking ||
+             _ambientPeekPointerInterrupted ||
+             _ambientPeekPreloadRequested) &&
+            _pendingAmbientPeekTarget is { } ambientTarget &&
+            FrameSequenceUsesSpritePage(
+                GetEdgeFrames(ambientTarget.Dock),
+                pageName))
         {
             return true;
         }
@@ -7318,6 +8430,15 @@ public partial class MainWindow : Window
             previousMode != BubbleMode.Reminder)
         {
             _todoWindow.BeginReminderInterruption();
+        }
+
+        if (mode is BubbleMode.Todo or BubbleMode.Reminder &&
+            (_isAmbientPeeking || _ambientPeekPointerInterrupted))
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
         }
 
         if (mode is BubbleMode.Todo or BubbleMode.Reminder ||
@@ -9605,6 +10726,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isAmbientPeeking || _ambientPeekPointerInterrupted)
+        {
+            StopAmbientPeek(
+                scheduleNext: true,
+                restoreOrigin: true,
+                restoreIdleFrame: true);
+        }
+
         _isReminderActive = true;
         EnsureReminderPetSizeOverrideAt(Stopwatch.GetTimestamp());
         SetBubbleMode(BubbleMode.Reminder);
@@ -9825,6 +10954,7 @@ public partial class MainWindow : Window
         MoveMainWindowTo(
             Left + workArea.Right - visiblePetBounds.Right,
             Top + workArea.Bottom - visiblePetBounds.Bottom);
+        _ambientPeekRestoreOriginPending = null;
         _todoWindowPositionCache.InvalidateGeometry();
     }
 
@@ -10399,6 +11529,19 @@ public partial class MainWindow : Window
         Rect WorkArea,
         Rect StartWindowBounds,
         Rect StartContactBounds);
+
+    private readonly record struct AmbientPeekEdgeSegment(
+        MonitorWorkArea.PhysicalWorkArea WorkArea,
+        EdgeDock Dock,
+        double Start,
+        double End);
+
+    private readonly record struct AmbientPeekTarget(
+        MonitorWorkArea.PhysicalWorkArea WorkArea,
+        EdgeDock Dock,
+        double SegmentStart,
+        double SegmentEnd,
+        double PositionFraction);
 
     private readonly record struct ReminderOccurrence(
         Guid TaskId,
