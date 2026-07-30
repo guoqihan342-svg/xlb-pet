@@ -28,6 +28,7 @@
         <Popup x:Name="BubblePopup"
                Grid.ColumnSpan="3"
                AllowsTransparency="True"
+               Opened="BubblePopup_Opened"
                Placement="Left"
                PlacementTarget="{Binding ElementName=PetSizeViewbox}"
                StaysOpen="True">

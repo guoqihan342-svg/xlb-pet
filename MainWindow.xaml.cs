@@ -238,6 +238,8 @@ public partial class MainWindow : Window
 
     private BubbleMode _bubbleMode;
     private bool? _cuteBubblePlacedOnLeft;
+    private bool? _cuteBubbleTailPlacedOnLeft;
+    private bool _cuteBubbleTailReconciliationQueued;
     private Point _pointerDownPosition;
     private bool _pointerDown;
     private bool _dragStarted;
@@ -1439,6 +1441,7 @@ public partial class MainWindow : Window
         var horizontalOffset = BubblePopup.HorizontalOffset;
         BubblePopup.HorizontalOffset = horizontalOffset + 0.01;
         BubblePopup.HorizontalOffset = horizontalOffset;
+        QueueCuteBubbleTailReconciliation();
     }
 
     private void MainWindow_DpiChanged(object sender, DpiChangedEventArgs e)
@@ -7575,6 +7578,8 @@ public partial class MainWindow : Window
     {
         _outsideTodoCloseGeneration++;
         BubblePopup.IsOpen = false;
+        _cuteBubblePlacedOnLeft = null;
+        _cuteBubbleTailPlacedOnLeft = null;
         BubbleHost.Visibility = Visibility.Collapsed;
         BubbleTailHost.Visibility = Visibility.Collapsed;
         CuteBubble.Visibility = Visibility.Collapsed;
@@ -7653,6 +7658,7 @@ public partial class MainWindow : Window
         BubbleTailHost.Visibility = Visibility.Visible;
         CuteBubble.Visibility = Visibility.Visible;
         BubblePopup.IsOpen = true;
+        QueueCuteBubbleTailReconciliation();
     }
 
     private void UpdateCuteBubblePlacementAndTail()
@@ -7673,27 +7679,135 @@ public partial class MainWindow : Window
             availableLeft >= bubbleWidth ||
             (availableRight < bubbleWidth &&
              availableLeft >= availableRight);
-        if (_cuteBubblePlacedOnLeft == placeOnLeft)
+        if (_cuteBubblePlacedOnLeft != placeOnLeft)
+        {
+            _cuteBubblePlacedOnLeft = placeOnLeft;
+            BubblePopup.Placement = placeOnLeft
+                ? PlacementMode.Left
+                : PlacementMode.Right;
+            ApplyCuteBubbleTailSide(placeOnLeft);
+        }
+
+        if (_cuteBubbleTailPlacedOnLeft is null)
+        {
+            ApplyCuteBubbleTailSide(placeOnLeft);
+        }
+
+        QueueCuteBubbleTailReconciliation();
+    }
+
+    private void BubblePopup_Opened(object? sender, EventArgs e) =>
+        QueueCuteBubbleTailReconciliation();
+
+    private void QueueCuteBubbleTailReconciliation()
+    {
+        if (_cuteBubbleTailReconciliationQueued ||
+            !BubblePopup.IsOpen ||
+            _bubbleMode != BubbleMode.Cute)
         {
             return;
         }
 
-        _cuteBubblePlacedOnLeft = placeOnLeft;
+        _cuteBubbleTailReconciliationQueued = true;
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            new Action(() =>
+            {
+                _cuteBubbleTailReconciliationQueued = false;
+                ReconcileCuteBubbleTailWithActualPlacement();
+            }));
+    }
 
-        BubblePopup.Placement = placeOnLeft
-            ? PlacementMode.Left
-            : PlacementMode.Right;
-        BubbleBodyColumn.Width = GridLength.Auto;
-        BubbleTailColumn.Width = new GridLength(12);
-        Grid.SetColumn(BubbleHost, placeOnLeft ? 0 : 1);
-        Grid.SetColumn(BubbleTailHost, placeOnLeft ? 1 : 0);
-        BubbleTailHost.Margin = placeOnLeft
+    private void ReconcileCuteBubbleTailWithActualPlacement()
+    {
+        if (!BubblePopup.IsOpen ||
+            _bubbleMode != BubbleMode.Cute ||
+            BubblePopup.Child is not FrameworkElement popupChild ||
+            !popupChild.IsLoaded ||
+            !PetSizeViewbox.IsLoaded ||
+            popupChild.ActualWidth <= 0 ||
+            PetSizeViewbox.ActualWidth <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var popupTopLeft = popupChild.PointToScreen(new Point(0, 0));
+            var popupBottomRight = popupChild.PointToScreen(
+                new Point(popupChild.ActualWidth, popupChild.ActualHeight));
+            var petTopLeft = PetSizeViewbox.PointToScreen(new Point(0, 0));
+            var petBottomRight = PetSizeViewbox.PointToScreen(
+                new Point(
+                    PetSizeViewbox.ActualWidth,
+                    PetSizeViewbox.ActualHeight));
+            var actualPopupIsOnLeft = ResolveCuteBubbleIsOnLeft(
+                Math.Min(popupTopLeft.X, popupBottomRight.X),
+                Math.Max(popupTopLeft.X, popupBottomRight.X),
+                Math.Min(petTopLeft.X, petBottomRight.X),
+                Math.Max(petTopLeft.X, petBottomRight.X),
+                _cuteBubblePlacedOnLeft ?? true);
+            ApplyCuteBubbleTailSide(actualPopupIsOnLeft);
+        }
+        catch (InvalidOperationException)
+        {
+            // The popup HWND can be recreated while crossing monitors or
+            // changing DPI. The next Opened/LocationChanged pass will retry.
+        }
+    }
+
+    private static bool ResolveCuteBubbleIsOnLeft(
+        double popupLeftPixels,
+        double popupRightPixels,
+        double petLeftPixels,
+        double petRightPixels,
+        bool fallback)
+    {
+        if (!double.IsFinite(popupLeftPixels) ||
+            !double.IsFinite(popupRightPixels) ||
+            !double.IsFinite(petLeftPixels) ||
+            !double.IsFinite(petRightPixels) ||
+            popupRightPixels <= popupLeftPixels ||
+            petRightPixels <= petLeftPixels)
+        {
+            return fallback;
+        }
+
+        var popupCenterPixels =
+            popupLeftPixels + (popupRightPixels - popupLeftPixels) / 2;
+        var petCenterPixels =
+            petLeftPixels + (petRightPixels - petLeftPixels) / 2;
+        if (Math.Abs(popupCenterPixels - petCenterPixels) <= 0.5)
+        {
+            return fallback;
+        }
+
+        return popupCenterPixels < petCenterPixels;
+    }
+
+    private void ApplyCuteBubbleTailSide(bool bubbleIsOnLeft)
+    {
+        if (_cuteBubbleTailPlacedOnLeft == bubbleIsOnLeft)
+        {
+            return;
+        }
+
+        _cuteBubbleTailPlacedOnLeft = bubbleIsOnLeft;
+        BubbleBodyColumn.Width = bubbleIsOnLeft
+            ? GridLength.Auto
+            : new GridLength(12);
+        BubbleTailColumn.Width = bubbleIsOnLeft
+            ? new GridLength(12)
+            : GridLength.Auto;
+        Grid.SetColumn(BubbleHost, bubbleIsOnLeft ? 0 : 1);
+        Grid.SetColumn(BubbleTailHost, bubbleIsOnLeft ? 1 : 0);
+        BubbleTailHost.Margin = bubbleIsOnLeft
             ? new Thickness(-1, 0, 0, 0)
             : new Thickness(0, 0, -1, 0);
-        BubbleTailHost.HorizontalAlignment = placeOnLeft
+        BubbleTailHost.HorizontalAlignment = bubbleIsOnLeft
             ? HorizontalAlignment.Left
             : HorizontalAlignment.Right;
-        BubbleTailPolygon.Points = placeOnLeft
+        BubbleTailPolygon.Points = bubbleIsOnLeft
             ? CuteTailPointsRight
             : CuteTailPointsLeft;
         BubbleTailPolygon.Fill = Brushes.White;

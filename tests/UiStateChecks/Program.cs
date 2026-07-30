@@ -20731,6 +20731,53 @@ internal static class Program
             }
 
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var petHost = GetField<Grid>(window, "PetHost");
+            var clickDown = new MouseButtonEventArgs(
+                Mouse.PrimaryDevice,
+                Environment.TickCount,
+                MouseButton.Left)
+            {
+                RoutedEvent = UIElement.MouseLeftButtonDownEvent,
+                Source = petHost
+            };
+            var clickUp = new MouseButtonEventArgs(
+                Mouse.PrimaryDevice,
+                Environment.TickCount,
+                MouseButton.Left)
+            {
+                RoutedEvent = UIElement.MouseLeftButtonUpEvent,
+                Source = petHost
+            };
+            Invoke(
+                window,
+                "PetHost_MouseLeftButtonDown",
+                petHost,
+                clickDown);
+            Invoke(
+                window,
+                "PetHost_MouseLeftButtonUp",
+                petHost,
+                clickUp);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(
+                GetRawField(window, "_bubbleMode")?.ToString() == "Cute" &&
+                GetField<Popup>(window, "BubblePopup").IsOpen &&
+                GetRawField(window, "_activeClip") is not null,
+                "真实左键单击小鲁班必须启动卖萌动作并显示可爱对话框");
+            AssertCuteBubbleTailAtCurrentPosition(
+                window,
+                "real left-click reaction");
+            var clickReactionClip =
+                GetRawField(window, "_activeClip")
+                ?? throw new InvalidOperationException(
+                    "真实左键单击没有生成可结束的卖萌动作");
+            Invoke(window, "CompleteActiveClip", clickReactionClip);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(
+                GetRawField(window, "_bubbleMode")?.ToString() == "None" &&
+                !GetField<Popup>(window, "BubblePopup").IsOpen,
+                "卖萌动作结束后可爱对话框必须正常收起，不能残留旧箭头方向");
+
             Invoke(window, "SetBubbleMode", todoBubbleMode);
             PumpDispatcher(TimeSpan.FromMilliseconds(40));
             Assert(todoWindow.IsVisible,
@@ -20844,15 +20891,13 @@ internal static class Program
             Invoke(window, "SetBubbleMode", cuteBubbleMode);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             var cutePopup = GetField<Popup>(window, "BubblePopup");
-            var cuteTail =
-                GetField<System.Windows.Shapes.Polygon>(
-                    window,
-                    "BubbleTailPolygon");
             Assert(cutePopup.IsOpen &&
-                   cutePopup.Placement == PlacementMode.Right &&
-                   cuteTail.Points.Count == 3 &&
-                   Math.Abs(cuteTail.Points[1].X) <= 0.01,
-                "人物位于屏幕左侧时，可爱对话框必须放到右边且箭头尖端向左指向人物");
+                   cutePopup.Placement == PlacementMode.Right,
+                "人物位于屏幕左侧时，可爱对话框应优先请求放到右边");
+            Assert(!AssertCuteBubbleTailAtCurrentPosition(
+                       window,
+                       "left-side pet"),
+                "人物位于屏幕左侧时，气泡实际应位于人物右边且箭头向左指向人物");
 
             window.Left =
                 workArea.Right - windowWidth - horizontalInset;
@@ -20860,10 +20905,40 @@ internal static class Program
             SetField(window, "_cuteBubblePlacedOnLeft", null);
             Invoke(window, "UpdateCuteBubblePlacementAndTail");
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
-            Assert(cutePopup.Placement == PlacementMode.Left &&
-                   cuteTail.Points.Count == 3 &&
-                   Math.Abs(cuteTail.Points[1].X - 12) <= 0.01,
-                "人物位于屏幕右侧时，可爱对话框必须放到左边且箭头尖端向右指向人物");
+            Assert(cutePopup.Placement == PlacementMode.Left,
+                "人物位于屏幕右侧时，可爱对话框应优先请求放到左边");
+            Assert(AssertCuteBubbleTailAtCurrentPosition(
+                       window,
+                       "right-side pet"),
+                "人物位于屏幕右侧时，气泡实际应位于人物左边且箭头向右指向人物");
+
+            Assert(!(bool)InvokeStatic(
+                       typeof(MainWindow),
+                       "ResolveCuteBubbleIsOnLeft",
+                       -1580d,
+                       -1353d,
+                       -1800d,
+                       -1610d,
+                       true)!,
+                "负坐标副屏上气泡实际位于人物右侧时，箭头必须仍向左指向人物");
+            Assert((bool)InvokeStatic(
+                       typeof(MainWindow),
+                       "ResolveCuteBubbleIsOnLeft",
+                       1450d,
+                       1677d,
+                       1700d,
+                       1890d,
+                       false)!,
+                "多屏物理坐标中气泡实际位于人物左侧时，箭头必须向右指向人物");
+            Assert((bool)InvokeStatic(
+                       typeof(MainWindow),
+                       "ResolveCuteBubbleIsOnLeft",
+                       double.NaN,
+                       0d,
+                       0d,
+                       190d,
+                       true)!,
+                "Popup HWND 正在跨屏重建而坐标暂不可用时，必须保留请求侧作为安全回退");
         }
         finally
         {
@@ -20894,6 +20969,75 @@ internal static class Program
 
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
         }
+    }
+
+    private static bool AssertCuteBubbleTailAtCurrentPosition(
+        MainWindow window,
+        string stage)
+    {
+        Invoke(window, "ReconcileCuteBubbleTailWithActualPlacement");
+        PumpDispatcher(TimeSpan.FromMilliseconds(10));
+
+        var popup = GetField<Popup>(window, "BubblePopup");
+        var popupChild = popup.Child as FrameworkElement
+            ?? throw new InvalidOperationException(
+                $"{stage}: 可爱对话框缺少可测量的 Popup 子元素");
+        var petViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+        var bubbleHost = GetField<Grid>(window, "BubbleHost");
+        var tailHost = GetField<Grid>(window, "BubbleTailHost");
+        var tailPolygon =
+            GetField<System.Windows.Shapes.Polygon>(
+                window,
+                "BubbleTailPolygon");
+        var firstColumn =
+            GetField<ColumnDefinition>(window, "BubbleBodyColumn");
+        var secondColumn =
+            GetField<ColumnDefinition>(window, "BubbleTailColumn");
+
+        popupChild.UpdateLayout();
+        var popupTopLeft = popupChild.PointToScreen(new Point(0, 0));
+        var popupBottomRight = popupChild.PointToScreen(
+            new Point(popupChild.ActualWidth, popupChild.ActualHeight));
+        var petTopLeft = petViewbox.PointToScreen(new Point(0, 0));
+        var petBottomRight = petViewbox.PointToScreen(
+            new Point(petViewbox.ActualWidth, petViewbox.ActualHeight));
+        var popupCenterX =
+            (popupTopLeft.X + popupBottomRight.X) / 2;
+        var petCenterX =
+            (petTopLeft.X + petBottomRight.X) / 2;
+        var popupIsOnLeft = popupCenterX < petCenterX;
+
+        Assert(
+            GetField<bool?>(window, "_cuteBubbleTailPlacedOnLeft") ==
+            popupIsOnLeft,
+            $"{stage}: 箭头侧必须按 Popup 最终物理位置复核，不能只看请求的 Placement");
+        Assert(
+            popupIsOnLeft
+                ? firstColumn.Width.IsAuto &&
+                  Math.Abs(secondColumn.Width.Value - 12) <= 0.01 &&
+                  Grid.GetColumn(bubbleHost) == 0 &&
+                  Grid.GetColumn(tailHost) == 1
+                : Math.Abs(firstColumn.Width.Value - 12) <= 0.01 &&
+                  secondColumn.Width.IsAuto &&
+                  Grid.GetColumn(tailHost) == 0 &&
+                  Grid.GetColumn(bubbleHost) == 1,
+            $"{stage}: 气泡翻边时 215 DIP 正文列和 12 DIP 箭头列必须一起交换");
+        Assert(tailPolygon.Points.Count == 3,
+            $"{stage}: 可爱气泡箭头必须保持三角形几何");
+
+        var tip = tailPolygon.PointToScreen(tailPolygon.Points[1]);
+        var baseCenter = tailPolygon.PointToScreen(new Point(
+            (tailPolygon.Points[0].X + tailPolygon.Points[2].X) / 2,
+            (tailPolygon.Points[0].Y + tailPolygon.Points[2].Y) / 2));
+        Assert(
+            popupIsOnLeft ? tip.X > baseCenter.X : tip.X < baseCenter.X,
+            $"{stage}: 箭头尖端必须朝向小鲁班所在的一侧");
+        Assert(
+            Math.Abs(tip.X - petCenterX) <
+            Math.Abs(baseCenter.X - petCenterX),
+            $"{stage}: 箭头尖端在物理屏幕坐标中必须比底边更接近小鲁班");
+
+        return popupIsOnLeft;
     }
 
     private static void PositionTodoArrowMatrixCase(
