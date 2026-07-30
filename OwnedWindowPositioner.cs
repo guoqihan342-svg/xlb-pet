@@ -15,10 +15,7 @@ internal static class OwnedWindowPositioner
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoOwnerZOrder = 0x0200;
-    private const int DwmWindowAttributeCloak = 13;
     private static readonly uint MonitorInfoSize = (uint)Marshal.SizeOf<MonitorInfo>();
-
-    internal readonly record struct NativeWindowPosition(int Left, int Top);
 
     internal sealed class PositionCache
     {
@@ -362,92 +359,6 @@ internal static class OwnedWindowPositioner
         }
     }
 
-    internal static bool TryGetNativePosition(
-        Window window,
-        out NativeWindowPosition position)
-    {
-        position = default;
-        try
-        {
-            if (!window.IsLoaded ||
-                PresentationSource.FromVisual(window) is not HwndSource source ||
-                source.Handle == IntPtr.Zero ||
-                !GetWindowRect(source.Handle, out var bounds))
-            {
-                return false;
-            }
-
-            position = new NativeWindowPosition(bounds.Left, bounds.Top);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    internal static bool TrySetNativePosition(
-        Window window,
-        NativeWindowPosition position)
-    {
-        try
-        {
-            if (!window.IsLoaded ||
-                PresentationSource.FromVisual(window) is not HwndSource source ||
-                source.Handle == IntPtr.Zero ||
-                !GetWindowRect(source.Handle, out var currentBounds))
-            {
-                return false;
-            }
-
-            if (currentBounds.Left == position.Left &&
-                currentBounds.Top == position.Top)
-            {
-                return true;
-            }
-
-            return SetWindowPos(
-                source.Handle,
-                IntPtr.Zero,
-                position.Left,
-                position.Top,
-                0,
-                0,
-                SwpNoSize |
-                SwpNoZOrder |
-                SwpNoActivate |
-                SwpNoOwnerZOrder);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    internal static bool TrySetCloaked(Window window, bool cloaked)
-    {
-        try
-        {
-            if (!window.IsLoaded ||
-                PresentationSource.FromVisual(window) is not HwndSource source ||
-                source.Handle == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            var value = cloaked ? 1 : 0;
-            return DwmSetWindowAttribute(
-                source.Handle,
-                DwmWindowAttributeCloak,
-                ref value,
-                sizeof(int)) == 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private static bool IsFinitePositiveBounds(Rect bounds) =>
         double.IsFinite(bounds.Left) &&
         double.IsFinite(bounds.Top) &&
@@ -528,13 +439,6 @@ internal static class OwnedWindowPositioner
         int width,
         int height,
         uint flags);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(
-        IntPtr windowHandle,
-        int attribute,
-        ref int attributeValue,
-        int attributeSize);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint
