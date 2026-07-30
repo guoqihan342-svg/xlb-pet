@@ -3302,7 +3302,7 @@ internal static class Program
                 "roam-boarding",
                 "roam-flight"
             }
-            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" }
+            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" }
                 .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
             .Concat(new[] { "action-reminder-enter", "action-reminder-hold" })
             .ToHashSet(StringComparer.Ordinal);
@@ -3319,7 +3319,7 @@ internal static class Program
                !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "还必须动态包含熊猫坐骑登乘与巡游连续分页、七个动作页、七个循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、八个动作页、八个循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -3398,7 +3398,7 @@ internal static class Program
                 "不得把巡游帧塞进点击动作、idle或手动edge分页");
         }
 
-        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
+        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" })
         {
             var pageName = $"action-{actionName}";
             var actionPageEntries = manifestPages.EnumerateObject()
@@ -4392,7 +4392,7 @@ internal static class Program
             paths.AddRange(reminderNames.Select(name => $"Assets/{name}"));
         }
 
-        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
+        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" })
         {
             var actionNames = Directory.EnumerateFiles(
                     assetsDirectory,
@@ -4721,6 +4721,9 @@ internal static class Program
         var actionLoopFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "ActionLoopFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var hideMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
+                "HideMotionFrameInterval",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         var todoMotionFrameInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "TodoMotionFrameInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
@@ -4734,16 +4737,18 @@ internal static class Program
         Assert(motionFrameInterval == sixtyFpsInterval &&
                todoMotionFrameInterval == sixtyFpsInterval &&
                actionLoopFrameInterval == sixtyFpsInterval &&
+               hideMotionFrameInterval ==
+                   TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 48) &&
                actionLoopCycleCount == 3,
-            "普通动作、Todo与微循环必须统一使用精确60fps姿势间隔，微循环固定3轮");
+            "普通动作与Todo使用精确60fps素材；捉迷藏使用48fps源间隔并经1.25倍播放为60fps，微循环固定3轮");
         Assert(actionTransitionDuration == TimeSpan.Zero,
             "普通动作相邻姿势必须直接切换，ActionTransitionDuration 必须为 zero");
 
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 7, "删除跑步后应保留 7 组点击动作");
-        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" };
+        Assert(clips.Length == 8, "删除跑步并新增捉迷藏后应保留 8 组点击动作");
+        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide" };
         var actualActions = clips
             .Select(clip => GetProperty<string>(clip, "ActionName"))
             .ToArray();
@@ -5068,8 +5073,7 @@ internal static class Program
     {
         var profile = GetExpectedMotionClipProfile(actionName);
         var names = BuildExpectedMotionFrameNames(actionName);
-        var sixtyFpsInterval = TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
-        var durations = Enumerable.Repeat(sixtyFpsInterval, names.Length).ToArray();
+        var durations = Enumerable.Repeat(profile.FrameInterval, names.Length).ToArray();
         if (profile.EndpointHoldDuration <= TimeSpan.Zero)
         {
             return durations;
@@ -5092,22 +5096,31 @@ internal static class Program
     private static (
         int? SmoothFrameCount,
         int LoopCycleCount,
-        TimeSpan EndpointHoldDuration) GetExpectedMotionClipProfile(
+        TimeSpan EndpointHoldDuration,
+        TimeSpan FrameInterval) GetExpectedMotionClipProfile(
             string actionName) =>
         actionName switch
         {
             "cute" => (
                 SmoothFrameCount: 56,
                 LoopCycleCount: 0,
-                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875)),
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
+                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
             "wave" => (
                 SmoothFrameCount: 40,
                 LoopCycleCount: 0,
-                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875)),
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
+                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
+            "hide" => (
+                SmoothFrameCount: null,
+                LoopCycleCount: 3,
+                EndpointHoldDuration: TimeSpan.Zero,
+                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 48)),
             _ => (
                 SmoothFrameCount: null,
                 LoopCycleCount: 3,
-                EndpointHoldDuration: TimeSpan.Zero)
+                EndpointHoldDuration: TimeSpan.Zero,
+                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60))
         };
 
     private static TimeSpan GetFrameDuration(object frame) =>
@@ -5125,18 +5138,18 @@ internal static class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 7 && clips.All(clip =>
+        Assert(clips.Length == 8 && clips.All(clip =>
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "run", StringComparison.OrdinalIgnoreCase)),
             "运行时点击动作中不得再出现 run");
 
         var activities = GetField<Array>(window, "_automaticActivities")
             .Cast<object?>()
             .ToArray();
-        Assert(activities.Length == 8 && activities.Count(activity => activity is null) == 1,
-            "自动活动袋必须为 7 个角色动作加 1 个待机项");
+        Assert(activities.Length == 9 && activities.Count(activity => activity is null) == 1,
+            "自动活动袋必须为 8 个角色动作加 1 个待机项");
         Assert(activities.Where(activity => activity is not null)
                 .All(activity => clips.Any(clip => ReferenceEquals(clip, activity))),
-            "自动活动袋的非空项必须全部引用保留的 7 个点击动作");
+            "自动活动袋的非空项必须全部引用保留的 8 个点击动作");
 
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainWindowSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
@@ -6067,6 +6080,11 @@ internal static class Program
             clips.Single(clip =>
                 GetProperty<string>(clip, "ActionName") == "wave"),
             "reaction-wave");
+        AssertProductionDiscreteVsyncTimeline(
+            window,
+            clips.Single(clip =>
+                GetProperty<string>(clip, "ActionName") == "hide"),
+            "reaction-hide");
 
         AssertTodoTransitionTimelineContract(window, source);
     }
@@ -9401,7 +9419,7 @@ internal static class Program
     private static void AssertRandomActivityBag(MainWindow window)
     {
         var activityCount = GetField<Array>(window, "_automaticActivities").Length;
-        Assert(activityCount == 8, "自动活动袋应包含 7 个角色动作和 1 个待机动作");
+        Assert(activityCount == 9, "自动活动袋应包含 8 个角色动作和 1 个待机动作");
 
         var firstBag = DrainActivityBag(window, activityCount);
         var secondBag = DrainActivityBag(window, activityCount);

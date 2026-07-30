@@ -113,6 +113,11 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgePeekMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
+    // Global reactions play at AnimationPlaybackSpeed=1.25. Authoring the
+    // hide-and-seek frames at 48fps therefore presents them at exactly 60fps,
+    // avoiding periodic 75->60Hz frame skips while the large cover is visible.
+    private static readonly TimeSpan HideMotionFrameInterval =
+        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 48);
     private static readonly TimeSpan StableReactionEndpointHoldDuration =
         TimeSpan.FromMilliseconds(1875);
     private static readonly long VisualFrameDeadlineToleranceTicks =
@@ -167,7 +172,7 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(5);
     private static readonly string[] ActionNames =
     [
-        "yawn", "cry", "cute", "like", "eat", "wave", "think"
+        "yawn", "cry", "cute", "like", "eat", "wave", "think", "hide"
     ];
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
@@ -496,7 +501,8 @@ public partial class MainWindow : Window
             CreateMotionClip("主人真棒！", "like"),
             CreateMotionClip("吃块饼干，补充能量！", "eat"),
             CreateMotionClip("嗨～我在这里！", "wave"),
-            CreateMotionClip("让我认真想一想……", "think")
+            CreateMotionClip("让我认真想一想……", "think"),
+            CreateMotionClip("嘘……来找我呀～", "hide")
         ];
         _todoExitClip = CreateTodoExitClip();
         _todoEnterClip = CreateTodoEnterClip();
@@ -512,7 +518,8 @@ public partial class MainWindow : Window
             _reactionClips[3],
             _reactionClips[4],
             _reactionClips[5],
-            _reactionClips[6]
+            _reactionClips[6],
+            _reactionClips[7]
         ];
         if (!_spritePages.TryGetValue(_idleFrame.PageName, out var idlePage))
         {
@@ -812,7 +819,7 @@ public partial class MainWindow : Window
                 timelineIndex == timeline.Frames.Length - 1 &&
                 profile.EndpointHoldDuration > TimeSpan.Zero
                     ? profile.EndpointHoldDuration
-                    : MotionFrameInterval;
+                    : profile.FrameInterval;
             frames.Add(new AnimationFrame(
                 timeline.Frames[timelineIndex],
                 holdDuration));
@@ -828,7 +835,7 @@ public partial class MainWindow : Window
             {
                 frames.Add(new AnimationFrame(
                     loopFrame,
-                    ActionLoopFrameInterval));
+                    profile.FrameInterval));
             }
         }
 
@@ -838,7 +845,7 @@ public partial class MainWindow : Window
         {
             frames.Add(new AnimationFrame(
                 timeline.Frames[timelineIndex],
-                MotionFrameInterval));
+                profile.FrameInterval));
         }
 
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
@@ -852,25 +859,35 @@ public partial class MainWindow : Window
             "cute" => new MotionClipProfile(
                 CuteCleanSmoothFrameCount,
                 LoopCycleCount: 0,
-                EndpointHoldDuration: StableReactionEndpointHoldDuration),
+                EndpointHoldDuration: StableReactionEndpointHoldDuration,
+                FrameInterval: MotionFrameInterval),
             "wave" => new MotionClipProfile(
                 WaveCleanSmoothFrameCount,
                 LoopCycleCount: 0,
-                EndpointHoldDuration: StableReactionEndpointHoldDuration),
+                EndpointHoldDuration: StableReactionEndpointHoldDuration,
+                FrameInterval: MotionFrameInterval),
+            "hide" => new MotionClipProfile(
+                availableSmoothFrameCount,
+                ActionLoopCycleCount,
+                EndpointHoldDuration: TimeSpan.Zero,
+                FrameInterval: HideMotionFrameInterval),
             _ => new MotionClipProfile(
                 availableSmoothFrameCount,
                 ActionLoopCycleCount,
-                EndpointHoldDuration: TimeSpan.Zero)
+                EndpointHoldDuration: TimeSpan.Zero,
+                FrameInterval: MotionFrameInterval)
         };
 
         if (profile.SmoothFrameCount <= 0 ||
             profile.SmoothFrameCount > availableSmoothFrameCount ||
-            profile.LoopCycleCount < 0)
+            profile.LoopCycleCount < 0 ||
+            profile.FrameInterval <= TimeSpan.Zero)
         {
             throw new InvalidOperationException(
                 $"Invalid motion profile for '{actionName}': " +
                 $"smooth={profile.SmoothFrameCount}/{availableSmoothFrameCount}, " +
-                $"loops={profile.LoopCycleCount}.");
+                $"loops={profile.LoopCycleCount}, " +
+                $"interval={profile.FrameInterval}.");
         }
 
         return profile;
@@ -10411,7 +10428,8 @@ public partial class MainWindow : Window
     private readonly record struct MotionClipProfile(
         int SmoothFrameCount,
         int LoopCycleCount,
-        TimeSpan EndpointHoldDuration);
+        TimeSpan EndpointHoldDuration,
+        TimeSpan FrameInterval);
 
     private sealed record AnimationClip(
         string Message,
