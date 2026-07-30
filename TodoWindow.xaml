@@ -1431,11 +1431,12 @@
                         <RowDefinition Height="18" />
                         <RowDefinition Height="36" />
                         <RowDefinition Height="28" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="34" />
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="1"
-                            Grid.RowSpan="4"
+                            Grid.RowSpan="5"
                             Margin="-4,-3,-4,-3"
                             BorderThickness="1.5"
                             CornerRadius="12"
@@ -2049,7 +2050,145 @@
                         </StackPanel>
                     </Grid>
 
-                    <Grid Grid.Row="4" Margin="0,4,0,0">
+                    <Grid x:Name="ScheduledQuietHoursEditor"
+                          Grid.Row="4"
+                          Height="30"
+                          Margin="1,2,1,0"
+                          IsEnabled="{Binding IsChecked, ElementName=ScheduledRepeatToggle}">
+                        <Grid.Style>
+                            <Style TargetType="{x:Type Grid}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsChecked, ElementName=ScheduledRepeatToggle}"
+                                                 Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Style>
+                        <Grid.Resources>
+                            <Style x:Key="ScheduledQuietTimeTextBoxStyle"
+                                   TargetType="{x:Type TextBox}">
+                                <Setter Property="Width" Value="67" />
+                                <Setter Property="Height" Value="25" />
+                                <Setter Property="Padding" Value="4,1" />
+                                <Setter Property="VerticalContentAlignment" Value="Center" />
+                                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                <Setter Property="Background" Value="#FFFFF8EE" />
+                                <Setter Property="BorderBrush" Value="#E7B77D" />
+                                <Setter Property="BorderThickness" Value="1" />
+                                <Setter Property="CaretBrush" Value="#A8642F" />
+                                <Setter Property="FontFamily" Value="Microsoft YaHei" />
+                                <Setter Property="FontSize" Value="10.5" />
+                                <Setter Property="Foreground" Value="#72513A" />
+                                <Setter Property="SelectionBrush" Value="#FFD7A6" />
+                                <Setter Property="TextAlignment" Value="Center" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="{x:Type TextBox}">
+                                            <Border x:Name="QuietTimeBorder"
+                                                    Padding="{TemplateBinding Padding}"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="8">
+                                                <ScrollViewer x:Name="PART_ContentHost"
+                                                              Focusable="False" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="Background"
+                                                            Value="#FFFFEDDA" />
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="BorderBrush"
+                                                            Value="#E39B50" />
+                                                </Trigger>
+                                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="Background"
+                                                            Value="#FFFFE7CA" />
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="BorderBrush"
+                                                            Value="#D98238" />
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="BorderThickness"
+                                                            Value="1.5" />
+                                                </Trigger>
+                                                <Trigger Property="IsEnabled" Value="False">
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="Background"
+                                                            Value="#FFF4EFE9" />
+                                                    <Setter TargetName="QuietTimeBorder"
+                                                            Property="BorderBrush"
+                                                            Value="#DDD0C2" />
+                                                    <Setter Property="Opacity" Value="0.66" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Grid.Resources>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="75" />
+                            <ColumnDefinition Width="67" />
+                            <ColumnDefinition Width="22" />
+                            <ColumnDefinition Width="67" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="ScheduledQuietHoursToggle"
+                                  Grid.Column="0"
+                                  VerticalAlignment="Center"
+                                  AutomationProperties.Name="免打扰时段"
+                                  Content="免打扰"
+                                  Cursor="Hand"
+                                  FontFamily="Microsoft YaHei"
+                                  FontSize="11.5"
+                                  Foreground="#8A562E"
+                                  Style="{StaticResource CuteTaskCheckBoxStyle}"
+                                  ToolTip="勾选后，这个循环任务在免打扰时段内不会弹窗"
+                                  Checked="ScheduledQuietHoursToggle_Changed"
+                                  Unchecked="ScheduledQuietHoursToggle_Changed" />
+                        <TextBox x:Name="ScheduledQuietHoursStartInput"
+                                 Grid.Column="1"
+                                 AutomationProperties.Name="免打扰开始时间"
+                                 InputMethod.IsInputMethodEnabled="False"
+                                 IsEnabled="{Binding IsChecked, ElementName=ScheduledQuietHoursToggle}"
+                                 MaxLength="8"
+                                 Style="{StaticResource ScheduledQuietTimeTextBoxStyle}"
+                                 Text="22:00:00"
+                                 ToolTip="开始时间，格式 HH:mm:ss"
+                                 TextChanged="ScheduledQuietHoursTimeInput_TextChanged"
+                                 PreviewTextInput="ScheduledQuietHoursTimeInput_PreviewTextInput" />
+                        <TextBlock Grid.Column="2"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="10.5"
+                                   Foreground="#B47A4E"
+                                   Text="至" />
+                        <TextBox x:Name="ScheduledQuietHoursEndInput"
+                                 Grid.Column="3"
+                                 AutomationProperties.Name="免打扰结束时间"
+                                 InputMethod.IsInputMethodEnabled="False"
+                                 IsEnabled="{Binding IsChecked, ElementName=ScheduledQuietHoursToggle}"
+                                 MaxLength="8"
+                                 Style="{StaticResource ScheduledQuietTimeTextBoxStyle}"
+                                 Text="07:00:00"
+                                 ToolTip="结束时间，格式 HH:mm:ss；可跨午夜"
+                                 TextChanged="ScheduledQuietHoursTimeInput_TextChanged"
+                                 PreviewTextInput="ScheduledQuietHoursTimeInput_PreviewTextInput" />
+                        <TextBlock Grid.Column="4"
+                                   Margin="5,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="9.5"
+                                   Foreground="#C58A5A"
+                                   Text="可跨夜" />
+                    </Grid>
+
+                    <Grid Grid.Row="5" Margin="0,4,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="102" />
                             <ColumnDefinition Width="4" />
@@ -2966,7 +3105,7 @@
                                    VerticalAlignment="Bottom"
                                    FontFamily="Microsoft YaHei"
                                    FontSize="10.5"
-                                   Foreground="#C65353"
+                                   Foreground="#D46A2E"
                                    TextTrimming="CharacterEllipsis" />
                         <TextBlock x:Name="ScheduledRepeatRulePreviewText"
                                    Grid.Column="0"

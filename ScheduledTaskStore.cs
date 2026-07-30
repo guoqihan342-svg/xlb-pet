@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security;
@@ -14,12 +15,21 @@ public sealed class ScheduledTaskStore
     internal static readonly TimeSpan MaximumRepeatInterval =
         TimeSpan.FromDays(1000);
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions JsonOptions =
+        CreateJsonOptions();
+
+    private static JsonSerializerOptions CreateJsonOptions()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        WriteIndented = true
-    };
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true
+        };
+        options.Converters.Add(
+            new ScheduledQuietHoursRecordJsonConverter());
+        return options;
+    }
 
     private readonly string _filePath;
     private bool _protectExistingDataAfterLoadFailure;
@@ -112,7 +122,8 @@ public sealed class ScheduledTaskStore
                     item.DueAt,
                     item.CreatedAt,
                     item.RepeatInterval?.Ticks,
-                    ToRecord(item.RepeatRule)))
+                    ToRecord(item.RepeatRule),
+                    ToRecord(item.QuietHours)))
                 .ToArray();
             var json = JsonSerializer.Serialize(records, JsonOptions);
 
@@ -171,7 +182,8 @@ public sealed class ScheduledTaskStore
                 record.RepeatIntervalTicks is { } ticks && ticks > 0
                     ? TimeSpan.FromTicks(ticks)
                     : null),
-            RepeatRule = ToRule(record.RepeatRule)
+            RepeatRule = ToRule(record.RepeatRule),
+            QuietHours = ToQuietHours(record.QuietHours)
         };
     }
 
@@ -201,6 +213,12 @@ public sealed class ScheduledTaskStore
                 item.RepeatRule,
                 dueAt,
                 ref repeatInterval);
+            var quietHours =
+                repeatRule is not null ||
+                repeatInterval is { } interval &&
+                interval > TimeSpan.Zero
+                    ? ScheduledQuietHoursSchedule.Normalize(item.QuietHours)
+                    : null;
             normalized.Add(new ScheduledTaskItem
             {
                 Id = item.Id,
@@ -208,7 +226,8 @@ public sealed class ScheduledTaskStore
                 DueAt = dueAt,
                 CreatedAt = createdAt,
                 RepeatInterval = repeatInterval,
-                RepeatRule = repeatRule
+                RepeatRule = repeatRule,
+                QuietHours = quietHours
             });
         }
 
@@ -312,6 +331,35 @@ public sealed class ScheduledTaskStore
             rule.NextOrdinal);
     }
 
+    private static ScheduledQuietHours? ToQuietHours(
+        ScheduledQuietHoursRecord? record)
+    {
+        return record is null
+            ? null
+            : ScheduledQuietHoursSchedule.Normalize(
+                new ScheduledQuietHours
+                {
+                    Version = record.Version,
+                    Start = record.Start,
+                    End = record.End,
+                    TimeZoneId = record.TimeZoneId ?? string.Empty
+                });
+    }
+
+    private static ScheduledQuietHoursRecord? ToRecord(
+        ScheduledQuietHours? quietHours)
+    {
+        var normalized =
+            ScheduledQuietHoursSchedule.Normalize(quietHours);
+        return normalized is null
+            ? null
+            : new ScheduledQuietHoursRecord(
+                normalized.Version,
+                normalized.Start,
+                normalized.End,
+                normalized.TimeZoneId);
+    }
+
     private sealed record ScheduledTaskRecord(
         Guid Id,
         string? Text,
@@ -319,7 +367,9 @@ public sealed class ScheduledTaskStore
         DateTimeOffset CreatedAt,
         long? RepeatIntervalTicks = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        ScheduledRepeatRuleRecord? RepeatRule = null);
+        ScheduledRepeatRuleRecord? RepeatRule = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        ScheduledQuietHoursRecord? QuietHours = null);
 
     private sealed record ScheduledRepeatRuleRecord(
         int Version,
@@ -328,4 +378,96 @@ public sealed class ScheduledTaskStore
         string? TimeZoneId,
         DateTime AnchorLocal,
         long NextOrdinal);
+
+    private sealed record ScheduledQuietHoursRecord(
+        int Version,
+        TimeSpan Start,
+        TimeSpan End,
+        string? TimeZoneId);
+
+    private sealed class ScheduledQuietHoursRecordJsonConverter
+        : JsonConverter<ScheduledQuietHoursRecord>
+    {
+        public override ScheduledQuietHoursRecord? Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Null)
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.ParseValue(ref reader);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !TryGetProperty(root, "version", out var versionElement) ||
+                !versionElement.TryGetInt32(out var version) ||
+                !TryGetProperty(root, "start", out var startElement) ||
+                !TryReadTimeSpan(startElement, out var start) ||
+                !TryGetProperty(root, "end", out var endElement) ||
+                !TryReadTimeSpan(endElement, out var end) ||
+                !TryGetProperty(root, "timeZoneId", out var timeZoneElement) ||
+                timeZoneElement.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return new ScheduledQuietHoursRecord(
+                version,
+                start,
+                end,
+                timeZoneElement.GetString());
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            ScheduledQuietHoursRecord value,
+            JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("version", value.Version);
+            writer.WriteString(
+                "start",
+                value.Start.ToString("c", CultureInfo.InvariantCulture));
+            writer.WriteString(
+                "end",
+                value.End.ToString("c", CultureInfo.InvariantCulture));
+            writer.WriteString("timeZoneId", value.TimeZoneId);
+            writer.WriteEndObject();
+        }
+
+        private static bool TryGetProperty(
+            JsonElement element,
+            string propertyName,
+            out JsonElement value)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(
+                        property.Name,
+                        propertyName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+
+            value = default;
+            return false;
+        }
+
+        private static bool TryReadTimeSpan(
+            JsonElement element,
+            out TimeSpan value)
+        {
+            value = default;
+            return element.ValueKind == JsonValueKind.String &&
+                   TimeSpan.TryParse(
+                       element.GetString(),
+                       CultureInfo.InvariantCulture,
+                       out value);
+        }
+    }
 }

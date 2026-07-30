@@ -1591,12 +1591,90 @@
                                    Text="一次" />
                     </Grid>
 
+                    <Grid x:Name="QuietHoursEditor"
+                          Height="34"
+                          Margin="0,4,0,0"
+                          IsEnabled="{Binding IsChecked, ElementName=RepeatToggle}">
+                        <Grid.Style>
+                            <Style TargetType="{x:Type Grid}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsChecked, ElementName=RepeatToggle}"
+                                                 Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Style>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="108" />
+                            <ColumnDefinition Width="75" />
+                            <ColumnDefinition Width="22" />
+                            <ColumnDefinition Width="75" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="QuietHoursToggle"
+                                  Grid.Column="0"
+                                  AutomationProperties.Name="免打扰时段"
+                                  Content="免打扰"
+                                  ToolTip="勾选后，这个循环任务在免打扰时段内不会弹窗"
+                                  Checked="QuietHoursToggle_Changed"
+                                  Unchecked="QuietHoursToggle_Changed"
+                                  shell:WindowChrome.IsHitTestVisibleInChrome="True" />
+                        <TextBox x:Name="QuietHoursStartTextBox"
+                                 Grid.Column="1"
+                                 Width="75"
+                                 Height="29"
+                                 Padding="4,2"
+                                 AutomationProperties.Name="免打扰开始时间"
+                                 InputMethod.IsInputMethodEnabled="False"
+                                 IsEnabled="{Binding IsChecked, ElementName=QuietHoursToggle}"
+                                 MaxLength="8"
+                                 Style="{StaticResource CuteRepeatCountTextBoxStyle}"
+                                 Text="22:00:00"
+                                 TextAlignment="Center"
+                                 ToolTip="开始时间，格式 HH:mm:ss"
+                                 TextChanged="QuietHoursControl_Changed"
+                                 PreviewTextInput="QuietHoursTimeTextBox_PreviewTextInput"
+                                 shell:WindowChrome.IsHitTestVisibleInChrome="True" />
+                        <TextBlock Grid.Column="2"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="10.5"
+                                   Foreground="#B47A4E"
+                                   Text="至" />
+                        <TextBox x:Name="QuietHoursEndTextBox"
+                                 Grid.Column="3"
+                                 Width="75"
+                                 Height="29"
+                                 Padding="4,2"
+                                 AutomationProperties.Name="免打扰结束时间"
+                                 InputMethod.IsInputMethodEnabled="False"
+                                 IsEnabled="{Binding IsChecked, ElementName=QuietHoursToggle}"
+                                 MaxLength="8"
+                                 Style="{StaticResource CuteRepeatCountTextBoxStyle}"
+                                 Text="07:00:00"
+                                 TextAlignment="Center"
+                                 ToolTip="结束时间，格式 HH:mm:ss；可跨午夜"
+                                 TextChanged="QuietHoursControl_Changed"
+                                 PreviewTextInput="QuietHoursTimeTextBox_PreviewTextInput"
+                                 shell:WindowChrome.IsHitTestVisibleInChrome="True" />
+                        <TextBlock Grid.Column="4"
+                                   Margin="7,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="10"
+                                   Foreground="#C58A5A"
+                                   Text="可跨夜" />
+                    </Grid>
+
                     <TextBlock x:Name="ValidationText"
                                MinHeight="17"
                                Margin="2,1,2,0"
                                FontFamily="Microsoft YaHei"
                                FontSize="9.5"
-                               Foreground="#D05B42"
+                               Foreground="#D46A2E"
                                TextWrapping="Wrap" />
                 </StackPanel>
             </ScrollViewer>

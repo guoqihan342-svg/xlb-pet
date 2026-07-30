@@ -20,6 +20,8 @@ public sealed class ScheduledTaskItem
 
     public ScheduledRepeatRule? RepeatRule { get; set; }
 
+    public ScheduledQuietHours? QuietHours { get; set; }
+
     public bool IsRecurring =>
         RepeatRule is not null ||
         RepeatInterval is { } interval && interval > TimeSpan.Zero;
@@ -36,12 +38,33 @@ public sealed class ScheduledTaskItem
             ? FormatRepeatInterval(interval)
             : "单次";
 
-    public string DueAtDisplayText =>
-        IsRecurring
-            ? $"{RepeatDisplayText} · 下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}"
-            : DueAt.ToLocalTime().ToString(
+    public string QuietHoursDisplayText =>
+        IsRecurring &&
+        QuietHours is { } quietHours &&
+        ScheduledQuietHoursSchedule.Normalize(quietHours) is
+            { } normalizedQuietHours
+            ? ScheduledQuietHoursSchedule.FormatDisplayText(
+                normalizedQuietHours)
+            : string.Empty;
+
+    public string DueAtDisplayText
+    {
+        get
+        {
+            if (!IsRecurring)
+            {
+                return DueAt.ToLocalTime().ToString(
                 "yyyy年M月d日 ddd HH:mm:ss",
                 ChineseCulture);
+            }
+
+            var quietHoursText = QuietHoursDisplayText;
+            return quietHoursText.Length == 0
+                ? $"{RepeatDisplayText} · 下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}"
+                : $"{RepeatDisplayText} · {quietHoursText} · " +
+                  $"下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}";
+        }
+    }
 
     public string DueDateDisplayText =>
         DueAt.ToLocalTime().ToString("M月d日 ddd", ChineseCulture);

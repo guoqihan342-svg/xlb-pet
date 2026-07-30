@@ -9103,7 +9103,8 @@ public partial class MainWindow : Window
         string text,
         DateTimeOffset dueAt,
         TimeSpan? repeatInterval,
-        ScheduledRepeatRule? repeatRule)
+        ScheduledRepeatRule? repeatRule,
+        ScheduledQuietHours? quietHours)
     {
         var normalizedText = text.Trim();
         if (normalizedText.Length == 0)
@@ -9112,15 +9113,23 @@ public partial class MainWindow : Window
         }
 
         var now = _nowProvider();
+        var normalizedRepeatInterval =
+            ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval);
+        var normalizedQuietHours =
+            repeatRule is not null ||
+            normalizedRepeatInterval is { } interval &&
+            interval > TimeSpan.Zero
+                ? ScheduledQuietHoursSchedule.Normalize(quietHours)
+                : null;
         var item = new ScheduledTaskItem
         {
             Id = Guid.NewGuid(),
             Text = normalizedText,
             DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt),
             CreatedAt = now,
-            RepeatInterval =
-                ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval),
-            RepeatRule = repeatRule
+            RepeatInterval = normalizedRepeatInterval,
+            RepeatRule = repeatRule,
+            QuietHours = normalizedQuietHours
         };
         InsertScheduledTaskSorted(item);
         SaveScheduledTasks();
@@ -9137,12 +9146,22 @@ public partial class MainWindow : Window
         var now = _nowProvider();
         RemoveDeletedScheduledTaskFromReminderState(item.Id);
         SaveScheduledTasks();
+        var suspendedQuietPresentation =
+            SuspendQuietScheduledTaskPresentationsAt(now);
         RebuildReminderQueueAt(now);
 
         if (_activeReminder is null)
         {
             if (!ShowNextQueuedReminderAt(now))
             {
+                if (suspendedQuietPresentation ||
+                    HasSuppressedQuietReminderStateAt(now))
+                {
+                    FinishQuietScheduledTaskSuspension();
+                    ScheduleNextReminderAt(now);
+                    return;
+                }
+
                 FinishReminderAfterScheduledTaskDeletion(now);
                 return;
             }
@@ -9205,9 +9224,12 @@ public partial class MainWindow : Window
         string text,
         DateTimeOffset dueAt,
         TimeSpan? repeatInterval,
-        ScheduledRepeatRule? repeatRule)
+        ScheduledRepeatRule? repeatRule,
+        ScheduledQuietHours? quietHours)
     {
-        if (_queuedReminderIds.Contains(item.Id))
+        if (_queuedReminderIds.Contains(item.Id) ||
+            _presentedReminderOccurrenceCounts.GetValueOrDefault(
+                item.Id) > 0)
         {
             return;
         }
@@ -9222,9 +9244,16 @@ public partial class MainWindow : Window
         _scheduledTasks.RemoveAt(existingIndex);
         item.Text = normalizedText;
         item.DueAt = ScheduledTaskStore.NormalizeToWholeSecond(dueAt);
-        item.RepeatInterval =
+        var normalizedRepeatInterval =
             ScheduledTaskStore.NormalizeRepeatInterval(repeatInterval);
+        item.RepeatInterval = normalizedRepeatInterval;
         item.RepeatRule = repeatRule;
+        item.QuietHours =
+            repeatRule is not null ||
+            normalizedRepeatInterval is { } interval &&
+            interval > TimeSpan.Zero
+                ? ScheduledQuietHoursSchedule.Normalize(quietHours)
+                : null;
         InsertScheduledTaskSorted(item);
 
         var now = _nowProvider();
@@ -9283,6 +9312,8 @@ public partial class MainWindow : Window
         }
 
         _scheduledTaskTimer.Stop();
+        var suspendedQuietPresentation =
+            SuspendQuietScheduledTaskPresentationsAt(now);
         RebuildReminderQueueAt(now);
         if (_activeReminder is null)
         {
@@ -9291,6 +9322,11 @@ public partial class MainWindow : Window
         else
         {
             RefreshActiveReminderPresentation(now);
+        }
+
+        if (suspendedQuietPresentation && _activeReminder is null)
+        {
+            FinishQuietScheduledTaskSuspension();
         }
 
         ScheduleNextReminderAt(now);
@@ -9343,6 +9379,11 @@ public partial class MainWindow : Window
                 continue;
             }
 
+            if (IsScheduledTaskQuietAt(item, now))
+            {
+                continue;
+            }
+
             if (_queuedReminderIds.Add(item.Id))
             {
                 _reminderQueue.Enqueue(item);
@@ -9361,9 +9402,20 @@ public partial class MainWindow : Window
                 continue;
             }
 
+            if (IsScheduledTaskQuietAt(item, now))
+            {
+                _queuedReminderIds.Remove(item.Id);
+                continue;
+            }
+
             _upcomingReminderPreloadPageName = null;
             _activeReminder = item;
-            _isReminderPresentationDismissed = false;
+            if (_presentedReminderOccurrenceCounts.GetValueOrDefault(
+                    item.Id) == 0)
+            {
+                _isReminderPresentationDismissed = false;
+            }
+
             RefreshActiveReminderPresentation(now);
             return true;
         }
@@ -9380,7 +9432,8 @@ public partial class MainWindow : Window
 
         var hasNewReminderOccurrences = false;
         _activeReminderBatch.RemoveAll(item =>
-            !_scheduledTasks.Contains(item));
+            !_scheduledTasks.Contains(item) ||
+            IsScheduledTaskQuietAt(item, now));
         if (_activeReminderBatch.All(item => item.Id != activeReminder.Id))
         {
             _activeReminderBatch.Add(activeReminder);
@@ -9398,8 +9451,14 @@ public partial class MainWindow : Window
         var activeIds = _activeReminderBatch
             .Select(item => item.Id)
             .ToHashSet();
+        var quietIds = _scheduledTasks
+            .Where(item => IsScheduledTaskQuietAt(item, now))
+            .Select(item => item.Id)
+            .ToHashSet();
         foreach (var staleId in _presentedReminderOccurrenceCounts.Keys
-                     .Where(id => !activeIds.Contains(id))
+                     .Where(id =>
+                         !activeIds.Contains(id) &&
+                         !quietIds.Contains(id))
                      .ToArray())
         {
             _presentedReminderOccurrenceCounts.Remove(staleId);
@@ -9727,14 +9786,13 @@ public partial class MainWindow : Window
         var acknowledgedItems = _activeReminderBatch
             .Where(item => acknowledgedCounts.ContainsKey(item.Id))
             .ToArray();
-        var carriedForwardCounts = _activeReminderBatch
-            .ToDictionary(
-                item => item.Id,
-                item => Math.Max(
+        var carriedForwardCounts =
+            _presentedReminderOccurrenceCounts.ToDictionary(
+                pair => pair.Key,
+                pair => Math.Max(
                     0,
-                    _presentedReminderOccurrenceCounts.GetValueOrDefault(
-                        item.Id) -
-                    acknowledgedCounts.GetValueOrDefault(item.Id)));
+                    pair.Value -
+                    acknowledgedCounts.GetValueOrDefault(pair.Key)));
         _activeReminder = null;
         _activeReminderBatch.Clear();
         foreach (var item in acknowledgedItems)
@@ -9873,6 +9931,7 @@ public partial class MainWindow : Window
         item.DueAt = maximumWholeSecond;
         item.RepeatInterval = null;
         item.RepeatRule = null;
+        item.QuietHours = null;
         InsertScheduledTaskSorted(item);
     }
 
@@ -10035,6 +10094,29 @@ public partial class MainWindow : Window
                 candidate = null;
             }
 
+            if (IsScheduledTaskQuietAt(item, now) &&
+                ScheduledQuietHoursSchedule.TryGetQuietEnd(
+                    item.QuietHours,
+                    now,
+                    out var quietEnd) &&
+                (observedCount > 0 ||
+                 item.DueAt <= now ||
+                 candidate is { } quietCandidate &&
+                 quietCandidate <= quietEnd))
+            {
+                candidate = quietEnd;
+            }
+            else if (observedCount > 0 &&
+                     item.IsRecurring &&
+                     ScheduledQuietHoursSchedule.TryGetNextQuietStart(
+                         item.QuietHours,
+                         now,
+                         out var quietStart) &&
+                     (candidate is null || quietStart < candidate.Value))
+            {
+                candidate = quietStart;
+            }
+
             if (candidate is { } dueAt &&
                 (nextDueAt is null || dueAt < nextDueAt.Value))
             {
@@ -10043,6 +10125,86 @@ public partial class MainWindow : Window
         }
 
         return nextDueAt;
+    }
+
+    private static bool IsScheduledTaskQuietAt(
+        ScheduledTaskItem item,
+        DateTimeOffset now) =>
+        item.IsRecurring &&
+        ScheduledQuietHoursSchedule.IsQuietAt(item.QuietHours, now);
+
+    private bool SuspendQuietScheduledTaskPresentationsAt(
+        DateTimeOffset now)
+    {
+        if (_activeReminder is null && _activeReminderBatch.Count == 0)
+        {
+            return false;
+        }
+
+        var quietIds = _activeReminderBatch
+            .Where(item => IsScheduledTaskQuietAt(item, now))
+            .Select(item => item.Id)
+            .ToHashSet();
+        if (_activeReminder is { } activeReminder &&
+            IsScheduledTaskQuietAt(activeReminder, now))
+        {
+            quietIds.Add(activeReminder.Id);
+        }
+
+        if (quietIds.Count == 0)
+        {
+            return false;
+        }
+
+        _activeReminderBatch.RemoveAll(item => quietIds.Contains(item.Id));
+        _visibleReminderOccurrences.RemoveAll(
+            occurrence => quietIds.Contains(occurrence.TaskId));
+        foreach (var quietId in quietIds)
+        {
+            _queuedReminderIds.Remove(quietId);
+        }
+
+        if (_activeReminder is { } current &&
+            quietIds.Contains(current.Id))
+        {
+            _activeReminder = _activeReminderBatch.Count > 0
+                ? _activeReminderBatch[0]
+                : null;
+        }
+
+        _totalReminderOccurrenceCount = 0;
+        return true;
+    }
+
+    private bool HasSuppressedQuietReminderStateAt(
+        DateTimeOffset now) =>
+        _scheduledTasks.Any(item =>
+            _presentedReminderOccurrenceCounts.ContainsKey(item.Id) &&
+            IsScheduledTaskQuietAt(item, now));
+
+    private void FinishQuietScheduledTaskSuspension()
+    {
+        if (_activeReminder is not null)
+        {
+            return;
+        }
+
+        var wasReminderVisible =
+            _isReminderActive || _bubbleMode == BubbleMode.Reminder;
+        _isReminderActive = false;
+        if (wasReminderVisible)
+        {
+            SetBubbleMode(
+                _todoWindow.IsVisible
+                    ? BubbleMode.Todo
+                    : BubbleMode.None);
+            RestoreReminderPetSizeAt(Stopwatch.GetTimestamp());
+        }
+        else
+        {
+            _reminderWindow?.HideSafely();
+            _reminderWindow?.ClearPresentation();
+        }
     }
 
     private void PreloadUpcomingReminderAt(DateTimeOffset now)

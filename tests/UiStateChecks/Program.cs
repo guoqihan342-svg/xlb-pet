@@ -270,6 +270,8 @@ internal static class Program
                         () => AssertScheduledTaskEditContract(window));
                     RunCheck(nameof(AssertScheduledReminderOccurrenceStackContract),
                         () => AssertScheduledReminderOccurrenceStackContract(window));
+                    RunCheck(nameof(AssertScheduledQuietHoursRuntimeContract),
+                        () => AssertScheduledQuietHoursRuntimeContract(window));
                     return 0;
                 }
 
@@ -342,6 +344,8 @@ internal static class Program
                     () => AssertScheduledTaskEditContract(window));
                 RunCheck(nameof(AssertScheduledReminderOccurrenceStackContract),
                     () => AssertScheduledReminderOccurrenceStackContract(window));
+                RunCheck(nameof(AssertScheduledQuietHoursRuntimeContract),
+                    () => AssertScheduledQuietHoursRuntimeContract(window));
                 RunCheck(
                     nameof(AssertPetSizeMoveToPointGestureContract),
                     () => AssertPetSizeMoveToPointGestureContract(window));
@@ -10819,6 +10823,9 @@ internal static class Program
             var scheduledRepeatEditor = GetField<Grid>(
                 todoWindow,
                 "ScheduledRepeatEditor");
+            var scheduledQuietHoursEditor = GetField<Grid>(
+                todoWindow,
+                "ScheduledQuietHoursEditor");
             var scheduledDatePickerHost = GetField<Border>(
                 todoWindow,
                 "ScheduledDatePickerHost");
@@ -10862,6 +10869,15 @@ internal static class Program
             var scheduledRepeatToggle = GetField<CheckBox>(
                 todoWindow,
                 "ScheduledRepeatToggle");
+            var scheduledQuietHoursToggle = GetField<CheckBox>(
+                todoWindow,
+                "ScheduledQuietHoursToggle");
+            var scheduledQuietHoursStart = GetField<TextBox>(
+                todoWindow,
+                "ScheduledQuietHoursStartInput");
+            var scheduledQuietHoursEnd = GetField<TextBox>(
+                todoWindow,
+                "ScheduledQuietHoursEndInput");
             var scheduledRepeatCount = GetField<TextBox>(
                 todoWindow,
                 "ScheduledRepeatCountInput");
@@ -10916,22 +10932,25 @@ internal static class Program
                 var dateRowHost =
                     VisualTreeHelper.GetParent(
                         scheduledDatePickerHost) as Grid;
-                Assert(rowHeights.Length == 5 &&
+                Assert(rowHeights.Length == 6 &&
                        rowHeights[0].IsStar &&
                        rowHeights[1].GridUnitType ==
                            GridUnitType.Pixel &&
                        Math.Abs(rowHeights[1].Value - 18) <= 0.01 &&
                        Math.Abs(rowHeights[2].Value - 36) <= 0.01 &&
                        Math.Abs(rowHeights[3].Value - 28) <= 0.01 &&
-                       Math.Abs(rowHeights[4].Value - 34) <= 0.01 &&
+                       rowHeights[4].GridUnitType ==
+                           GridUnitType.Auto &&
+                       Math.Abs(rowHeights[5].Value - 34) <= 0.01 &&
                        statusRowHost is not null &&
                        Grid.GetRow(statusRowHost) == 1 &&
                        inputRowHost is not null &&
                        Grid.GetRow(inputRowHost) == 2 &&
                        Grid.GetRow(scheduledRepeatEditor) == 3 &&
+                       Grid.GetRow(scheduledQuietHoursEditor) == 4 &&
                        dateRowHost is not null &&
-                       Grid.GetRow(dateRowHost) == 4,
-                    $"{stage}定时页行顺序必须固定为 */18校验/36输入/28循环/34日期");
+                       Grid.GetRow(dateRowHost) == 5,
+                    $"{stage}定时页行顺序必须固定为 */18校验/36输入/28循环/Auto免打扰/34日期");
 
                 var todoInputBounds = BoundsInTodo(todoInput);
                 var scheduledInputBounds = BoundsInTodo(scheduledInput);
@@ -10957,7 +10976,21 @@ internal static class Program
                 Assert(scheduledInputBounds.Bottom <=
                            repeatBounds.Top + 0.5 &&
                        repeatBounds.Bottom <= dateBounds.Top + 0.5,
-                    $"{stage}定时输入、循环和日期三行不得垂直重叠");
+                    $"{stage}定时输入、循环、免打扰和日期各行不得垂直重叠");
+                if (scheduledQuietHoursEditor.Visibility ==
+                    Visibility.Visible)
+                {
+                    var quietBounds =
+                        BoundsInTodo(scheduledQuietHoursEditor);
+                    Assert(repeatBounds.Bottom <= quietBounds.Top + 0.5 &&
+                           quietBounds.Bottom <= dateBounds.Top + 0.5,
+                        $"{stage}可见免打扰时段不得覆盖循环或日期行");
+                }
+                else
+                {
+                    Assert(scheduledQuietHoursEditor.ActualHeight <= 0.5,
+                        $"{stage}非循环状态必须折叠免打扰行且不占布局高度");
+                }
 
                 var statusBounds = scheduledRepeatRulePreview.Visibility ==
                         Visibility.Visible
@@ -11228,6 +11261,12 @@ internal static class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             todoWindow.UpdateLayout();
             AssertScheduledFormLayout("默认新增态");
+            Assert(scheduledQuietHoursEditor.Visibility ==
+                       Visibility.Collapsed &&
+                   scheduledQuietHoursToggle.IsChecked != true &&
+                   scheduledQuietHoursStart.Text == "22:00:00" &&
+                   scheduledQuietHoursEnd.Text == "07:00:00",
+                "免打扰时段必须仅供循环任务使用，新增态默认关闭并预填22:00:00到07:00:00");
             scheduledRepeatToggle.ApplyTemplate();
             var scheduledRepeatShell = scheduledRepeatToggle.Template.FindName(
                 "CuteCheckShell",
@@ -11240,9 +11279,39 @@ internal static class Program
                        Color.FromRgb(0xF2, 0xA0, 0x52) &&
                    scheduledRepeatShell.BorderBrush is SolidColorBrush
                        repeatCheckedBorder &&
-                   repeatCheckedBorder.Color ==
-                       Color.FromRgb(0xD9, 0x84, 0x35),
+                       repeatCheckedBorder.Color ==
+                        Color.FromRgb(0xD9, 0x84, 0x35),
                 "定时任务的循环勾选必须继续使用橘色萌系样式");
+            scheduledQuietHoursToggle.ApplyTemplate();
+            var scheduledQuietHoursShell =
+                scheduledQuietHoursToggle.Template.FindName(
+                    "CuteCheckShell",
+                    scheduledQuietHoursToggle) as Border;
+            Assert(scheduledQuietHoursEditor.Visibility ==
+                       Visibility.Visible &&
+                   scheduledQuietHoursEditor.IsEnabled &&
+                   scheduledQuietHoursToggle.IsChecked != true &&
+                   !scheduledQuietHoursStart.IsEnabled &&
+                   !scheduledQuietHoursEnd.IsEnabled &&
+                   scheduledQuietHoursToggle.Foreground is SolidColorBrush
+                       quietHoursTextBrush &&
+                   quietHoursTextBrush.Color ==
+                       Color.FromRgb(0x8A, 0x56, 0x2E),
+                "勾选循环后必须显示萌橘色免打扰行，开关默认关闭且时间框保持禁用");
+            scheduledQuietHoursToggle.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Assert(scheduledQuietHoursStart.IsEnabled &&
+                   scheduledQuietHoursEnd.IsEnabled &&
+                   scheduledQuietHoursShell?.Background is SolidColorBrush
+                       quietHoursCheckedBackground &&
+                   quietHoursCheckedBackground.Color ==
+                       Color.FromRgb(0xF2, 0xA0, 0x52) &&
+                   scheduledQuietHoursShell.BorderBrush is SolidColorBrush
+                       quietHoursCheckedBorder &&
+                   quietHoursCheckedBorder.Color ==
+                       Color.FromRgb(0xD9, 0x84, 0x35),
+                "免打扰勾选、时间输入和焦点视觉必须保持定时任务的萌橘色风格");
+            scheduledQuietHoursToggle.IsChecked = false;
             scheduledRepeatToggle.IsChecked = false;
             PumpDispatcher(TimeSpan.FromMilliseconds(10));
             scheduledInput.ApplyTemplate();
@@ -12162,17 +12231,20 @@ internal static class Program
             DateTimeOffset requestedDueAt = default;
             TimeSpan? requestedRepeatInterval = null;
             ScheduledRepeatRule? requestedRepeatRule = null;
+            ScheduledQuietHours? requestedQuietHours = null;
             todoWindow.ScheduledTaskAddRequested += (
                 text,
                 dueAt,
                 repeatInterval,
-                repeatRule) =>
+                repeatRule,
+                quietHours) =>
             {
                 requestedCount++;
                 requestedText = text;
                 requestedDueAt = dueAt;
                 requestedRepeatInterval = repeatInterval;
                 requestedRepeatRule = repeatRule;
+                requestedQuietHours = quietHours;
             };
 
             var futureLocal = DateTime.Now.AddHours(2);
@@ -12207,7 +12279,8 @@ internal static class Program
                    requestedDueAt == expectedDueAt &&
                    requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0 &&
                    requestedRepeatInterval is null &&
-                   requestedRepeatRule is null,
+                   requestedRepeatRule is null &&
+                   requestedQuietHours is null,
                 "定时页应发出去除首尾空白的内容和精确到整秒的本地 DateTimeOffset");
             Assert(scheduledInput.Text.Length == 0 &&
                    GetRawField(todoWindow, "_scheduledDate") is DateTime &&
@@ -12256,6 +12329,9 @@ internal static class Program
             scheduledRepeatCount.Text = "3";
             scheduledRepeatUnit.SelectedIndex =
                 (int)ScheduledRepeatUnit.Hour;
+            scheduledQuietHoursToggle.IsChecked = true;
+            scheduledQuietHoursStart.Text = "21:15:30";
+            scheduledQuietHoursEnd.Text = "06:45:10";
             scheduledInput.Text = "  循环检查小喇叭  ";
             Assert(scheduledDatePickerHost.Visibility == Visibility.Visible &&
                    scheduledTimePickerHost.Visibility == Visibility.Visible &&
@@ -12284,11 +12360,27 @@ internal static class Program
                        Every: 3,
                        NextOrdinal: 0
                    } &&
+                   requestedQuietHours is
+                   {
+                       Start.Hours: 21,
+                       Start.Minutes: 15,
+                       Start.Seconds: 30,
+                       End.Hours: 6,
+                       End.Minutes: 45,
+                       End.Seconds: 10
+                   } &&
+                   requestedQuietHours.TimeZoneId ==
+                       TimeZoneInfo.Local.Id &&
                    requestedDueAt == expectedRecurringFirstDueAt &&
                    requestedDueAt.Ticks % TimeSpan.TicksPerSecond == 0,
-                "新增循环任务必须把用户选择的日期和 HH:mm:ss 作为首次 DueAt，间隔只定义后续提醒");
+                "新增循环任务必须保存首次 DueAt、后续间隔以及可跨午夜的萌橘色免打扰时段");
             Assert(scheduledInput.Text.Length == 0 &&
                    scheduledRepeatToggle.IsChecked != true &&
+                   scheduledQuietHoursEditor.Visibility ==
+                       Visibility.Collapsed &&
+                   scheduledQuietHoursToggle.IsChecked != true &&
+                   scheduledQuietHoursStart.Text == "22:00:00" &&
+                   scheduledQuietHoursEnd.Text == "07:00:00" &&
                    scheduledRepeatCount.Text == "1" &&
                    scheduledRepeatUnit.SelectedIndex ==
                        (int)ScheduledRepeatUnit.Hour &&
@@ -12298,6 +12390,23 @@ internal static class Program
                    scheduledTimePickerHost.Visibility == Visibility.Visible &&
                    scheduledRepeatHint.Visibility == Visibility.Collapsed,
                 "循环任务新增成功后必须安全恢复默认单次草稿，避免下一条被误设为循环");
+
+            scheduledRepeatToggle.IsChecked = true;
+            scheduledQuietHoursToggle.IsChecked = true;
+            scheduledQuietHoursStart.Text = "23:10:05";
+            scheduledQuietHoursEnd.Text = "23:10:05";
+            scheduledInput.Text = "免打扰同值校验";
+            Invoke(todoWindow, "RequestScheduledTaskSubmit");
+            Assert(requestedCount == 2 &&
+                   validationText.Text.Contains(
+                       "不能相同",
+                       StringComparison.Ordinal) &&
+                   scheduledQuietHoursEnd.IsKeyboardFocused,
+                "免打扰开始和结束相同必须留在萌橘色编辑态并阻止误设为全天静默");
+            scheduledInput.Clear();
+            Invoke(todoWindow, "ResetScheduledRepeatDraft");
+            Invoke(todoWindow, "ResetScheduledQuietHoursDraft");
+            Invoke(todoWindow, "SetScheduledTaskValidation", string.Empty);
 
             var editLocal = DateTime.Now.AddHours(4);
             editLocal = new DateTime(
@@ -12343,12 +12452,14 @@ internal static class Program
             DateTimeOffset requestedEditDueAt = default;
             TimeSpan? requestedEditRepeatInterval = null;
             ScheduledRepeatRule? requestedEditRepeatRule = null;
+            ScheduledQuietHours? requestedEditQuietHours = null;
             todoWindow.ScheduledTaskEditRequested += (
                 item,
                 text,
                 dueAt,
                 repeatInterval,
-                repeatRule) =>
+                repeatRule,
+                quietHours) =>
             {
                 editRequestedCount++;
                 requestedEditItem = item;
@@ -12356,6 +12467,7 @@ internal static class Program
                 requestedEditDueAt = dueAt;
                 requestedEditRepeatInterval = repeatInterval;
                 requestedEditRepeatRule = repeatRule;
+                requestedEditQuietHours = quietHours;
             };
 
             Invoke(
@@ -12402,6 +12514,18 @@ internal static class Program
             var scheduledEditorRepeatToggle = GetField<CheckBox>(
                 scheduledEditor,
                 "RepeatToggle");
+            var scheduledEditorQuietHoursEditor = GetField<Grid>(
+                scheduledEditor,
+                "QuietHoursEditor");
+            var scheduledEditorQuietHoursToggle = GetField<CheckBox>(
+                scheduledEditor,
+                "QuietHoursToggle");
+            var scheduledEditorQuietHoursStart = GetField<TextBox>(
+                scheduledEditor,
+                "QuietHoursStartTextBox");
+            var scheduledEditorQuietHoursEnd = GetField<TextBox>(
+                scheduledEditor,
+                "QuietHoursEndTextBox");
             var scheduledEditorRepeatCount = GetField<TextBox>(
                 scheduledEditor,
                 "RepeatCountTextBox");
@@ -12434,6 +12558,11 @@ internal static class Program
                    scheduledEditorMinute.SelectedIndex == editLocal.Minute &&
                    scheduledEditorSecond.SelectedIndex == editLocal.Second &&
                    scheduledEditorRepeatToggle.IsChecked != true &&
+                   scheduledEditorQuietHoursEditor.Visibility ==
+                       Visibility.Collapsed &&
+                   scheduledEditorQuietHoursToggle.IsChecked != true &&
+                   scheduledEditorQuietHoursStart.Text == "22:00:00" &&
+                   scheduledEditorQuietHoursEnd.Text == "07:00:00" &&
                    Math.Abs(scheduledEditorDateHost.ActualWidth - 102) <= 0.1 &&
                    Math.Abs(scheduledEditorTimeHost.ActualWidth - 92) <= 0.1 &&
                    Math.Abs(scheduledEditorSaveButton.Height - 38) <= 0.1 &&
@@ -12595,8 +12724,41 @@ internal static class Program
             Assert(scheduledEditorTimePickerPopup.IsOpen &&
                    scheduledEditor.IsVisible &&
                    scheduledEditorRepeatToggle.IsChecked == true &&
+                   scheduledEditorQuietHoursEditor.Visibility ==
+                       Visibility.Visible &&
                    editRequestedCount == 0,
-                "修改定时任务勾选循环时必须保持选择提醒时间 Popup 和编辑窗");
+                "修改定时任务勾选循环时必须显示免打扰行，并保持选择提醒时间 Popup 和编辑窗");
+            scheduledEditorQuietHoursToggle.ApplyTemplate();
+            scheduledEditorQuietHoursToggle.IsChecked = true;
+            scheduledEditorQuietHoursStart.Text = "20:20:21";
+            scheduledEditorQuietHoursEnd.Text = "06:06:07";
+            var quietHoursPreviewClick = new MouseButtonEventArgs(
+                Mouse.PrimaryDevice,
+                Environment.TickCount,
+                MouseButton.Left)
+            {
+                RoutedEvent = UIElement.PreviewMouseDownEvent,
+                Source = scheduledEditorQuietHoursStart
+            };
+            scheduledEditorQuietHoursStart.RaiseEvent(
+                quietHoursPreviewClick);
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            var scheduledEditorQuietHoursShell =
+                scheduledEditorQuietHoursToggle.Template.FindName(
+                    "CheckBoxShell",
+                    scheduledEditorQuietHoursToggle) as Border;
+            Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                   scheduledEditorQuietHoursStart.IsEnabled &&
+                   scheduledEditorQuietHoursEnd.IsEnabled &&
+                   scheduledEditorQuietHoursShell?.Background is
+                       SolidColorBrush editorQuietCheckedBackground &&
+                   editorQuietCheckedBackground.Color ==
+                       Color.FromRgb(0xF2, 0xA0, 0x52) &&
+                   scheduledEditorQuietHoursShell.BorderBrush is
+                       SolidColorBrush editorQuietCheckedBorder &&
+                   editorQuietCheckedBorder.Color ==
+                       Color.FromRgb(0xD9, 0x84, 0x35),
+                "修改窗操作萌橘色免打扰开关和时间框时不得收起外层提醒时间选择窗");
             scheduledEditorRepeatCount.Text = "3";
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             Assert(scheduledEditorTimePickerPopup.IsOpen &&
@@ -12821,10 +12983,19 @@ internal static class Program
                        Every: 2,
                        NextOrdinal: 0
                    } &&
+                   requestedEditQuietHours is
+                   {
+                       Start.Hours: 20,
+                       Start.Minutes: 20,
+                       Start.Seconds: 21,
+                       End.Hours: 6,
+                       End.Minutes: 6,
+                       End.Seconds: 7
+                   } &&
                    GetRawField(todoWindow, "_scheduledTaskEditWindow") is null &&
                    !todoWindow.IsTransientPopupOpen &&
                    scheduledEditorSaveClick.Handled,
-                "独立编辑窗提交必须传回同一个 ScheduledTaskItem，并精确保留秒级时间和循环调度数据");
+                "独立编辑窗提交必须传回同一个 ScheduledTaskItem，并精确保留秒级时间、循环调度和免打扰数据");
 
             // A reminder can already be visible before the user opens an
             // editor. The newly opened editor must still join that reminder
@@ -13127,13 +13298,20 @@ internal static class Program
                 TimeSpan.FromDays(1) +
                 TimeSpan.FromHours(2) +
                 TimeSpan.FromMinutes(30);
+            var recurringEditQuietHours = new ScheduledQuietHours
+            {
+                Start = new TimeSpan(22, 30, 15),
+                End = new TimeSpan(7, 5, 45),
+                TimeZoneId = TimeZoneInfo.Local.Id
+            };
             var recurringEditItem = new ScheduledTaskItem
             {
                 Id = Guid.NewGuid(),
                 Text = "要修改的循环任务",
                 DueAt = recurringEditDueAt,
                 CreatedAt = DateTimeOffset.Now.AddMinutes(-3),
-                RepeatInterval = recurringEditInterval
+                RepeatInterval = recurringEditInterval,
+                QuietHours = recurringEditQuietHours
             };
             scheduledTasks.Add(recurringEditItem);
             Invoke(todoWindow, "SelectTaskPage", true, false);
@@ -13147,6 +13325,11 @@ internal static class Program
                        recurringEditItem) &&
                    scheduledInput.Text == recurringEditItem.Text &&
                    scheduledRepeatToggle.IsChecked == true &&
+                   scheduledQuietHoursEditor.Visibility ==
+                       Visibility.Visible &&
+                   scheduledQuietHoursToggle.IsChecked == true &&
+                   scheduledQuietHoursStart.Text == "22:30:15" &&
+                   scheduledQuietHoursEnd.Text == "07:05:45" &&
                    scheduledRepeatCount.Text == "1590" &&
                    scheduledRepeatUnit.SelectedIndex ==
                        (int)ScheduledRepeatUnit.Minute &&
@@ -13169,8 +13352,9 @@ internal static class Program
                        recurringEditItem) &&
                    requestedEditText == "循环任务只改文案" &&
                    requestedEditDueAt == recurringEditDueAt &&
-                   requestedEditRepeatInterval == recurringEditInterval,
-                "循环任务只修改文案时必须保留原下一次到期时间和周期，重启后不能重新计时");
+                   requestedEditRepeatInterval == recurringEditInterval &&
+                   requestedEditQuietHours == recurringEditQuietHours,
+                "循环任务只修改文案时必须保留原下一次到期时间、周期和免打扰时段，重启后不能重新计时");
 
             Invoke(
                 todoWindow,
@@ -13286,23 +13470,35 @@ internal static class Program
                 DueAt = preservedRuleDueAt,
                 CreatedAt = DateTimeOffset.Now,
                 RepeatInterval = TimeSpan.FromHours(3),
-                RepeatRule = preservedRule
+                RepeatRule = preservedRule,
+                QuietHours = recurringEditQuietHours
             };
             scheduledTasks.Add(ruleEditItem);
             Invoke(
                 todoWindow,
                 "BeginScheduledTaskFormEdit",
                 ruleEditItem);
-            scheduledInput.Text = "  只修改循环任务文案  ";
+            scheduledInput.Text = "  只修改循环任务文案与免打扰  ";
+            scheduledQuietHoursStart.Text = "20:01:02";
+            scheduledQuietHoursEnd.Text = "05:03:04";
             Invoke(todoWindow, "RequestScheduledTaskSubmit");
             Assert(editRequestedCount == 5 &&
                    ReferenceEquals(requestedEditItem, ruleEditItem) &&
-                   requestedEditText == "只修改循环任务文案" &&
+                   requestedEditText == "只修改循环任务文案与免打扰" &&
                    requestedEditDueAt == preservedRuleDueAt &&
                    requestedEditRepeatInterval == TimeSpan.FromHours(3) &&
                    requestedEditRepeatRule == preservedRule &&
-                   requestedEditRepeatRule?.NextOrdinal == 7,
-                "只修改循环任务文案必须原样保留 DueAt、规则和 NextOrdinal，不能让重启后的循环进度归零");
+                   requestedEditRepeatRule?.NextOrdinal == 7 &&
+                   requestedEditQuietHours is
+                   {
+                       Start.Hours: 20,
+                       Start.Minutes: 1,
+                       Start.Seconds: 2,
+                       End.Hours: 5,
+                       End.Minutes: 3,
+                       End.Seconds: 4
+                   },
+                "只修改循环任务文案与免打扰时段必须原样保留 DueAt、规则和 NextOrdinal，不能让重启后的循环进度归零");
 
             var deleteItem = new ScheduledTaskItem
             {
@@ -13743,7 +13939,8 @@ internal static class Program
                 _,
                 dueAt,
                 _,
-                repeatRule) =>
+                repeatRule,
+                _) =>
             {
                 addCount++;
                 advancedDueAt = dueAt;
@@ -13824,7 +14021,8 @@ internal static class Program
             _,
             dueAt,
             _,
-            repeatRule) =>
+            repeatRule,
+            _) =>
         {
             editAccepted++;
             editedDueAt = dueAt;
@@ -13858,7 +14056,7 @@ internal static class Program
             ShowActivated = false
         };
         var oneOffAccepted = 0;
-        oneOffEditor.EditAccepted += (_, _, _, _) => oneOffAccepted++;
+        oneOffEditor.EditAccepted += (_, _, _, _, _) => oneOffAccepted++;
         oneOffEditor.Show();
         PumpDispatcher(TimeSpan.FromMilliseconds(20));
         Invoke(
@@ -13953,6 +14151,7 @@ internal static class Program
                 "  改到更早并修正文案  ",
                 now.AddSeconds(10).AddMilliseconds(875),
                 null,
+                null,
                 null);
             Assert(scheduledTasks.SequenceEqual([moving, first, middle]) &&
                    moving.Id == movingId &&
@@ -13978,6 +14177,7 @@ internal static class Program
                 "改到更晚",
                 now.AddSeconds(50).AddMilliseconds(499),
                 editedRepeatInterval,
+                null,
                 null);
             Assert(scheduledTasks.SequenceEqual([first, middle, moving]) &&
                    moving.Id == movingId &&
@@ -14041,6 +14241,7 @@ internal static class Program
                 "不允许覆盖正在显示的内容",
                 now.AddMinutes(10),
                 null,
+                null,
                 null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
@@ -14065,6 +14266,7 @@ internal static class Program
                 "  排队任务延后  ",
                 now.AddSeconds(30).AddMilliseconds(900),
                 null,
+                null,
                 null);
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(window, "_activeReminder"),
@@ -14088,6 +14290,7 @@ internal static class Program
                 queuedFirst,
                 "排队任务提前",
                 now.AddSeconds(-1),
+                null,
                 null,
                 null);
             Assert(ReferenceEquals(
@@ -14952,6 +15155,437 @@ internal static class Program
         }
     }
 
+    private static void AssertScheduledQuietHoursRuntimeContract(
+        MainWindow window)
+    {
+        var scheduledTasks =
+            GetField<ObservableCollection<ScheduledTaskItem>>(
+                window,
+                "_scheduledTasks");
+        var reminderQueue =
+            GetField<Queue<ScheduledTaskItem>>(
+                window,
+                "_reminderQueue");
+        var queuedReminderIds =
+            GetField<HashSet<Guid>>(
+                window,
+                "_queuedReminderIds");
+        var activeBatch =
+            GetField<List<ScheduledTaskItem>>(
+                window,
+                "_activeReminderBatch");
+        var visibleOccurrences =
+            (IList)GetRawField(
+                window,
+                "_visibleReminderOccurrences")!;
+        var observedCounts =
+            (IDictionary)GetRawField(
+                window,
+                "_presentedReminderOccurrenceCounts")!;
+        var scheduledStore =
+            GetField<ScheduledTaskStore>(
+                window,
+                "_scheduledTaskStore");
+        var scheduledTimer =
+            GetField<DispatcherTimer>(
+                window,
+                "_scheduledTaskTimer");
+        var automaticTimer =
+            GetField<DispatcherTimer>(
+                window,
+                "_automaticTimer");
+        var reminderSizeTimer =
+            GetField<DispatcherTimer>(
+                window,
+                "_reminderSizeCommitTimer");
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var scheduledInput = GetField<TextBox>(
+            todoWindow,
+            "ScheduledTaskInput");
+        var originalNowProvider =
+            GetField<Func<DateTimeOffset>>(window, "_nowProvider");
+        var originalAutomaticEnabled =
+            GetField<bool>(window, "_automaticAnimationEnabled");
+        var originalScale = GetField<double>(window, "_petSizeScale");
+        var originalHitTestVisible = window.IsHitTestVisible;
+        var now = DateTimeOffset.Now;
+        Func<DateTimeOffset> controlledNow = () => now;
+
+        void ResetReminderState()
+        {
+            scheduledTimer.Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            activeBatch.Clear();
+            visibleOccurrences.Clear();
+            observedCounts.Clear();
+            SetField(window, "_activeReminder", null);
+            SetField(window, "_isReminderActive", false);
+            SetField(
+                window,
+                "_isReminderPresentationDismissed",
+                false);
+            SetField(window, "_totalReminderOccurrenceCount", 0L);
+            SetField(window, "_upcomingReminderPreloadPageName", null);
+            if (GetRawField(window, "_reminderWindow") is
+                ReminderWindow existingReminder)
+            {
+                existingReminder.HideSafely();
+                existingReminder.ClearPresentation();
+            }
+
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "Todo"));
+            Assert(scheduledStore.Save(scheduledTasks),
+                "免打扰运行时回归必须能够清空旧定时任务");
+        }
+
+        try
+        {
+            scheduledTimer.Stop();
+            automaticTimer.Stop();
+            reminderSizeTimer.Stop();
+            SetField(window, "_automaticAnimationEnabled", false);
+            SetField(window, "_nowProvider", controlledNow);
+            window.IsHitTestVisible = false;
+            ResetReminderState();
+
+            var quietStartLocal = new DateTime(
+                2032,
+                6,
+                12,
+                22,
+                0,
+                0,
+                DateTimeKind.Unspecified);
+            var quietEndLocal = quietStartLocal.AddHours(1);
+            var quietStart = new DateTimeOffset(
+                quietStartLocal,
+                TimeZoneInfo.Local.GetUtcOffset(quietStartLocal));
+            var quietEnd = new DateTimeOffset(
+                quietEndLocal,
+                TimeZoneInfo.Local.GetUtcOffset(quietEndLocal));
+            var quietHours = new ScheduledQuietHours
+            {
+                Start = TimeSpan.FromHours(22),
+                End = TimeSpan.FromHours(23),
+                TimeZoneId = TimeZoneInfo.Local.Id
+            };
+            now = quietStart.AddMinutes(30);
+            var quietRecurring = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000001"),
+                Text = "安静时段内积累的循环提醒",
+                DueAt = quietStart,
+                CreatedAt = quietStart.AddDays(-1),
+                RepeatInterval = TimeSpan.FromMinutes(10),
+                QuietHours = quietHours
+            };
+            var normalDuringQuiet = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000002"),
+                Text = "免打扰不应挡住其他任务",
+                DueAt = now,
+                CreatedAt = now.AddMinutes(-1)
+            };
+            Invoke(
+                window,
+                "InsertScheduledTaskSorted",
+                quietRecurring);
+            Invoke(
+                window,
+                "InsertScheduledTaskSorted",
+                normalDuringQuiet);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "免打扰任务与普通任务必须先持久化");
+
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var reminderWindow =
+                (ReminderWindow?)GetRawField(
+                    window,
+                    "_reminderWindow")
+                ?? throw new InvalidOperationException(
+                    "普通任务到点后必须创建提醒窗口");
+            var reminderContent = GetField<TextBox>(
+                reminderWindow,
+                "ReminderContentTextBox");
+            var reminderTitle = GetField<TextBlock>(
+                reminderWindow,
+                "ReminderTitleText");
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       normalDuringQuiet) &&
+                   activeBatch.SequenceEqual([normalDuringQuiet]) &&
+                   !queuedReminderIds.Contains(quietRecurring.Id) &&
+                   quietRecurring.DueAt == quietStart &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   reminderWindow.IsVisible &&
+                   reminderContent.Text.Contains(
+                       normalDuringQuiet.Text,
+                       StringComparison.Ordinal) &&
+                   !reminderContent.Text.Contains(
+                       quietRecurring.Text,
+                       StringComparison.Ordinal),
+                "免打扰期间不得弹出、放大或推进静默任务，但同一时刻的普通任务仍须正常提醒");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            var nextQuietWake =
+                (DateTimeOffset)Invoke(
+                    window,
+                    "FindNextReminderDueAt",
+                    now)!;
+            var quietPersistedBeforeEnd =
+                scheduledStore.Load().Single();
+            Assert(scheduledTasks.SequenceEqual([quietRecurring]) &&
+                   quietRecurring.DueAt == quietStart &&
+                   quietRecurring.QuietHours == quietHours &&
+                   quietPersistedBeforeEnd.DueAt == quietStart &&
+                   quietPersistedBeforeEnd.QuietHours == quietHours &&
+                   GetRawField(window, "_activeReminder") is null &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   nextQuietWake == quietEnd &&
+                   scheduledTimer.IsEnabled,
+                "静默任务必须保留原DueAt和循环锚点，定时器只唤醒到免打扰结束而不能忙轮询");
+
+            now = quietEnd;
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       quietRecurring) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   reminderWindow.IsVisible &&
+                   visibleOccurrences.Count == 7 &&
+                   reminderTitle.Text == "7 次提醒待确认" &&
+                   reminderContent.Text.Split(
+                       quietRecurring.Text,
+                       StringSplitOptions.None).Length - 1 == 7,
+                "免打扰结束时必须一次显示从原锚点累计的7次漏提醒，不能丢失或快速补播");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            var expectedQuietNextDueAt = quietEnd.AddMinutes(10);
+            var quietPersistedAfterAcknowledge =
+                scheduledStore.Load().Single();
+            Assert(quietRecurring.DueAt == expectedQuietNextDueAt &&
+                   quietRecurring.QuietHours == quietHours &&
+                   quietPersistedAfterAcknowledge.DueAt ==
+                       expectedQuietNextDueAt &&
+                   quietPersistedAfterAcknowledge.QuietHours == quietHours,
+                "确认静默期汇总提醒后必须推进到首个未来周期，并继续持久化免打扰配置");
+
+            ResetReminderState();
+            var boundaryQuietStartLocal = new DateTime(
+                2032,
+                6,
+                13,
+                22,
+                40,
+                0,
+                DateTimeKind.Unspecified);
+            var boundaryQuietEndLocal = new DateTime(
+                2032,
+                6,
+                13,
+                23,
+                0,
+                0,
+                DateTimeKind.Unspecified);
+            var boundaryQuietStart = new DateTimeOffset(
+                boundaryQuietStartLocal,
+                TimeZoneInfo.Local.GetUtcOffset(boundaryQuietStartLocal));
+            var boundaryQuietEnd = new DateTimeOffset(
+                boundaryQuietEndLocal,
+                TimeZoneInfo.Local.GetUtcOffset(boundaryQuietEndLocal));
+            var visibleBeforeQuiet = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000003"),
+                Text = "边界前已经显示但尚未确认",
+                DueAt = boundaryQuietStart.AddMinutes(-10),
+                CreatedAt = boundaryQuietStart.AddDays(-1),
+                RepeatInterval = TimeSpan.FromMinutes(30),
+                QuietHours = new ScheduledQuietHours
+                {
+                    Start = new TimeSpan(22, 40, 0),
+                    End = TimeSpan.FromHours(23),
+                    TimeZoneId = TimeZoneInfo.Local.Id
+                }
+            };
+            now = boundaryQuietStart.AddMinutes(-5);
+            Invoke(
+                window,
+                "InsertScheduledTaskSorted",
+                visibleBeforeQuiet);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "边界前可见提醒必须先持久化");
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Assert(GetField<bool>(window, "_isReminderActive") &&
+                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
+                   visibleOccurrences.Count == 1,
+                "进入免打扰前必须先建立一个已展示未确认的提醒");
+
+            var normalAtQuietBoundary = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000004"),
+                Text = "静默边界同秒的普通提醒",
+                DueAt = boundaryQuietStart,
+                CreatedAt = boundaryQuietStart.AddMinutes(-1)
+            };
+            Invoke(
+                window,
+                "InsertScheduledTaskSorted",
+                normalAtQuietBoundary);
+            scheduledInput.Text = "免打扰边界仍要保留的定时任务草稿";
+            now = boundaryQuietStart;
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       normalAtQuietBoundary) &&
+                   activeBatch.SequenceEqual([normalAtQuietBoundary]) &&
+                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
+                   visibleOccurrences.Count == 1 &&
+                   !reminderContent.Text.Contains(
+                       visibleBeforeQuiet.Text,
+                       StringComparison.Ordinal) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   !GetField<bool>(window, "_isRestoringReminderSize") &&
+                   GetField<object>(window, "_bubbleMode").ToString() ==
+                       "Reminder" &&
+                   scheduledInput.Text ==
+                       "免打扰边界仍要保留的定时任务草稿",
+                "静默边界若同秒还有普通任务，必须原位无闪切换提醒并保留旧未确认计数与编辑草稿");
+
+            var frozenQuietDueAt = visibleBeforeQuiet.DueAt;
+            var frozenQuietInterval = visibleBeforeQuiet.RepeatInterval;
+            var frozenQuietHours = visibleBeforeQuiet.QuietHours;
+            Invoke(
+                window,
+                "TodoWindow_ScheduledTaskEditRequested",
+                visibleBeforeQuiet,
+                "不允许覆盖静默中的待确认提醒",
+                boundaryQuietEnd.AddHours(1),
+                null,
+                null,
+                null);
+            var frozenQuietPersisted = scheduledStore.Load().Single(
+                item => item.Id == visibleBeforeQuiet.Id);
+            Assert(visibleBeforeQuiet.Text ==
+                       "边界前已经显示但尚未确认" &&
+                   visibleBeforeQuiet.DueAt == frozenQuietDueAt &&
+                   visibleBeforeQuiet.RepeatInterval ==
+                       frozenQuietInterval &&
+                   visibleBeforeQuiet.QuietHours == frozenQuietHours &&
+                   frozenQuietPersisted.Text == visibleBeforeQuiet.Text &&
+                   frozenQuietPersisted.DueAt == frozenQuietDueAt &&
+                   frozenQuietPersisted.RepeatInterval ==
+                       frozenQuietInterval &&
+                   frozenQuietPersisted.QuietHours == frozenQuietHours &&
+                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
+                   !queuedReminderIds.Contains(visibleBeforeQuiet.Id),
+                "静默中已展示未确认的任务必须冻结修改，避免旧提醒计数与新时间或新循环规则冲突");
+
+            Invoke(window, "AcknowledgeActiveReminder");
+            Assert(scheduledTasks.SequenceEqual([visibleBeforeQuiet]) &&
+                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
+                   visibleBeforeQuiet.DueAt ==
+                       boundaryQuietStart.AddMinutes(-10),
+                "确认普通任务不得顺带确认或丢掉正在静默的旧提醒");
+
+            now = boundaryQuietEnd;
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       visibleBeforeQuiet) &&
+                   GetField<bool>(window, "_isReminderActive") &&
+                   visibleOccurrences.Count == 2 &&
+                   reminderTitle.Text == "2 次提醒待确认" &&
+                   reminderContent.Text.Split(
+                       visibleBeforeQuiet.Text,
+                       StringSplitOptions.None).Length - 1 == 2,
+                "免打扰结束后必须恢复边界前未确认记录，并合并静默期间新增的下一次提醒");
+            Invoke(window, "AcknowledgeActiveReminder");
+        }
+        finally
+        {
+            scheduledTimer.Stop();
+            automaticTimer.Stop();
+            reminderSizeTimer.Stop();
+            GetField<DispatcherTimer>(
+                window,
+                "_petSizePersistTimer").Stop();
+            scheduledTasks.Clear();
+            reminderQueue.Clear();
+            queuedReminderIds.Clear();
+            activeBatch.Clear();
+            visibleOccurrences.Clear();
+            observedCounts.Clear();
+            scheduledStore.Save(scheduledTasks);
+            SetField(window, "_activeReminder", null);
+            SetField(window, "_isReminderActive", false);
+            SetField(
+                window,
+                "_isReminderPresentationDismissed",
+                false);
+            SetField(window, "_totalReminderOccurrenceCount", 0L);
+            SetField(window, "_upcomingReminderPreloadPageName", null);
+            SetField(window, "_isTransientPetSizeOverride", false);
+            SetField(window, "_isRestoringReminderSize", false);
+            if (GetRawField(window, "_reminderWindow") is
+                ReminderWindow reminderWindow)
+            {
+                reminderWindow.HideSafely();
+                reminderWindow.ClearPresentation();
+            }
+
+            Invoke(
+                window,
+                "SetBubbleMode",
+                GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "StopVisualClock");
+            SetField(window, "_activeClip", null);
+            SetField(window, "_activeFrameIndex", -1);
+            SetField(window, "_activeClipStartedTimestamp", 0L);
+            SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+            Invoke(window, "ClearDeferredActiveClipClock");
+            Invoke(window, "ResetPetVisualTransforms");
+            Invoke(
+                window,
+                "ApplyPetSizeScale",
+                originalScale,
+                false,
+                false);
+            SetField(window, "_nowProvider", originalNowProvider);
+            SetField(
+                window,
+                "_automaticAnimationEnabled",
+                originalAutomaticEnabled);
+            if (originalAutomaticEnabled && window.IsVisible)
+            {
+                Invoke(window, "RestartAutomaticCountdown");
+            }
+
+            window.IsHitTestVisible = originalHitTestVisible;
+        }
+    }
+
     private static void AssertScheduledReminderBatchContract(MainWindow window)
     {
         var scheduledTasks = GetField<ObservableCollection<ScheduledTaskItem>>(
@@ -15258,6 +15892,7 @@ internal static class Program
                 "不允许覆盖已展示批次",
                 now.AddHours(1),
                 null,
+                null,
                 null);
             Invoke(
                 window,
@@ -15372,6 +16007,7 @@ internal static class Program
                    !GetField<bool>(window, "_isReminderActive") &&
                    scheduledTimer.IsEnabled,
                 "确认漏提醒后必须从原到期锚点一次跨过全部遗漏周期，持久化首个未来时间且不补播历史提醒");
+
         }
         finally
         {
@@ -15629,12 +16265,14 @@ internal static class Program
                 "同秒提醒甲",
                 dueAt,
                 null,
+                null,
                 null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "同秒提醒乙",
                 dueAt,
+                null,
                 null,
                 null);
             Assert(scheduledTasks.Count == 2 &&
@@ -15902,6 +16540,7 @@ internal static class Program
                 "应用恢复后的逾期提醒",
                 currentNow.AddSeconds(-5),
                 null,
+                null,
                 null);
             var overdueActive = GetField<ScheduledTaskItem>(
                 window,
@@ -15939,12 +16578,14 @@ internal static class Program
                 "回拨提醒甲",
                 rewindDueAt,
                 null,
+                null,
                 null);
             Invoke(
                 window,
                 "TodoWindow_ScheduledTaskAddRequested",
                 "回拨提醒乙",
                 rewindDueAt,
+                null,
                 null,
                 null);
             var rewindOrder = scheduledTasks.ToArray();

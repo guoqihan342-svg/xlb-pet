@@ -141,12 +141,15 @@ public partial class TodoWindow : Window
     private DateTimeOffset _editingScheduledOriginalDueAt;
     private TimeSpan? _editingScheduledOriginalRepeatInterval;
     private ScheduledRepeatRule? _editingScheduledOriginalRepeatRule;
+    private ScheduledQuietHours? _editingScheduledOriginalQuietHours;
     private DateTime? _scheduledDate;
     private DateTime _displayedScheduledCalendarMonth;
     private bool _scheduledTaskDraftClockEdited;
     private bool _updatingScheduledTaskDraftClock;
     private bool _updatingScheduledRepeatDraft;
     private bool _scheduledRepeatDraftEdited;
+    private bool _updatingScheduledQuietHoursDraft;
+    private bool _scheduledQuietHoursDraftEdited;
     private bool _updatingScheduledTimePickerSelection;
     private bool _switchingScheduledPickerPopup;
     private bool _isScheduledDatePickerPopupOpen;
@@ -251,6 +254,7 @@ public partial class TodoWindow : Window
             (int)ScheduledRepeatUnit.Hour;
         ResetScheduledTaskDraftClock(DateTimeOffset.Now);
         ResetScheduledRepeatDraft();
+        ResetScheduledQuietHoursDraft();
     }
 
     private static Brush CreateTodoDropIndicatorBrush()
@@ -407,7 +411,8 @@ public partial class TodoWindow : Window
         string,
         DateTimeOffset,
         TimeSpan?,
-        ScheduledRepeatRule?>?
+        ScheduledRepeatRule?,
+        ScheduledQuietHours?>?
         ScheduledTaskAddRequested;
 
     public event Action<
@@ -415,7 +420,8 @@ public partial class TodoWindow : Window
         string,
         DateTimeOffset,
         TimeSpan?,
-        ScheduledRepeatRule?>?
+        ScheduledRepeatRule?,
+        ScheduledQuietHours?>?
         ScheduledTaskEditRequested;
 
     public event Action<ScheduledTaskItem>? ScheduledTaskDeleteRequested;
@@ -2328,7 +2334,8 @@ public partial class TodoWindow : Window
                 out var text,
                 out var dueAt,
                 out var repeatInterval,
-                out var repeatRule))
+                out var repeatRule,
+                out var quietHours))
         {
             return;
         }
@@ -2340,7 +2347,8 @@ public partial class TodoWindow : Window
                 text,
                 dueAt,
                 repeatInterval,
-                repeatRule);
+                repeatRule,
+                quietHours);
             CancelScheduledTaskEdit(resetDraft: true, focusInput: true);
             return;
         }
@@ -2349,10 +2357,12 @@ public partial class TodoWindow : Window
             text,
             dueAt,
             repeatInterval,
-            repeatRule);
+            repeatRule,
+            quietHours);
         ScheduledTaskInput.Clear();
         ResetScheduledTaskDraftClock(DateTimeOffset.Now);
         ResetScheduledRepeatDraft();
+        ResetScheduledQuietHoursDraft();
         SetScheduledTaskValidation(string.Empty);
         ScheduledTaskInput.Focus();
     }
@@ -2364,11 +2374,13 @@ public partial class TodoWindow : Window
         out string text,
         out DateTimeOffset dueAt,
         out TimeSpan? repeatInterval,
-        out ScheduledRepeatRule? repeatRule)
+        out ScheduledRepeatRule? repeatRule,
+        out ScheduledQuietHours? quietHours)
     {
         dueAt = default;
         repeatInterval = null;
         repeatRule = null;
+        quietHours = null;
         text = ScheduledTaskInput.Text.Trim();
         if (text.Length == 0)
         {
@@ -2418,7 +2430,7 @@ public partial class TodoWindow : Window
             repeatInterval =
                 _editingScheduledOriginalRepeatInterval;
             repeatRule = _editingScheduledOriginalRepeatRule;
-            return true;
+            return TryReadScheduledQuietHours(out quietHours);
         }
 
         if (ScheduledRepeatToggle.IsChecked == true)
@@ -2484,6 +2496,69 @@ public partial class TodoWindow : Window
             return false;
         }
 
+        return TryReadScheduledQuietHours(out quietHours);
+    }
+
+    private bool TryReadScheduledQuietHours(
+        out ScheduledQuietHours? quietHours)
+    {
+        quietHours = null;
+        if (ScheduledRepeatToggle.IsChecked != true ||
+            ScheduledQuietHoursToggle.IsChecked != true)
+        {
+            return true;
+        }
+
+        if (_editingScheduledTask is not null &&
+            !_scheduledQuietHoursDraftEdited)
+        {
+            quietHours = _editingScheduledOriginalQuietHours;
+            return true;
+        }
+
+        if (!DateTime.TryParseExact(
+                ScheduledQuietHoursStartInput.Text.Trim(),
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var start))
+        {
+            SetScheduledTaskValidation(
+                "免打扰开始时间要写成 HH:mm:ss");
+            ScheduledQuietHoursStartInput.Focus();
+            ScheduledQuietHoursStartInput.SelectAll();
+            return false;
+        }
+
+        if (!DateTime.TryParseExact(
+                ScheduledQuietHoursEndInput.Text.Trim(),
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var end))
+        {
+            SetScheduledTaskValidation(
+                "免打扰结束时间要写成 HH:mm:ss");
+            ScheduledQuietHoursEndInput.Focus();
+            ScheduledQuietHoursEndInput.SelectAll();
+            return false;
+        }
+
+        if (start.TimeOfDay == end.TimeOfDay)
+        {
+            SetScheduledTaskValidation(
+                "免打扰开始和结束时间不能相同哦");
+            ScheduledQuietHoursEndInput.Focus();
+            ScheduledQuietHoursEndInput.SelectAll();
+            return false;
+        }
+
+        quietHours = new ScheduledQuietHours
+        {
+            Start = start.TimeOfDay,
+            End = end.TimeOfDay,
+            TimeZoneId = TimeZoneInfo.Local.Id
+        };
         return true;
     }
 
@@ -2615,14 +2690,16 @@ public partial class TodoWindow : Window
             text,
             dueAt,
             repeatInterval,
-            repeatRule) =>
+            repeatRule,
+            quietHours) =>
         {
             ScheduledTaskEditRequested?.Invoke(
                 item,
                 text,
                 dueAt,
                 repeatInterval,
-                repeatRule);
+                repeatRule,
+                quietHours);
         };
         editor.Closed += (_, _) =>
         {
@@ -2648,8 +2725,10 @@ public partial class TodoWindow : Window
         _editingScheduledOriginalRepeatInterval =
             item.RepeatInterval;
         _editingScheduledOriginalRepeatRule = item.RepeatRule;
+        _editingScheduledOriginalQuietHours = item.QuietHours;
         _scheduledTaskDraftClockEdited = false;
         _scheduledRepeatDraftEdited = false;
+        _scheduledQuietHoursDraftEdited = false;
         var localDueAt = item.DueAt.ToLocalTime();
         ScheduledTaskInput.Text = item.Text;
         SetScheduledDate(localDueAt.Date, markEdited: false);
@@ -2658,6 +2737,8 @@ public partial class TodoWindow : Window
             CultureInfo.InvariantCulture);
         SetScheduledRepeatDraft(item.RepeatInterval, item.RepeatRule);
         _scheduledRepeatDraftEdited = false;
+        SetScheduledQuietHoursDraft(item.QuietHours);
+        _scheduledQuietHoursDraftEdited = false;
         ScheduledTaskSubmitButton.Content = "确定修改";
         ScheduledTaskSubmitButton.ToolTip = "保存定时任务修改";
         ScheduledTaskEditCancelButton.Visibility = Visibility.Visible;
@@ -2687,6 +2768,8 @@ public partial class TodoWindow : Window
         _editingScheduledOriginalRepeatInterval = null;
         _editingScheduledOriginalRepeatRule = null;
         _scheduledRepeatDraftEdited = false;
+        _editingScheduledOriginalQuietHours = null;
+        _scheduledQuietHoursDraftEdited = false;
         ScheduledTaskSubmitButton.Content = "新增";
         ScheduledTaskSubmitButton.ToolTip = "添加定时任务";
         ScheduledTaskEditCancelButton.Visibility = Visibility.Collapsed;
@@ -2697,6 +2780,7 @@ public partial class TodoWindow : Window
             ScheduledTaskInput.Clear();
             ResetScheduledTaskDraftClock(DateTimeOffset.Now);
             ResetScheduledRepeatDraft();
+            ResetScheduledQuietHoursDraft();
         }
 
         if (focusInput && IsVisible && !_hasClosed)
@@ -2754,6 +2838,40 @@ public partial class TodoWindow : Window
         }
 
         UpdateScheduledRepeatRulePreview();
+    }
+
+    private void ScheduledQuietHoursToggle_Changed(
+        object sender,
+        RoutedEventArgs e)
+    {
+        MarkScheduledPickerInteractionIfOpen();
+        if (!_updatingScheduledQuietHoursDraft)
+        {
+            _scheduledQuietHoursDraftEdited = true;
+            ClearScheduledTaskValidation();
+        }
+    }
+
+    private void ScheduledQuietHoursTimeInput_TextChanged(
+        object sender,
+        TextChangedEventArgs e)
+    {
+        if (_updatingScheduledQuietHoursDraft)
+        {
+            return;
+        }
+
+        MarkScheduledPickerInteractionIfOpen();
+        _scheduledQuietHoursDraftEdited = true;
+        ClearScheduledTaskValidation();
+    }
+
+    private void ScheduledQuietHoursTimeInput_PreviewTextInput(
+        object sender,
+        TextCompositionEventArgs e)
+    {
+        e.Handled = e.Text.Any(
+            character => !char.IsDigit(character) && character != ':');
     }
 
     private void ScheduledRepeatInput_TextChanged(
@@ -2956,6 +3074,35 @@ public partial class TodoWindow : Window
 
     private void ResetScheduledRepeatDraft() =>
         SetScheduledRepeatDraft(repeatInterval: null);
+
+    private void SetScheduledQuietHoursDraft(
+        ScheduledQuietHours? quietHours)
+    {
+        _updatingScheduledQuietHoursDraft = true;
+        try
+        {
+            ScheduledQuietHoursToggle.IsChecked = quietHours is not null;
+            ScheduledQuietHoursStartInput.Text =
+                FormatScheduledQuietTime(
+                    quietHours?.Start ?? TimeSpan.FromHours(22));
+            ScheduledQuietHoursEndInput.Text =
+                FormatScheduledQuietTime(
+                    quietHours?.End ?? TimeSpan.FromHours(7));
+        }
+        finally
+        {
+            _updatingScheduledQuietHoursDraft = false;
+        }
+    }
+
+    private void ResetScheduledQuietHoursDraft()
+    {
+        SetScheduledQuietHoursDraft(quietHours: null);
+        _scheduledQuietHoursDraftEdited = false;
+    }
+
+    private static string FormatScheduledQuietTime(TimeSpan value) =>
+        value.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
 
     private void UpdateScheduledRepeatEditorVisibility()
     {
@@ -3164,6 +3311,7 @@ public partial class TodoWindow : Window
         return ScheduledDatePickerHost.IsMouseOver ||
                ScheduledTimePickerHost.IsMouseOver ||
                ScheduledRepeatEditor.IsMouseOver ||
+               ScheduledQuietHoursEditor.IsMouseOver ||
                IsPointerOverPopupChild(ScheduledDatePickerPopup) ||
                IsPointerOverPopupChild(ScheduledTimePickerPopup) ||
                IsPointerOverComboBoxPopup(ScheduledHourComboBox) ||
@@ -3624,6 +3772,7 @@ public partial class TodoWindow : Window
 
         var isRepeatEditorInteraction =
             IsWithin(originalSource, ScheduledRepeatEditor) ||
+            IsWithin(originalSource, ScheduledQuietHoursEditor) ||
             IsWithinScheduledTimePartPopup(
                 originalSource,
                 ScheduledRepeatUnitComboBox);

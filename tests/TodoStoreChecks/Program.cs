@@ -12,6 +12,7 @@ try
     CheckAppSettingsStore(tempDirectory);
     CheckScheduledTaskStore(tempDirectory);
     CheckScheduledRepeatRules(tempDirectory);
+    CheckScheduledQuietHours(tempDirectory);
     Console.WriteLine("TodoStore, AppSettingsStore, and ScheduledTaskStore checks passed.");
 }
 finally
@@ -1197,6 +1198,456 @@ static void CheckScheduledRepeatDstRules()
                 "Lord Howe 02:15 必须推进到真实的 30 分钟缺口末端 02:30，不能写死一小时");
         }
     }
+}
+
+static void CheckScheduledQuietHours(string tempDirectory)
+{
+    var chinaTimeZone = FindAvailableTimeZone(
+        "China Standard Time",
+        "Asia/Shanghai")
+        ?? throw new InvalidOperationException(
+            "A China time zone is required for quiet-hours checks.");
+
+    DateTimeOffset AtLocal(
+        TimeZoneInfo timeZone,
+        int year,
+        int month,
+        int day,
+        int hour,
+        int minute,
+        int second)
+    {
+        var local = new DateTime(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            DateTimeKind.Unspecified);
+        return new DateTimeOffset(
+            TimeZoneInfo.ConvertTimeToUtc(local, timeZone),
+            TimeSpan.Zero);
+    }
+
+    var sameDay = new ScheduledQuietHours
+    {
+        Version = 1,
+        Start = new TimeSpan(12, 30, 15),
+        End = new TimeSpan(13, 45, 20),
+        TimeZoneId = chinaTimeZone.Id
+    };
+    var normalizedSameDay = ScheduledQuietHoursSchedule.Normalize(sameDay);
+    Assert(
+        normalizedSameDay is not null &&
+        normalizedSameDay.Version == 1 &&
+        normalizedSameDay.Start == new TimeSpan(12, 30, 15) &&
+        normalizedSameDay.End == new TimeSpan(13, 45, 20) &&
+        normalizedSameDay.TimeZoneId == chinaTimeZone.Id,
+        "Valid same-day quiet hours must normalize without losing second precision.");
+
+    var beforeSameDayStart =
+        AtLocal(chinaTimeZone, 2026, 7, 30, 12, 30, 14);
+    var atSameDayStart =
+        AtLocal(chinaTimeZone, 2026, 7, 30, 12, 30, 15);
+    var beforeSameDayEnd =
+        AtLocal(chinaTimeZone, 2026, 7, 30, 13, 45, 19);
+    var atSameDayEnd =
+        AtLocal(chinaTimeZone, 2026, 7, 30, 13, 45, 20);
+    Assert(
+        !ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedSameDay,
+            beforeSameDayStart) &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedSameDay,
+            atSameDayStart) &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedSameDay,
+            beforeSameDayEnd) &&
+        !ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedSameDay,
+            atSameDayEnd),
+        "Same-day quiet hours must use a start-inclusive, end-exclusive interval.");
+    Assert(
+        ScheduledQuietHoursSchedule.TryGetQuietEnd(
+            normalizedSameDay,
+            atSameDayStart,
+            out var sameDayEnd) &&
+        sameDayEnd == atSameDayEnd,
+        "A same-day quiet interval must resolve its exact end instant.");
+    Assert(
+        ScheduledQuietHoursSchedule.TryGetNextQuietStart(
+            normalizedSameDay,
+            beforeSameDayStart,
+            out var sameDayNextStart) &&
+        sameDayNextStart == atSameDayStart,
+        "Before a same-day interval, the next quiet start must be today.");
+    Assert(
+        ScheduledQuietHoursSchedule.TryGetNextQuietStart(
+            normalizedSameDay,
+            atSameDayEnd,
+            out var nextDaySameDayStart) &&
+        TimeZoneInfo.ConvertTime(nextDaySameDayStart, chinaTimeZone).DateTime ==
+            new DateTime(
+                2026,
+                7,
+                31,
+                12,
+                30,
+                15,
+                DateTimeKind.Unspecified),
+        "At the exclusive end boundary, the next quiet start must be tomorrow.");
+    var sameDayDisplay =
+        ScheduledQuietHoursSchedule.FormatDisplayText(normalizedSameDay!);
+    Assert(
+        sameDayDisplay.Contains("12:30:15", StringComparison.Ordinal) &&
+        sameDayDisplay.Contains("13:45:20", StringComparison.Ordinal),
+        "The quiet-hours display text must retain both exact wall-clock times.");
+
+    var overnight = new ScheduledQuietHours
+    {
+        Version = 1,
+        Start = new TimeSpan(22, 0, 0),
+        End = new TimeSpan(7, 0, 0),
+        TimeZoneId = chinaTimeZone.Id
+    };
+    var normalizedOvernight =
+        ScheduledQuietHoursSchedule.Normalize(overnight);
+    var beforeOvernightStart =
+        AtLocal(chinaTimeZone, 2026, 7, 30, 21, 59, 59);
+    var atOvernightStart =
+        AtLocal(chinaTimeZone, 2026, 7, 30, 22, 0, 0);
+    var beforeOvernightEnd =
+        AtLocal(chinaTimeZone, 2026, 7, 31, 6, 59, 59);
+    var atOvernightEnd =
+        AtLocal(chinaTimeZone, 2026, 7, 31, 7, 0, 0);
+    Assert(
+        normalizedOvernight is not null &&
+        !ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedOvernight,
+            beforeOvernightStart) &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedOvernight,
+            atOvernightStart) &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedOvernight,
+            beforeOvernightEnd) &&
+        !ScheduledQuietHoursSchedule.IsQuietAt(
+            normalizedOvernight,
+            atOvernightEnd),
+        "Cross-midnight quiet hours must use [start,end) on both calendar days.");
+    Assert(
+        ScheduledQuietHoursSchedule.TryGetQuietEnd(
+            normalizedOvernight,
+            atOvernightStart,
+            out var overnightEndFromStart) &&
+        overnightEndFromStart == atOvernightEnd &&
+        ScheduledQuietHoursSchedule.TryGetQuietEnd(
+            normalizedOvernight,
+            beforeOvernightEnd,
+            out var overnightEndFromMorning) &&
+        overnightEndFromMorning == atOvernightEnd,
+        "Both halves of an overnight interval must resolve the same end instant.");
+    Assert(
+        ScheduledQuietHoursSchedule.TryGetNextQuietStart(
+            normalizedOvernight,
+            AtLocal(chinaTimeZone, 2026, 7, 30, 12, 0, 0),
+            out var overnightNextStart) &&
+        overnightNextStart == atOvernightStart,
+        "Outside an overnight interval, the next quiet start must be the upcoming evening.");
+    var overnightDisplay =
+        ScheduledQuietHoursSchedule.FormatDisplayText(normalizedOvernight!);
+    Assert(
+        overnightDisplay.Contains("22:00:00", StringComparison.Ordinal) &&
+        overnightDisplay.Contains("07:00:00", StringComparison.Ordinal),
+        "The overnight display text must retain both exact wall-clock times.");
+
+    Assert(
+        ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = new TimeSpan(8, 0, 0),
+            End = new TimeSpan(8, 0, 0),
+            TimeZoneId = chinaTimeZone.Id
+        }) is null,
+        "start=end must be rejected instead of becoming an accidental all-day mute.");
+    Assert(
+        ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
+        {
+            Version = -1,
+            Start = new TimeSpan(8, 0, 0),
+            End = new TimeSpan(9, 0, 0),
+            TimeZoneId = chinaTimeZone.Id
+        }) is null &&
+        ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = new TimeSpan(8, 0, 0),
+            End = new TimeSpan(9, 0, 0),
+            TimeZoneId = "Invalid/Quiet-Hours-Time-Zone"
+        }) is null &&
+        ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = new TimeSpan(8, 0, 0),
+            End = new TimeSpan(9, 0, 0),
+            TimeZoneId = string.Empty
+        }) is null,
+        "Negative versions and missing or invalid time-zone identifiers must be rejected.");
+    Assert(
+        ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = TimeSpan.FromSeconds(-1),
+            End = new TimeSpan(9, 0, 0),
+            TimeZoneId = chinaTimeZone.Id
+        }) is null &&
+        ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = new TimeSpan(8, 0, 0),
+            End = TimeSpan.FromDays(1),
+            TimeZoneId = chinaTimeZone.Id
+        }) is null,
+        "Negative or 24-hour time-of-day values must be rejected.");
+
+    CheckScheduledQuietHoursDst(AtLocal);
+
+    var anchorLocal = new DateTime(
+        2026,
+        7,
+        30,
+        10,
+        7,
+        45,
+        DateTimeKind.Unspecified);
+    Assert(
+        ScheduledRepeatSchedule.TryCreate(
+            ScheduledRepeatUnit.Minute,
+            5,
+            anchorLocal,
+            chinaTimeZone,
+            out var repeatRule,
+            out var firstDueAt) &&
+        repeatRule is not null,
+        "Quiet-hours persistence checks require a valid recurring rule.");
+    var quietStorePath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "quiet-hours-roundtrip.json");
+    var quietStore = new ScheduledTaskStore(quietStorePath);
+    var quietTask = new ScheduledTaskItem
+    {
+        Id = Guid.Parse("40000000-0000-0000-0000-000000000001"),
+        Text = "Quiet-hours round trip",
+        DueAt = firstDueAt,
+        CreatedAt = firstDueAt.AddDays(-1),
+        RepeatRule = repeatRule,
+        QuietHours = normalizedOvernight
+    };
+    Assert(
+        quietStore.Save([quietTask]),
+        "A recurring task with valid quiet hours must save successfully.");
+    var quietJson = File.ReadAllText(quietStorePath);
+    Assert(
+        quietJson.Contains("\"quietHours\"", StringComparison.Ordinal) &&
+        quietJson.Contains("\"start\"", StringComparison.Ordinal) &&
+        quietJson.Contains("\"end\"", StringComparison.Ordinal) &&
+        quietJson.Contains("\"timeZoneId\"", StringComparison.Ordinal),
+        "Quiet hours must use readable camelCase JSON fields.");
+    var quietReloaded = quietStore.Load().Single();
+    Assert(
+        quietReloaded.Id == quietTask.Id &&
+        quietReloaded.RepeatRule is not null &&
+        quietReloaded.QuietHours is { } reloadedQuiet &&
+        reloadedQuiet.Version == normalizedOvernight!.Version &&
+        reloadedQuiet.Start == normalizedOvernight.Start &&
+        reloadedQuiet.End == normalizedOvernight.End &&
+        reloadedQuiet.TimeZoneId == normalizedOvernight.TimeZoneId,
+        "Valid quiet hours must survive a scheduled-task JSON round trip.");
+
+    var legacyPath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "quiet-hours-legacy-null.json");
+    var legacyId = Guid.Parse("40000000-0000-0000-0000-000000000002");
+    File.WriteAllText(
+        legacyPath,
+        JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                Id = legacyId,
+                Text = "Legacy recurring task without quiet hours",
+                DueAt = firstDueAt,
+                CreatedAt = firstDueAt.AddDays(-1),
+                RepeatIntervalTicks =
+                    (long?)TimeSpan.FromMinutes(5).Ticks
+            }
+        }));
+    var legacyReloaded =
+        new ScheduledTaskStore(legacyPath).Load().Single();
+    Assert(
+        legacyReloaded.Id == legacyId &&
+        legacyReloaded.IsRecurring &&
+        legacyReloaded.QuietHours is null,
+        "Legacy JSON without quietHours must continue to load with a null quiet period.");
+
+    var invalidQuietPath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "invalid-quiet-hours.json");
+    var invalidQuietId =
+        Guid.Parse("40000000-0000-0000-0000-000000000003");
+    File.WriteAllText(
+        invalidQuietPath,
+        JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                Id = invalidQuietId,
+                Text = "Keep task when quiet hours are invalid",
+                DueAt = firstDueAt,
+                CreatedAt = firstDueAt.AddDays(-1),
+                RepeatIntervalTicks =
+                    (long?)TimeSpan.FromMinutes(5).Ticks,
+                QuietHours = new
+                {
+                    Version = 1,
+                    Start = new TimeSpan(22, 0, 0),
+                    End = new TimeSpan(22, 0, 0),
+                    TimeZoneId = chinaTimeZone.Id
+                }
+            }
+        }));
+    var invalidQuietReloaded =
+        new ScheduledTaskStore(invalidQuietPath).Load().Single();
+    Assert(
+        invalidQuietReloaded.Id == invalidQuietId &&
+        invalidQuietReloaded.Text ==
+            "Keep task when quiet hours are invalid" &&
+        invalidQuietReloaded.RepeatInterval ==
+            TimeSpan.FromMinutes(5) &&
+        invalidQuietReloaded.QuietHours is null,
+        "Invalid quiet hours must be dropped without dropping or degrading the task.");
+
+    var oneShotPath = Path.Combine(
+        tempDirectory,
+        "scheduled",
+        "one-shot-quiet-hours.json");
+    var oneShotStore = new ScheduledTaskStore(oneShotPath);
+    var oneShotId =
+        Guid.Parse("40000000-0000-0000-0000-000000000004");
+    Assert(
+        oneShotStore.Save(
+        [
+            new ScheduledTaskItem
+            {
+                Id = oneShotId,
+                Text = "One-shot task cannot own quiet hours",
+                DueAt = firstDueAt.AddHours(1),
+                CreatedAt = firstDueAt,
+                QuietHours = normalizedSameDay
+            }
+        ]),
+        "A one-shot task containing stale quiet-hours data must still save.");
+    var oneShotReloaded = oneShotStore.Load().Single();
+    Assert(
+        oneShotReloaded.Id == oneShotId &&
+        !oneShotReloaded.IsRecurring &&
+        oneShotReloaded.QuietHours is null,
+        "Quiet hours on a non-recurring task must normalize to null.");
+}
+
+static void CheckScheduledQuietHoursDst(
+    Func<TimeZoneInfo, int, int, int, int, int, int, DateTimeOffset> atLocal)
+{
+    var eastern = FindAvailableTimeZone(
+        "Eastern Standard Time",
+        "America/New_York");
+    if (eastern is null)
+    {
+        return;
+    }
+
+    var springQuiet = ScheduledQuietHoursSchedule.Normalize(
+        new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = new TimeSpan(1, 30, 0),
+            End = new TimeSpan(3, 30, 0),
+            TimeZoneId = eastern.Id
+        });
+    var springStart = atLocal(eastern, 2026, 3, 8, 1, 30, 0);
+    var springBeforeEnd = atLocal(eastern, 2026, 3, 8, 3, 29, 59);
+    var springEnd = atLocal(eastern, 2026, 3, 8, 3, 30, 0);
+    Assert(
+        springQuiet is not null &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            springQuiet,
+            springStart) &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            springQuiet,
+            springBeforeEnd) &&
+        !ScheduledQuietHoursSchedule.IsQuietAt(
+            springQuiet,
+            springEnd) &&
+        ScheduledQuietHoursSchedule.TryGetQuietEnd(
+            springQuiet,
+            springStart,
+            out var resolvedSpringEnd) &&
+        resolvedSpringEnd == springEnd,
+        "Quiet-hours boundaries must remain usable across a spring-forward DST gap.");
+
+    var ambiguousLocal = new DateTime(
+        2026,
+        11,
+        1,
+        1,
+        45,
+        0,
+        DateTimeKind.Unspecified);
+    if (!eastern.IsAmbiguousTime(ambiguousLocal))
+    {
+        return;
+    }
+
+    var fallQuiet = ScheduledQuietHoursSchedule.Normalize(
+        new ScheduledQuietHours
+        {
+            Version = 1,
+            Start = new TimeSpan(1, 30, 0),
+            End = new TimeSpan(2, 30, 0),
+            TimeZoneId = eastern.Id
+        });
+    var ambiguousOffsets =
+        eastern.GetAmbiguousTimeOffsets(ambiguousLocal);
+    var firstAmbiguousInstant =
+        new DateTimeOffset(ambiguousLocal, ambiguousOffsets.Max())
+            .ToUniversalTime();
+    var secondAmbiguousInstant =
+        new DateTimeOffset(ambiguousLocal, ambiguousOffsets.Min())
+            .ToUniversalTime();
+    var fallEnd = atLocal(eastern, 2026, 11, 1, 2, 30, 0);
+    Assert(
+        fallQuiet is not null &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            fallQuiet,
+            firstAmbiguousInstant) &&
+        ScheduledQuietHoursSchedule.IsQuietAt(
+            fallQuiet,
+            secondAmbiguousInstant) &&
+        ScheduledQuietHoursSchedule.TryGetQuietEnd(
+            fallQuiet,
+            firstAmbiguousInstant,
+            out var firstResolvedFallEnd) &&
+        firstResolvedFallEnd == fallEnd &&
+        ScheduledQuietHoursSchedule.TryGetQuietEnd(
+            fallQuiet,
+            secondAmbiguousInstant,
+            out var secondResolvedFallEnd) &&
+        secondResolvedFallEnd == fallEnd,
+        "Both real instants in a fall-back ambiguous hour must share one wall-clock quiet interval.");
 }
 
 static TimeZoneInfo? FindAvailableTimeZone(params string[] identifiers)

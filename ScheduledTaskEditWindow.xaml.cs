@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -27,18 +28,21 @@ public partial class ScheduledTaskEditWindow : Window
     private readonly DateTimeOffset _originalDueAt;
     private readonly TimeSpan? _originalRepeatInterval;
     private readonly ScheduledRepeatRule? _originalRepeatRule;
+    private readonly ScheduledQuietHours? _originalQuietHours;
     private readonly Action _closePickersAfterDeactivationAction;
     private readonly Action _positionBesideOwnerAction;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private Window? _positionOwner;
     private bool _editorSizeInitialized;
-    private bool _initializing;
+    private bool _initializing = true;
     private bool _isImeComposing;
     private bool _reminderInterruptionActive;
     private bool _scheduleEdited;
     private bool _repeatEdited;
+    private bool _quietHoursEdited;
     private bool _internalPopupOpen;
     private bool _repeatUnitSelectionCommitted;
+    private IInputElement? _focusBeforeReminder;
     private bool _updatingTimePickerSelection;
     private DateTime _displayedScheduledCalendarMonth;
     private bool _positionBesideOwnerQueued;
@@ -51,6 +55,7 @@ public partial class ScheduledTaskEditWindow : Window
         _originalDueAt = item.DueAt;
         _originalRepeatInterval = item.RepeatInterval;
         _originalRepeatRule = item.RepeatRule;
+        _originalQuietHours = item.QuietHours;
         _closePickersAfterDeactivationAction =
             ClosePickersAfterDeactivation;
         _positionBesideOwnerAction = PositionBesideOwner;
@@ -79,6 +84,7 @@ public partial class ScheduledTaskEditWindow : Window
                 localDueAt.Second);
             UpdateScheduledTimeTextFromPicker();
             SetRepeatDraft(item.RepeatInterval, item.RepeatRule);
+            SetQuietHoursDraft(item.QuietHours);
         }
         finally
         {
@@ -111,7 +117,8 @@ public partial class ScheduledTaskEditWindow : Window
         string,
         DateTimeOffset,
         TimeSpan?,
-        ScheduledRepeatRule?>?
+        ScheduledRepeatRule?,
+        ScheduledQuietHours?>?
         EditAccepted;
 
     public ScheduledTaskItem Item => _item;
@@ -127,6 +134,16 @@ public partial class ScheduledTaskEditWindow : Window
 
     internal void SetReminderInterruptionActive(bool active)
     {
+        if (active &&
+            !_reminderInterruptionActive &&
+            _focusBeforeReminder is null &&
+            Keyboard.FocusedElement is IInputElement focusedElement &&
+            focusedElement is DependencyObject focusedObject &&
+            IsWithin(focusedObject, this))
+        {
+            _focusBeforeReminder = focusedElement;
+        }
+
         _reminderInterruptionActive = active;
     }
 
@@ -137,18 +154,30 @@ public partial class ScheduledTaskEditWindow : Window
             return;
         }
 
+        var focusTarget = _focusBeforeReminder;
         Activate();
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.Input,
             new Action(() =>
             {
-                if (!IsLoaded || !IsVisible)
+                if (!IsLoaded ||
+                    !IsVisible ||
+                    _reminderInterruptionActive)
                 {
                     return;
                 }
 
-                TaskTextBox.Focus();
-                Keyboard.Focus(TaskTextBox);
+                var target =
+                    focusTarget is UIElement
+                    {
+                        IsVisible: true,
+                        IsEnabled: true
+                    } visibleTarget
+                        ? visibleTarget
+                        : TaskTextBox;
+                target.Focus();
+                Keyboard.Focus(target);
+                _focusBeforeReminder = null;
             }));
     }
 
@@ -204,6 +233,18 @@ public partial class ScheduledTaskEditWindow : Window
             every.ToString(CultureInfo.InvariantCulture);
         RepeatUnitComboBox.SelectedIndex = (int)unit;
     }
+
+    private void SetQuietHoursDraft(ScheduledQuietHours? quietHours)
+    {
+        QuietHoursToggle.IsChecked = quietHours is not null;
+        QuietHoursStartTextBox.Text = FormatQuietTime(
+            quietHours?.Start ?? TimeSpan.FromHours(22));
+        QuietHoursEndTextBox.Text = FormatQuietTime(
+            quietHours?.End ?? TimeSpan.FromHours(7));
+    }
+
+    private static string FormatQuietTime(TimeSpan value) =>
+        value.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
 
     private void ScheduledTaskEditWindow_Loaded(
         object sender,
@@ -477,6 +518,7 @@ public partial class ScheduledTaskEditWindow : Window
             IsWithin(originalSource, RepeatToggle) ||
             IsWithin(originalSource, RepeatCountTextBox) ||
             IsWithin(originalSource, RepeatUnitComboBox) ||
+            IsWithin(originalSource, QuietHoursEditor) ||
             IsWithinComboBoxPopup(originalSource, RepeatUnitComboBox);
         var isDatePickerInteraction =
             IsWithin(originalSource, ScheduledDatePickerHost) ||
@@ -533,6 +575,44 @@ public partial class ScheduledTaskEditWindow : Window
     private void RepeatToggle_Changed(object sender, RoutedEventArgs e)
     {
         DraftControl_Changed(sender, e);
+    }
+
+    private void QuietHoursToggle_Changed(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (ValidationText is not null)
+        {
+            ValidationText.Text = string.Empty;
+        }
+
+        if (!_initializing)
+        {
+            _quietHoursEdited = true;
+        }
+    }
+
+    private void QuietHoursControl_Changed(
+        object sender,
+        TextChangedEventArgs e)
+    {
+        if (ValidationText is not null)
+        {
+            ValidationText.Text = string.Empty;
+        }
+
+        if (!_initializing)
+        {
+            _quietHoursEdited = true;
+        }
+    }
+
+    private void QuietHoursTimeTextBox_PreviewTextInput(
+        object sender,
+        TextCompositionEventArgs e)
+    {
+        e.Handled = e.Text.Any(
+            character => !char.IsDigit(character) && character != ':');
     }
 
     private void RepeatCountTextBox_PreviewTextInput(
@@ -1096,7 +1176,8 @@ public partial class ScheduledTaskEditWindow : Window
                 out var text,
                 out var dueAt,
                 out var repeatInterval,
-                out var repeatRule))
+                out var repeatRule,
+                out var quietHours))
         {
             System.Media.SystemSounds.Beep.Play();
             _ = Dispatcher.BeginInvoke(
@@ -1116,7 +1197,8 @@ public partial class ScheduledTaskEditWindow : Window
             text,
             dueAt,
             repeatInterval,
-            repeatRule);
+            repeatRule,
+            quietHours);
         Close();
         return true;
     }
@@ -1125,12 +1207,14 @@ public partial class ScheduledTaskEditWindow : Window
         out string text,
         out DateTimeOffset dueAt,
         out TimeSpan? repeatInterval,
-        out ScheduledRepeatRule? repeatRule)
+        out ScheduledRepeatRule? repeatRule,
+        out ScheduledQuietHours? quietHours)
     {
         text = TaskTextBox.Text.Trim();
         dueAt = default;
         repeatInterval = null;
         repeatRule = null;
+        quietHours = null;
         if (text.Length == 0)
         {
             SetValidation("先写下要提醒的事情哦");
@@ -1239,6 +1323,64 @@ public partial class ScheduledTaskEditWindow : Window
             return false;
         }
 
+        return TryReadQuietHours(out quietHours);
+    }
+
+    private bool TryReadQuietHours(out ScheduledQuietHours? quietHours)
+    {
+        quietHours = null;
+        if (RepeatToggle.IsChecked != true ||
+            QuietHoursToggle.IsChecked != true)
+        {
+            return true;
+        }
+
+        if (!_quietHoursEdited)
+        {
+            quietHours = _originalQuietHours;
+            return true;
+        }
+
+        if (!DateTime.TryParseExact(
+                QuietHoursStartTextBox.Text.Trim(),
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var start))
+        {
+            SetValidation("免打扰开始时间要写成 HH:mm:ss");
+            QuietHoursStartTextBox.Focus();
+            QuietHoursStartTextBox.SelectAll();
+            return false;
+        }
+
+        if (!DateTime.TryParseExact(
+                QuietHoursEndTextBox.Text.Trim(),
+                "HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var end))
+        {
+            SetValidation("免打扰结束时间要写成 HH:mm:ss");
+            QuietHoursEndTextBox.Focus();
+            QuietHoursEndTextBox.SelectAll();
+            return false;
+        }
+
+        if (start.TimeOfDay == end.TimeOfDay)
+        {
+            SetValidation("免打扰开始和结束时间不能相同哦");
+            QuietHoursEndTextBox.Focus();
+            QuietHoursEndTextBox.SelectAll();
+            return false;
+        }
+
+        quietHours = new ScheduledQuietHours
+        {
+            Start = start.TimeOfDay,
+            End = end.TimeOfDay,
+            TimeZoneId = TimeZoneInfo.Local.Id
+        };
         return true;
     }
 
@@ -1382,7 +1524,8 @@ public partial class ScheduledTaskEditWindow : Window
         ScheduledTimePickerPopup.Child?.IsMouseOver == true ||
         RepeatToggle.IsMouseOver ||
         RepeatCountTextBox.IsMouseOver ||
-        RepeatUnitComboBox.IsMouseOver;
+        RepeatUnitComboBox.IsMouseOver ||
+        QuietHoursEditor.IsMouseOver;
 
     private void ScheduledTaskEditWindow_Activated(
         object? sender,
