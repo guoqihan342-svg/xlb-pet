@@ -7,7 +7,6 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -9676,52 +9675,32 @@ public partial class MainWindow : Window
         var title = _totalReminderOccurrenceCount == 1
             ? "定时任务到点啦"
             : $"{_totalReminderOccurrenceCount} 次提醒待确认";
-        var content = BuildReminderPresentationText(overflowCount);
+        var entries = BuildReminderPresentationEntries();
         EnsureReminderWindow().SetPresentation(
             title,
-            content,
-            _visibleReminderOccurrences.Count,
+            entries,
             overflowCount);
     }
 
-    private string BuildReminderPresentationText(long overflowCount)
+    private string[] BuildReminderPresentationEntries()
     {
-        var builder = new StringBuilder(
-            Math.Max(128, _visibleReminderOccurrences.Count * 96));
-        if (overflowCount > 0)
-        {
-            builder.Append("先按时间显示最早的 ")
-                .Append(_visibleReminderOccurrences.Count)
-                .Append(" 条；另有 ")
-                .Append(overflowCount)
-                .AppendLine(" 条会在确认后继续显示。")
-                .AppendLine();
-        }
-
+        var entries = new string[_visibleReminderOccurrences.Count];
         for (var index = 0;
              index < _visibleReminderOccurrences.Count;
              index++)
         {
             var occurrence = _visibleReminderOccurrences[index];
-            builder.Append('•')
-                .Append(' ')
-                .Append(
-                    occurrence.DueAt.ToLocalTime()
-                        .ToString("M月d日 HH:mm:ss"));
-            if (occurrence.RepeatText.Length > 0)
-            {
-                builder.Append(" · ").Append(occurrence.RepeatText);
-            }
-
-            builder.AppendLine()
-                .Append(occurrence.Text);
-            if (index < _visibleReminderOccurrences.Count - 1)
-            {
-                builder.AppendLine().AppendLine();
-            }
+            var dueAtText = occurrence.DueAt.ToLocalTime()
+                .ToString("M月d日 HH:mm:ss");
+            var repeatText = occurrence.RepeatText.Length > 0
+                ? $" · {occurrence.RepeatText}"
+                : string.Empty;
+            entries[index] =
+                $"• {dueAtText}{repeatText}{Environment.NewLine}" +
+                occurrence.Text;
         }
 
-        return builder.ToString();
+        return entries;
     }
 
     private static long SaturatingAdd(long left, long right)

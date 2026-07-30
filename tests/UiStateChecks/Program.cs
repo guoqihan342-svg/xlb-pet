@@ -14537,8 +14537,8 @@ internal static class Program
                     "MonitorWorkArea.GetForVisual(_anchor, _placementAnchor)",
                     StringComparison.Ordinal) &&
                reminderSource.Contains(
-                   "Math.Min(_preferredHeight, usableHeight)",
-                   StringComparison.Ordinal) &&
+                    "Math.Min(PreferredPagedHeight, usableHeight)",
+                    StringComparison.Ordinal) &&
                 reminderXaml.Contains(
                     "ShowActivated=\"False\"",
                     StringComparison.Ordinal) &&
@@ -14546,7 +14546,7 @@ internal static class Program
                     "x:Name=\"ReminderCloseButton\"",
                     StringComparison.Ordinal) &&
                 reminderXaml.Contains(
-                    "ToolTip=\"关闭并清空当前显示的提醒\"",
+                    "ToolTip=\"关闭并清空本批提醒\"",
                     StringComparison.Ordinal) &&
                 reminderXaml.Contains(
                     "Click=\"CloseButton_Click\"",
@@ -14575,6 +14575,63 @@ internal static class Program
             "提醒必须按 occurrence 建模、未确认时继续布下一次定时器；" +
             "关闭与知道啦必须统一消费当前显示项，删除活动任务要同步重整提醒状态，" +
             "并在单个轻量窗口内最多显示100条");
+
+        var reminderSetPresentation = typeof(ReminderWindow).GetMethod(
+            "SetPresentation",
+            InstanceFlags);
+        var reminderPresentationParameters =
+            reminderSetPresentation?.GetParameters() ?? [];
+        var reminderPageSizeConstant = typeof(ReminderWindow)
+            .GetFields(StaticFlags)
+            .FirstOrDefault(field =>
+                field.IsLiteral &&
+                field.FieldType == typeof(int) &&
+                field.Name.Contains("Page", StringComparison.Ordinal) &&
+                Equals(field.GetRawConstantValue(), 5));
+        Assert(reminderSetPresentation is not null &&
+               reminderPresentationParameters.Length == 3 &&
+               reminderPresentationParameters[0].ParameterType ==
+                   typeof(string) &&
+               reminderPresentationParameters[1].ParameterType ==
+                   typeof(IReadOnlyList<string>) &&
+               reminderPresentationParameters[2].ParameterType ==
+                   typeof(long) &&
+               reminderPageSizeConstant is not null &&
+               mainSource.Contains(
+                   "BuildReminderPresentationEntries()",
+                   StringComparison.Ordinal) &&
+               !mainSource.Contains(
+                   "BuildReminderPresentationText(",
+                   StringComparison.Ordinal) &&
+               reminderSource.Contains(
+                   "PreferredPagedHeight = 468",
+                   StringComparison.Ordinal) &&
+               !reminderSource.Contains(
+                   "MaximumPreferredHeight = 4096",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "x:Name=\"ReminderPagingPanel\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "x:Name=\"ReminderPreviousPageButton\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "x:Name=\"ReminderPageText\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "x:Name=\"ReminderNextPageButton\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "x:Name=\"ReminderAcknowledgeButton\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "x:Key=\"CuteReminderPageButtonStyle\"",
+                   StringComparison.Ordinal) &&
+               reminderXaml.Contains(
+                   "FontFamily=\"Microsoft YaHei\"",
+                   StringComparison.Ordinal),
+            "提醒分页必须保留100条批次安全上限，改用字符串条目列表并以5条为一页；" +
+            "窗口必须固定紧凑高度并提供可测的萌橘分页控件，不能继续拼接一整段百条文本");
 
         scheduledTimer.Stop();
         automaticTimer.Stop();
@@ -15111,8 +15168,24 @@ internal static class Program
                    Math.Abs(effectivePetSizeTarget - 1.40d) < 0.001,
                 "关闭旧提醒后新的 occurrence 必须单独显示；尺寸尚在恢复时要取消缩小并重新平滑放大");
 
-            now = firstDueAt.AddMinutes(105);
+            now = firstDueAt.AddMinutes(103);
             Invoke(window, "ProcessScheduledTasksAt", now);
+            reminderWindow.UpdateLayout();
+            var reminderPagingPanel = GetField<Border>(
+                reminderWindow,
+                "ReminderPagingPanel");
+            var reminderPreviousPageButton = GetField<Button>(
+                reminderWindow,
+                "ReminderPreviousPageButton");
+            var reminderPageText = GetField<TextBlock>(
+                reminderWindow,
+                "ReminderPageText");
+            var reminderNextPageButton = GetField<Button>(
+                reminderWindow,
+                "ReminderNextPageButton");
+            var reminderAcknowledgeButton = GetField<Button>(
+                reminderWindow,
+                "ReminderAcknowledgeButton");
             var countText =
                 GetField<TextBlock>(
                     reminderWindow,
@@ -15120,15 +15193,205 @@ internal static class Program
             Assert(visibleOccurrences.Count == 100 &&
                    GetField<long>(
                        window,
-                       "_totalReminderOccurrenceCount") == 102 &&
-                   countText.Contains("另有 2 条", StringComparison.Ordinal) &&
+                       "_totalReminderOccurrenceCount") == 100 &&
+                   !countText.Contains("另有", StringComparison.Ordinal) &&
                    GetProperty<DateTimeOffset>(
                        visibleOccurrences[0]!,
                        "DueAt") == firstDueAt.AddMinutes(4) &&
                    GetProperty<DateTimeOffset>(
                        visibleOccurrences[99]!,
-                       "DueAt") == firstDueAt.AddMinutes(103),
-                "清空旧提醒后前跳到105分钟，必须从第4分钟起保留最早100条并明确显示另外2条");
+                       "DueAt") == firstDueAt.AddMinutes(103) &&
+                   reminderPagingPanel.Visibility == Visibility.Visible &&
+                   reminderPageText.Text.Contains(
+                       "1 / 20",
+                       StringComparison.Ordinal) &&
+                   !reminderPreviousPageButton.IsEnabled &&
+                   reminderNextPageButton.IsEnabled &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 5 &&
+                   reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(4).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal) &&
+                   reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(8).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal) &&
+                   !reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(9).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal),
+                "100条提醒必须保留完整批次但第一页严格只显示最早5条，共20页；" +
+                "第一页必须禁用上一页并启用下一页");
+
+            reminderPreviousPageButton.ApplyTemplate();
+            reminderNextPageButton.ApplyTemplate();
+            reminderAcknowledgeButton.ApplyTemplate();
+            var previousPageChrome =
+                reminderPreviousPageButton.Template.FindName(
+                    "PageButtonBackground",
+                    reminderPreviousPageButton) as Border;
+            var nextPageChrome =
+                reminderNextPageButton.Template.FindName(
+                    "PageButtonBackground",
+                    reminderNextPageButton) as Border;
+            var acknowledgeChrome =
+                reminderAcknowledgeButton.Template.FindName(
+                    "ButtonBackground",
+                    reminderAcknowledgeButton) as Border;
+            Assert(reminderPagingPanel.Background is SolidColorBrush
+                       pagingBackground &&
+                   pagingBackground.Color ==
+                       Color.FromRgb(0xFF, 0xF6, 0xEC) &&
+                   reminderPagingPanel.BorderBrush is SolidColorBrush
+                       pagingBorder &&
+                   pagingBorder.Color ==
+                       Color.FromRgb(0xF3, 0xC8, 0x9F) &&
+                   reminderPagingPanel.CornerRadius.TopLeft == 19 &&
+                   previousPageChrome?.Background is SolidColorBrush
+                       previousBackground &&
+                   previousBackground.Color ==
+                       Color.FromRgb(0xFF, 0xF8, 0xF1) &&
+                   nextPageChrome?.Background is SolidColorBrush
+                       nextBackground &&
+                   nextBackground.Color ==
+                       Color.FromRgb(0xFF, 0xF1, 0xE2) &&
+                   nextPageChrome.BorderBrush is SolidColorBrush
+                       nextBorder &&
+                   nextBorder.Color ==
+                       Color.FromRgb(0xF0, 0xB4, 0x77) &&
+                   reminderPageText.Foreground is SolidColorBrush
+                       pageTextBrush &&
+                   pageTextBrush.Color ==
+                       Color.FromRgb(0xB9, 0x63, 0x26) &&
+                   reminderPageText.FontFamily.Source ==
+                       "Microsoft YaHei" &&
+                   acknowledgeChrome?.Background is SolidColorBrush
+                       acknowledgeBackground &&
+                   acknowledgeBackground.Color ==
+                       Color.FromRgb(0xF2, 0xA0, 0x52) &&
+                   acknowledgeChrome.BorderBrush is SolidColorBrush
+                       acknowledgeBorder &&
+                   acknowledgeBorder.Color ==
+                       Color.FromRgb(0xD9, 0x84, 0x35),
+                "定时提醒分页、页码和确认按钮必须使用圆润暖橘萌系样式；" +
+                "禁用与可用翻页按钮也要有明确且一致的橘色层级");
+
+            var pagingActiveClip = GetRawField(window, "_activeClip");
+            var pagingClipStartedTimestamp = GetField<long>(
+                window,
+                "_activeClipStartedTimestamp");
+            var pagingFrameDeadlineTimestamp = GetField<long>(
+                window,
+                "_activeFrameDeadlineTimestamp");
+            var pagingFrameIndex = GetField<int>(
+                window,
+                "_activeFrameIndex");
+            var pagingOccurrenceSnapshot = visibleOccurrences
+                .Cast<object>()
+                .Select(occurrence => (
+                    TaskId: GetProperty<Guid>(occurrence, "TaskId"),
+                    DueAt: GetProperty<DateTimeOffset>(occurrence, "DueAt"),
+                    OccurrenceOffset:
+                        GetProperty<long>(occurrence, "OccurrenceOffset")))
+                .ToArray();
+            var pagingTotalCount = GetField<long>(
+                window,
+                "_totalReminderOccurrenceCount");
+            var pagingDueAt = recurring.DueAt;
+            var persistedPagingDueAt =
+                scheduledStore.Load().Single().DueAt;
+            var pagingWindowLeft = reminderWindow.Left;
+            var pagingWindowTop = reminderWindow.Top;
+            var pagingWindowHeight = reminderWindow.Height;
+            Assert(pagingWindowHeight > 0 &&
+                   pagingWindowHeight <= 468.1,
+                "分页提醒窗口必须使用不超过468 DIP的固定紧凑高度");
+
+            for (var pageIndex = 1; pageIndex < 20; pageIndex++)
+            {
+                reminderNextPageButton.RaiseEvent(
+                    new RoutedEventArgs(Button.ClickEvent));
+            }
+
+            var pagingOccurrenceAfterNavigation = visibleOccurrences
+                .Cast<object>()
+                .Select(occurrence => (
+                    TaskId: GetProperty<Guid>(occurrence, "TaskId"),
+                    DueAt: GetProperty<DateTimeOffset>(occurrence, "DueAt"),
+                    OccurrenceOffset:
+                        GetProperty<long>(occurrence, "OccurrenceOffset")))
+                .ToArray();
+            Assert(reminderPageText.Text.Contains(
+                       "20 / 20",
+                       StringComparison.Ordinal) &&
+                   reminderPreviousPageButton.IsEnabled &&
+                   !reminderNextPageButton.IsEnabled &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 5 &&
+                   reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(99).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal) &&
+                   reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(103).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal) &&
+                   !reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(98).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(
+                       GetRawField(window, "_activeClip"),
+                       pagingActiveClip) &&
+                   GetField<long>(
+                       window,
+                       "_activeClipStartedTimestamp") ==
+                       pagingClipStartedTimestamp &&
+                   GetField<long>(
+                       window,
+                       "_activeFrameDeadlineTimestamp") ==
+                       pagingFrameDeadlineTimestamp &&
+                   GetField<int>(
+                       window,
+                       "_activeFrameIndex") == pagingFrameIndex &&
+                   pagingOccurrenceAfterNavigation.SequenceEqual(
+                       pagingOccurrenceSnapshot) &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") ==
+                       pagingTotalCount &&
+                   recurring.DueAt == pagingDueAt &&
+                   scheduledStore.Load().Single().DueAt ==
+                       persistedPagingDueAt &&
+                   Math.Abs(reminderWindow.Left - pagingWindowLeft) < 0.1 &&
+                   Math.Abs(reminderWindow.Top - pagingWindowTop) < 0.1 &&
+                   Math.Abs(
+                       reminderWindow.Height - pagingWindowHeight) < 0.1,
+                "翻到第20页必须严格显示第96至100条并禁用下一页；" +
+                "翻页只能切换正文，不能重播提醒动画、改变occurrence、推进截止时间或让窗口跳动");
+
+            now = firstDueAt.AddMinutes(105);
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            countText = GetField<TextBlock>(
+                reminderWindow,
+                "ReminderCountText").Text;
+            Assert(visibleOccurrences.Count == 100 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 102 &&
+                   countText.Contains("另有 2 条", StringComparison.Ordinal) &&
+                   reminderPageText.Text.Contains(
+                       "20 / 20",
+                       StringComparison.Ordinal) &&
+                   !reminderNextPageButton.IsEnabled &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 5,
+                "100条批次外新增2条只能进入overflow，不能把当前批次错误扩成21页；" +
+                "追加提醒时应保留用户正在查看的有效页");
             var reminderVerticalScrollBar =
                 FindVisualDescendants<ScrollBar>(reminderWindow)
                     .FirstOrDefault(scrollBar =>
@@ -15155,13 +15418,36 @@ internal static class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(GetField<bool>(window, "_isReminderActive") &&
                    visibleOccurrences.Count == 2 &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 2 &&
                    recurring.DueAt == firstDueAt.AddMinutes(104) &&
                    todoWindow.IsVisible &&
                    reminderWindow.IsVisible &&
-                   dismissRequestCount == 3,
-                "超过100条时关闭只清空当前已显示的100条；即使系统时间回拨，也必须立即展示未显示的剩余2条");
+                   dismissRequestCount == 3 &&
+                   reminderPagingPanel.Visibility ==
+                       Visibility.Collapsed &&
+                   reminderPageText.Text.Contains(
+                       "1 / 1",
+                       StringComparison.Ordinal) &&
+                   !reminderPreviousPageButton.IsEnabled &&
+                   !reminderNextPageButton.IsEnabled &&
+                   reminderTextBox.Text.Split(
+                       recurring.Text,
+                       StringSplitOptions.None).Length - 1 == 2 &&
+                   reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(104).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal) &&
+                   reminderTextBox.Text.Contains(
+                       firstDueAt.AddMinutes(105).ToLocalTime()
+                           .ToString("M月d日 HH:mm:ss"),
+                       StringComparison.Ordinal),
+                "在第20页关闭也必须一次清空整个100条批次；剩余2条应立即回到第一页，" +
+                "隐藏分页栏且不能丢失overflow");
 
-            Invoke(window, "AcknowledgeActiveReminder");
+            reminderAcknowledgeButton.RaiseEvent(
+                new RoutedEventArgs(Button.ClickEvent));
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             var persisted = scheduledStore.Load().Single();
             Assert(!GetField<bool>(window, "_isReminderActive") &&
@@ -15406,6 +15692,18 @@ internal static class Program
             var reminderTitle = GetField<TextBlock>(
                 reminderWindow,
                 "ReminderTitleText");
+            var reminderPagingPanel = GetField<Border>(
+                reminderWindow,
+                "ReminderPagingPanel");
+            var reminderPreviousPageButton = GetField<Button>(
+                reminderWindow,
+                "ReminderPreviousPageButton");
+            var reminderPageText = GetField<TextBlock>(
+                reminderWindow,
+                "ReminderPageText");
+            var reminderNextPageButton = GetField<Button>(
+                reminderWindow,
+                "ReminderNextPageButton");
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(
                            window,
@@ -15456,9 +15754,30 @@ internal static class Program
                    visibleOccurrences.Count == 7 &&
                    reminderTitle.Text == "7 次提醒待确认" &&
                    reminderContent.Text.Split(
+                        quietRecurring.Text,
+                        StringSplitOptions.None).Length - 1 == 5 &&
+                   reminderPagingPanel.Visibility ==
+                       Visibility.Visible &&
+                   reminderPageText.Text.Contains(
+                       "1 / 2",
+                       StringComparison.Ordinal) &&
+                   !reminderPreviousPageButton.IsEnabled &&
+                   reminderNextPageButton.IsEnabled,
+                "免打扰结束时必须从原锚点累计7次漏提醒且第一页严格显示5条，" +
+                "不能丢失、快速补播或把分页后的总数误写成5条");
+
+            reminderNextPageButton.RaiseEvent(
+                new RoutedEventArgs(Button.ClickEvent));
+            Assert(reminderContent.Text.Split(
                        quietRecurring.Text,
-                       StringSplitOptions.None).Length - 1 == 7,
-                "免打扰结束时必须一次显示从原锚点累计的7次漏提醒，不能丢失或快速补播");
+                       StringSplitOptions.None).Length - 1 == 2 &&
+                   reminderPageText.Text.Contains(
+                       "2 / 2",
+                       StringComparison.Ordinal) &&
+                   reminderPreviousPageButton.IsEnabled &&
+                   !reminderNextPageButton.IsEnabled &&
+                   visibleOccurrences.Count == 7,
+                "7次免打扰汇总提醒的第二页必须只显示剩余2条，翻页不能改变累计occurrence");
 
             Invoke(window, "AcknowledgeActiveReminder");
             var expectedQuietNextDueAt = quietEnd.AddMinutes(10);

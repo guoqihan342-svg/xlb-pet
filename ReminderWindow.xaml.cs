@@ -9,24 +9,20 @@ namespace LubanDesktopPet;
 public partial class ReminderWindow : Window
 {
     private const double DefaultWidth = 372;
-    private const double MinimumUsableHeight = 210;
-    private const double MaximumPreferredHeight = 4096;
+    private const double PreferredPagedHeight = 468;
     private const double WorkAreaInset = 12;
     private const int AdjacentWindowGapPixels = 6;
-    private const double FixedContentHeight = 158;
-    private const double EstimatedTextLineHeight = 21;
-    private const int EstimatedCharactersPerLine = 28;
-    private const int MaximumPreferredTextLines = 300;
+    private const int ReminderItemsPerPage = 5;
 
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private readonly Action _repositionAction;
+    private readonly List<string> _presentationEntries = [];
     private Window? _anchor;
     private FrameworkElement? _placementAnchor;
-    private double _preferredHeight = 360;
     private string _presentationTitle = string.Empty;
-    private string _presentationContent = string.Empty;
-    private int _presentationVisibleCount = -1;
     private long _presentationOverflowCount = -1;
+    private string _renderedPageContent = string.Empty;
+    private int _currentPageIndex;
     private bool _allowClose;
     private bool _dismissRequestPending;
     private bool _hasClosed;
@@ -45,30 +41,26 @@ public partial class ReminderWindow : Window
 
     public void SetPresentation(
         string? title,
-        string? content,
-        int visibleCount,
+        IReadOnlyList<string>? entries,
         long overflowCount)
     {
-        visibleCount = Math.Max(0, visibleCount);
         overflowCount = Math.Max(0L, overflowCount);
 
         var presentationTitle = string.IsNullOrWhiteSpace(title)
             ? "小鲁班提醒"
             : title.Trim();
-        var presentationContent = content ?? string.Empty;
+        var presentationEntries = NormalizeEntries(entries);
 
         var titleChanged = !string.Equals(
             _presentationTitle,
             presentationTitle,
             StringComparison.Ordinal);
-        var contentChanged = !string.Equals(
-            _presentationContent,
-            presentationContent,
-            StringComparison.Ordinal);
-        var countChanged =
-            _presentationVisibleCount != visibleCount ||
+        var entriesChanged = !EntriesEqual(
+            _presentationEntries,
+            presentationEntries);
+        var overflowChanged =
             _presentationOverflowCount != overflowCount;
-        if (!titleChanged && !contentChanged && !countChanged)
+        if (!titleChanged && !entriesChanged && !overflowChanged)
         {
             return;
         }
@@ -80,35 +72,89 @@ public partial class ReminderWindow : Window
             ReminderTitleText.Text = presentationTitle;
         }
 
-        if (countChanged)
+        if (entriesChanged)
         {
-            _presentationVisibleCount = visibleCount;
-            _presentationOverflowCount = overflowCount;
-            ReminderCountText.Text = overflowCount > 0
-                ? $"当前 {visibleCount} 条，另有 {overflowCount} 条"
-                : $"{visibleCount} 条提醒";
+            var preserveCurrentPage = HasStablePrefix(
+                _presentationEntries,
+                presentationEntries);
+            _presentationEntries.Clear();
+            _presentationEntries.AddRange(presentationEntries);
+            if (!preserveCurrentPage)
+            {
+                _currentPageIndex = 0;
+            }
         }
 
-        if (contentChanged)
+        _presentationOverflowCount = overflowCount;
+        ClampCurrentPage();
+        RefreshPresentationChrome();
+        RenderCurrentPage();
+    }
+
+    private static List<string> NormalizeEntries(
+        IReadOnlyList<string>? entries)
+    {
+        if (entries is null || entries.Count == 0)
         {
-            _presentationContent = presentationContent;
-            ReminderContentTextBox.Text = presentationContent;
-            ReminderContentTextBox.Select(0, 0);
-            ReminderContentTextBox.ScrollToHome();
+            return [];
         }
 
-        if (contentChanged || countChanged)
+        var normalized = new List<string>(entries.Count);
+        for (var index = 0; index < entries.Count; index++)
         {
-            _preferredHeight = CalculatePreferredHeight(
-                presentationContent,
-                visibleCount);
-            ApplyAnchorWorkAreaSize();
+            normalized.Add(entries[index] ?? string.Empty);
         }
 
-        if (IsVisible && (contentChanged || countChanged))
+        return normalized;
+    }
+
+    private static bool EntriesEqual(
+        IReadOnlyList<string> left,
+        IReadOnlyList<string> right)
+    {
+        if (left.Count != right.Count)
         {
-            ScheduleReposition();
+            return false;
         }
+
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!string.Equals(
+                    left[index],
+                    right[index],
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasStablePrefix(
+        IReadOnlyList<string> previousEntries,
+        IReadOnlyList<string> nextEntries)
+    {
+        if (previousEntries.Count == 0 || nextEntries.Count == 0)
+        {
+            return previousEntries.Count == nextEntries.Count;
+        }
+
+        var sharedLength = Math.Min(
+            previousEntries.Count,
+            nextEntries.Count);
+        for (var index = 0; index < sharedLength; index++)
+        {
+            if (!string.Equals(
+                    previousEntries[index],
+                    nextEntries[index],
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public void ShowBeside(Window anchor) =>
@@ -178,13 +224,18 @@ public partial class ReminderWindow : Window
         }
 
         _presentationTitle = string.Empty;
-        _presentationContent = string.Empty;
-        _presentationVisibleCount = -1;
+        _presentationEntries.Clear();
         _presentationOverflowCount = -1;
-        _preferredHeight = 360;
+        _renderedPageContent = string.Empty;
+        _currentPageIndex = 0;
         ReminderTitleText.Text = "小鲁班提醒";
         ReminderCountText.Text = "0 条提醒";
         ReminderContentTextBox.Clear();
+        ReminderPageText.Text = "第 1 / 1 页";
+        ReminderPreviousPageButton.IsEnabled = false;
+        ReminderNextPageButton.IsEnabled = false;
+        ReminderPagingPanel.Visibility = Visibility.Collapsed;
+        ReminderAcknowledgeButton.Content = "知道啦";
     }
 
     public void CloseForApplication()
@@ -209,32 +260,95 @@ public partial class ReminderWindow : Window
         Close();
     }
 
-    private static double CalculatePreferredHeight(
-        string content,
-        int visibleCount)
+    private int PageCount =>
+        Math.Max(
+            1,
+            (_presentationEntries.Count + ReminderItemsPerPage - 1) /
+            ReminderItemsPerPage);
+
+    private void ClampCurrentPage()
     {
-        var explicitLines = 1;
-        foreach (var character in content)
+        _currentPageIndex = Math.Clamp(
+            _currentPageIndex,
+            0,
+            PageCount - 1);
+    }
+
+    private void RefreshPresentationChrome()
+    {
+        var entryCount = _presentationEntries.Count;
+        ReminderCountText.Text = _presentationOverflowCount > 0
+            ? $"本批 {entryCount} 条，另有 {_presentationOverflowCount} 条稍后显示"
+            : $"{entryCount} 条提醒";
+
+        var pageCount = PageCount;
+        ReminderPageText.Text = entryCount == 0
+            ? "第 1 / 1 页"
+            : $"第 {_currentPageIndex + 1} / {pageCount} 页";
+        ReminderPreviousPageButton.IsEnabled =
+            entryCount > 0 && _currentPageIndex > 0;
+        ReminderNextPageButton.IsEnabled =
+            entryCount > 0 && _currentPageIndex < pageCount - 1;
+        ReminderPagingPanel.Visibility = pageCount > 1
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        ReminderAcknowledgeButton.Content =
+            pageCount > 1 || _presentationOverflowCount > 0
+                ? "本批都知道啦"
+                : "知道啦";
+    }
+
+    private void RenderCurrentPage()
+    {
+        var startIndex = _currentPageIndex * ReminderItemsPerPage;
+        var itemCount = Math.Min(
+            ReminderItemsPerPage,
+            Math.Max(0, _presentationEntries.Count - startIndex));
+        var pageContent = itemCount == 0
+            ? string.Empty
+            : string.Join(
+                $"{Environment.NewLine}{Environment.NewLine}",
+                _presentationEntries.GetRange(startIndex, itemCount));
+        if (string.Equals(
+                _renderedPageContent,
+                pageContent,
+                StringComparison.Ordinal))
         {
-            if (character == '\n')
-            {
-                explicitLines++;
-            }
+            return;
         }
 
-        var wrappedLines = Math.Max(
-            explicitLines,
-            (content.Length + EstimatedCharactersPerLine - 1) /
-            EstimatedCharactersPerLine);
-        var itemLines = Math.Max(1, visibleCount) * 2;
-        var preferredLines = Math.Clamp(
-            Math.Max(wrappedLines, itemLines),
-            4,
-            MaximumPreferredTextLines);
-        return Math.Clamp(
-            FixedContentHeight + preferredLines * EstimatedTextLineHeight,
-            MinimumUsableHeight,
-            MaximumPreferredHeight);
+        _renderedPageContent = pageContent;
+        ReminderContentTextBox.Text = pageContent;
+        ReminderContentTextBox.Select(0, 0);
+        ReminderContentTextBox.ScrollToHome();
+    }
+
+    private void PreviousPageButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_currentPageIndex > 0)
+        {
+            _currentPageIndex--;
+            RefreshPresentationChrome();
+            RenderCurrentPage();
+        }
+
+        e.Handled = true;
+    }
+
+    private void NextPageButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_currentPageIndex < PageCount - 1)
+        {
+            _currentPageIndex++;
+            RefreshPresentationChrome();
+            RenderCurrentPage();
+        }
+
+        e.Handled = true;
     }
 
     private void AttachAnchor(
@@ -291,8 +405,8 @@ public partial class ReminderWindow : Window
         {
             ApplyWindowSize(
                 DefaultWidth,
-                _preferredHeight,
-                double.PositiveInfinity);
+                PreferredPagedHeight,
+                PreferredPagedHeight);
             return;
         }
 
@@ -304,8 +418,8 @@ public partial class ReminderWindow : Window
 
         ApplyWindowSize(
             Math.Min(DefaultWidth, usableWidth),
-            Math.Min(_preferredHeight, usableHeight),
-            usableHeight);
+            Math.Min(PreferredPagedHeight, usableHeight),
+            Math.Min(PreferredPagedHeight, usableHeight));
     }
 
     private void ApplyWindowSize(

@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="小鲁班提醒"
         Width="372"
-        Height="360"
+        Height="468"
+        MaxHeight="468"
         AllowsTransparency="True"
         Background="Transparent"
         FontFamily="Microsoft YaHei"
@@ -121,18 +122,69 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="CuteReminderPageButtonStyle"
+               TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="#FFF1E2" />
+            <Setter Property="BorderBrush" Value="#F0B477" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Foreground" Value="#C66F2D" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="PageButtonBackground"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="15">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="PageButtonBackground"
+                                        Property="Background"
+                                        Value="#FFE2C4" />
+                                <Setter Property="BorderBrush"
+                                        Value="#E79A51" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="PageButtonBackground"
+                                        Property="Background"
+                                        Value="#F8CC9F" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="PageButtonBackground"
+                                        Property="Background"
+                                        Value="#FFF8F1" />
+                                <Setter Property="BorderBrush"
+                                        Value="#F4D8BC" />
+                                <Setter Property="Foreground"
+                                        Value="#D9B99B" />
+                                <Setter Property="Cursor"
+                                        Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="10">
-        <Border Background="#FFFDFEFF"
-                BorderBrush="#C9DCF7"
+        <Border Background="#FFF9F2"
+                BorderBrush="#F2C08E"
                 BorderThickness="1"
                 CornerRadius="20">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="18"
-                                  Color="#58749F"
+                                  Color="#A7662D"
                                   Direction="270"
-                                  Opacity="0.24"
+                                  Opacity="0.22"
                                   ShadowDepth="4" />
             </Border.Effect>
 
@@ -141,6 +193,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
@@ -176,13 +229,13 @@
                                    FontFamily="Microsoft YaHei"
                                    FontSize="15"
                                    FontWeight="SemiBold"
-                                   Foreground="#3F5578"
+                                   Foreground="#7E4A27"
                                    Text="小鲁班提醒"
                                    TextTrimming="CharacterEllipsis" />
                         <TextBlock Margin="0,2,0,0"
                                    FontFamily="Microsoft YaHei"
                                    FontSize="10.5"
-                                   Foreground="#8A99AE"
+                                   Foreground="#B17A50"
                                    Text="到时间啦，记得看看这些事情哦" />
                     </StackPanel>
 
@@ -199,8 +252,8 @@
                             Cursor="Hand"
                             FontFamily="Microsoft YaHei"
                             FontSize="17"
-                            Foreground="#94A3B7"
-                            ToolTip="关闭并清空当前显示的提醒"
+                            Foreground="#C38352"
+                            ToolTip="关闭并清空本批提醒"
                             Click="CloseButton_Click">
                         <Button.Style>
                             <Style TargetType="Button">
@@ -229,14 +282,14 @@
                                                 <Trigger Property="IsMouseOver" Value="True">
                                                     <Setter TargetName="CloseBackground"
                                                             Property="Background"
-                                                            Value="#FFF0F3F8" />
+                                                            Value="#FFF0E2" />
                                                     <Setter Property="Foreground"
-                                                            Value="#5F7392" />
+                                                            Value="#A95E27" />
                                                 </Trigger>
                                                 <Trigger Property="IsPressed" Value="True">
                                                     <Setter TargetName="CloseBackground"
                                                             Property="Background"
-                                                            Value="#FFE4EBF4" />
+                                                            Value="#FFE1C7" />
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -251,24 +304,24 @@
                         Margin="0,11,0,8"
                         Padding="10,5"
                         HorizontalAlignment="Left"
-                        Background="#EEF5FF"
+                        Background="#FFF0DE"
                         CornerRadius="10">
                     <TextBlock x:Name="ReminderCountText"
                                FontFamily="Microsoft YaHei"
                                FontSize="11"
                                FontWeight="SemiBold"
-                               Foreground="#5577AA"
+                               Foreground="#C66F2D"
                                Text="0 条提醒" />
                 </Border>
 
                 <TextBox x:Name="ReminderContentTextBox"
                          Grid.Row="2"
-                         MinHeight="78"
+                         MinHeight="0"
                          Padding="11,9"
                          AcceptsReturn="True"
                          AutomationProperties.Name="提醒内容"
-                         Background="#FFF9FBFE"
-                         BorderBrush="#DCE7F5"
+                         Background="#FFFCF8"
+                         BorderBrush="#F4C99D"
                          BorderThickness="1"
                          FontFamily="Microsoft YaHei"
                          FontSize="12.5"
@@ -277,7 +330,7 @@
                          IsInactiveSelectionHighlightEnabled="True"
                          IsReadOnly="True"
                          IsReadOnlyCaretVisible="True"
-                         SelectionBrush="#8EBBF4"
+                         SelectionBrush="#F6B56F"
                          TextWrapping="Wrap"
                          VerticalContentAlignment="Top"
                          VerticalScrollBarVisibility="Auto">
@@ -287,7 +340,75 @@
                     </TextBox.Resources>
                 </TextBox>
 
-                <Grid Grid.Row="3" Margin="0,12,0,0">
+                <Border x:Name="ReminderPagingPanel"
+                        Grid.Row="3"
+                        Margin="0,10,0,0"
+                        Padding="6,4"
+                        HorizontalAlignment="Center"
+                        Background="#FFFFF6EC"
+                        BorderBrush="#F3C89F"
+                        BorderThickness="1"
+                        CornerRadius="19"
+                        Visibility="Collapsed">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <Button x:Name="ReminderPreviousPageButton"
+                                AutomationProperties.Name="上一页提醒"
+                                Style="{StaticResource CuteReminderPageButtonStyle}"
+                                ToolTip="上一页"
+                                Click="PreviousPageButton_Click">
+                            <Path Width="7"
+                                  Height="12"
+                                  Data="M7,1 L1,6 L7,11"
+                                  Fill="Transparent"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  StrokeStartLineCap="Round"
+                                  StrokeThickness="1.8" />
+                        </Button>
+
+                        <Border Grid.Column="1"
+                                MinWidth="92"
+                                Margin="7,0"
+                                Padding="12,0"
+                                Background="#FFF0DE"
+                                CornerRadius="14">
+                            <TextBlock x:Name="ReminderPageText"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Microsoft YaHei"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       Foreground="#B96326"
+                                       Text="第 1 / 1 页" />
+                        </Border>
+
+                        <Button x:Name="ReminderNextPageButton"
+                                Grid.Column="2"
+                                AutomationProperties.Name="下一页提醒"
+                                Style="{StaticResource CuteReminderPageButtonStyle}"
+                                ToolTip="下一页"
+                                Click="NextPageButton_Click">
+                            <Path Width="7"
+                                  Height="12"
+                                  Data="M1,1 L7,6 L1,11"
+                                  Fill="Transparent"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  StrokeStartLineCap="Round"
+                                  StrokeThickness="1.8" />
+                        </Button>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="4" Margin="0,12,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
@@ -297,16 +418,17 @@
                                VerticalAlignment="Center"
                                FontFamily="Microsoft YaHei"
                                FontSize="10"
-                               Foreground="#98A5B7"
+                               Foreground="#B58A67"
                                Text="内容可选中，按 Ctrl+C 复制" />
 
-                    <Button Grid.Column="1"
+                    <Button x:Name="ReminderAcknowledgeButton"
+                            Grid.Column="1"
                             MinWidth="92"
                             Height="34"
                             Padding="18,0"
                             AutomationProperties.Name="确认提醒"
-                            Background="#6F9EE8"
-                            BorderBrush="#5D8EDB"
+                            Background="#F2A052"
+                            BorderBrush="#D98435"
                             BorderThickness="1"
                             Content="知道啦"
                             Cursor="Hand"
@@ -317,8 +439,8 @@
                             Click="AcknowledgeButton_Click">
                         <Button.Style>
                             <Style TargetType="Button">
-                                <Setter Property="Background" Value="#6F9EE8" />
-                                <Setter Property="BorderBrush" Value="#5D8EDB" />
+                                <Setter Property="Background" Value="#F2A052" />
+                                <Setter Property="BorderBrush" Value="#D98435" />
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="Button">
@@ -335,17 +457,17 @@
                                                 <Trigger Property="IsMouseOver" Value="True">
                                                     <Setter TargetName="ButtonBackground"
                                                             Property="Background"
-                                                            Value="#5E90DD" />
+                                                            Value="#ED9148" />
                                                 </Trigger>
                                                 <Trigger Property="IsPressed" Value="True">
                                                     <Setter TargetName="ButtonBackground"
                                                             Property="Background"
-                                                            Value="#4E7FCB" />
+                                                            Value="#DC7A32" />
                                                 </Trigger>
                                                 <Trigger Property="IsKeyboardFocused" Value="True">
                                                     <Setter TargetName="ButtonBackground"
                                                             Property="BorderBrush"
-                                                            Value="#315FAD" />
+                                                            Value="#A9571C" />
                                                     <Setter TargetName="ButtonBackground"
                                                             Property="BorderThickness"
                                                             Value="2" />
