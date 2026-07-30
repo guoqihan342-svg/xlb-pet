@@ -12733,12 +12733,30 @@ internal static class Program
             var scheduledEditorQuietHoursToggle = GetField<CheckBox>(
                 scheduledEditor,
                 "QuietHoursToggle");
+            var scheduledEditorQuietHoursStartHost = GetField<Border>(
+                scheduledEditor,
+                "QuietHoursStartPickerHost");
             var scheduledEditorQuietHoursStart = GetField<TextBox>(
                 scheduledEditor,
                 "QuietHoursStartTextBox");
+            var scheduledEditorQuietHoursEndHost = GetField<Border>(
+                scheduledEditor,
+                "QuietHoursEndPickerHost");
             var scheduledEditorQuietHoursEnd = GetField<TextBox>(
                 scheduledEditor,
                 "QuietHoursEndTextBox");
+            var scheduledEditorQuietHoursTimePickerPopup = GetField<Popup>(
+                scheduledEditor,
+                "QuietHoursTimePickerPopup");
+            var scheduledEditorQuietHoursHourPicker = GetField<ComboBox>(
+                scheduledEditor,
+                "QuietHoursHourComboBox");
+            var scheduledEditorQuietHoursMinutePicker = GetField<ComboBox>(
+                scheduledEditor,
+                "QuietHoursMinuteComboBox");
+            var scheduledEditorQuietHoursSecondPicker = GetField<ComboBox>(
+                scheduledEditor,
+                "QuietHoursSecondComboBox");
             var scheduledEditorRepeatCount = GetField<TextBox>(
                 scheduledEditor,
                 "RepeatCountTextBox");
@@ -12776,6 +12794,18 @@ internal static class Program
                    scheduledEditorQuietHoursToggle.IsChecked != true &&
                    scheduledEditorQuietHoursStart.Text == "22:00:00" &&
                    scheduledEditorQuietHoursEnd.Text == "07:00:00" &&
+                   scheduledEditorQuietHoursStart.IsReadOnly &&
+                   scheduledEditorQuietHoursEnd.IsReadOnly &&
+                   !InputMethod.GetIsInputMethodEnabled(
+                       scheduledEditorQuietHoursStart) &&
+                   !InputMethod.GetIsInputMethodEnabled(
+                       scheduledEditorQuietHoursEnd) &&
+                   scheduledEditorQuietHoursStartHost.Cursor == Cursors.Hand &&
+                   scheduledEditorQuietHoursEndHost.Cursor == Cursors.Hand &&
+                   !scheduledEditorQuietHoursTimePickerPopup.IsOpen &&
+                   scheduledEditorQuietHoursHourPicker.Items.Count == 24 &&
+                   scheduledEditorQuietHoursMinutePicker.Items.Count == 60 &&
+                   scheduledEditorQuietHoursSecondPicker.Items.Count == 60 &&
                    Math.Abs(scheduledEditorDateHost.ActualWidth - 102) <= 0.1 &&
                    Math.Abs(scheduledEditorTimeHost.ActualWidth - 92) <= 0.1 &&
                    Math.Abs(scheduledEditorSaveButton.Height - 38) <= 0.1 &&
@@ -12943,18 +12973,6 @@ internal static class Program
                 "修改定时任务勾选循环时必须显示免打扰行，并保持选择提醒时间 Popup 和编辑窗");
             scheduledEditorQuietHoursToggle.ApplyTemplate();
             scheduledEditorQuietHoursToggle.IsChecked = true;
-            scheduledEditorQuietHoursStart.Text = "20:20:21";
-            scheduledEditorQuietHoursEnd.Text = "06:06:07";
-            var quietHoursPreviewClick = new MouseButtonEventArgs(
-                Mouse.PrimaryDevice,
-                Environment.TickCount,
-                MouseButton.Left)
-            {
-                RoutedEvent = UIElement.PreviewMouseDownEvent,
-                Source = scheduledEditorQuietHoursStart
-            };
-            scheduledEditorQuietHoursStart.RaiseEvent(
-                quietHoursPreviewClick);
             PumpDispatcher(TimeSpan.FromMilliseconds(10));
             var scheduledEditorQuietHoursShell =
                 scheduledEditorQuietHoursToggle.Template.FindName(
@@ -12999,6 +13017,186 @@ internal static class Program
                        "_internalPopupOpen") is true &&
                    editRequestedCount == 0,
                 "修改定时任务选择循环单位后只能关闭单位下拉，选择提醒时间 Popup 和编辑窗必须继续显示");
+
+            void OpenQuietHoursPicker(
+                Border host,
+                int expectedHour,
+                int expectedMinute,
+                int expectedSecond,
+                string pickerName)
+            {
+                var hostClick = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent =
+                        UIElement.PreviewMouseLeftButtonDownEvent,
+                    Source = host
+                };
+                host.RaiseEvent(hostClick);
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                Assert(hostClick.Handled &&
+                       scheduledEditorQuietHoursTimePickerPopup.IsOpen &&
+                       !scheduledEditorTimePickerPopup.IsOpen &&
+                       scheduledEditorQuietHoursHourPicker.SelectedIndex ==
+                           expectedHour &&
+                       scheduledEditorQuietHoursMinutePicker.SelectedIndex ==
+                           expectedMinute &&
+                       scheduledEditorQuietHoursSecondPicker.SelectedIndex ==
+                           expectedSecond &&
+                       scheduledEditor.IsVisible &&
+                       editRequestedCount == 0,
+                    $"点击{pickerName}必须打开独立时分秒选择器、回填当前值，并关闭提醒时间选择器以避免两层重叠");
+            }
+
+            void SelectQuietHoursPart(
+                ComboBox picker,
+                int selectedIndex,
+                string pickerName)
+            {
+                picker.IsDropDownOpen = true;
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                var option = picker.ItemContainerGenerator
+                    .ContainerFromIndex(selectedIndex) as ComboBoxItem
+                    ?? throw new InvalidOperationException(
+                        $"{pickerName}未生成第 {selectedIndex} 个可点击选项");
+                var optionClick = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent =
+                        UIElement.PreviewMouseLeftButtonDownEvent,
+                    Source = option
+                };
+                option.RaiseEvent(optionClick);
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                Assert(optionClick.Handled &&
+                       picker.SelectedIndex == selectedIndex &&
+                       !picker.IsDropDownOpen &&
+                       scheduledEditorQuietHoursTimePickerPopup.IsOpen &&
+                       !scheduledEditorTimePickerPopup.IsOpen &&
+                       scheduledEditor.IsVisible &&
+                       editRequestedCount == 0,
+                    $"{pickerName}选择一列后只能关闭当前下拉，免打扰时分秒 Popup 和修改窗必须保持");
+            }
+
+            OpenQuietHoursPicker(
+                scheduledEditorQuietHoursStartHost,
+                22,
+                0,
+                0,
+                "免打扰开始时间");
+            SelectQuietHoursPart(
+                scheduledEditorQuietHoursHourPicker,
+                20,
+                "免打扰开始小时");
+            SelectQuietHoursPart(
+                scheduledEditorQuietHoursMinutePicker,
+                20,
+                "免打扰开始分钟");
+            SelectQuietHoursPart(
+                scheduledEditorQuietHoursSecondPicker,
+                21,
+                "免打扰开始秒");
+            var quietHoursConfirmButton = new Button();
+            Invoke(
+                scheduledEditor,
+                "QuietHoursTimePickerConfirmButton_Click",
+                quietHoursConfirmButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    quietHoursConfirmButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(!scheduledEditorQuietHoursTimePickerPopup.IsOpen &&
+                   scheduledEditorQuietHoursStart.Text == "20:20:21" &&
+                   scheduledEditorQuietHoursEnd.Text == "07:00:00" &&
+                   scheduledEditorTimeInput.Text == "11:22:33" &&
+                   scheduledEditorHour.SelectedIndex == 11 &&
+                   scheduledEditorMinute.SelectedIndex == 22 &&
+                   scheduledEditorSecond.SelectedIndex == 33 &&
+                   scheduledEditor.IsVisible &&
+                   editRequestedCount == 0,
+                "确定免打扰开始时间只能收起选择器，并精确保留20:20:21草稿；" +
+                "不能串改上方提醒时间");
+
+            OpenQuietHoursPicker(
+                scheduledEditorQuietHoursEndHost,
+                7,
+                0,
+                0,
+                "免打扰结束时间");
+            scheduledEditorQuietHoursHourPicker.IsDropDownOpen = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var quietHoursInputSource =
+                PresentationSource.FromVisual(
+                    scheduledEditorQuietHoursHourPicker)
+                ?? throw new InvalidOperationException(
+                    "免打扰时分秒选择器没有建立输入源");
+            var quietHoursEscape = CreateKeyEvent(
+                quietHoursInputSource,
+                Key.Escape);
+            Invoke(
+                scheduledEditor,
+                "Window_PreviewKeyDown",
+                scheduledEditor,
+                quietHoursEscape);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(quietHoursEscape.Handled &&
+                   !scheduledEditorQuietHoursTimePickerPopup.IsOpen &&
+                   !scheduledEditorQuietHoursHourPicker.IsDropDownOpen &&
+                   !scheduledEditorQuietHoursMinutePicker.IsDropDownOpen &&
+                   !scheduledEditorQuietHoursSecondPicker.IsDropDownOpen &&
+                   scheduledEditor.IsVisible &&
+                   scheduledEditorQuietHoursStart.Text == "20:20:21" &&
+                   scheduledEditorQuietHoursEnd.Text == "07:00:00" &&
+                   editRequestedCount == 0,
+                "免打扰时分秒选择器按Esc必须只关闭Popup和三列下拉，不能保存、取消或关闭修改窗");
+
+            OpenQuietHoursPicker(
+                scheduledEditorQuietHoursEndHost,
+                7,
+                0,
+                0,
+                "免打扰结束时间");
+            SelectQuietHoursPart(
+                scheduledEditorQuietHoursHourPicker,
+                6,
+                "免打扰结束小时");
+            SelectQuietHoursPart(
+                scheduledEditorQuietHoursMinutePicker,
+                6,
+                "免打扰结束分钟");
+            SelectQuietHoursPart(
+                scheduledEditorQuietHoursSecondPicker,
+                7,
+                "免打扰结束秒");
+            Invoke(
+                scheduledEditor,
+                "QuietHoursTimePickerConfirmButton_Click",
+                quietHoursConfirmButton,
+                new RoutedEventArgs(
+                    ButtonBase.ClickEvent,
+                    quietHoursConfirmButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(!scheduledEditorQuietHoursTimePickerPopup.IsOpen &&
+                   scheduledEditorQuietHoursStart.Text == "20:20:21" &&
+                   scheduledEditorQuietHoursEnd.Text == "06:06:07" &&
+                   scheduledEditorTimeInput.Text == "11:22:33" &&
+                   scheduledEditorHour.SelectedIndex == 11 &&
+                   scheduledEditorMinute.SelectedIndex == 22 &&
+                   scheduledEditorSecond.SelectedIndex == 33 &&
+                   scheduledEditor.IsVisible &&
+                   editRequestedCount == 0,
+                "确定免打扰结束时间必须形成20:20:21至次日06:06:07的跨夜草稿，" +
+                "且不能串改上方提醒时间");
+
+            Invoke(scheduledEditor, "OpenScheduledTimePicker");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(scheduledEditorTimePickerPopup.IsOpen &&
+                   !scheduledEditorQuietHoursTimePickerPopup.IsOpen,
+                "重新打开提醒时间选择器时必须保持与免打扰选择器互斥");
 
             scheduledEditorText.Text = "提醒期间必须保留的定时任务草稿";
             Invoke(todoWindow, "BeginReminderInterruption");
@@ -15614,7 +15812,15 @@ internal static class Program
                            .ToString("M月d日 HH:mm:ss"),
                        StringComparison.Ordinal),
                 "在第20页关闭也必须一次清空整个100条批次；剩余2条应立即回到第一页，" +
-                "隐藏分页栏且不能丢失overflow");
+                "隐藏分页栏且不能丢失overflow；实际 " +
+                $"active={GetField<bool>(window, "_isReminderActive")}, " +
+                $"visible={visibleOccurrences.Count}, " +
+                $"total={GetField<long>(window, "_totalReminderOccurrenceCount")}, " +
+                $"due={recurring.DueAt:O}, " +
+                $"todo={todoWindow.IsVisible}, reminder={reminderWindow.IsVisible}, " +
+                $"dismiss={dismissRequestCount}, paging={reminderPagingPanel.Visibility}, " +
+                $"page={reminderPageText.Text}, items=" +
+                $"{reminderTextBox.Text.Split(recurring.Text, StringSplitOptions.None).Length - 1}");
 
             reminderAcknowledgeButton.RaiseEvent(
                 new RoutedEventArgs(Button.ClickEvent));
