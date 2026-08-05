@@ -120,7 +120,7 @@ public partial class MainWindow : Window
     // these short neutral micro-seams. Tap/downshift transitions wait for the
     // next one on the unchanged 1x/2x clock instead of racing to loop frame 001.
     private static readonly int[] WorkNeutralMicroSeamFrameIndices =
-        [0, 10, 21, 33, 44, 56, 69, 81, 93];
+        [0, 12, 24, 36, 48, 60, 72, 84];
     private const int MaximumVisibleReminderOccurrences = 100;
     // The regenerated cute prefix spends the former second-bob frame budget on
     // eight-step interpolation around its one intentional crouch/recovery, and
@@ -6552,7 +6552,7 @@ public partial class MainWindow : Window
         if (IsWorkTypingLoopClip(clip))
         {
             // A serious loop can begin at any neutral micro-seam, including
-            // frame 094 on the final atlas page. Use the cyclic look-ahead as
+            // frame 085 on the final atlas page. Use the cyclic look-ahead as
             // soon as that first pose is actually visible so frame 096 -> 001
             // never waits for a cold first page.
             PrefetchNextWorkLoopPage(
