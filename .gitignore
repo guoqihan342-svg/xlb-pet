@@ -4,6 +4,7 @@ obj/
 tests/**/bin/
 tests/**/obj/
 .vs/
+.venv/
 *.user
 *.suo
 

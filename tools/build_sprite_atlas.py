@@ -25,6 +25,20 @@ REUSABLE_PAGE_MAX_WIDTH = 1540
 MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
 ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
 REMINDER_PHASES = ("enter", "hold")
+WORK_PHASES = (
+    "enter",
+    "loop",
+    "tap",
+    "serious-loop",
+    "serious-exit",
+)
+WORK_MIN_FRAME_COUNTS = {
+    "enter": 24,
+    "loop": 96,
+    "tap": 24,
+    "serious-loop": 96,
+    "serious-exit": 24,
+}
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 REQUIRED_ROAM_SEQUENCES = ("flight", "boarding")
 OPTIONAL_ROAM_SEQUENCES = ("wave",)
@@ -37,6 +51,7 @@ EDGE_PEEK_FRAME_COUNT = 48
 MIN_ROAM_FRAME_COUNT = 48
 ROAM_FLIGHT_PAGE_FRAME_LIMIT = 32
 REMINDER_PAGE_FRAME_LIMIT = 32
+WORK_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_MIN_PREFETCH_FRAMES = 8
 ACTION_PAGE_FRAME_LIMIT = 32
@@ -400,6 +415,65 @@ def reminder_resource_paths(root: Path, phase: str) -> list[str]:
     return numbered_resource_paths(root, f"luban-reminder-{phase}")
 
 
+def work_resource_paths(root: Path, phase: str) -> list[str]:
+    """Return one independent, fail-closed working-animation sequence."""
+
+    if phase not in WORK_PHASES:
+        raise ValueError(f"Unknown working-animation phase: {phase}")
+    paths = numbered_resource_paths(root, f"luban-work-{phase}")
+    minimum_frame_count = WORK_MIN_FRAME_COUNTS[phase]
+    if len(paths) < minimum_frame_count:
+        raise RuntimeError(
+            f"Dense working-animation sequence {phase} must contain at least "
+            f"{minimum_frame_count} frames, found {len(paths)}"
+        )
+    return paths
+
+
+def partition_work_resource_paths(
+    phase: str,
+    paths: list[str],
+) -> list[tuple[str, list[str]]]:
+    """Split one working-animation sequence into contiguous <=32-frame pages."""
+
+    if phase not in WORK_PHASES:
+        raise ValueError(f"Unknown working-animation phase: {phase}")
+    minimum_frame_count = WORK_MIN_FRAME_COUNTS[phase]
+    if len(paths) < minimum_frame_count:
+        raise RuntimeError(
+            f"Dense working-animation sequence {phase} must contain at least "
+            f"{minimum_frame_count} frames, found {len(paths)}"
+        )
+
+    base_page_name = f"work-{phase}"
+    partitions = [
+        (
+            base_page_name
+            if part_number == 1
+            else f"{base_page_name}-part-{part_number:02d}",
+            list(paths[offset : offset + WORK_PAGE_FRAME_LIMIT]),
+        )
+        for part_number, offset in enumerate(
+            range(0, len(paths), WORK_PAGE_FRAME_LIMIT),
+            start=1,
+        )
+    ]
+    if (
+        any(not partition_paths for _, partition_paths in partitions)
+        or any(
+            len(partition_paths) > WORK_PAGE_FRAME_LIMIT
+            for _, partition_paths in partitions
+        )
+        or [path for _, partition_paths in partitions for path in partition_paths]
+        != paths
+    ):
+        raise RuntimeError(
+            f"Invalid working-animation page partition for {phase}: "
+            f"{[len(partition_paths) for _, partition_paths in partitions]}"
+        )
+    return partitions
+
+
 def partition_reminder_resource_paths(
     phase: str,
     paths: list[str],
@@ -621,6 +695,8 @@ def resource_paths(root: Path) -> list[str]:
         paths.extend(roam_flight_resource_paths(root, sequence))
     for phase in REMINDER_PHASES:
         paths.extend(reminder_resource_paths(root, phase))
+    for phase in WORK_PHASES:
+        paths.extend(work_resource_paths(root, phase))
     for action in ACTION_NAMES:
         paths.extend(action_resource_paths(root, action))
         paths.extend(action_loop_resource_paths(root, action))
@@ -828,6 +904,16 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
         for page_name, partition_paths in partition_reminder_resource_paths(
             phase,
             reminder_resource_paths(root, phase),
+        ):
+            if page_name in pages:
+                raise RuntimeError(f"Duplicate sprite page name: {page_name}")
+            pages[page_name] = partition_paths
+    # Working mode is a separate state machine, not a click-action slot. Keep
+    # enter, steady typing, and head-tap feedback independently addressable.
+    for phase in WORK_PHASES:
+        for page_name, partition_paths in partition_work_resource_paths(
+            phase,
+            work_resource_paths(root, phase),
         ):
             if page_name in pages:
                 raise RuntimeError(f"Duplicate sprite page name: {page_name}")

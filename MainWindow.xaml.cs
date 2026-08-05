@@ -7,14 +7,17 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Runtime;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -71,6 +74,8 @@ public partial class MainWindow : Window
     private const double EdgeRoamPoseFramesPerSecond = 48;
     private static readonly TimeSpan EdgeRoamPreloadLeadTime =
         TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan EdgeRoamPreloadWatchdogInterval =
+        TimeSpan.FromMilliseconds(250);
     private const int EdgeRoamClosestPointSamples = 256;
     private const double SnoreBubbleMinimumScale = 1;
     private const double SnoreBubbleMaximumScale = 1.58;
@@ -86,21 +91,36 @@ public partial class MainWindow : Window
     private const int SpriteFrameDescriptorValueCount = 6;
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
-    // Ordinary clips use rolling current/next-page prefetch, so two hot pages
-    // plus the idle runway fit inside 64 MiB without changing a single source
-    // pixel or animation pose. Roaming intentionally keeps its complete
-    // boarding/flight presentation ready and receives the former 128 MiB
-    // budget only while it is preloading or active.
+    // Ordinary clips use rolling current/next-page prefetch. With the current
+    // manifest, both hot pages plus the 22 MiB idle runway need at most 54 MiB.
+    // The adjacent-bucket reuse path can add at most 1 MiB to each of those four
+    // buffers; the existing 64 MiB ordinary budget therefore keeps the full
+    // authored runway with six MiB of scheduling headroom. Roaming needs
+    // 93 MiB canonically and at most 101 MiB after the same bounded reuse,
+    // leaving 3 MiB headroom here.
     private const long SpritePageResidentBudgetBytes = 64L * 1024 * 1024;
-    private const long SpritePageRoamResidentBudgetBytes = 128L * 1024 * 1024;
-    // Keep the startup idle page and one wake continuation page. Together they
-    // provide more than one second of authored runway while the existing
-    // asynchronous look-ahead decodes the following page. Free buffers and
-    // unrelated completed-action pages converge to the same 32 MiB target.
-    private const long SpritePageIdleResidentTargetBytes = 32L * 1024 * 1024;
+    private const long SpritePageRoamResidentBudgetBytes = 104L * 1024 * 1024;
+    // Keep the startup idle page and one wake continuation page. Their two
+    // 11 MiB capacity buckets need 22 MiB canonically and at most 24 MiB when
+    // the bounded adjacent-bucket reuse path is involved. Do not retain a
+    // third unrelated free buffer after an action or roaming run has settled.
+    private const long SpritePageIdleResidentTargetBytes = 24L * 1024 * 1024;
     private const long SpritePageCollectionThresholdBytes = 16L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
+    private const int WorkEnterFrameCount = 48;
+    private const int WorkLoopFrameCount = 96;
+    private const int WorkSeriousLoopFrameCount = 96;
+    private const int WorkSeriousExitFrameCount = 24;
+    private const int WorkTapFrameCount = 48;
+    private const int WorkEnterPillowVisibleFrameCount = 24;
+    private const double WorkNormalPoseFramesPerSecond = 60;
+    private const double WorkFastPlaybackMultiplier = 2;
+    // The 96-pose keyboard cycle comes closest to its authored home-row pose at
+    // these short neutral micro-seams. Tap/downshift transitions wait for the
+    // next one on the unchanged 1x/2x clock instead of racing to loop frame 001.
+    private static readonly int[] WorkNeutralMicroSeamFrameIndices =
+        [0, 10, 21, 33, 44, 56, 69, 81, 93];
     private const int MaximumVisibleReminderOccurrences = 100;
     // The regenerated cute prefix spends the former second-bob frame budget on
     // eight-step interpolation around its one intentional crouch/recovery, and
@@ -114,6 +134,20 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EdgePeekMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan TodoMotionFrameInterval = MotionFrameInterval;
     private static readonly TimeSpan ActionLoopFrameInterval = MotionFrameInterval;
+    // Work clips intentionally counter the global character speed multiplier:
+    // after ToCharacterAnimationTicks applies AnimationPlaybackSpeed, their
+    // authored pose clock is exactly 60fps. Fast typing changes only the
+    // absolute loop phase and therefore remains continuous at 2x.
+    private static readonly TimeSpan WorkFrameInterval = TimeSpan.FromSeconds(
+        AnimationPlaybackSpeed / WorkNormalPoseFramesPerSecond);
+    // Reuse eight evenly spaced poses from the authored serious-to-normal brow
+    // relaxation in reverse. An explicit 60fps sequence is deterministic on
+    // 59/60Hz displays, unlike relying on the compositor to skip a 180fps clip.
+    private static readonly int[] WorkSeriousEnterSourceFrameIndices =
+        [23, 20, 16, 13, 10, 7, 3, 0];
+    private static readonly TimeSpan WorkFastDuration = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan WorkSingleClickDecisionPadding =
+        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
     private static readonly TimeSpan StableReactionEndpointHoldDuration =
         TimeSpan.FromMilliseconds(1875);
     private static readonly long VisualFrameDeadlineToleranceTicks =
@@ -203,12 +237,24 @@ public partial class MainWindow : Window
     private readonly SpriteFrame[] _roamWaveFrames;
     private readonly SpriteFrame[] _reminderEnterFrames;
     private readonly SpriteFrame[] _reminderHoldFrames;
+    private readonly SpriteFrame[] _workEnterFrames;
+    private readonly SpriteFrame[] _workLoopFrames;
+    private readonly SpriteFrame[] _workSeriousLoopFrames;
+    private readonly SpriteFrame[] _workSeriousExitFrames;
+    private readonly SpriteFrame[] _workTapFrames;
     private readonly AnimationClip[] _reactionClips;
     private readonly AnimationClip _todoEnterClip;
     private readonly AnimationClip _todoExitClip;
     private readonly AnimationClip _reminderEnterClip;
     private readonly AnimationClip _reminderHoldClip;
     private readonly AnimationClip _reminderExitClip;
+    private readonly AnimationClip _workEnterClip;
+    private readonly AnimationClip _workLoopClip;
+    private readonly AnimationClip _workSeriousLoopClip;
+    private readonly AnimationClip _workSeriousEnterClip;
+    private readonly AnimationClip _workSeriousExitClip;
+    private readonly AnimationClip _workTapClip;
+    private readonly AnimationClip _workExitClip;
     private readonly AnimationClip?[] _automaticActivities;
     private readonly DispatcherTimer _automaticTimer;
     private readonly DispatcherTimer _petSizePersistTimer;
@@ -217,6 +263,9 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _spritePagePrefetchDispatchTimer;
     private readonly DispatcherTimer _spritePageIdleTrimTimer;
     private readonly DispatcherTimer _spritePageCollectionTimer;
+    private readonly DispatcherTimer _edgePeekHoldTimer;
+    private readonly DispatcherTimer _workSingleClickTimer;
+    private readonly AnimationClock _snoreBubbleScaleClock;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
     private readonly ObservableCollection<TodoItem> _todos = new();
@@ -242,12 +291,21 @@ public partial class MainWindow : Window
     private readonly Action _processSystemTimeChangedAction;
     private readonly Action _processSystemRecoveryAction;
     private readonly Action _processReminderWindowPositionUpdateAction;
+    private readonly Action _processTodoOpenAfterEdgeRoamStopAction;
+    private readonly Action _processTodoOpenAfterWorkExitAction;
 
     private BubbleMode _bubbleMode;
     private bool? _cuteBubblePlacedOnLeft;
     private bool? _cuteBubbleTailPlacedOnLeft;
     private bool _cuteBubbleTailReconciliationQueued;
     private Point _pointerDownPosition;
+    private Point _pointerDownScreenPosition;
+    private Point _latestDragScreenPosition;
+    private Vector _dragPointerOffsetFromWindowInPhysicalPixels;
+    private double _dragContactTopOffsetInPhysicalPixels;
+    private bool _directDragPhysicalGeometryReady;
+    private bool _directDragTopClamped;
+    private double _directDragTopClampPointerYInPhysicalPixels = double.NaN;
     private bool _pointerDown;
     private bool _dragStarted;
     private bool _dragInteractionActive;
@@ -261,6 +319,26 @@ public partial class MainWindow : Window
     private int _deferredActiveClipClockFrameIndex = -1;
     private TimeSpan _deferredActiveClipClockHoldDuration;
     private int _nextClipIndex;
+    private WorkState _workState;
+    private int _workPointerClickCount;
+    private int _workClickGeneration;
+    private int _scheduledWorkSingleClickGeneration;
+    private bool _workExitRequested;
+    private bool _workTapPhaseSyncRequested;
+    private bool _workTapAfterSeriousExitRequested;
+    private bool _workSeriousEnterRequested;
+    private bool _workSeriousExitRequested;
+    private bool _workEnterAfterEdgePeekExitRequested;
+    private bool _openTodoAfterWorkExitRequested;
+    private bool _todoOpenAfterWorkExitQueued;
+    private double _workLoopAnchorFramePosition;
+    private double _workLoopPlaybackRate = 1;
+    private double _workTapTargetFramePosition = double.PositiveInfinity;
+    private double _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+    private double _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+    private double _workExitTargetFramePosition = double.PositiveInfinity;
+    private long _workLoopAnchorTimestamp;
+    private long _workFastUntilTimestamp;
     private int _lastAutomaticActivityIndex = -1;
     private int _outsideTodoCloseGeneration;
     private int _outsideTodoCloseScheduledGeneration;
@@ -284,8 +362,11 @@ public partial class MainWindow : Window
     private bool _edgeRoamFlightPagesReady;
     private bool _edgeRoamPreloadRequested;
     private bool _edgeRoamBoardingReverse;
+    private bool _edgeRoamCurrentSupportPointValid;
     private bool _edgeRoamStopScheduleNext;
     private bool _edgeRoamStopInterrupted;
+    private bool _openTodoAfterEdgeRoamStopRequested;
+    private bool _todoOpenAfterEdgeRoamStopQueued;
     private int _edgeRoamDirection = 1;
     private int _edgeRoamBoardingStartIndex;
     private EdgeRoamPhase _edgeRoamPhase;
@@ -309,6 +390,8 @@ public partial class MainWindow : Window
     private Rect _edgeRoamRouteBounds;
     private Point _edgeRoamStartPoint;
     private Point _edgeRoamRouteStartPoint;
+    private Point _edgeRoamCurrentSupportPoint;
+    private Point _edgeRoamDisembarkSupportPoint;
     private Vector _edgeRoamRouteTangent;
     private double _petSizeScale = 1;
     private double _persistedPetSizeScale = 1;
@@ -340,8 +423,6 @@ public partial class MainWindow : Window
     private bool _automaticAnimationEnabled;
     private bool _isPillowBreathing;
     private bool _isSnoreBubbleAnimating;
-    private long _snoreBubbleAnimationStartedTimestamp;
-    private double _snoreBubbleCurrentScale = SnoreBubbleMinimumScale;
     private bool _isClosing;
     private bool _suppressTodoWindowDeactivate;
     private bool _displaySettingsSubscribed;
@@ -397,6 +478,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _snoreBubbleScaleClock = CreateSnoreBubbleScaleClock();
         SourceInitialized += MainWindow_SourceInitialized;
         _processOutsideTodoCloseAction = ProcessOutsideTodoClose;
         _processTodoWindowPositionUpdateAction = ProcessTodoWindowPositionUpdate;
@@ -404,6 +486,10 @@ public partial class MainWindow : Window
         _processSystemRecoveryAction = ProcessSystemRecovery;
         _processReminderWindowPositionUpdateAction =
             ProcessReminderWindowPositionUpdate;
+        _processTodoOpenAfterEdgeRoamStopAction =
+            ProcessTodoOpenAfterEdgeRoamStop;
+        _processTodoOpenAfterWorkExitAction =
+            ProcessTodoOpenAfterWorkExit;
         _spritePagePrefetchDispatchTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -420,6 +506,14 @@ public partial class MainWindow : Window
             Interval = SpritePageCollectionDelay
         };
         _spritePageCollectionTimer.Tick += SpritePageCollectionTimer_Tick;
+        _edgePeekHoldTimer = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = EdgePeekFullyPeekedHold
+        };
+        _edgePeekHoldTimer.Tick += EdgePeekHoldTimer_Tick;
+        _workSingleClickTimer = new DispatcherTimer(
+            DispatcherPriority.Background);
+        _workSingleClickTimer.Tick += WorkSingleClickTimer_Tick;
         _lastObservedSpritePageCollectionGeneration =
             GC.CollectionCount(GC.MaxGeneration);
 
@@ -483,6 +577,26 @@ public partial class MainWindow : Window
             "action-reminder-hold",
             "Assets/luban-reminder-hold-",
             expectedFrameCount: 48);
+        _workEnterFrames = LoadNumberedFrameSequence(
+            "work-enter",
+            "Assets/luban-work-enter-",
+            expectedFrameCount: WorkEnterFrameCount);
+        _workLoopFrames = LoadNumberedFrameSequence(
+            "work-loop",
+            "Assets/luban-work-loop-",
+            expectedFrameCount: WorkLoopFrameCount);
+        _workSeriousLoopFrames = LoadNumberedFrameSequence(
+            "work-serious-loop",
+            "Assets/luban-work-serious-loop-",
+            expectedFrameCount: WorkSeriousLoopFrameCount);
+        _workSeriousExitFrames = LoadNumberedFrameSequence(
+            "work-serious-exit",
+            "Assets/luban-work-serious-exit-",
+            expectedFrameCount: WorkSeriousExitFrameCount);
+        _workTapFrames = LoadNumberedFrameSequence(
+            "work-tap",
+            "Assets/luban-work-tap-",
+            expectedFrameCount: WorkTapFrameCount);
         // Keep only the idle page and the first continuation page permanently
         // hot. Remaining wake pages use the same rolling look-ahead as every
         // other clip, avoiding a permanent 54 MiB wake allocation.
@@ -504,6 +618,34 @@ public partial class MainWindow : Window
         _reminderEnterClip = CreateReminderEnterClip();
         _reminderHoldClip = CreateReminderHoldClip();
         _reminderExitClip = CreateReminderExitClip();
+        _workEnterClip = CreateWorkClip(
+            "work-enter",
+            _workEnterFrames,
+            reverse: false);
+        _workLoopClip = CreateWorkClip(
+            "work-loop",
+            _workLoopFrames,
+            reverse: false);
+        _workSeriousLoopClip = CreateWorkClip(
+            "work-serious-loop",
+            _workSeriousLoopFrames,
+            reverse: false);
+        _workSeriousEnterClip = CreateWorkSampledClip(
+            "work-serious-enter",
+            _workSeriousExitFrames,
+            WorkSeriousEnterSourceFrameIndices);
+        _workSeriousExitClip = CreateWorkClip(
+            "work-serious-exit",
+            _workSeriousExitFrames,
+            reverse: false);
+        _workTapClip = CreateWorkClip(
+            "work-tap",
+            _workTapFrames,
+            reverse: false);
+        _workExitClip = CreateWorkClip(
+            "work-exit",
+            _workEnterFrames,
+            reverse: true);
         _automaticActivities =
         [
             _reactionClips[0],
@@ -783,6 +925,28 @@ public partial class MainWindow : Window
                 $"actual {frames.Length}");
         }
 
+        if (string.Equals(pageNamePrefix, "edge-left", StringComparison.Ordinal))
+        {
+            // The authored side-peek envelope extends two source pixels past
+            // the 399px display surface. Keeping that negative destination
+            // clipped the lower supporting arm on both the left pose and its
+            // mirrored right pose. Shift only this edge sequence inward by the
+            // minimum amount so every authored atlas pixel remains visible.
+            for (var index = 0; index < frames.Length; index++)
+            {
+                var frame = frames[index];
+                var minimumDestinationX = Math.Max(0, frame.DestinationX);
+                var maximumDestinationX = DisplayPixelWidth - frame.Width;
+                var destinationX = Math.Min(
+                    minimumDestinationX,
+                    maximumDestinationX);
+                if (destinationX != frame.DestinationX)
+                {
+                    frames[index] = frame with { DestinationX = destinationX };
+                }
+            }
+        }
+
         return frames;
     }
 
@@ -965,6 +1129,58 @@ public partial class MainWindow : Window
             frames[index] = new AnimationFrame(
                 frame,
                 MotionFrameInterval);
+        }
+
+        return new AnimationClip(
+            string.Empty,
+            actionName,
+            frames,
+            ActionFrameIndex: 0);
+    }
+
+    private static AnimationClip CreateWorkClip(
+        string actionName,
+        IReadOnlyList<SpriteFrame> sourceFrames,
+        bool reverse)
+    {
+        var frames = new AnimationFrame[sourceFrames.Count];
+        for (var index = 0; index < sourceFrames.Count; index++)
+        {
+            var sourceIndex = reverse
+                ? sourceFrames.Count - 1 - index
+                : index;
+            frames[index] = new AnimationFrame(
+                sourceFrames[sourceIndex],
+                WorkFrameInterval);
+        }
+
+        return new AnimationClip(
+            string.Empty,
+            actionName,
+            frames,
+            ActionFrameIndex: 0);
+    }
+
+    private static AnimationClip CreateWorkSampledClip(
+        string actionName,
+        IReadOnlyList<SpriteFrame> sourceFrames,
+        IReadOnlyList<int> sourceFrameIndices)
+    {
+        var frames = new AnimationFrame[sourceFrameIndices.Count];
+        for (var index = 0; index < sourceFrameIndices.Count; index++)
+        {
+            var sourceIndex = sourceFrameIndices[index];
+            if (sourceIndex < 0 || sourceIndex >= sourceFrames.Count)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(sourceFrameIndices),
+                    sourceIndex,
+                    $"Clip '{actionName}' sampled outside its source sequence.");
+            }
+
+            frames[index] = new AnimationFrame(
+                sourceFrames[sourceIndex],
+                WorkFrameInterval);
         }
 
         return new AnimationClip(
@@ -1196,6 +1412,7 @@ public partial class MainWindow : Window
                 pageName,
                 new SpriteAtlasPage(
                     pageDescriptor.Resource,
+                    CreatePackUri(pageDescriptor.Resource),
                     pageDescriptor.Width,
                     pageDescriptor.Height,
                     pageDescriptor.UncompressedByteCount,
@@ -1204,6 +1421,9 @@ public partial class MainWindow : Window
                     pageDescriptor.Encoding,
                     pageDescriptor.ContentSha256,
                     pageDescriptor.DecodedSha256,
+                    Convert.FromHexString(pageDescriptor.ContentSha256),
+                    Convert.FromHexString(pageDescriptor.DecodedSha256),
+                    pageDescriptor.UniqueSpriteCount,
                     frameDescriptorValues,
                     new ReadOnlyDictionary<string, SpriteFrame>(frameMap)));
         }
@@ -1413,6 +1633,7 @@ public partial class MainWindow : Window
         RestartAutomaticCountdown();
         _spritePageWarmupEnabled = true;
         ResumeSpritePageWarmup();
+        RefreshWorkModeButton();
     }
 
     private void Window_LocationChanged(object? sender, EventArgs e)
@@ -1460,7 +1681,7 @@ public partial class MainWindow : Window
         }
 
         // WPF Popup 使用独立 HWND，父窗口移动时不会自行重算屏幕坐标。
-        // 轻微重设偏移会在 DragMove 的每次 LocationChanged 中强制它跟随宠物。
+        // 轻微重设偏移会在捕获式拖动的每次 LocationChanged 中强制它跟随宠物。
         var horizontalOffset = BubblePopup.HorizontalOffset;
         BubblePopup.HorizontalOffset = horizontalOffset + 0.01;
         BubblePopup.HorizontalOffset = horizontalOffset;
@@ -1585,6 +1806,10 @@ public partial class MainWindow : Window
                     }
 
                     _sessionInactive = true;
+                    CancelPetPointerInteractionForInterruption();
+                    CancelTodoOpenAfterEdgeRoamStop();
+                    CancelTodoOpenAfterWorkExit();
+                    StopWorkModeImmediately(restoreIdleFrame: true);
                     _suppressTodoWindowDeactivate = true;
                     _outsideTodoCloseGeneration++;
                     _automaticTimer.Stop();
@@ -1710,6 +1935,8 @@ public partial class MainWindow : Window
                 }));
         }
 
+        RefreshWorkModeButton();
+
     }
 
     private void ProcessSystemTimeChanged()
@@ -1726,6 +1953,23 @@ public partial class MainWindow : Window
     {
         RestartAutomaticCountdown();
         DeferIdleSpritePageTrim();
+
+        if (_openTodoAfterEdgeRoamStopRequested &&
+            !IsWithin(
+                e.OriginalSource as DependencyObject ??
+                e.Source as DependencyObject,
+                PetHost))
+        {
+            CancelTodoOpenAfterEdgeRoamStop();
+        }
+        if (_openTodoAfterWorkExitRequested &&
+            !IsWithin(
+                e.OriginalSource as DependencyObject ??
+                e.Source as DependencyObject,
+                PetHost))
+        {
+            CancelTodoOpenAfterWorkExit();
+        }
 
         if (_bubbleMode != BubbleMode.Todo)
         {
@@ -1946,22 +2190,22 @@ public partial class MainWindow : Window
 
     private void MoveMainWindowTo(double logicalLeft, double logicalTop)
     {
-        var snappedLeft = SnapDipToPhysicalPixel(
-            logicalLeft,
-            horizontal: true);
-        var snappedTop = SnapDipToPhysicalPixel(
-            logicalTop,
-            horizontal: false);
         if (OwnedWindowPositioner.TrySetPosition(
                 this,
-                snappedLeft,
-                snappedTop))
+                logicalLeft,
+                logicalTop))
         {
             return;
         }
 
-        Left = snappedLeft;
-        Top = snappedTop;
+        // The native path already performs DPI conversion and physical-pixel
+        // snapping. Only the pre-HWND/failure fallback needs the WPF values.
+        Left = SnapDipToPhysicalPixel(
+            logicalLeft,
+            horizontal: true);
+        Top = SnapDipToPhysicalPixel(
+            logicalTop,
+            horizontal: false);
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -1971,6 +2215,23 @@ public partial class MainWindow : Window
             PersistLatestPetSizeForShutdownAt(Stopwatch.GetTimestamp());
         }
         _isClosing = true;
+        CancelPendingWorkSingleClick();
+        CancelTodoOpenAfterWorkExit();
+        _workSingleClickTimer.Stop();
+        _workSingleClickTimer.Tick -= WorkSingleClickTimer_Tick;
+        _workState = WorkState.Idle;
+        _workExitRequested = false;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workSeriousEnterRequested = false;
+        _workSeriousExitRequested = false;
+        _workEnterAfterEdgePeekExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workLoopAnchorTimestamp = 0;
+        _workFastUntilTimestamp = 0;
         CancelSpritePagePrefetchForShutdown();
         if (_displaySettingsSubscribed)
         {
@@ -2005,11 +2266,17 @@ public partial class MainWindow : Window
         _edgeRoamBoardingPagesReady = false;
         _edgeRoamFlightPagesReady = false;
         _edgeRoamBoardingReverse = false;
+        _edgeRoamCurrentSupportPointValid = false;
         _edgeRoamStopScheduleNext = false;
         _edgeRoamStopInterrupted = false;
+        _openTodoAfterEdgeRoamStopRequested = false;
+        _todoOpenAfterEdgeRoamStopQueued = false;
         _nextEdgeRoamDueTimestamp = 0;
         _nextAutomaticActivityDueTimestamp = 0;
         _pillowBreathingDueTimestamp = 0;
+        RefreshSnoreBubbleAnimationState();
+        _edgePeekHoldTimer.Stop();
+        _edgePeekHoldTimer.Tick -= EdgePeekHoldTimer_Tick;
         _petSizePersistTimer.Stop();
         _petSizePersistTimer.Tick -= PetSizePersistTimer_Tick;
         _reminderSizeCommitTimer.Stop();
@@ -2076,6 +2343,62 @@ public partial class MainWindow : Window
         ClearResidentSpritePages();
     }
 
+    private void WorkModeButton_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left &&
+            _workState != WorkState.Idle)
+        {
+            // Cancel before Button waits for MouseUp. Otherwise a pending
+            // single-click timer can fire while the user is pressing 下班啦.
+            CancelPendingWorkSingleClick();
+        }
+    }
+
+    private void PetHost_PreviewMouseRightButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Right)
+        {
+            return;
+        }
+
+        CancelPendingWorkSingleClick();
+        _workEnterAfterEdgePeekExitRequested = false;
+        RefreshWorkModeButton();
+    }
+
+    private void CancelPetPointerInteractionForInterruption()
+    {
+        CancelPendingWorkSingleClick();
+        _pointerDown = false;
+        _dragStarted = false;
+        _dragInteractionActive = false;
+        _pointerDownPosition = default;
+        _pointerDownScreenPosition = default;
+        _latestDragScreenPosition = default;
+        _dragPointerOffsetFromWindowInPhysicalPixels = default;
+        _dragContactTopOffsetInPhysicalPixels = 0;
+        _directDragPhysicalGeometryReady = false;
+        _directDragTopClamped = false;
+        _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        _edgeDockDragContext = null;
+        _suppressClickReactionAfterRoamInterruption = false;
+        _workPointerClickCount = 0;
+        _workEnterAfterEdgePeekExitRequested = false;
+        if (PetHost.IsMouseCaptured)
+        {
+            // All gesture state is already clear when LostMouseCapture runs,
+            // so it cannot finish a stale drag or restart an idle reaction.
+            PetHost.ReleaseMouseCapture();
+        }
+
+        RefreshSnoreBubbleAnimationState();
+        RefreshWorkModeButton();
+    }
+
     private void PetHost_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left)
@@ -2084,8 +2407,15 @@ public partial class MainWindow : Window
         }
 
         DeferIdleSpritePageTrim();
+        _workEnterAfterEdgePeekExitRequested = false;
+        _workPointerClickCount = e.ClickCount;
+        if (_workState == WorkState.Typing && e.ClickCount >= 2)
+        {
+            CancelPendingWorkSingleClick();
+        }
         if (_isReminderActive || _isTransientPetSizeOverride)
         {
+            CancelTodoOpenAfterEdgeRoamStop();
             e.Handled = true;
             return;
         }
@@ -2096,12 +2426,13 @@ public partial class MainWindow : Window
             CommitPetSizePreviewSession(persist: true);
         }
 
+        CancelTodoOpenAfterEdgeRoamStop();
+        CancelTodoOpenAfterWorkExit();
         _suppressClickReactionAfterRoamInterruption = _isEdgeRoaming;
         StopEdgeRoaming(
             scheduleNext: true,
             restoreIdleFrame: true,
-            interrupted: true,
-            immediate: _suppressClickReactionAfterRoamInterruption);
+            interrupted: true);
         StopPillowBreathing();
         _automaticTimer.Stop();
         _dragInteractionActive = true;
@@ -2109,18 +2440,55 @@ public partial class MainWindow : Window
         _dragStarted = false;
         _edgeDockDragContext = null;
         _pointerDownPosition = e.GetPosition(this);
-        PetHost.CaptureMouse();
+        _pointerDownScreenPosition = GetScreenPointOrFallback(
+            _pointerDownPosition,
+            new Point(double.NaN, double.NaN));
+        _latestDragScreenPosition = _pointerDownScreenPosition;
+        _directDragPhysicalGeometryReady = false;
+        _directDragTopClamped = false;
+        _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        if (!PetHost.CaptureMouse())
+        {
+            _pointerDown = false;
+            _dragStarted = false;
+            _dragInteractionActive = false;
+            _edgeDockDragContext = null;
+            _suppressClickReactionAfterRoamInterruption = false;
+            _workPointerClickCount = 0;
+            RestartAutomaticCountdown();
+        }
+        RefreshSnoreBubbleAnimationState();
+        RefreshWorkModeButton();
         e.Handled = true;
     }
 
     private void PetHost_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!_pointerDown || e.LeftButton != MouseButtonState.Pressed)
+        if (!_dragInteractionActive ||
+            e.LeftButton != MouseButtonState.Pressed)
         {
             return;
         }
 
         var currentPosition = e.GetPosition(this);
+        var currentScreenPosition = GetScreenPointOrFallback(
+            currentPosition,
+            _latestDragScreenPosition);
+        _latestDragScreenPosition = currentScreenPosition;
+        if (_dragStarted)
+        {
+            ContinueDirectPetDrag(
+                currentPosition,
+                currentScreenPosition);
+            e.Handled = true;
+            return;
+        }
+
+        if (!_pointerDown)
+        {
+            return;
+        }
+
         var movedFarEnough =
             Math.Abs(currentPosition.X - _pointerDownPosition.X) >=
             SystemParameters.MinimumHorizontalDragDistance ||
@@ -2130,6 +2498,24 @@ public partial class MainWindow : Window
         if (!movedFarEnough)
         {
             return;
+        }
+
+        CancelPendingWorkSingleClick();
+        if (_workState != WorkState.Idle)
+        {
+            StopWorkModeImmediately(restoreIdleFrame: true);
+        }
+        CancelTodoOpenAfterEdgeRoamStop();
+        if (_isEdgeRoaming)
+        {
+            // A click can finish the authored disembark in place, but once the
+            // gesture becomes a real drag the composition clock must stop
+            // owning Left/Top before captured input starts moving the HWND.
+            StopEdgeRoaming(
+                scheduleNext: true,
+                restoreIdleFrame: true,
+                interrupted: true,
+                immediate: true);
         }
 
         _dragStarted = true;
@@ -2142,30 +2528,13 @@ public partial class MainWindow : Window
             MonitorWorkArea.GetForVisual(this, PetSizeViewbox),
             startWindowBounds,
             GetDragReleaseContactBounds(startWindowBounds, dragOriginDock));
-        PetHost.ReleaseMouseCapture();
-
-        try
-        {
-            DragMove();
-        }
-        catch (InvalidOperationException)
-        {
-            // 快速松手可能发生在 WPF 把拖动交给系统之前。无论系统拖动
-            // 是否正常返回，都用最终窗口位置补做一次边缘吸附判定。
-        }
-        finally
-        {
-            try
-            {
-                UpdateEdgeDockAfterDrag();
-            }
-            finally
-            {
-                _edgeDockDragContext = null;
-                _dragInteractionActive = false;
-                RestartAutomaticCountdown();
-            }
-        }
+        _directDragPhysicalGeometryReady =
+            TryPrepareDirectPetDragGeometry(
+                startWindowBounds,
+                dragOriginDock);
+        ContinueDirectPetDrag(
+            currentPosition,
+            currentScreenPosition);
 
         e.Handled = true;
     }
@@ -2177,23 +2546,32 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_dragStarted && _dragInteractionActive)
+        if (_dragStarted)
         {
-            // DragMove owns the gesture until its nested message loop returns.
-            // A fast mouse-up can be routed during that loop; keep the saved
-            // edge origin/trajectory intact for the finally dock check.
+            var releaseLocalPosition = e.GetPosition(this);
+            _latestDragScreenPosition = GetScreenPointOrFallback(
+                releaseLocalPosition,
+                _latestDragScreenPosition);
+            ContinueDirectPetDrag(
+                releaseLocalPosition,
+                _latestDragScreenPosition);
+            CompleteDirectPetDrag(updateEdgeDock: true);
             e.Handled = true;
             return;
         }
 
         var wasSimpleClick = _pointerDown && !_dragStarted;
+        var workClickCount = _workPointerClickCount;
+        var wasWorkInteraction = _workState != WorkState.Idle;
         var shouldActCute = wasSimpleClick &&
+                            !wasWorkInteraction &&
                             _edgeDock == EdgeDock.None &&
                             !_suppressClickReactionAfterRoamInterruption;
         _pointerDown = false;
         _dragInteractionActive = false;
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
+        _workPointerClickCount = 0;
         PetHost.ReleaseMouseCapture();
 
         if (wasSimpleClick && _bubbleMode == BubbleMode.Todo)
@@ -2201,7 +2579,11 @@ public partial class MainWindow : Window
             SetBubbleMode(BubbleMode.None);
         }
 
-        if (shouldActCute)
+        if (wasSimpleClick && wasWorkInteraction)
+        {
+            HandleWorkPetClick(workClickCount);
+        }
+        else if (shouldActCute)
         {
             ShowCuteReaction();
         }
@@ -2210,27 +2592,288 @@ public partial class MainWindow : Window
             RestartAutomaticCountdown();
         }
 
+        RefreshWorkModeButton();
         e.Handled = true;
     }
 
     private void PetHost_LostMouseCapture(object sender, MouseEventArgs e)
     {
-        // ReleaseMouseCapture is part of handing the gesture to DragMove.
-        // A fast mouse-up can make LeftButton appear released in this
-        // synchronous callback; the DragMove finally block still owns the
-        // saved origin/trajectory context until it performs the last dock
-        // check.
+        if (!_dragInteractionActive)
+        {
+            return;
+        }
+
         if (_dragStarted)
         {
+            _latestDragScreenPosition = GetScreenPointOrFallback(
+                e.GetPosition(this),
+                _latestDragScreenPosition);
+            CompleteDirectPetDrag(updateEdgeDock: true);
             return;
         }
 
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
+        _directDragPhysicalGeometryReady = false;
+        _directDragTopClamped = false;
+        _directDragTopClampPointerYInPhysicalPixels = double.NaN;
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
+        _workPointerClickCount = 0;
         RestartAutomaticCountdown();
+        RefreshWorkModeButton();
+        RefreshSnoreBubbleAnimationState();
+    }
+
+    private bool TryPrepareDirectPetDragGeometry(
+        Rect startWindowBounds,
+        EdgeDock dragOriginDock)
+    {
+        if (!OwnedWindowPositioner.TryGetPhysicalBounds(
+                this,
+                out var physicalWindowBounds) ||
+            !double.IsFinite(_pointerDownScreenPosition.X) ||
+            !double.IsFinite(_pointerDownScreenPosition.Y))
+        {
+            return false;
+        }
+
+        var contactBounds = GetDragReleaseContactBounds(
+            startWindowBounds,
+            dragOriginDock);
+        var contactTopScreenPoint = GetScreenPointOrFallback(
+            new Point(0, contactBounds.Top - Top),
+            new Point(double.NaN, double.NaN));
+        if (!double.IsFinite(contactTopScreenPoint.Y))
+        {
+            return false;
+        }
+
+        _dragPointerOffsetFromWindowInPhysicalPixels = new Vector(
+            _pointerDownScreenPosition.X - physicalWindowBounds.Left,
+            _pointerDownScreenPosition.Y - physicalWindowBounds.Top);
+        _dragContactTopOffsetInPhysicalPixels =
+            contactTopScreenPoint.Y - physicalWindowBounds.Top;
+        return double.IsFinite(
+                   _dragPointerOffsetFromWindowInPhysicalPixels.X) &&
+               double.IsFinite(
+                   _dragPointerOffsetFromWindowInPhysicalPixels.Y) &&
+               double.IsFinite(_dragContactTopOffsetInPhysicalPixels);
+    }
+
+    private void ContinueDirectPetDrag(
+        Point currentLocalPosition,
+        Point currentScreenPosition)
+    {
+        if (_directDragPhysicalGeometryReady &&
+            double.IsFinite(currentScreenPosition.X) &&
+            double.IsFinite(currentScreenPosition.Y))
+        {
+            // Re-sample the current frame's contact edge on every input event.
+            // Keep the physical pointer-to-HWND offset established by the last
+            // successful SetWindowPos; rebuilding it from the original DIP
+            // point would jump after WM_DPICHANGED.
+            if (OwnedWindowPositioner.TryGetPhysicalBounds(
+                    this,
+                    out var currentPhysicalBounds))
+            {
+                var currentViewboxBounds =
+                    GetPetViewboxBoundsInScreenDips();
+                var currentContactBounds = GetDragReleaseContactBounds(
+                    currentViewboxBounds,
+                    _edgeDockDragContext?.OriginDock ?? EdgeDock.None);
+                var contactTopScreenPoint = GetScreenPointOrFallback(
+                    new Point(0, currentContactBounds.Top - Top),
+                    new Point(double.NaN, double.NaN));
+                if (double.IsFinite(contactTopScreenPoint.Y))
+                {
+                    _dragContactTopOffsetInPhysicalPixels =
+                        contactTopScreenPoint.Y - currentPhysicalBounds.Top;
+                }
+            }
+
+            var hasPhysicalWorkArea = MonitorWorkArea.TryGetPhysicalWorkAreaAt(
+                currentScreenPosition,
+                out var physicalWorkArea);
+            var unclampedTop = Math.Round(
+                currentScreenPosition.Y -
+                _dragPointerOffsetFromWindowInPhysicalPixels.Y,
+                MidpointRounding.AwayFromZero);
+            var targetPosition = CalculateDirectPetDragPosition(
+                currentScreenPosition,
+                _dragPointerOffsetFromWindowInPhysicalPixels,
+                _dragContactTopOffsetInPhysicalPixels,
+                physicalWorkArea,
+                keepTopContactPinned:
+                    _directDragTopClamped &&
+                    currentScreenPosition.Y <=
+                    _directDragTopClampPointerYInPhysicalPixels + 0.5);
+            if (_directDragTopClamped &&
+                (!hasPhysicalWorkArea ||
+                 currentScreenPosition.Y >
+                 _directDragTopClampPointerYInPhysicalPixels + 0.5))
+            {
+                _directDragTopClamped = false;
+                _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+                targetPosition = CalculateDirectPetDragPosition(
+                    currentScreenPosition,
+                    _dragPointerOffsetFromWindowInPhysicalPixels,
+                    _dragContactTopOffsetInPhysicalPixels,
+                    physicalWorkArea,
+                    keepTopContactPinned: false);
+            }
+            if (double.IsFinite(targetPosition.X) &&
+                double.IsFinite(targetPosition.Y) &&
+                targetPosition.X >= int.MinValue &&
+                targetPosition.X <= int.MaxValue &&
+                targetPosition.Y >= int.MinValue &&
+                targetPosition.Y <= int.MaxValue &&
+                OwnedWindowPositioner.TrySetPhysicalPosition(
+                    this,
+                    checked((int)targetPosition.X),
+                    checked((int)targetPosition.Y)))
+            {
+                if (!_directDragTopClamped &&
+                    targetPosition.Y > unclampedTop)
+                {
+                    _directDragTopClamped = true;
+                    _directDragTopClampPointerYInPhysicalPixels =
+                        currentScreenPosition.Y;
+                }
+
+                if (OwnedWindowPositioner.TryGetPhysicalBounds(
+                        this,
+                        out var positionedPhysicalBounds))
+                {
+                    _dragPointerOffsetFromWindowInPhysicalPixels = new Vector(
+                        currentScreenPosition.X - positionedPhysicalBounds.Left,
+                        currentScreenPosition.Y - positionedPhysicalBounds.Top);
+                }
+
+                try
+                {
+                    // Keep the DIP fallback continuous if a later native move
+                    // fails, and rebuild it naturally after a DPI transition.
+                    _pointerDownPosition = PointFromScreen(
+                        currentScreenPosition);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The next captured input event will retry.
+                }
+
+                return;
+            }
+
+            _directDragPhysicalGeometryReady = false;
+        }
+
+        // This path is only for a not-yet-created HWND or a transient native
+        // positioning failure. It still follows the captured grab point and
+        // clamps the current frame's visible pixels, rather than handing the
+        // fixed transparent envelope back to system window dragging.
+        var desiredLeft = Left +
+                          currentLocalPosition.X -
+                          _pointerDownPosition.X;
+        var desiredTop = Top +
+                         currentLocalPosition.Y -
+                         _pointerDownPosition.Y;
+        var viewboxBounds = GetPetViewboxBoundsInScreenDips();
+        var contactBounds = GetDragReleaseContactBounds(
+            viewboxBounds,
+            _edgeDockDragContext?.OriginDock ?? EdgeDock.None);
+        var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
+        var translatedContactTop = contactBounds.Top + desiredTop - Top;
+        var topWasClamped = translatedContactTop < workArea.Top;
+        if (topWasClamped)
+        {
+            desiredTop += workArea.Top - translatedContactTop;
+        }
+
+        MoveMainWindowTo(desiredLeft, desiredTop);
+        if (topWasClamped &&
+            double.IsFinite(currentScreenPosition.X) &&
+            double.IsFinite(currentScreenPosition.Y))
+        {
+            try
+            {
+                _pointerDownPosition = PointFromScreen(
+                    currentScreenPosition);
+            }
+            catch (InvalidOperationException)
+            {
+                // The next captured input event will retry.
+            }
+        }
+    }
+
+    private void CompleteDirectPetDrag(bool updateEdgeDock)
+    {
+        var hadActiveDrag = _dragStarted;
+        _pointerDown = false;
+        _dragStarted = false;
+        _dragInteractionActive = false;
+        _directDragPhysicalGeometryReady = false;
+        _directDragTopClamped = false;
+        _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        if (PetHost.IsMouseCaptured)
+        {
+            PetHost.ReleaseMouseCapture();
+        }
+
+        try
+        {
+            if (hadActiveDrag && updateEdgeDock)
+            {
+                UpdateEdgeDockAfterDrag();
+            }
+        }
+        finally
+        {
+            _edgeDockDragContext = null;
+            _suppressClickReactionAfterRoamInterruption = false;
+            RestartAutomaticCountdown();
+            RefreshWorkModeButton();
+            RefreshSnoreBubbleAnimationState();
+        }
+    }
+
+    private static Point CalculateDirectPetDragPosition(
+        Point pointerScreenPosition,
+        Vector pointerOffsetFromWindow,
+        double contactTopOffset,
+        Rect physicalWorkArea,
+        bool keepTopContactPinned)
+    {
+        if (!double.IsFinite(pointerScreenPosition.X) ||
+            !double.IsFinite(pointerScreenPosition.Y) ||
+            !double.IsFinite(pointerOffsetFromWindow.X) ||
+            !double.IsFinite(pointerOffsetFromWindow.Y) ||
+            !double.IsFinite(contactTopOffset))
+        {
+            return new Point(double.NaN, double.NaN);
+        }
+
+        var desiredLeft = pointerScreenPosition.X -
+                          pointerOffsetFromWindow.X;
+        var desiredTop = pointerScreenPosition.Y -
+                         pointerOffsetFromWindow.Y;
+        if (!physicalWorkArea.IsEmpty &&
+            IsFiniteRect(physicalWorkArea) &&
+            physicalWorkArea.Width > 0 &&
+            physicalWorkArea.Height > 0)
+        {
+            var topContactWindowPosition =
+                physicalWorkArea.Top - contactTopOffset;
+            desiredTop = keepTopContactPinned
+                ? topContactWindowPosition
+                : Math.Max(desiredTop, topContactWindowPosition);
+        }
+
+        return new Point(
+            Math.Round(desiredLeft, MidpointRounding.AwayFromZero),
+            Math.Round(desiredTop, MidpointRounding.AwayFromZero));
     }
 
     private void PetHost_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -2238,19 +2881,1122 @@ public partial class MainWindow : Window
         DeferIdleSpritePageTrim();
         if (_isReminderActive || _isTransientPetSizeOverride)
         {
+            CancelTodoOpenAfterEdgeRoamStop();
             e.Handled = true;
             return;
         }
 
-        SetBubbleMode(_bubbleMode == BubbleMode.Todo ? BubbleMode.None : BubbleMode.Todo);
+        CancelPendingWorkSingleClick();
+        if (_workState != WorkState.Idle)
+        {
+            _openTodoAfterWorkExitRequested = true;
+            RequestWorkExit();
+            e.Handled = true;
+            return;
+        }
+
+        if (_isEdgeRoaming)
+        {
+            // Stop at the currently presented support point and play the real
+            // boarding sequence backwards. Opening an owned WPF window is
+            // deferred until that sequence completes so Show() never re-enters
+            // the active CompositionTarget.Rendering callback.
+            _openTodoAfterEdgeRoamStopRequested = true;
+            StopEdgeRoaming(
+                scheduleNext: true,
+                restoreIdleFrame: true,
+                interrupted: true);
+            e.Handled = true;
+            return;
+        }
+
+        CancelTodoOpenAfterEdgeRoamStop();
+        if (_bubbleMode == BubbleMode.Todo)
+        {
+            SetBubbleMode(BubbleMode.None);
+        }
+        else
+        {
+            OpenTodoFromPetRightClick();
+        }
+
+        e.Handled = true;
+    }
+
+    private void OpenTodoFromPetRightClick()
+    {
+        SetBubbleMode(BubbleMode.Todo);
 
         if (_bubbleMode == BubbleMode.Todo)
         {
             _todoWindow.ShowDefaultTab();
             _todoWindow.FocusInput();
         }
+    }
 
+    private void CancelTodoOpenAfterEdgeRoamStop()
+    {
+        _openTodoAfterEdgeRoamStopRequested = false;
+    }
+
+    private void QueueTodoOpenAfterEdgeRoamStop()
+    {
+        if (_todoOpenAfterEdgeRoamStopQueued ||
+            Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                CancelTodoOpenAfterEdgeRoamStop();
+            }
+
+            return;
+        }
+
+        _todoOpenAfterEdgeRoamStopQueued = true;
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Input,
+                _processTodoOpenAfterEdgeRoamStopAction);
+        }
+        catch (InvalidOperationException)
+        {
+            _todoOpenAfterEdgeRoamStopQueued = false;
+            CancelTodoOpenAfterEdgeRoamStop();
+        }
+    }
+
+    private void ProcessTodoOpenAfterEdgeRoamStop()
+    {
+        _todoOpenAfterEdgeRoamStopQueued = false;
+        if (!_openTodoAfterEdgeRoamStopRequested)
+        {
+            return;
+        }
+
+        CancelTodoOpenAfterEdgeRoamStop();
+        if (_isClosing || _sessionInactive || _isReminderActive ||
+            _isTransientPetSizeOverride || _isEdgeRoaming ||
+            _dragInteractionActive || _pointerDown ||
+            _bubbleMode != BubbleMode.None)
+        {
+            return;
+        }
+
+        DeferIdleSpritePageTrim();
+        OpenTodoFromPetRightClick();
+    }
+
+    private void WorkModeButton_Click(object sender, RoutedEventArgs e)
+    {
         e.Handled = true;
+        DeferIdleSpritePageTrim();
+        if (_workState == WorkState.Idle)
+        {
+            if (_edgeDock == EdgeDock.None)
+            {
+                _ = TryEnterWorkMode();
+            }
+            else
+            {
+                _ = TryEnterWorkModeAfterEdgePeekExit();
+            }
+        }
+        else if (_workState == WorkState.Typing && !_workExitRequested)
+        {
+            RequestWorkExit();
+        }
+    }
+
+    private bool CanEnterWorkMode()
+    {
+        return IsLoaded &&
+               !_isClosing && !_sessionInactive && _automaticAnimationEnabled &&
+               _workState == WorkState.Idle &&
+               _activeClip is null &&
+               _currentSpriteFrame is SpriteFrame currentFrame &&
+               currentFrame == _idleFrame &&
+               !_isReminderActive && !_isTransientPetSizeOverride &&
+               !_dragInteractionActive && !_pointerDown &&
+               !_isPetSizeTransitioning && !_isPetSizePreviewSessionActive &&
+               !_isPetSizeAdjustmentActive && !_petSizeTargetUpdatePending &&
+               !_isFrameBlending && _pendingSpriteFrame is null &&
+               _bubbleMode == BubbleMode.None && !_todoWindow.IsVisible &&
+               !BubblePopup.IsOpen && _edgeDock == EdgeDock.None &&
+               !_isEdgeRoaming;
+    }
+
+    private bool CanEnterWorkModeAfterEdgePeekExit()
+    {
+        return IsLoaded &&
+               !_isClosing && !_sessionInactive && _automaticAnimationEnabled &&
+               _workState == WorkState.Idle && _activeClip is null &&
+               !_workEnterAfterEdgePeekExitRequested &&
+               !_isReminderActive && !_isTransientPetSizeOverride &&
+               !_dragInteractionActive && !_pointerDown && !_dragStarted &&
+               !_isPetSizeTransitioning && !_isPetSizePreviewSessionActive &&
+               !_isPetSizeAdjustmentActive && !_petSizeTargetUpdatePending &&
+               _bubbleMode == BubbleMode.None && !_todoWindow.IsVisible &&
+               !BubblePopup.IsOpen &&
+               _edgeDock is EdgeDock.Left or EdgeDock.Right or EdgeDock.Bottom &&
+               !_isEdgeRoaming;
+    }
+
+    private bool TryEnterWorkModeAfterEdgePeekExit()
+    {
+        if (!CanEnterWorkModeAfterEdgePeekExit())
+        {
+            RefreshWorkModeButton();
+            return false;
+        }
+
+        _workEnterAfterEdgePeekExitRequested = true;
+        _edgePeekHoldTimer.Stop();
+        var frames = GetEdgeFrames(_edgeDock);
+        if (_edgePeekFrameIndex == frames.Length - 1)
+        {
+            CompleteWorkModeEntryAfterEdgePeekExit();
+            return true;
+        }
+
+        // Finish the authored retreat at 60fps instead of cutting directly
+        // from an arbitrary peek pose to idle. The stable rest endpoint then
+        // hands off pixel-safely to work-enter frame 001.
+        _edgePeekFrameDeadlineTimestamp = Stopwatch.GetTimestamp();
+        RefreshWorkModeButton();
+        UpdateVisualClockSubscription();
+        return true;
+    }
+
+    private void CompleteWorkModeEntryAfterEdgePeekExit()
+    {
+        if (!_workEnterAfterEdgePeekExitRequested)
+        {
+            return;
+        }
+
+        _workEnterAfterEdgePeekExitRequested = false;
+        ExitEdgePeek(restartAutomaticCountdown: false);
+        if (!TryEnterWorkMode())
+        {
+            RestartAutomaticCountdown();
+            RefreshWorkModeButton();
+        }
+    }
+
+    private bool TryEnterWorkMode()
+    {
+        if (!CanEnterWorkMode())
+        {
+            RefreshWorkModeButton();
+            return false;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        CancelPendingWorkSingleClick();
+        CancelTodoOpenAfterEdgeRoamStop();
+        CancelTodoOpenAfterWorkExit();
+        _edgeRoamPreloadRequested = false;
+        CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
+        ScheduleNextEdgeRoam(timestamp, EdgeRoamInterval);
+        StopPillowBreathing();
+        _automaticTimer.Stop();
+        _workState = WorkState.Entering;
+        _workExitRequested = false;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workFastUntilTimestamp = 0;
+        _workLoopPlaybackRate = 1;
+        // The first work page may still be loading, so the current visible
+        // descriptor can remain idle for a few render ticks. Hide the snore
+        // bubble from the high-level state change itself instead of waiting
+        // for the first work frame to publish.
+        RefreshSnoreBubbleAnimationState();
+        StartWorkClip(_workEnterClip);
+        RefreshWorkModeButton();
+        return true;
+    }
+
+    private void StartWorkClip(AnimationClip clip)
+    {
+        StartWorkClipAt(clip, startFrameIndex: 0);
+    }
+
+    private void StartWorkClipAt(AnimationClip clip, int startFrameIndex)
+    {
+        if (startFrameIndex < 0 || startFrameIndex >= clip.Frames.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startFrameIndex));
+        }
+
+        _activeClip = clip;
+        _activeFrameIndex = -1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        ClearDeferredActiveClipClock();
+        RequestSpritePagePrefetch(
+            clip.Frames[startFrameIndex].Image.PageName,
+            urgent: true);
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        _nextFrameMinimumHold = TimeSpan.Zero;
+        ShowActiveClipFrame(startFrameIndex);
+    }
+
+    private void StartWorkLoopAt(long timestamp)
+    {
+        _workState = WorkState.Typing;
+        _workLoopAnchorFramePosition = 0;
+        _workLoopAnchorTimestamp = 0;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workFastUntilTimestamp = 0;
+        _workLoopPlaybackRate = 1;
+
+        StartWorkClip(_workLoopClip);
+        RefreshWorkModeButton();
+    }
+
+    private void StartWorkSeriousExitClip()
+    {
+        if (_workState != WorkState.Typing ||
+            (!ReferenceEquals(_activeClip, _workSeriousLoopClip) &&
+             !ReferenceEquals(_activeClip, _workSeriousEnterClip)))
+        {
+            return;
+        }
+
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workFastUntilTimestamp = 0;
+        _workLoopAnchorTimestamp = 0;
+        _workLoopAnchorFramePosition = 0;
+        _workLoopPlaybackRate = 1;
+        StartWorkClip(_workSeriousExitClip);
+        RefreshWorkModeButton();
+    }
+
+    private void StartWorkSeriousEnterClip(long timestamp)
+    {
+        if (_workState != WorkState.Typing ||
+            !ReferenceEquals(_activeClip, _workLoopClip) ||
+            !_workSeriousEnterRequested ||
+            !double.IsFinite(_workSeriousEnterTargetFramePosition))
+        {
+            return;
+        }
+
+        // Preserve the exact absolute loop phase selected by the 2x clock.
+        // The sampled entry clip begins pixel-identically at this normal neutral
+        // seam and ends at the matching serious neutral seam.
+        _workLoopAnchorFramePosition = _workSeriousEnterTargetFramePosition;
+        _workLoopAnchorTimestamp = timestamp;
+        _workSeriousEnterRequested = false;
+        _workFastUntilTimestamp = 0;
+        StartWorkClip(_workSeriousEnterClip);
+    }
+
+    private void StartSeriousWorkLoopAt(long timestamp)
+    {
+        var framePosition = double.IsFinite(
+                _workSeriousEnterTargetFramePosition)
+            ? _workSeriousEnterTargetFramePosition
+            : 0;
+        var frameIndex = (int)(
+            Math.Floor(framePosition) % WorkSeriousLoopFrameCount);
+        if (frameIndex < 0)
+        {
+            frameIndex += WorkSeriousLoopFrameCount;
+        }
+
+        _workState = WorkState.Typing;
+        _workLoopAnchorFramePosition = framePosition;
+        _workLoopAnchorTimestamp = 0;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workLoopPlaybackRate = WorkFastPlaybackMultiplier;
+        _workFastUntilTimestamp = checked(
+            timestamp + ToStopwatchTicks(WorkFastDuration));
+
+        StartWorkClipAt(_workSeriousLoopClip, frameIndex);
+        RefreshWorkModeButton();
+    }
+
+    private void RequestWorkExit()
+    {
+        CancelPendingWorkSingleClick();
+        if (_workState is WorkState.Idle or WorkState.Exiting)
+        {
+            // A right-click can arrive after the authored exit has already
+            // started. Hide the work button in this input turn as soon as the
+            // deferred Todo request is recorded, rather than exposing it until
+            // the next composition callback.
+            RefreshWorkModeButton();
+            return;
+        }
+
+        _workExitRequested = true;
+        if (_workSeriousEnterRequested)
+        {
+            // A right-click before the selected seam cancels the expression
+            // change. Keep the current 2x phase untouched until the exit seam.
+            _workSeriousEnterRequested = false;
+            _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        }
+        PrefetchPendingWorkTransitionPages();
+        if (_workState == WorkState.Entering &&
+            ReferenceEquals(_activeClip, _workEnterClip))
+        {
+            var enterFrameIndex = GetDisplayedWorkEnterFrameIndex();
+            StartWorkExitClipAt(
+                _workExitClip.Frames.Length - 1 - enterFrameIndex);
+            return;
+        }
+
+        if (!IsWorkTypingLoopClip(_activeClip))
+        {
+            RefreshWorkModeButton();
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        var framePosition = GetWorkLoopFramePositionAt(timestamp);
+        if (_workLoopAnchorTimestamp <= 0)
+        {
+            if (ReferenceEquals(_activeClip, _workSeriousLoopClip))
+            {
+                StartWorkSeriousExitClip();
+            }
+            else
+            {
+                StartWorkExitClip();
+            }
+            return;
+        }
+
+        _workExitTargetFramePosition =
+            GetNextWorkNeutralMicroSeamFramePosition(framePosition);
+        var remainingFrames = Math.Max(
+            0,
+            _workExitTargetFramePosition - framePosition);
+        if (remainingFrames <= 0.000001)
+        {
+            if (ReferenceEquals(_activeClip, _workSeriousLoopClip))
+            {
+                StartWorkSeriousExitClip();
+            }
+            else
+            {
+                StartWorkExitClip();
+            }
+            return;
+        }
+
+        // Keep the absolute loop clock untouched while waiting. Re-anchoring or
+        // temporarily accelerating here makes the hands visibly jerk just before
+        // the exit, especially when the current pose is a key-down pose.
+        RefreshWorkModeButton();
+    }
+
+    private int GetDisplayedWorkEnterFrameIndex()
+    {
+        if (_currentSpriteFrame is SpriteFrame currentFrame)
+        {
+            for (var index = 0; index < _workEnterFrames.Length; index++)
+            {
+                if (currentFrame == _workEnterFrames[index])
+                {
+                    return index;
+                }
+            }
+
+            if (currentFrame == _idleFrame)
+            {
+                return 0;
+            }
+        }
+
+        return Math.Clamp(_activeFrameIndex, 0, _workEnterFrames.Length - 1);
+    }
+
+    private void StartWorkExitClip()
+    {
+        StartWorkExitClipAt(startFrameIndex: 0);
+    }
+
+    private void StartWorkExitClipAt(int startFrameIndex)
+    {
+        if (_workState == WorkState.Idle)
+        {
+            return;
+        }
+
+        CancelPendingWorkSingleClick();
+        _workState = WorkState.Exiting;
+        _workExitRequested = false;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workFastUntilTimestamp = 0;
+        _workLoopAnchorTimestamp = 0;
+        _workLoopPlaybackRate = 1;
+        StartWorkClipAt(_workExitClip, startFrameIndex);
+        RefreshWorkModeButton();
+    }
+
+    private void FinishWorkExit()
+    {
+        var openTodo = _openTodoAfterWorkExitRequested;
+        _workState = WorkState.Idle;
+        _workExitRequested = false;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workLoopAnchorTimestamp = 0;
+        _workLoopAnchorFramePosition = 0;
+        _workLoopPlaybackRate = 1;
+        _workFastUntilTimestamp = 0;
+        _activeClip = null;
+        _activeFrameIndex = -1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        ClearDeferredActiveClipClock();
+        // work-enter frame 001 is authored pixel-identically to idle. Publish
+        // the logical idle descriptor before Todo decides where to enter its
+        // wake sequence; this changes no pixels and therefore cannot flash.
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        ShowStableFrame(_idleFrame);
+        RequestIdleSpritePageTrim();
+        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
+        RestartAutomaticCountdown();
+        ScheduleUnpinnedPetSizePreviewCommit();
+        RefreshWorkModeButton();
+        UpdateVisualClockSubscription();
+        if (openTodo)
+        {
+            QueueTodoOpenAfterWorkExit();
+        }
+    }
+
+    private void StopWorkModeImmediately(bool restoreIdleFrame)
+    {
+        CancelPendingWorkSingleClick();
+        CancelTodoOpenAfterWorkExit();
+        if (_workState == WorkState.Idle)
+        {
+            return;
+        }
+
+        if (_activeClip is { } activeClip && IsWorkClip(activeClip))
+        {
+            _activeClip = null;
+            _activeFrameIndex = -1;
+            _activeClipStartedTimestamp = 0;
+            _activeFrameDeadlineTimestamp = 0;
+            ClearDeferredActiveClipClock();
+        }
+
+        _workState = WorkState.Idle;
+        _workExitRequested = false;
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workLoopAnchorTimestamp = 0;
+        _workLoopAnchorFramePosition = 0;
+        _workLoopPlaybackRate = 1;
+        _workFastUntilTimestamp = 0;
+        if (restoreIdleFrame)
+        {
+            _nextFrameBlendDuration = TimeSpan.Zero;
+            ShowStableFrame(_idleFrame);
+        }
+
+        RequestIdleSpritePageTrim();
+        RefreshWorkModeButton();
+        UpdateVisualClockSubscription();
+    }
+
+    private void HandleWorkPetClick(int clickCount)
+    {
+        if (_workState != WorkState.Typing || _workExitRequested ||
+            !IsWorkTypingLoopClip(_activeClip))
+        {
+            return;
+        }
+
+        if (clickCount >= 2)
+        {
+            CancelPendingWorkSingleClick();
+            StartFastWorkTypingAt(Stopwatch.GetTimestamp());
+            return;
+        }
+
+        if (_workTapPhaseSyncRequested || _workSeriousEnterRequested)
+        {
+            // The first click has already been confirmed and owns the nearest
+            // neutral seam. Extra single-click notifications must not restart
+            // arbitration and push the visible head tap farther into the future.
+            return;
+        }
+
+        ScheduleWorkSingleClick();
+    }
+
+    private void ScheduleWorkSingleClick()
+    {
+        CancelPendingWorkSingleClick();
+        _workClickGeneration++;
+        _scheduledWorkSingleClickGeneration = _workClickGeneration;
+        var decisionDelay = GetWorkSingleClickDecisionDelay();
+        _workSingleClickTimer.Interval = decisionDelay;
+
+        PrefetchWorkSeriousEntryPage();
+        PrefetchPendingWorkTransitionPages();
+        _workSingleClickTimer.Start();
+    }
+
+    private void PrefetchWorkSeriousEntryPage()
+    {
+        // A ClickCount=1 event is also the first half of every double-click.
+        // Warm the short facial-entry page before the second event arrives.
+        // Once it is resident, the render-time look-ahead requests the exact
+        // target serious-loop page without cancelling this more urgent decode.
+        RequestSpritePagePrefetch(
+            _workSeriousEnterClip.Frames[0].Image.PageName,
+            urgent: true);
+    }
+
+    private void CancelPendingWorkSingleClick()
+    {
+        _workTapPhaseSyncRequested = false;
+        _workTapAfterSeriousExitRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        _workSingleClickTimer.Stop();
+        _workClickGeneration++;
+        _scheduledWorkSingleClickGeneration = 0;
+    }
+
+    private void WorkSingleClickTimer_Tick(object? sender, EventArgs e)
+    {
+        _workSingleClickTimer.Stop();
+        var generation = _scheduledWorkSingleClickGeneration;
+        _scheduledWorkSingleClickGeneration = 0;
+        if (generation == 0 || generation != _workClickGeneration ||
+            _workState != WorkState.Typing || _workExitRequested ||
+            !IsWorkTypingLoopClip(_activeClip))
+        {
+            _workTapPhaseSyncRequested = false;
+            _workTapTargetFramePosition = double.PositiveInfinity;
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        var framePosition = GetWorkLoopFramePositionAt(timestamp);
+        _workTapTargetFramePosition =
+            GetNextWorkNeutralMicroSeamFramePosition(framePosition);
+        _workTapPhaseSyncRequested = true;
+    }
+
+    private void StartWorkTapAtNeutralSeam(long timestamp)
+    {
+        if (!_workTapPhaseSyncRequested ||
+            !double.IsFinite(_workTapTargetFramePosition))
+        {
+            return;
+        }
+
+        _workLoopAnchorFramePosition = _workTapTargetFramePosition;
+        _workLoopAnchorTimestamp = timestamp;
+        _workTapPhaseSyncRequested = false;
+        _workTapTargetFramePosition = double.PositiveInfinity;
+        if (ReferenceEquals(_activeClip, _workSeriousLoopClip))
+        {
+            // A single click deliberately leaves serious typing, but the face
+            // must relax through its authored sequence before the ordinary
+            // head-tap pose appears. Both hand-offs occur on exact neutral
+            // bitmaps, so no normal-face frame is exposed early.
+            _workTapAfterSeriousExitRequested = true;
+            _workFastUntilTimestamp = 0;
+            StartWorkSeriousExitClip();
+            return;
+        }
+
+        _workTapAfterSeriousExitRequested = false;
+        _workLoopPlaybackRate = 1;
+        _workFastUntilTimestamp = 0;
+        StartWorkClip(_workTapClip);
+    }
+
+    private void StartFastWorkTypingAt(long timestamp)
+    {
+        if (_workState != WorkState.Typing || _workExitRequested ||
+            !IsWorkTypingLoopClip(_activeClip))
+        {
+            return;
+        }
+
+        if (ReferenceEquals(_activeClip, _workSeriousLoopClip))
+        {
+            if (_workLoopAnchorTimestamp > 0)
+            {
+                _workLoopAnchorFramePosition =
+                    GetWorkLoopFramePositionAt(timestamp);
+            }
+            _workLoopAnchorTimestamp = timestamp;
+            _workLoopPlaybackRate = WorkFastPlaybackMultiplier;
+            _workFastUntilTimestamp = checked(
+                timestamp + ToStopwatchTicks(WorkFastDuration));
+            _workSeriousExitRequested = false;
+            _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+            return;
+        }
+
+        if (_workSeriousEnterRequested)
+        {
+            // Repeated double-click notifications must not move the selected
+            // seam and make the visible expression transition feel delayed.
+            return;
+        }
+
+        var framePosition = GetWorkLoopFramePositionAt(timestamp);
+        _workLoopAnchorFramePosition = framePosition;
+        _workLoopAnchorTimestamp = timestamp;
+        _workLoopPlaybackRate = WorkFastPlaybackMultiplier;
+        _workFastUntilTimestamp = 0;
+        _workSeriousEnterTargetFramePosition =
+            GetNextWorkNeutralMicroSeamFramePosition(framePosition);
+        _workSeriousEnterRequested = true;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        RequestSpritePagePrefetch(
+            _workSeriousEnterClip.Frames[0].Image.PageName,
+            urgent: true);
+        PrefetchPendingWorkTransitionPages();
+        UpdateVisualClockSubscription();
+    }
+
+    private void AdvanceWorkLoop(long timestamp)
+    {
+        if (_workState != WorkState.Typing ||
+            !IsWorkTypingLoopClip(_activeClip) ||
+            _workLoopAnchorTimestamp <= 0)
+        {
+            return;
+        }
+
+        PrefetchPendingWorkTransitionPages();
+        if (_workFastUntilTimestamp > 0 &&
+            timestamp >= _workFastUntilTimestamp &&
+            _scheduledWorkSingleClickGeneration == 0 &&
+            !_workSingleClickTimer.IsEnabled &&
+            !_workTapPhaseSyncRequested &&
+            !_workExitRequested &&
+            ReferenceEquals(_activeClip, _workSeriousLoopClip))
+        {
+            var currentFramePosition = GetWorkLoopFramePositionAt(timestamp);
+            if (!_workSeriousExitRequested)
+            {
+                _workSeriousExitRequested = true;
+                _workSeriousExitTargetFramePosition =
+                    GetNextWorkNeutralMicroSeamFramePosition(
+                        currentFramePosition);
+            }
+
+            if (currentFramePosition >= _workSeriousExitTargetFramePosition)
+            {
+                StartWorkSeriousExitClip();
+                return;
+            }
+        }
+
+        var framePosition = GetWorkLoopFramePositionAt(timestamp);
+        if (_workExitRequested &&
+            framePosition >= _workExitTargetFramePosition)
+        {
+            if (ReferenceEquals(_activeClip, _workSeriousLoopClip))
+            {
+                // Preserve the authored brow/face relaxation before reversing
+                // the seated work transition. Cutting straight to work-exit
+                // would otherwise remove the serious expression in one frame.
+                StartWorkSeriousExitClip();
+            }
+            else
+            {
+                StartWorkExitClip();
+            }
+            return;
+        }
+
+        if (_workSeriousEnterRequested &&
+            framePosition >= _workSeriousEnterTargetFramePosition)
+        {
+            StartWorkSeriousEnterClip(timestamp);
+            return;
+        }
+
+        if (_workTapPhaseSyncRequested &&
+            framePosition >= _workTapTargetFramePosition)
+        {
+            StartWorkTapAtNeutralSeam(timestamp);
+            return;
+        }
+
+        var frameIndex = (int)(Math.Floor(framePosition) % WorkLoopFrameCount);
+        if (frameIndex < 0)
+        {
+            frameIndex += WorkLoopFrameCount;
+        }
+        if (frameIndex == _activeFrameIndex)
+        {
+            return;
+        }
+
+        _activeFrameIndex = frameIndex;
+        _nextFrameBlendDuration = TimeSpan.Zero;
+        var activeLoopFrames = GetActiveWorkLoopFrames();
+        ShowStableFrame(activeLoopFrames[frameIndex]);
+        PrefetchNextWorkLoopPage(activeLoopFrames, frameIndex);
+    }
+
+    private double GetWorkLoopFramePositionAt(long timestamp)
+    {
+        if (_workLoopAnchorTimestamp <= 0 ||
+            timestamp <= _workLoopAnchorTimestamp)
+        {
+            return _workLoopAnchorFramePosition;
+        }
+
+        var elapsedSeconds =
+            (timestamp - _workLoopAnchorTimestamp) /
+            (double)Stopwatch.Frequency;
+        return _workLoopAnchorFramePosition +
+               elapsedSeconds * WorkNormalPoseFramesPerSecond *
+               _workLoopPlaybackRate;
+    }
+
+    private static double GetNextWorkNeutralMicroSeamFramePosition(
+        double framePosition)
+    {
+        if (!double.IsFinite(framePosition))
+        {
+            throw new ArgumentOutOfRangeException(nameof(framePosition));
+        }
+
+        var cycleStart =
+            Math.Floor(framePosition / WorkLoopFrameCount) * WorkLoopFrameCount;
+        foreach (var seamFrameIndex in WorkNeutralMicroSeamFrameIndices)
+        {
+            var candidate = cycleStart + seamFrameIndex;
+            if (candidate >= framePosition)
+            {
+                return candidate;
+            }
+        }
+
+        return cycleStart + WorkLoopFrameCount +
+               WorkNeutralMicroSeamFrameIndices[0];
+    }
+
+    private void PrefetchNextWorkLoopPage(
+        IReadOnlyList<SpriteFrame> loopFrames,
+        int displayedFrameIndex)
+    {
+        var currentPageName = loopFrames[displayedFrameIndex].PageName;
+        for (var offset = 1; offset < loopFrames.Count; offset++)
+        {
+            var frameIndex =
+                (displayedFrameIndex + offset) % loopFrames.Count;
+            var nextPageName = loopFrames[frameIndex].PageName;
+            if (string.Equals(
+                    nextPageName,
+                    currentPageName,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!IsSpritePageImmediatelyAvailable(nextPageName))
+            {
+                RequestSpritePagePrefetch(nextPageName, urgent: true);
+            }
+            return;
+        }
+    }
+
+    private void PrefetchPendingWorkTransitionPages()
+    {
+        if ((_scheduledWorkSingleClickGeneration != 0 ||
+             _workSingleClickTimer.IsEnabled ||
+             _workTapPhaseSyncRequested ||
+             _workTapAfterSeriousExitRequested) &&
+            _workState == WorkState.Typing &&
+            !IsSpritePageImmediatelyAvailable(
+                _workTapClip.Frames[0].Image.PageName))
+        {
+            RequestSpritePagePrefetch(
+                _workTapClip.Frames[0].Image.PageName,
+                urgent: false);
+        }
+
+        if (_workSeriousEnterRequested &&
+            _workState == WorkState.Typing &&
+            !IsSpritePageImmediatelyAvailable(
+                _workSeriousEnterClip.Frames[0].Image.PageName))
+        {
+            RequestSpritePagePrefetch(
+                _workSeriousEnterClip.Frames[0].Image.PageName,
+                urgent: true);
+        }
+
+        if ((ReferenceEquals(_activeClip, _workSeriousEnterClip) ||
+             _workSeriousEnterRequested) &&
+            !_workExitRequested)
+        {
+            var framePosition = double.IsFinite(
+                    _workSeriousEnterTargetFramePosition)
+                ? _workSeriousEnterTargetFramePosition
+                : 0;
+            var frameIndex = (int)(
+                Math.Floor(framePosition) % WorkSeriousLoopFrameCount);
+            if (frameIndex < 0)
+            {
+                frameIndex += WorkSeriousLoopFrameCount;
+            }
+
+            var pageName = _workSeriousLoopFrames[frameIndex].PageName;
+            if (!IsSpritePageImmediatelyAvailable(pageName))
+            {
+                RequestSpritePagePrefetch(pageName, urgent: false);
+            }
+        }
+
+        if (ReferenceEquals(_activeClip, _workTapClip) &&
+            !_workExitRequested &&
+            !IsSpritePageImmediatelyAvailable(
+                _workLoopClip.Frames[0].Image.PageName))
+        {
+            RequestSpritePagePrefetch(
+                _workLoopClip.Frames[0].Image.PageName,
+                urgent: false);
+        }
+
+        if (ReferenceEquals(_activeClip, _workSeriousLoopClip) &&
+            (_workFastUntilTimestamp > 0 || _workSeriousExitRequested) &&
+            !IsSpritePageImmediatelyAvailable(
+                _workSeriousExitClip.Frames[0].Image.PageName))
+        {
+            RequestSpritePagePrefetch(
+                _workSeriousExitClip.Frames[0].Image.PageName,
+                urgent: false);
+        }
+
+        if (ReferenceEquals(_activeClip, _workSeriousExitClip) &&
+            !_workExitRequested &&
+            !IsSpritePageImmediatelyAvailable(
+                (_workTapAfterSeriousExitRequested
+                    ? _workTapClip
+                    : _workLoopClip).Frames[0].Image.PageName))
+        {
+            var continuationClip = _workTapAfterSeriousExitRequested
+                ? _workTapClip
+                : _workLoopClip;
+            RequestSpritePagePrefetch(
+                continuationClip.Frames[0].Image.PageName,
+                urgent: false);
+        }
+
+        if (_workExitRequested &&
+            _workState is not WorkState.Idle and not WorkState.Exiting &&
+            !IsSpritePageImmediatelyAvailable(
+                _workExitClip.Frames[0].Image.PageName))
+        {
+            RequestSpritePagePrefetch(
+                _workExitClip.Frames[0].Image.PageName,
+                urgent: false);
+        }
+    }
+
+    private bool IsWorkTypingLoopClip(AnimationClip? clip) =>
+        ReferenceEquals(clip, _workLoopClip) ||
+        ReferenceEquals(clip, _workSeriousLoopClip);
+
+    private SpriteFrame[] GetActiveWorkLoopFrames() =>
+        ReferenceEquals(_activeClip, _workSeriousLoopClip)
+            ? _workSeriousLoopFrames
+            : _workLoopFrames;
+
+    private bool IsWorkClip(AnimationClip clip) =>
+        ReferenceEquals(clip, _workEnterClip) ||
+        ReferenceEquals(clip, _workLoopClip) ||
+        ReferenceEquals(clip, _workSeriousLoopClip) ||
+        ReferenceEquals(clip, _workSeriousEnterClip) ||
+        ReferenceEquals(clip, _workSeriousExitClip) ||
+        ReferenceEquals(clip, _workTapClip) ||
+        ReferenceEquals(clip, _workExitClip);
+
+    private static TimeSpan GetWorkSingleClickDecisionDelay()
+    {
+        var nativeMilliseconds = GetDoubleClickTime();
+        var milliseconds = nativeMilliseconds is >= 100 and <= 2000
+            ? nativeMilliseconds
+            : 500u;
+        return TimeSpan.FromMilliseconds(milliseconds) +
+               WorkSingleClickDecisionPadding;
+    }
+
+    private void CancelTodoOpenAfterWorkExit()
+    {
+        _openTodoAfterWorkExitRequested = false;
+    }
+
+    private void QueueTodoOpenAfterWorkExit()
+    {
+        if (_todoOpenAfterWorkExitQueued ||
+            Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                CancelTodoOpenAfterWorkExit();
+            }
+            return;
+        }
+
+        _todoOpenAfterWorkExitQueued = true;
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Input,
+                _processTodoOpenAfterWorkExitAction);
+        }
+        catch (InvalidOperationException)
+        {
+            _todoOpenAfterWorkExitQueued = false;
+            CancelTodoOpenAfterWorkExit();
+            RefreshWorkModeButton();
+        }
+    }
+
+    private void ProcessTodoOpenAfterWorkExit()
+    {
+        _todoOpenAfterWorkExitQueued = false;
+        if (!_openTodoAfterWorkExitRequested)
+        {
+            RefreshWorkModeButton();
+            return;
+        }
+
+        CancelTodoOpenAfterWorkExit();
+        if (_isClosing || _sessionInactive || _isReminderActive ||
+            _isTransientPetSizeOverride || _workState != WorkState.Idle ||
+            _isEdgeRoaming || _dragInteractionActive || _pointerDown ||
+            _bubbleMode != BubbleMode.None)
+        {
+            RefreshWorkModeButton();
+            return;
+        }
+
+        DeferIdleSpritePageTrim();
+        OpenTodoFromPetRightClick();
+        RefreshWorkModeButton();
+    }
+
+    private void RefreshWorkModeButton()
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        var workActive = _workState != WorkState.Idle;
+        var facingCompensation = PetFacingScale.ScaleX < 0 ? -1d : 1d;
+        if (WorkModeFacingCompensation.ScaleX != facingCompensation)
+        {
+            WorkModeFacingCompensation.ScaleX = facingCompensation;
+        }
+        var canEnter = !workActive && CanEnterWorkMode();
+        var canEnterAfterEdgePeek =
+            !workActive && CanEnterWorkModeAfterEdgePeekExit();
+        var todoOpenPending = _openTodoAfterWorkExitRequested ||
+                              _todoOpenAfterWorkExitQueued;
+        var shouldShow = !todoOpenPending &&
+                         (workActive || canEnter || canEnterAfterEdgePeek ||
+                          _workEnterAfterEdgePeekExitRequested);
+        var shouldEnable = canEnter ||
+                           canEnterAfterEdgePeek ||
+                           (_workState == WorkState.Typing &&
+                            !_workExitRequested);
+        var buttonOpacity = shouldShow ? 1d : 0d;
+        if (WorkModeButton.Opacity != buttonOpacity)
+        {
+            WorkModeButton.Opacity = buttonOpacity;
+        }
+        if (WorkModeButton.IsHitTestVisible != (shouldShow && shouldEnable))
+        {
+            WorkModeButton.IsHitTestVisible = shouldShow && shouldEnable;
+        }
+        if (WorkModeButton.IsEnabled != shouldEnable)
+        {
+            WorkModeButton.IsEnabled = shouldEnable;
+        }
+
+        var visualStateTag = workActive ? "Working" : "Idle";
+        if (!string.Equals(
+                WorkModeButton.Tag as string,
+                visualStateTag,
+                StringComparison.Ordinal))
+        {
+            WorkModeButton.Tag = visualStateTag;
+        }
+
+        var automationName = workActive ? "下班啦" : "去打工";
+        if (!string.Equals(
+                WorkModeButton.Content as string,
+                automationName,
+                StringComparison.Ordinal))
+        {
+            WorkModeButton.Content = automationName;
+        }
+        if (!string.Equals(
+                AutomationProperties.GetName(WorkModeButton),
+                automationName,
+                StringComparison.Ordinal))
+        {
+            AutomationProperties.SetName(WorkModeButton, automationName);
+        }
     }
 
     private void UpdateEdgeDockAfterDrag()
@@ -2360,6 +4106,29 @@ public partial class MainWindow : Window
 
         EnterEdgePeek(touchedEdge);
     }
+
+    private Point GetScreenPointOrFallback(Point localPoint, Point fallback)
+    {
+        try
+        {
+            var screenPoint = PointToScreen(localPoint);
+            return double.IsFinite(screenPoint.X) &&
+                   double.IsFinite(screenPoint.Y)
+                ? screenPoint
+                : fallback;
+        }
+        catch (InvalidOperationException)
+        {
+            return fallback;
+        }
+    }
+
+    private static bool IsFiniteRect(Rect rect) =>
+        double.IsFinite(rect.Left) &&
+        double.IsFinite(rect.Top) &&
+        double.IsFinite(rect.Width) &&
+        double.IsFinite(rect.Height) &&
+        rect.Width >= 0 && rect.Height >= 0;
 
     private Rect GetDragReleaseContactBounds(
         Rect windowBounds,
@@ -2586,6 +4355,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        _edgePeekHoldTimer.Stop();
+        _workEnterAfterEdgePeekExitRequested = false;
         StopEdgeRoaming(
             scheduleNext: true,
             restoreIdleFrame: false,
@@ -2663,9 +4434,12 @@ public partial class MainWindow : Window
     {
         if (_edgeDock == EdgeDock.None)
         {
+            _workEnterAfterEdgePeekExitRequested = false;
             return;
         }
 
+        _edgePeekHoldTimer.Stop();
+        _workEnterAfterEdgePeekExitRequested = false;
         _edgeDock = EdgeDock.None;
         _edgePeekFrameIndex = 0;
         _edgePeekFrameDeadlineTimestamp = 0;
@@ -2711,6 +4485,21 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_workEnterAfterEdgePeekExitRequested)
+        {
+            var exitFrames = GetEdgeFrames(_edgeDock);
+            if (_edgePeekFrameIndex == exitFrames.Length - 1)
+            {
+                CompleteWorkModeEntryAfterEdgePeekExit();
+                return;
+            }
+        }
+
+        if (_edgePeekHoldTimer.IsEnabled)
+        {
+            return;
+        }
+
         if (_edgePeekFrameDeadlineTimestamp == long.MaxValue)
         {
             return;
@@ -2740,9 +4529,11 @@ public partial class MainWindow : Window
         {
             _edgePeekFrameIndex = (_edgePeekFrameIndex + 1) % frames.Length;
             frameChanged = true;
-            var nextHoldDuration = GetEdgePeekFrameHoldDuration(
-                _edgePeekFrameIndex,
-                frames.Length);
+            var nextHoldDuration = _workEnterAfterEdgePeekExitRequested
+                ? EdgePeekMotionFrameInterval
+                : GetEdgePeekFrameHoldDuration(
+                    _edgePeekFrameIndex,
+                    frames.Length);
             _edgePeekFrameDeadlineTimestamp +=
                 ToStopwatchTicks(nextHoldDuration);
             if (_synchronizeEdgePeekToRenderingCadence)
@@ -2783,6 +4574,11 @@ public partial class MainWindow : Window
                         "page was previously marked unavailable");
                 }
             }
+        }
+
+        if (!_workEnterAfterEdgePeekExitRequested)
+        {
+            ArmEdgePeekHoldTimerIfStable(timestamp);
         }
     }
 
@@ -2860,6 +4656,58 @@ public partial class MainWindow : Window
                 GetEdgePeekFrameHoldDuration(
                     _edgePeekFrameIndex,
                     frames.Length)));
+        ArmEdgePeekHoldTimerIfStable(timestamp);
+    }
+
+    private void ArmEdgePeekHoldTimerIfStable(long timestamp)
+    {
+        _edgePeekHoldTimer.Stop();
+        if (_isClosing ||
+            _edgeDock == EdgeDock.None ||
+            _edgePeekFrameDeadlineTimestamp is <= 0 or long.MaxValue)
+        {
+            return;
+        }
+
+        var frames = GetEdgeFrames(_edgeDock);
+        if (_edgePeekFrameIndex < 0 ||
+            _edgePeekFrameIndex >= frames.Length ||
+            _currentSpriteFrame is not SpriteFrame displayedFrame ||
+            displayedFrame != frames[_edgePeekFrameIndex])
+        {
+            return;
+        }
+
+        var fullyPeekedFrameIndex = frames.Length / 2 - 1;
+        if (_edgePeekFrameIndex != fullyPeekedFrameIndex &&
+            _edgePeekFrameIndex != frames.Length - 1)
+        {
+            return;
+        }
+
+        var remainingTicks = _edgePeekFrameDeadlineTimestamp - timestamp;
+        if (remainingTicks <= 0)
+        {
+            return;
+        }
+
+        _edgePeekHoldTimer.Interval = TimeSpan.FromSeconds(
+            Math.Max(0.001, remainingTicks / (double)Stopwatch.Frequency));
+        _edgePeekHoldTimer.Start();
+    }
+
+    private void EdgePeekHoldTimer_Tick(object? sender, EventArgs e)
+    {
+        _edgePeekHoldTimer.Stop();
+        if (_isClosing || _edgeDock == EdgeDock.None)
+        {
+            UpdateVisualClockSubscription();
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        AdvanceEdgePeek(timestamp);
+        UpdateVisualClockSubscription();
     }
 
     private void TryStartDeferredEdgePeekClockAt(long timestamp)
@@ -2913,6 +4761,7 @@ public partial class MainWindow : Window
     private bool TryStartReaction(AnimationClip clip, bool showCuteBubble)
     {
         if (_isClosing || _sessionInactive ||
+            _workState != WorkState.Idle ||
             _activeClip is not null || _dragInteractionActive ||
             _isReminderActive ||
             _bubbleMode == BubbleMode.Todo ||
@@ -3004,6 +4853,10 @@ public partial class MainWindow : Window
                 return;
             }
         }
+
+        // The final decode completion can wake an already-due roam directly;
+        // no 16 ms polling timer is needed while background I/O is in flight.
+        ArmAutomaticWakeTimer(Stopwatch.GetTimestamp());
     }
 
     private bool AreAllEdgeRoamPreloadPagesResident()
@@ -3024,6 +4877,7 @@ public partial class MainWindow : Window
         if (_isClosing || _sessionInactive ||
             !_edgeRoamingEnabled || _isEdgeRoaming ||
             !_automaticAnimationEnabled || _isReminderActive ||
+            _workState != WorkState.Idle ||
             _activeClip is not null || _dragInteractionActive || _pointerDown ||
             _isPetSizeTransitioning || _isPetSizePreviewSessionActive ||
             _isPetSizeAdjustmentActive || _bubbleMode != BubbleMode.None ||
@@ -3074,6 +4928,9 @@ public partial class MainWindow : Window
         _edgeRoamStartPoint = new Point(
             currentWindowLeft + supportOffset.X,
             currentWindowTop + supportOffset.Y);
+        _edgeRoamCurrentSupportPoint = _edgeRoamStartPoint;
+        _edgeRoamDisembarkSupportPoint = _edgeRoamStartPoint;
+        _edgeRoamCurrentSupportPointValid = true;
         _edgeRoamRouteStartDistance = FindClosestEdgeRoamRouteDistance(
             _edgeRoamRouteBounds,
             radius,
@@ -3108,6 +4965,7 @@ public partial class MainWindow : Window
         _edgeRoamLandingSeamElapsedSeconds = 0;
         _nextEdgeRoamDueTimestamp = 0;
         _edgeRoamPreloadRequested = false;
+        CancelTodoOpenAfterEdgeRoamStop();
         _isEdgeRoaming = true;
 
         StopPillowBreathing();
@@ -3228,12 +5086,23 @@ public partial class MainWindow : Window
         var wasRoaming = _isEdgeRoaming;
         var scheduleNext = _edgeRoamStopScheduleNext;
         var interrupted = _edgeRoamStopInterrupted;
+        var shouldOpenTodoAfterStop =
+            wasRoaming && interrupted && restoreIdleFrame &&
+            _openTodoAfterEdgeRoamStopRequested &&
+            !_isClosing && !_sessionInactive && !_isReminderActive &&
+            !_isTransientPetSizeOverride;
+        if (!shouldOpenTodoAfterStop)
+        {
+            CancelTodoOpenAfterEdgeRoamStop();
+        }
+
         _isEdgeRoaming = false;
         _edgeRoamPhase = EdgeRoamPhase.None;
         _edgeRoamClockStarted = false;
         _edgeRoamBoardingPagesReady = false;
         _edgeRoamFlightPagesReady = false;
         _edgeRoamBoardingReverse = false;
+        _edgeRoamCurrentSupportPointValid = false;
         _edgeRoamBoardingStartIndex = 0;
         _edgeRoamStopScheduleNext = false;
         _edgeRoamStopInterrupted = false;
@@ -3247,6 +5116,8 @@ public partial class MainWindow : Window
         _edgeRoamFacingScaleX = 1;
         _edgeRoamRotationDegrees = 0;
         _edgeRoamDisembarkStartRotationDegrees = 0;
+        _edgeRoamCurrentSupportPoint = default;
+        _edgeRoamDisembarkSupportPoint = default;
         CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
         if (wasRoaming)
         {
@@ -3274,6 +5145,11 @@ public partial class MainWindow : Window
             RequestIdleSpritePageTrim();
             RestartAutomaticCountdown();
             UpdateVisualClockSubscription();
+        }
+
+        if (shouldOpenTodoAfterStop)
+        {
+            QueueTodoOpenAfterEdgeRoamStop();
         }
     }
 
@@ -3343,6 +5219,12 @@ public partial class MainWindow : Window
         }
         else
         {
+            _edgeRoamDisembarkSupportPoint =
+                _edgeRoamCurrentSupportPointValid &&
+                double.IsFinite(_edgeRoamCurrentSupportPoint.X) &&
+                double.IsFinite(_edgeRoamCurrentSupportPoint.Y)
+                    ? _edgeRoamCurrentSupportPoint
+                    : _edgeRoamStartPoint;
             // Keep the complete final travel transform for the first reverse
             // boarding pose, then straighten it smoothly. Clearing Angle here
             // made a vertical-edge stop snap from +/-90 to 0 in one frame.
@@ -3412,8 +5294,8 @@ public partial class MainWindow : Window
                     elapsedSeconds);
             PetRoamRotate.Angle = _edgeRoamRotationDegrees;
             ApplyEdgeRoamingPosition(
-                _edgeRoamStartPoint.X,
-                _edgeRoamStartPoint.Y);
+                _edgeRoamDisembarkSupportPoint.X,
+                _edgeRoamDisembarkSupportPoint.Y);
         }
 
         var poseSpeed = EdgeRoamPoseFramesPerSecond * AnimationPlaybackSpeed;
@@ -3861,9 +5743,18 @@ public partial class MainWindow : Window
         _edgeRoamFacingScaleX = orientation.ScaleX;
         _edgeRoamRotationDegrees = orientation.RotationDegrees;
 
-        PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
-        PetFacingScale.ScaleY = 1;
-        PetRoamRotate.Angle = _edgeRoamRotationDegrees;
+        if (Math.Abs(PetFacingScale.ScaleX - _edgeRoamFacingScaleX) > 0.0001)
+        {
+            PetFacingScale.ScaleX = _edgeRoamFacingScaleX;
+        }
+        if (Math.Abs(PetFacingScale.ScaleY - 1) > 0.0001)
+        {
+            PetFacingScale.ScaleY = 1;
+        }
+        if (Math.Abs(PetRoamRotate.Angle - _edgeRoamRotationDegrees) > 0.0001)
+        {
+            PetRoamRotate.Angle = _edgeRoamRotationDegrees;
+        }
     }
 
     private static EdgeRoamOrientation ResolveEdgeRoamOrientation(
@@ -4042,6 +5933,10 @@ public partial class MainWindow : Window
             MoveMainWindowTo(
                 _edgeRoamLogicalLeft,
                 _edgeRoamLogicalTop);
+            _edgeRoamCurrentSupportPoint = new Point(
+                supportScreenX,
+                supportScreenY);
+            _edgeRoamCurrentSupportPointValid = true;
         }
         finally
         {
@@ -4254,7 +6149,8 @@ public partial class MainWindow : Window
     {
         _automaticTimer.Stop();
         if (_isClosing || _sessionInactive ||
-            _isReminderActive || !_automaticAnimationEnabled)
+            _isReminderActive || !_automaticAnimationEnabled ||
+            _workState != WorkState.Idle)
         {
             return;
         }
@@ -4267,7 +6163,10 @@ public partial class MainWindow : Window
                 !AreAllEdgeRoamPreloadPagesResident())
             {
                 ContinueEdgeRoamPreload();
-                _automaticTimer.Interval = TimeSpan.FromMilliseconds(16);
+                // Page completions continue the preload chain immediately.
+                // This coarse one-shot is only a watchdog for an unexpected
+                // lost callback, not a 60 Hz UI-thread polling loop.
+                _automaticTimer.Interval = EdgeRoamPreloadWatchdogInterval;
                 _automaticTimer.Start();
                 return;
             }
@@ -4304,6 +6203,7 @@ public partial class MainWindow : Window
         }
 
         if (_activeClip is not null || _dragInteractionActive ||
+            _workState != WorkState.Idle ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
             _isEdgeRoaming)
         {
@@ -4339,6 +6239,7 @@ public partial class MainWindow : Window
             timestamp + ToStopwatchTicks(AutomaticAnimationInterval));
         if (_isClosing || _sessionInactive || !_automaticAnimationEnabled ||
             _isReminderActive ||
+            _workState != WorkState.Idle ||
             _activeClip is not null || _isPillowBreathing || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
             _isEdgeRoaming)
@@ -4353,6 +6254,7 @@ public partial class MainWindow : Window
     {
         if (_isClosing || _sessionInactive || !_automaticAnimationEnabled ||
             _isReminderActive ||
+            _workState != WorkState.Idle ||
             _activeClip is not null || _dragInteractionActive ||
             _bubbleMode == BubbleMode.Todo || _edgeDock != EdgeDock.None ||
             _isEdgeRoaming)
@@ -4459,6 +6361,29 @@ public partial class MainWindow : Window
         RefreshSnoreBubbleAnimationState();
     }
 
+    private static AnimationClock CreateSnoreBubbleScaleClock()
+    {
+        var easing = new SineEase
+        {
+            EasingMode = EasingMode.EaseInOut
+        };
+        easing.Freeze();
+
+        var animation = new DoubleAnimation
+        {
+            From = SnoreBubbleMinimumScale,
+            To = SnoreBubbleMaximumScale,
+            Duration = new Duration(TimeSpan.FromTicks(
+                SnoreBubbleCycleDuration.Ticks / 2)),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            FillBehavior = FillBehavior.Stop,
+            EasingFunction = easing
+        };
+        animation.Freeze();
+        return (AnimationClock)animation.CreateClock(true);
+    }
+
     private void RefreshSnoreBubbleAnimationState()
     {
         var isTodoExitIdleEndpoint =
@@ -4466,12 +6391,17 @@ public partial class MainWindow : Window
             _activeFrameIndex == _todoExitClip.Frames.Length - 1;
         var shouldAnimate = IsLoaded &&
                             !_isClosing &&
+                            !_sessionInactive &&
+                            _workState == WorkState.Idle &&
                             _currentSpriteFrame is SpriteFrame currentFrame &&
                             currentFrame == _idleFrame &&
                             (_activeClip is null ||
                              isTodoExitIdleEndpoint) &&
                             !_isReminderActive &&
                             !_isEdgeRoaming &&
+                            !_dragInteractionActive &&
+                            !_pointerDown &&
+                            !_dragStarted &&
                             _edgeDock == EdgeDock.None;
         if (shouldAnimate == _isSnoreBubbleAnimating)
         {
@@ -4479,54 +6409,33 @@ public partial class MainWindow : Window
         }
 
         _isSnoreBubbleAnimating = shouldAnimate;
-        _snoreBubbleAnimationStartedTimestamp = shouldAnimate
-            ? Stopwatch.GetTimestamp()
-            : 0;
-        _snoreBubbleCurrentScale = SnoreBubbleMinimumScale;
+        SnoreBubbleHost.Opacity = shouldAnimate ? 1 : 0;
+        _snoreBubbleScaleClock.Controller?.Stop();
+        SnoreBubbleScale.ApplyAnimationClock(
+            ScaleTransform.ScaleXProperty,
+            null);
+        SnoreBubbleScale.ApplyAnimationClock(
+            ScaleTransform.ScaleYProperty,
+            null);
         SnoreBubbleScale.ScaleX = SnoreBubbleMinimumScale;
         SnoreBubbleScale.ScaleY = SnoreBubbleMinimumScale;
-        SnoreBubbleHost.Opacity = shouldAnimate ? 1 : 0;
+        if (shouldAnimate)
+        {
+            SnoreBubbleScale.ApplyAnimationClock(
+                ScaleTransform.ScaleXProperty,
+                _snoreBubbleScaleClock,
+                HandoffBehavior.SnapshotAndReplace);
+            SnoreBubbleScale.ApplyAnimationClock(
+                ScaleTransform.ScaleYProperty,
+                _snoreBubbleScaleClock,
+                HandoffBehavior.SnapshotAndReplace);
+            _snoreBubbleScaleClock.Controller?.Begin();
+        }
+
+        // The tiny bubble now runs on WPF's composition clock. It no longer
+        // keeps the application's managed Rendering callback alive while the
+        // character and window are otherwise completely idle.
         UpdateVisualClockSubscription();
-    }
-
-    private void AdvanceSnoreBubble(long timestamp)
-    {
-        if (!_isSnoreBubbleAnimating ||
-            _snoreBubbleAnimationStartedTimestamp <= 0)
-        {
-            return;
-        }
-
-        var elapsedSeconds = Math.Max(
-            0,
-            (timestamp - _snoreBubbleAnimationStartedTimestamp) /
-            (double)Stopwatch.Frequency);
-        var scale = GetSnoreBubbleScale(elapsedSeconds);
-        if (Math.Abs(scale - _snoreBubbleCurrentScale) <= 0.0001)
-        {
-            return;
-        }
-
-        _snoreBubbleCurrentScale = scale;
-        SnoreBubbleScale.ScaleX = scale;
-        SnoreBubbleScale.ScaleY = scale;
-    }
-
-    private static double GetSnoreBubbleScale(double elapsedSeconds)
-    {
-        var cycleSeconds = SnoreBubbleCycleDuration.TotalSeconds;
-        if (!double.IsFinite(elapsedSeconds) ||
-            elapsedSeconds <= 0 ||
-            cycleSeconds <= 0)
-        {
-            return SnoreBubbleMinimumScale;
-        }
-
-        var phase = elapsedSeconds / cycleSeconds;
-        phase -= Math.Floor(phase);
-        var pulse = 0.5 - 0.5 * Math.Cos(phase * Math.Tau);
-        return SnoreBubbleMinimumScale +
-               (SnoreBubbleMaximumScale - SnoreBubbleMinimumScale) * pulse;
     }
 
     private void AdvanceActiveClip(long timestamp)
@@ -4558,7 +6467,7 @@ public partial class MainWindow : Window
             var nextFrameIndex = resolvedFrameIndex + 1;
             if (nextFrameIndex >= clip.Frames.Length)
             {
-                CompleteActiveClip(clip);
+                CompleteActiveClipAt(clip, timestamp);
                 return;
             }
 
@@ -4640,6 +6549,20 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (IsWorkTypingLoopClip(clip))
+        {
+            // A serious loop can begin at any neutral micro-seam, including
+            // frame 094 on the final atlas page. Use the cyclic look-ahead as
+            // soon as that first pose is actually visible so frame 096 -> 001
+            // never waits for a cold first page.
+            PrefetchNextWorkLoopPage(
+                ReferenceEquals(clip, _workSeriousLoopClip)
+                    ? _workSeriousLoopFrames
+                    : _workLoopFrames,
+                displayedFrameIndex);
+            return;
+        }
+
         var currentPageName = currentFrame.PageName;
         for (var frameIndex = displayedFrameIndex + 1;
              frameIndex < clip.Frames.Length;
@@ -4677,13 +6600,151 @@ public partial class MainWindow : Window
                 RequestSpritePagePrefetch(holdPageName, urgent: true);
             }
         }
+        else if (ReferenceEquals(clip, _workEnterClip))
+        {
+            var loopPageName = _workLoopFrames[0].PageName;
+            if (!IsSpritePageImmediatelyAvailable(loopPageName))
+            {
+                RequestSpritePagePrefetch(loopPageName, urgent: true);
+            }
+        }
+        else if (ReferenceEquals(clip, _workTapClip))
+        {
+            var continuationPageName = _workExitRequested
+                ? _workExitClip.Frames[0].Image.PageName
+                : _workLoopFrames[0].PageName;
+            if (!IsSpritePageImmediatelyAvailable(continuationPageName))
+            {
+                RequestSpritePagePrefetch(continuationPageName, urgent: true);
+            }
+        }
+        else if (ReferenceEquals(clip, _workSeriousEnterClip))
+        {
+            if (_workExitRequested)
+            {
+                var exitPageName = _workExitClip.Frames[0].Image.PageName;
+                if (!IsSpritePageImmediatelyAvailable(exitPageName))
+                {
+                    RequestSpritePagePrefetch(exitPageName, urgent: true);
+                }
+                return;
+            }
+
+            var framePosition = double.IsFinite(
+                    _workSeriousEnterTargetFramePosition)
+                ? _workSeriousEnterTargetFramePosition
+                : 0;
+            var frameIndex = (int)(
+                Math.Floor(framePosition) % WorkSeriousLoopFrameCount);
+            if (frameIndex < 0)
+            {
+                frameIndex += WorkSeriousLoopFrameCount;
+            }
+
+            var loopPageName = _workSeriousLoopFrames[frameIndex].PageName;
+            if (!IsSpritePageImmediatelyAvailable(loopPageName))
+            {
+                RequestSpritePagePrefetch(loopPageName, urgent: true);
+            }
+        }
+        else if (ReferenceEquals(clip, _workSeriousExitClip))
+        {
+            var continuationPageName = _workExitRequested
+                ? _workExitClip.Frames[0].Image.PageName
+                : _workTapAfterSeriousExitRequested
+                    ? _workTapClip.Frames[0].Image.PageName
+                    : _workLoopFrames[0].PageName;
+            if (!IsSpritePageImmediatelyAvailable(continuationPageName))
+            {
+                RequestSpritePagePrefetch(continuationPageName, urgent: true);
+            }
+        }
     }
 
     private void CompleteActiveClip(AnimationClip clip)
     {
+        CompleteActiveClipAt(clip, Stopwatch.GetTimestamp());
+    }
+
+    private void CompleteActiveClipAt(AnimationClip clip, long timestamp)
+    {
         ShowStableFrame(clip.Frames[^1].Image);
         if (!ReferenceEquals(_activeClip, clip))
         {
+            return;
+        }
+
+        if (ReferenceEquals(clip, _workEnterClip))
+        {
+            if (_workExitRequested)
+            {
+                StartWorkExitClip();
+            }
+            else
+            {
+                StartWorkLoopAt(timestamp);
+            }
+            return;
+        }
+
+        if (ReferenceEquals(clip, _workTapClip))
+        {
+            if (_workExitRequested)
+            {
+                StartWorkExitClip();
+            }
+            else
+            {
+                StartWorkLoopAt(timestamp);
+            }
+            return;
+        }
+
+        if (ReferenceEquals(clip, _workSeriousEnterClip))
+        {
+            if (_workExitRequested)
+            {
+                // Finish the short brow transition, then play its authored
+                // forward relaxation before leaving work mode. This prevents
+                // one-frame face swaps when right-click lands mid-transition.
+                StartWorkSeriousExitClip();
+            }
+            else
+            {
+                StartSeriousWorkLoopAt(timestamp);
+            }
+            return;
+        }
+
+        if (ReferenceEquals(clip, _workSeriousExitClip))
+        {
+            if (_workExitRequested)
+            {
+                StartWorkExitClip();
+            }
+            else if (_workTapAfterSeriousExitRequested)
+            {
+                _workTapAfterSeriousExitRequested = false;
+                _workLoopPlaybackRate = 1;
+                _workFastUntilTimestamp = 0;
+                StartWorkClip(_workTapClip);
+            }
+            else
+            {
+                StartWorkLoopAt(timestamp);
+            }
+            return;
+        }
+
+        if (ReferenceEquals(clip, _workExitClip))
+        {
+            FinishWorkExit();
+            return;
+        }
+
+        if (ReferenceEquals(clip, _workLoopClip))
+        {
+            StartWorkLoopAt(timestamp);
             return;
         }
 
@@ -4793,6 +6854,13 @@ public partial class MainWindow : Window
     private void StartActiveClipClockAt(long timestamp, TimeSpan holdDuration)
     {
         ClearDeferredActiveClipClock();
+        if (IsWorkTypingLoopClip(_activeClip))
+        {
+            _activeClipStartedTimestamp = timestamp;
+            _workLoopAnchorTimestamp = timestamp;
+            _activeFrameDeadlineTimestamp = long.MaxValue;
+            return;
+        }
         if (_activeClipStartedTimestamp <= 0)
         {
             _activeClipStartedTimestamp = timestamp;
@@ -4905,7 +6973,10 @@ public partial class MainWindow : Window
         // the first edge pose is published. Opacity is render-only, and changing
         // it here keeps the character pixels and pillow state atomic without a
         // one-frame flash or a layout pass on the animation clock.
-        var pillowOpacity = IsEdgeSpriteFrame(frame) ? 0d : 1d;
+        var pillowOpacity = IsEdgeSpriteFrame(frame) ||
+                            IsWorkPillowHiddenFrame(frame)
+            ? 0d
+            : 1d;
         if (PillowImage.Opacity != pillowOpacity)
         {
             PillowImage.Opacity = pillowOpacity;
@@ -4918,6 +6989,47 @@ public partial class MainWindow : Window
     private static bool IsEdgeSpriteFrame(SpriteFrame frame) =>
         frame.Name.StartsWith("Assets/luban-edge-", StringComparison.Ordinal) ||
         frame.Name.StartsWith("Assets/luban-roam-", StringComparison.Ordinal);
+
+    private static bool IsWorkPillowHiddenFrame(SpriteFrame frame)
+    {
+        const string enterPrefix = "Assets/luban-work-enter-";
+        if (frame.Name.StartsWith(
+                "Assets/luban-work-loop-",
+                StringComparison.Ordinal) ||
+            frame.Name.StartsWith(
+                "Assets/luban-work-tap-",
+                StringComparison.Ordinal) ||
+            frame.Name.StartsWith(
+                "Assets/luban-work-serious-loop-",
+                StringComparison.Ordinal) ||
+            frame.Name.StartsWith(
+                "Assets/luban-work-serious-exit-",
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!frame.Name.StartsWith(enterPrefix, StringComparison.Ordinal) ||
+            frame.Name.Length < enterPrefix.Length + 3)
+        {
+            return false;
+        }
+
+        var first = frame.Name[enterPrefix.Length];
+        var second = frame.Name[enterPrefix.Length + 1];
+        var third = frame.Name[enterPrefix.Length + 2];
+        if (first is < '0' or > '9' ||
+            second is < '0' or > '9' ||
+            third is < '0' or > '9')
+        {
+            return false;
+        }
+
+        var frameNumber = (first - '0') * 100 +
+                          (second - '0') * 10 +
+                          third - '0';
+        return frameNumber > WorkEnterPillowVisibleFrameCount;
+    }
 
     private void DiscardSupersededPendingSpriteFrame(SpriteFrame displayedFrame)
     {
@@ -4950,7 +7062,7 @@ public partial class MainWindow : Window
 
         // A frame that can be displayed from the current page is newer than an
         // outstanding cold-page request. Invalidate that demand as well as the
-        // pending pose so a completion already queued behind DragMove cannot
+        // pending pose so a completion already queued behind a drag cannot
         // publish and replay the stale frame on the next composition pass.
         if (string.Equals(
                 _desiredSpritePageName,
@@ -5183,11 +7295,18 @@ public partial class MainWindow : Window
             var timestamp = Stopwatch.GetTimestamp();
             TryShowPendingSpriteFrameAt(timestamp);
             AdvancePetSizeCompositionFrame(timestamp);
-            AdvanceSnoreBubble(timestamp);
+            PrefetchPendingWorkTransitionPages();
 
             if (_activeClip is not null)
             {
-                AdvanceActiveClip(timestamp);
+                if (IsWorkTypingLoopClip(_activeClip))
+                {
+                    AdvanceWorkLoop(timestamp);
+                }
+                else
+                {
+                    AdvanceActiveClip(timestamp);
+                }
             }
 
             if (_edgeDock != EdgeDock.None)
@@ -5226,13 +7345,14 @@ public partial class MainWindow : Window
 
     private void UpdateVisualClockSubscription()
     {
+        RefreshWorkModeButton();
         var shouldRun = !_isClosing &&
-                         (_isPetSizeAdjustmentActive ||
-                          _petSizeTargetUpdatePending ||
+                          (_isPetSizeAdjustmentActive ||
+                           _petSizeTargetUpdatePending ||
                            _isPetSizeTransitioning ||
-                           _isSnoreBubbleAnimating ||
                            _activeClip is not null ||
-                            _edgeDock != EdgeDock.None ||
+                           (_edgeDock != EdgeDock.None &&
+                            !_edgePeekHoldTimer.IsEnabled) ||
                            _isEdgeRoaming ||
                            _isFrameBlending ||
                            _pendingSpriteFrame is not null ||
@@ -5918,6 +8038,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        PrepareSpritePageBufferForIncomingPage(pageName, page);
         var generation = _spritePagePrefetchGeneration;
         var cancellation = new CancellationTokenSource();
         _spritePagePrefetchCancellation = cancellation;
@@ -5958,6 +8079,28 @@ public partial class MainWindow : Window
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private void PrepareSpritePageBufferForIncomingPage(
+        string pageName,
+        SpriteAtlasPage page)
+    {
+        var budgetBytes = GetSpritePageResidentBudgetBytes();
+        TrimSpritePageBufferPoolToTarget(budgetBytes);
+
+        // Decode used to allocate first and evict after publication, so the
+        // buffer that was about to become free could never satisfy this Rent.
+        // Pre-evict only unprotected LRU pages that the post-publication trim
+        // would remove anyway. Current, pending, desired, pinned and roaming
+        // pages remain protected by IsSpritePageProtected.
+        var incomingCapacity = SpritePageBufferPool.GetCapacity(
+            page.UncompressedByteCount);
+        var residentTargetBytes = Math.Max(
+            0L,
+            budgetBytes - incomingCapacity);
+        TrimResidentSpritePagesToTarget(
+            residentTargetBytes,
+            preservePageName: pageName);
     }
 
     private void ReleaseCompletedSpritePagePrefetchForShutdown(
@@ -6006,6 +8149,7 @@ public partial class MainWindow : Window
         {
             _ = completedTask.Exception;
             StartSpritePagePrefetch();
+            TrimResidentSpritePagesToBudget();
             if (_spritePagePrefetchTask is null &&
                 _desiredSpritePageName is null)
             {
@@ -6026,6 +8170,7 @@ public partial class MainWindow : Window
                 ReturnSpritePageBuffer(completedTask.Result.Pixels);
             }
             StartSpritePagePrefetch();
+            TrimResidentSpritePagesToBudget();
             if (_spritePagePrefetchTask is null &&
                 _desiredSpritePageName is null)
             {
@@ -6157,12 +8302,20 @@ public partial class MainWindow : Window
             _spritePageWarmupIndex++;
         }
 
+        TrimResidentSpritePagesToBudget();
         ResumeSpritePageWarmup();
     }
 
     private bool StopAnimatedStateForFailedSpritePage(string pageName)
     {
         var failedCurrentEdge = false;
+        var failedWorkPage =
+            _workState != WorkState.Idle &&
+            (FrameSequenceUsesSpritePage(_workEnterFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_workLoopFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_workSeriousLoopFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_workSeriousExitFrames, pageName) ||
+             FrameSequenceUsesSpritePage(_workTapFrames, pageName));
         var failedRoamingPage =
             _isEdgeRoaming &&
             (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
@@ -6179,9 +8332,19 @@ public partial class MainWindow : Window
                                     StringComparison.Ordinal);
         }
 
-        if (!failedCurrentEdge && !failedRoamingPage)
+        if (!failedCurrentEdge && !failedRoamingPage && !failedWorkPage)
         {
             return false;
+        }
+
+        if (failedWorkPage)
+        {
+            StopWorkModeImmediately(restoreIdleFrame: true);
+            ScheduleNextEdgeRoam(
+                Stopwatch.GetTimestamp(),
+                EdgeRoamInterval);
+            RestartAutomaticCountdown();
+            return true;
         }
 
         if (failedCurrentEdge)
@@ -6269,25 +8432,31 @@ public partial class MainWindow : Window
         try
         {
             var stride = checked(page.Width * 4);
-            var readStartedAt = Stopwatch.GetTimestamp();
-            var validationResource = Application.GetResourceStream(
-                CreatePackUri(page.ResourcePath))
-                ?? throw new InvalidOperationException(
-                    $"Missing sprite atlas page resource: {page.ResourcePath}");
-            using (validationResource.Stream)
+            var readElapsed = TimeSpan.Zero;
+            if (!page.IsContentHashValidated)
             {
-                ValidateSpriteAtlasPageContentHash(
-                    validationResource.Stream,
-                    page.CompressedByteCount,
-                    page.ResourcePath,
-                    page.ContentSha256,
-                    cancellationToken);
+                var readStartedAt = Stopwatch.GetTimestamp();
+                var validationResource = Application.GetResourceStream(
+                    page.ResourceUri)
+                    ?? throw new InvalidOperationException(
+                        $"Missing sprite atlas page resource: {page.ResourcePath}");
+                using (validationResource.Stream)
+                {
+                    ValidateSpriteAtlasPageContentHashCore(
+                        validationResource.Stream,
+                        page.CompressedByteCount,
+                        page.ResourcePath,
+                        page.ContentSha256Bytes,
+                        cancellationToken);
+                }
+
+                page.MarkContentHashValidated();
+                readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
             }
 
-            var readElapsed = Stopwatch.GetElapsedTime(readStartedAt);
             cancellationToken.ThrowIfCancellationRequested();
             var decodeResource = Application.GetResourceStream(
-                CreatePackUri(page.ResourcePath))
+                page.ResourceUri)
                 ?? throw new InvalidOperationException(
                     $"Missing sprite atlas page resource: {page.ResourcePath}");
             using (decodeResource.Stream)
@@ -6296,7 +8465,7 @@ public partial class MainWindow : Window
                        CompressionMode.Decompress,
                        leaveOpen: false))
             {
-                DecodeSpritePageStream(
+                DecodeSpritePageStreamCore(
                     page.ResourcePath,
                     page.Encoding,
                     brotliStream,
@@ -6305,7 +8474,8 @@ public partial class MainWindow : Window
                     page.Width,
                     page.Height,
                     page.FrameDescriptorValues,
-                    page.DecodedSha256,
+                    page.DecodedSha256Bytes,
+                    page.UniqueSpriteCount,
                     cancellationToken);
             }
 
@@ -6332,8 +8502,29 @@ public partial class MainWindow : Window
         string expectedSha256,
         CancellationToken cancellationToken)
     {
+        if (!IsCanonicalSha256(expectedSha256))
+        {
+            throw new InvalidDataException(
+                $"Brotli sprite page hash declaration is invalid: {resourcePath}");
+        }
+
+        ValidateSpriteAtlasPageContentHashCore(
+            compressedStream,
+            compressedByteCount,
+            resourcePath,
+            Convert.FromHexString(expectedSha256),
+            cancellationToken);
+    }
+
+    private static void ValidateSpriteAtlasPageContentHashCore(
+        Stream compressedStream,
+        int compressedByteCount,
+        string resourcePath,
+        ReadOnlySpan<byte> expectedSha256,
+        CancellationToken cancellationToken)
+    {
         if (!compressedStream.CanRead || compressedByteCount <= 0 ||
-            !IsCanonicalSha256(expectedSha256))
+            expectedSha256.Length != SHA256.HashSizeInBytes)
         {
             throw new InvalidDataException(
                 $"Brotli sprite page hash declaration is invalid: {resourcePath}");
@@ -6375,8 +8566,9 @@ public partial class MainWindow : Window
                     "Brotli sprite page SHA-256 could not be finalized.");
             }
 
-            var expectedHash = Convert.FromHexString(expectedSha256);
-            if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+            if (!CryptographicOperations.FixedTimeEquals(
+                    actualHash,
+                    expectedSha256))
             {
                 throw new InvalidDataException(
                     $"Brotli sprite page SHA-256 does not match the manifest: {resourcePath}");
@@ -6595,6 +8787,7 @@ public partial class MainWindow : Window
     private bool CanRunIdleSpritePageCollection() =>
         !_isClosing &&
         !_isInsideVisualRenderingCallback &&
+        _workState == WorkState.Idle &&
         _activeClip is null &&
         !_isReminderActive &&
         !_dragInteractionActive &&
@@ -6611,7 +8804,7 @@ public partial class MainWindow : Window
         _bubbleMode == BubbleMode.None &&
         !_todoWindow.IsVisible &&
         !BubblePopup.IsOpen &&
-        _edgeDock == EdgeDock.None &&
+        IsEdgeDockIdleForSpritePageCollection() &&
         _pendingSpriteFrame is null &&
         _spritePagePrefetchTask is null &&
         _desiredSpritePageName is null &&
@@ -6620,6 +8813,25 @@ public partial class MainWindow : Window
         !_renderDeferredSpritePageCancellation &&
         !_residentSpritePageTrimPending &&
         _upcomingReminderPreloadPageName is null;
+
+    private bool IsEdgeDockIdleForSpritePageCollection()
+    {
+        if (_edgeDock == EdgeDock.None)
+        {
+            return true;
+        }
+
+        if (!_edgePeekHoldTimer.IsEnabled)
+        {
+            return false;
+        }
+
+        var frames = GetEdgeFrames(_edgeDock);
+        return _edgePeekFrameIndex >= 0 &&
+               _edgePeekFrameIndex < frames.Length &&
+               _currentSpriteFrame is SpriteFrame displayedFrame &&
+               displayedFrame == frames[_edgePeekFrameIndex];
+    }
 
     private void ObserveNaturalSpritePageCollection()
     {
@@ -6635,13 +8847,11 @@ public partial class MainWindow : Window
         }
 
         _lastObservedSpritePageCollectionGeneration = generation;
-        var clearedEvictionDebt =
-            _spritePageEvictedBytesSinceCollection > 0;
-        _spritePageEvictedBytesSinceCollection = 0;
-        if (clearedEvictionDebt)
-        {
-            _lastSpritePageCollectionTimestamp = Stopwatch.GetTimestamp();
-        }
+        // A normal Gen2 collection can reclaim references without compacting
+        // the LOH segments that held discarded sprite pages. Keep the eviction
+        // debt until our explicitly requested idle CompactOnce has completed;
+        // otherwise unrelated natural collections suppress the only path that
+        // returns the long-running process from its atlas high-water mark.
     }
 
     private void SpritePageCollectionTimer_Tick(object? sender, EventArgs e)
@@ -6742,7 +8952,7 @@ public partial class MainWindow : Window
                     GCLargeObjectHeapCompactionMode.CompactOnce;
                 GC.Collect(
                     GC.MaxGeneration,
-                    GCCollectionMode.Forced,
+                    GCCollectionMode.Aggressive,
                     blocking: true,
                     compacting: true);
             })
@@ -6809,6 +9019,12 @@ public partial class MainWindow : Window
              (_edgeRoamPhase != EdgeRoamPhase.Disembarking &&
               (FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
                FrameSequenceUsesSpritePage(_roamWaveFrames, pageName)))))
+        {
+            return true;
+        }
+
+        if (_edgeDock != EdgeDock.None &&
+            FrameSequenceUsesSpritePage(GetEdgeFrames(_edgeDock), pageName))
         {
             return true;
         }
@@ -6988,13 +9204,46 @@ public partial class MainWindow : Window
         string expectedDecodedSha256,
         CancellationToken cancellationToken)
     {
+        if (!IsCanonicalSha256(expectedDecodedSha256))
+        {
+            throw new InvalidDataException(
+                $"Sprite page payload declaration is invalid: {resourcePath}");
+        }
+
+        DecodeSpritePageStreamCore(
+            resourcePath,
+            encoding,
+            payloadStream,
+            expectedPayloadByteCount,
+            decodedPixels,
+            atlasWidth,
+            atlasHeight,
+            frameDescriptorValues,
+            Convert.FromHexString(expectedDecodedSha256),
+            frameDescriptorValues.Length / SpriteFrameDescriptorValueCount,
+            cancellationToken);
+    }
+
+    private static void DecodeSpritePageStreamCore(
+        string resourcePath,
+        string encoding,
+        Stream payloadStream,
+        int expectedPayloadByteCount,
+        byte[] decodedPixels,
+        int atlasWidth,
+        int atlasHeight,
+        int[] frameDescriptorValues,
+        ReadOnlySpan<byte> expectedDecodedSha256,
+        int uniqueSpriteCount,
+        CancellationToken cancellationToken)
+    {
         if (!payloadStream.CanRead ||
             !IsSupportedSpriteAtlasEncoding(encoding) ||
             atlasWidth <= 0 || atlasHeight <= 0 ||
             (long)atlasWidth * atlasHeight > int.MaxValue / 4 ||
             expectedPayloadByteCount <= 0 ||
             expectedPayloadByteCount > MaximumSpritePagePayloadBytes ||
-            !IsCanonicalSha256(expectedDecodedSha256))
+            expectedDecodedSha256.Length != SHA256.HashSizeInBytes)
         {
             throw new InvalidDataException(
                 $"Sprite page payload declaration is invalid: {resourcePath}");
@@ -7036,6 +9285,7 @@ public partial class MainWindow : Window
                 atlasWidth,
                 atlasHeight,
                 frameDescriptorValues,
+                uniqueSpriteCount,
                 cancellationToken);
         }
 
@@ -7046,7 +9296,7 @@ public partial class MainWindow : Window
                 $"Sprite page payload exceeds its declared length: {resourcePath}");
         }
 
-        ValidateSpriteAtlasDecodedHash(
+        ValidateSpriteAtlasDecodedHashCore(
             resourcePath,
             decodedPixels.AsSpan(0, expectedAtlasByteCount),
             expectedDecodedSha256);
@@ -7088,12 +9338,14 @@ public partial class MainWindow : Window
         int atlasWidth,
         int atlasHeight,
         int[] frameDescriptorValues,
+        int uniqueSpriteCount,
         CancellationToken cancellationToken)
     {
         if (atlasWidth <= 0 || atlasHeight <= 0 ||
             (long)atlasWidth * atlasHeight > int.MaxValue / 4 ||
             frameDescriptorValues.Length == 0 ||
-            frameDescriptorValues.Length % SpriteFrameDescriptorValueCount != 0)
+            frameDescriptorValues.Length % SpriteFrameDescriptorValueCount != 0 ||
+            uniqueSpriteCount <= 0)
         {
             throw new InvalidDataException("Delta-sub sprite page geometry is invalid.");
         }
@@ -7121,8 +9373,10 @@ public partial class MainWindow : Window
         try
         {
         var writtenRegionDestinations =
-            new Dictionary<SpriteAtlasRegion, (int X, int Y)>();
-        var validatedRegions = new List<SpriteAtlasRegion>();
+            new Dictionary<SpriteAtlasRegion, (int X, int Y)>(
+                uniqueSpriteCount);
+        var validatedRegions = new List<SpriteAtlasRegion>(
+            uniqueSpriteCount);
         var payloadOffset = 0;
         var atlasStride = checked(atlasWidth * 4);
         var displayStride = checked(DisplayPixelWidth * 4);
@@ -7300,10 +9554,27 @@ public partial class MainWindow : Window
                 $"Sprite page decoded hash declaration is invalid: {resourcePath}");
         }
 
+        ValidateSpriteAtlasDecodedHashCore(
+            resourcePath,
+            decodedPixels,
+            Convert.FromHexString(expectedSha256));
+    }
+
+    private static void ValidateSpriteAtlasDecodedHashCore(
+        string resourcePath,
+        ReadOnlySpan<byte> decodedPixels,
+        ReadOnlySpan<byte> expectedSha256)
+    {
+        if (decodedPixels.Length == 0 ||
+            expectedSha256.Length != SHA256.HashSizeInBytes)
+        {
+            throw new InvalidDataException(
+                $"Sprite page decoded hash declaration is invalid: {resourcePath}");
+        }
+
         Span<byte> actualHash = stackalloc byte[SHA256.HashSizeInBytes];
         _ = SHA256.HashData(decodedPixels, actualHash);
-        var expectedHash = Convert.FromHexString(expectedSha256);
-        if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+        if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedSha256))
         {
             throw new InvalidDataException(
                 $"Sprite page decoded SHA-256 does not match the manifest: {resourcePath}");
@@ -7312,6 +9583,25 @@ public partial class MainWindow : Window
 
     private void SetBubbleMode(BubbleMode mode)
     {
+        if (mode != BubbleMode.None)
+        {
+            CancelTodoOpenAfterEdgeRoamStop();
+            CancelTodoOpenAfterWorkExit();
+        }
+
+        if (mode is BubbleMode.Todo or BubbleMode.Reminder &&
+            (_dragInteractionActive || _pointerDown || _dragStarted ||
+             PetHost.IsMouseCaptured))
+        {
+            CancelPetPointerInteractionForInterruption();
+        }
+
+        if (mode is BubbleMode.Todo or BubbleMode.Reminder &&
+            _workState != WorkState.Idle)
+        {
+            StopWorkModeImmediately(restoreIdleFrame: false);
+        }
+
         if (_bubbleMode == mode)
         {
             return;
@@ -10345,6 +12635,14 @@ public partial class MainWindow : Window
         Reminder
     }
 
+    private enum WorkState
+    {
+        Idle,
+        Entering,
+        Typing,
+        Exiting
+    }
+
     private enum EdgeRoamPhase
     {
         None,
@@ -10360,6 +12658,9 @@ public partial class MainWindow : Window
         Right,
         Bottom
     }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
 
     private readonly record struct EdgeDockDragContext(
         EdgeDock OriginDock,
@@ -10467,6 +12768,7 @@ public partial class MainWindow : Window
 
     private sealed record SpriteAtlasPage(
         string ResourcePath,
+        Uri ResourceUri,
         int Width,
         int Height,
         int UncompressedByteCount,
@@ -10475,8 +12777,22 @@ public partial class MainWindow : Window
         string Encoding,
         string ContentSha256,
         string DecodedSha256,
+        byte[] ContentSha256Bytes,
+        byte[] DecodedSha256Bytes,
+        int UniqueSpriteCount,
         int[] FrameDescriptorValues,
-        IReadOnlyDictionary<string, SpriteFrame> Frames);
+        IReadOnlyDictionary<string, SpriteFrame> Frames)
+    {
+        private int _contentHashValidated;
+
+        public bool IsContentHashValidated =>
+            Volatile.Read(ref _contentHashValidated) != 0;
+
+        public void MarkContentHashValidated()
+        {
+            Volatile.Write(ref _contentHashValidated, 1);
+        }
+    }
 
     private sealed class ResidentSpritePage
     {

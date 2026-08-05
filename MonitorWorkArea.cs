@@ -104,6 +104,61 @@ internal static class MonitorWorkArea
         }
     }
 
+    internal static bool TryGetPhysicalWorkAreaAt(
+        Point physicalScreenPoint,
+        out Rect workArea)
+    {
+        workArea = Rect.Empty;
+        try
+        {
+            if (!double.IsFinite(physicalScreenPoint.X) ||
+                !double.IsFinite(physicalScreenPoint.Y) ||
+                physicalScreenPoint.X < int.MinValue ||
+                physicalScreenPoint.X > int.MaxValue ||
+                physicalScreenPoint.Y < int.MinValue ||
+                physicalScreenPoint.Y > int.MaxValue)
+            {
+                return false;
+            }
+
+            var nativePoint = new NativePoint
+            {
+                X = checked((int)Math.Round(
+                    physicalScreenPoint.X,
+                    MidpointRounding.AwayFromZero)),
+                Y = checked((int)Math.Round(
+                    physicalScreenPoint.Y,
+                    MidpointRounding.AwayFromZero))
+            };
+            var monitor = MonitorFromPoint(
+                nativePoint,
+                MonitorDefaultToNearest);
+            var monitorInfo = new MonitorInfo
+            {
+                Size = (uint)Marshal.SizeOf<MonitorInfo>()
+            };
+            if (monitor == IntPtr.Zero ||
+                !GetMonitorInfo(monitor, ref monitorInfo) ||
+                monitorInfo.WorkArea.Right <= monitorInfo.WorkArea.Left ||
+                monitorInfo.WorkArea.Bottom <= monitorInfo.WorkArea.Top)
+            {
+                return false;
+            }
+
+            workArea = new Rect(
+                monitorInfo.WorkArea.Left,
+                monitorInfo.WorkArea.Top,
+                monitorInfo.WorkArea.Right - monitorInfo.WorkArea.Left,
+                monitorInfo.WorkArea.Bottom - monitorInfo.WorkArea.Top);
+            return true;
+        }
+        catch
+        {
+            workArea = Rect.Empty;
+            return false;
+        }
+    }
+
     internal static bool IsExternalWorkAreaEdgeAt(
         Window window,
         ScreenEdge edge,

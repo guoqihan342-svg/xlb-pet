@@ -29,7 +29,7 @@ namespace LubanDesktopPet;
 /// </remarks>
 internal sealed class SpritePageBufferPool
 {
-    internal const long DefaultHardBudgetBytes = 128L * 1024 * 1024;
+    internal const long DefaultHardBudgetBytes = 104L * 1024 * 1024;
     internal const int CapacityBucketBytes = 1 * 1024 * 1024;
 
     private readonly object _syncRoot = new();
@@ -274,7 +274,7 @@ internal sealed class SpritePageBufferPool
         }
     }
 
-    private static int GetCapacity(int requestedLength)
+    internal static int GetCapacity(int requestedLength)
     {
         var capacity = checked(
             ((long)requestedLength + CapacityBucketBytes - 1) /
@@ -294,24 +294,43 @@ internal sealed class SpritePageBufferPool
 
     private bool TryRentFreeBuffer(int capacity, out byte[] buffer)
     {
+        var selectedCapacity = capacity;
         if (!_freeBuffersByCapacity.TryGetValue(
-                capacity,
+                selectedCapacity,
                 out var freeBuffers) ||
             freeBuffers.Count == 0)
         {
-            buffer = null!;
-            return false;
+            // Atlas pages cluster in neighbouring one-MiB buckets. Reusing the
+            // next bucket avoids an otherwise needless LOH discard/allocation
+            // pair while capping resident slack at exactly one MiB.
+            if (capacity > Array.MaxLength - CapacityBucketBytes)
+            {
+                buffer = null!;
+                return false;
+            }
+
+            selectedCapacity = capacity + CapacityBucketBytes;
+            if (!_freeBuffersByCapacity.TryGetValue(
+                    selectedCapacity,
+                    out freeBuffers) ||
+                freeBuffers.Count == 0)
+            {
+                buffer = null!;
+                return false;
+            }
         }
 
         buffer = freeBuffers.Pop();
         if (freeBuffers.Count == 0)
         {
-            _freeBuffersByCapacity.Remove(capacity);
+            _freeBuffersByCapacity.Remove(selectedCapacity);
         }
 
         if (!_bufferStates.TryGetValue(buffer, out var state) ||
             state != BufferState.Free ||
-            buffer.Length != capacity)
+            buffer.Length != selectedCapacity ||
+            buffer.Length < capacity ||
+            buffer.Length - capacity > CapacityBucketBytes)
         {
             throw new InvalidOperationException(
                 "The sprite-page buffer pool free-list state is inconsistent.");

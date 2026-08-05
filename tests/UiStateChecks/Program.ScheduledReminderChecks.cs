@@ -1057,9 +1057,20 @@ internal static partial class Program
                 "定时提醒长内容的滑动块必须使用带高光的橘色圆润萌系滑块，不能退回系统蓝色滑块");
 
             now = firstDueAt.AddMinutes(4);
+            // Earlier dismiss checks intentionally retain their double-click
+            // guard until the dispatcher reaches Input priority.  A physical
+            // next click can only arrive after that turn; mirror that ordering
+            // before synthesizing the later page-20 close in the same test.
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(!GetField<bool>(reminderWindow, "_dismissRequestPending"),
+                "新一批提醒可交互前必须释放上一批的关闭防重入门禁");
             reminderCloseButton.RaiseEvent(
                 new RoutedEventArgs(Button.ClickEvent));
-            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            // The full suite may still be draining deferred WPF work from the
+            // preceding window/cache checks.  Give the dismiss request one
+            // bounded dispatcher turn instead of assuming an otherwise idle
+            // queue; the reminder-only run normally completes much sooner.
+            PumpDispatcher(TimeSpan.FromMilliseconds(120));
             Assert(GetField<bool>(window, "_isReminderActive") &&
                    visibleOccurrences.Count == 2 &&
                    GetField<long>(

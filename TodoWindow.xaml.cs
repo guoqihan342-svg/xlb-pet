@@ -175,6 +175,7 @@ public partial class TodoWindow : Window
     private bool _isReminderInterruptionActive;
     private bool _suppressDeleteConfirmationForSession;
     private bool _isDeleteConfirmationOpen;
+    private const double TailPlacementEpsilon = 0.01;
     private bool _tailOnRight = true;
     private double _tailTop = 198;
     private bool _allowClose;
@@ -828,7 +829,7 @@ public partial class TodoWindow : Window
         SecondColumn.Width = new GridLength(tailOnRight ? 12 : 280);
         Grid.SetColumn(TodoBorder, tailOnRight ? 0 : 1);
         Grid.SetColumn(TailHost, tailOnRight ? 1 : 0);
-        UpdateTailMargin();
+        UpdateTailHorizontalMargin();
         TailHost.HorizontalAlignment = tailOnRight
             ? HorizontalAlignment.Left
             : HorizontalAlignment.Right;
@@ -839,21 +840,37 @@ public partial class TodoWindow : Window
 
     public void SetTailPlacement(bool tailOnRight, double centerY)
     {
-        SetTailOnRight(tailOnRight);
         var bubbleHeight = ActualHeight > 0 ? ActualHeight : Height;
         var maximumTop = Math.Max(18, bubbleHeight - 36);
-        _tailTop = Math.Clamp(
+        var tailTop = Math.Clamp(
             double.IsFinite(centerY) ? centerY - 9 : bubbleHeight / 2 - 9,
             18,
             maximumTop);
-        UpdateTailMargin();
+        var sideChanged = _tailOnRight != tailOnRight;
+        var topChanged =
+            Math.Abs(_tailTop - tailTop) > TailPlacementEpsilon;
+        if (!sideChanged && !topChanged)
+        {
+            return;
+        }
+
+        if (sideChanged)
+        {
+            SetTailOnRight(tailOnRight);
+        }
+
+        if (topChanged)
+        {
+            _tailTop = tailTop;
+            TailVerticalTransform.Y = tailTop;
+        }
     }
 
-    private void UpdateTailMargin()
+    private void UpdateTailHorizontalMargin()
     {
         TailHost.Margin = _tailOnRight
-            ? new Thickness(-1, _tailTop, 0, 0)
-            : new Thickness(0, _tailTop, -1, 0);
+            ? new Thickness(-1, 0, 0, 0)
+            : new Thickness(0, 0, -1, 0);
     }
 
     public void CloseForApplication()

@@ -202,11 +202,12 @@
               HorizontalAlignment="Stretch"
               VerticalAlignment="Stretch"
               Cursor="Hand"
-              ToolTip="左键卖萌或拖动，右键打开待办"
+              ToolTip="左键互动或拖动，右键打开待办；打工时单击敲头、双击加速"
               MouseLeftButtonDown="PetHost_MouseLeftButtonDown"
               MouseMove="PetHost_MouseMove"
               MouseLeftButtonUp="PetHost_MouseLeftButtonUp"
               LostMouseCapture="PetHost_LostMouseCapture"
+              PreviewMouseRightButtonDown="PetHost_PreviewMouseRightButtonDown"
               MouseRightButtonUp="PetHost_MouseRightButtonUp">
             <Viewbox x:Name="PetSizeViewbox"
                      Width="190"
@@ -297,6 +298,110 @@
                         </Ellipse>
                     </Grid>
                 </Canvas>
+
+                <Button x:Name="WorkModeButton"
+                        Width="92"
+                        Height="28"
+                        Margin="0"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Top"
+                        Panel.ZIndex="20"
+                        AutomationProperties.Name="切换打工状态"
+                        Cursor="Hand"
+                        Content="去打工"
+                        Focusable="False"
+                        FontFamily="Microsoft YaHei"
+                        IsHitTestVisible="False"
+                        Opacity="0"
+                        RenderTransformOrigin="0.5,0.5"
+                        Tag="Idle"
+                        ToolTip="待机时去打工；打工时点击下班"
+                        PreviewMouseLeftButtonDown="WorkModeButton_PreviewMouseLeftButtonDown"
+                        Click="WorkModeButton_Click">
+                    <Button.RenderTransform>
+                        <ScaleTransform x:Name="WorkModeFacingCompensation"
+                                        ScaleX="1"
+                                        ScaleY="1" />
+                    </Button.RenderTransform>
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="WorkButtonChrome"
+                                    BorderBrush="#E9A95F"
+                                    BorderThickness="1.2"
+                                    CornerRadius="14"
+                                    SnapsToDevicePixels="False">
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0"
+                                                         EndPoint="0,1">
+                                        <GradientStop Offset="0"
+                                                      Color="#FFFFFCF3" />
+                                        <GradientStop Offset="1"
+                                                      Color="#FFFFE8C5" />
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                                <Grid Margin="10,0,10,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="17" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Viewbox Width="15"
+                                             Height="14"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Center"
+                                             IsHitTestVisible="False">
+                                        <Canvas Width="16"
+                                                Height="15">
+                                            <Path Data="M1.5,1.5 H14.5 V10 H1.5 Z M5,10 V12.2 M11,10 V12.2 M3.2,13 H12.8 M2,14 H14"
+                                                  Fill="Transparent"
+                                                  Stroke="#A8612E"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round"
+                                                  StrokeThickness="1.45" />
+                                            <Ellipse Width="1.5"
+                                                     Height="1.5"
+                                                     Canvas.Left="7.25"
+                                                     Canvas.Top="5"
+                                                     Fill="#F09B46" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock Grid.Column="1"
+                                               Margin="5,0,0,0"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontFamily="Microsoft YaHei"
+                                               FontSize="11.5"
+                                               FontWeight="SemiBold"
+                                               Foreground="#925227"
+                                               IsHitTestVisible="False"
+                                               Text="{TemplateBinding Content}" />
+                                </Grid>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver"
+                                         Value="True">
+                                    <Setter TargetName="WorkButtonChrome"
+                                            Property="Background"
+                                            Value="#FFFFF2D9" />
+                                    <Setter TargetName="WorkButtonChrome"
+                                            Property="BorderBrush"
+                                            Value="#F08F43" />
+                                </Trigger>
+                                <Trigger Property="IsPressed"
+                                         Value="True">
+                                    <Setter TargetName="WorkButtonChrome"
+                                            Property="Background"
+                                            Value="#FFFFDCA6" />
+                                </Trigger>
+                                <Trigger Property="IsEnabled"
+                                         Value="False">
+                                    <Setter TargetName="WorkButtonChrome"
+                                            Property="Opacity"
+                                            Value="0.68" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
 
             </Grid>
             </Viewbox>

@@ -30,6 +30,8 @@
         <SolidColorBrush x:Key="CuteBlueHoverBrush" Color="#3477E8" />
         <SolidColorBrush x:Key="CuteOrangeHoverBrush" Color="#F8B971" />
         <SolidColorBrush x:Key="CuteOrangeEditHoverBrush" Color="#F2A65A" />
+        <SolidColorBrush x:Key="TodoRowHoverBackgroundBrush" Color="#DCEBFF" />
+        <SolidColorBrush x:Key="TodoRowHoverBorderBrush" Color="#5B8DEF" />
         <!--
             These brushes are replaced as one palette when the selected task
             page changes. DynamicResource keeps the existing switch/slider
@@ -1089,13 +1091,32 @@
                         </ListBox.Resources>
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
-                                 <Setter Property="Padding" Value="0" />
-                                 <Setter Property="Margin" Value="0" />
-                                 <Setter Property="BorderBrush" Value="Transparent" />
-                                 <Setter Property="BorderThickness" Value="0,1" />
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Margin" Value="0" />
                                 <Setter Property="MinHeight" Value="0" />
                                 <Setter Property="Focusable" Value="False" />
+                                <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="BorderBrush" Value="Transparent" />
+                                <Setter Property="BorderThickness" Value="0" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="VerticalContentAlignment" Value="Top" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                                            <Border x:Name="TodoItemContainerChrome"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    Padding="{TemplateBinding Padding}"
+                                                    SnapsToDevicePixels="True">
+                                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                                  SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemsPanel>
@@ -1116,19 +1137,10 @@
                                             Unloaded="TaskRow_Unloaded">
                                         <Border.Style>
                                             <Style TargetType="Border">
-                                                <Setter Property="Background">
-                                                    <Setter.Value>
-                                                        <LinearGradientBrush StartPoint="0,0"
-                                                                             EndPoint="1,1">
-                                                            <GradientStop Offset="0"
-                                                                          Color="#F9FCFF" />
-                                                            <GradientStop Offset="1"
-                                                                          Color="#EDF5FF" />
-                                                        </LinearGradientBrush>
-                                                    </Setter.Value>
-                                                </Setter>
+                                                <Setter Property="Background"
+                                                        Value="#F3F8FF" />
                                                 <Setter Property="BorderBrush"
-                                                        Value="#D5E5F8" />
+                                                        Value="Transparent" />
                                                 <Setter Property="BorderThickness"
                                                         Value="1" />
                                                 <Style.Triggers>
@@ -1137,13 +1149,13 @@
                                                         <Setter Property="Background"
                                                                 Value="#F5F9FE" />
                                                         <Setter Property="BorderBrush"
-                                                                Value="#DCE7F5" />
+                                                                Value="Transparent" />
                                                     </DataTrigger>
                                                     <Trigger Property="IsMouseOver" Value="True">
                                                         <Setter Property="Background"
-                                                                Value="#EAF3FF" />
+                                                                Value="{StaticResource TodoRowHoverBackgroundBrush}" />
                                                         <Setter Property="BorderBrush"
-                                                                Value="#91B8EE" />
+                                                                Value="{StaticResource TodoRowHoverBorderBrush}" />
                                                     </Trigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -3246,10 +3258,14 @@
 
         <Grid x:Name="TailHost"
               Grid.Column="1"
-              Margin="-1,198,0,0"
+              Margin="-1,0,0,0"
               HorizontalAlignment="Left"
               VerticalAlignment="Top"
               IsHitTestVisible="False">
+            <Grid.RenderTransform>
+                <TranslateTransform x:Name="TailVerticalTransform"
+                                    Y="198" />
+            </Grid.RenderTransform>
             <Polygon x:Name="TailPolygon"
                      Points="0,0 12,9 0,18"
                      Fill="White"

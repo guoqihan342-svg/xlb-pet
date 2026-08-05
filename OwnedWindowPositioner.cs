@@ -359,6 +359,74 @@ internal static class OwnedWindowPositioner
         }
     }
 
+    internal static bool TryGetPhysicalBounds(
+        Window window,
+        out NativeRect bounds)
+    {
+        bounds = default;
+        try
+        {
+            if (!window.IsLoaded ||
+                PresentationSource.FromVisual(window) is not HwndSource source ||
+                source.Handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return GetWindowRect(source.Handle, out bounds) &&
+                   bounds.Right > bounds.Left &&
+                   bounds.Bottom > bounds.Top;
+        }
+        catch
+        {
+            bounds = default;
+            return false;
+        }
+    }
+
+    internal static bool TrySetPhysicalPosition(
+        Window window,
+        int physicalLeft,
+        int physicalTop)
+    {
+        try
+        {
+            if (!window.IsLoaded ||
+                PresentationSource.FromVisual(window) is not HwndSource source ||
+                source.Handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (GetWindowRect(source.Handle, out var currentBounds) &&
+                currentBounds.Left == physicalLeft &&
+                currentBounds.Top == physicalTop)
+            {
+                return true;
+            }
+
+            // Drag input and monitor work areas are already expressed in
+            // physical screen pixels. Passing them through WPF's current DPI
+            // transform would corrupt negative-coordinate and mixed-DPI
+            // monitor positions, so this path deliberately stays native.
+            return SetWindowPos(
+                source.Handle,
+                IntPtr.Zero,
+                physicalLeft,
+                physicalTop,
+                0,
+                0,
+                SwpNoSize |
+                SwpNoZOrder |
+                SwpNoActivate |
+                SwpNoOwnerZOrder);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool IsFinitePositiveBounds(Rect bounds) =>
         double.IsFinite(bounds.Left) &&
         double.IsFinite(bounds.Top) &&

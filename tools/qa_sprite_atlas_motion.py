@@ -54,6 +54,29 @@ OPTIONAL_SEQUENCE_NAMES = frozenset(("roam.wave",))
 MIN_ROAM_FRAME_COUNT = 48
 EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
+WORK_PHASE_FRAME_COUNTS = {
+    "enter": 48,
+    "loop": 96,
+    "tap": 48,
+    "serious-loop": 96,
+    "serious-exit": 24,
+}
+WORK_TYPING_LOOP_PHASES = frozenset(("loop", "serious-loop"))
+WORK_TYPING_LOOP_PERIOD_FRAMES = 96
+WORK_TYPING_LOOP_MIN_UNIQUE_POSES = 56
+WORK_TYPING_NEUTRAL_SEAM_INDICES = (0, 10, 21, 33, 44, 56, 69, 81, 93)
+WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES = 5
+WORK_TRANSITION_MIN_UNIQUE_POSES = {
+    "enter": 48,
+    # Tap deliberately has byte-identical normal-neutral endpoints.
+    "tap": 36,
+    "serious-exit": 20,
+}
+# Enter uses an opaque cartoon cloud to cover a deliberate scene swap and tap
+# introduces an external hand from outside the canvas. Their transition-specific
+# invariants are enforced by build_work_animation.py; the generic whole-silhouette
+# motion gate remains applicable to the steady work loop.
+MOTION_ANALYSIS_EXCLUDED_SEQUENCES = frozenset(("work.enter", "work.tap"))
 USER_SCALES = (0.75, 1.0, 1.4)
 DPI_SCALES = (1.0, 1.25, 1.5)
 MAX_USER_DPI_SCALE = max(USER_SCALES) * max(DPI_SCALES)
@@ -129,6 +152,12 @@ SEQUENCE_EXPRESSIONS = {
             rf"^Assets/luban-reminder-{re.escape(phase)}-(\d{{3}})\.png$"
         )
         for phase in REMINDER_PHASE_FRAME_COUNTS
+    },
+    **{
+        f"work.{phase}": re.compile(
+            rf"^Assets/luban-work-{re.escape(phase)}-(\d{{3}})\.png$"
+        )
+        for phase in WORK_PHASE_FRAME_COUNTS
     },
 }
 
@@ -824,6 +853,25 @@ def expected_runtime_resources(root: Path) -> tuple[set[str], dict[str, list[str
     return expected, sequences
 
 
+def maximum_cyclic_identical_run(frame_hashes: list[bytes]) -> int:
+    if not frame_hashes:
+        return 0
+    if len(set(frame_hashes)) == 1:
+        return len(frame_hashes)
+    doubled = frame_hashes + frame_hashes
+    maximum = 1
+    current = 1
+    for index in range(1, len(doubled)):
+        if doubled[index] == doubled[index - 1]:
+            current += 1
+            maximum = max(maximum, current)
+        else:
+            current = 1
+        if index >= len(frame_hashes) and current == 1:
+            break
+    return min(maximum, len(frame_hashes))
+
+
 def validate_resource_contract(
     reader: AtlasReader,
     disk_sequences: dict[str, list[str]],
@@ -886,7 +934,11 @@ def validate_resource_contract(
                 manifest_count=len(resources),
                 disk_count=len(disk_sequences[name]),
             )
-        if name.endswith(".loop") and len(resources) != 48:
+        if (
+            name.endswith(".loop") and
+            not name.startswith("work.") and
+            len(resources) != 48
+        ):
             add_failure(
                 failures,
                 "sequence.loop_count",
@@ -940,6 +992,73 @@ def validate_resource_contract(
                     expected=expected_count,
                     actual=len(resources),
                 )
+        if name.startswith("work."):
+            phase = name.removeprefix("work.")
+            expected_count = WORK_PHASE_FRAME_COUNTS[phase]
+            if len(resources) != expected_count:
+                add_failure(
+                    failures,
+                    "sequence.work_count",
+                    "work sequence frame count must match its runtime contract",
+                    sequence=name,
+                    expected=expected_count,
+                    actual=len(resources),
+                )
+            frame_hashes = [
+                hashlib.sha256(reader.reconstruct(resource).tobytes()).digest()
+                for resource in resources
+            ]
+            unique_count = len(set(frame_hashes))
+            if phase in WORK_TYPING_LOOP_PHASES:
+                # Count validation above owns malformed/legacy lengths. Only
+                # index into declared seam positions once the full v5 cycle is
+                # present, so diagnostics fail closed instead of crashing.
+                if len(frame_hashes) == WORK_TYPING_LOOP_PERIOD_FRAMES:
+                    if unique_count < WORK_TYPING_LOOP_MIN_UNIQUE_POSES:
+                        add_failure(
+                            failures,
+                            "sequence.work_cycle_unique",
+                            "work typing cycle must preserve enough distinct articulated poses",
+                            sequence=name,
+                            period=WORK_TYPING_LOOP_PERIOD_FRAMES,
+                            minimum=WORK_TYPING_LOOP_MIN_UNIQUE_POSES,
+                            actual=unique_count,
+                        )
+                    neutral_hash = frame_hashes[0]
+                    mismatched_seams = [
+                        index
+                        for index in WORK_TYPING_NEUTRAL_SEAM_INDICES
+                        if frame_hashes[index] != neutral_hash
+                    ]
+                    if mismatched_seams:
+                        add_failure(
+                            failures,
+                            "sequence.work_neutral_seams",
+                            "declared runtime pause seams must be byte-exact neutral frames",
+                            sequence=name,
+                            indices_0_based=mismatched_seams,
+                        )
+                    maximum_run = maximum_cyclic_identical_run(frame_hashes)
+                    if maximum_run > WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES:
+                        add_failure(
+                            failures,
+                            "sequence.work_still_run",
+                            "typing loop contains an excessive identical-frame pause",
+                            sequence=name,
+                            maximum=WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES,
+                            actual=maximum_run,
+                        )
+            else:
+                minimum_unique = WORK_TRANSITION_MIN_UNIQUE_POSES[phase]
+                if unique_count < minimum_unique:
+                    add_failure(
+                        failures,
+                        "sequence.work_unique",
+                        "work transition must preserve enough authored poses",
+                        sequence=name,
+                        minimum=minimum_unique,
+                        actual=unique_count,
+                    )
 
         page_ranks = [reader.page_order[reader.locations[path].page_name] for path in resources]
         if page_ranks != sorted(page_ranks):
@@ -966,6 +1085,44 @@ def validate_resource_contract(
                     sequence=name,
                     page=page_name,
                     numbers=page_numbers,
+                )
+
+    work_loop = manifest_sequences.get("work.loop", [])
+    work_serious_loop = manifest_sequences.get("work.serious-loop", [])
+    work_enter = manifest_sequences.get("work.enter", [])
+    work_tap = manifest_sequences.get("work.tap", [])
+    work_serious_exit = manifest_sequences.get("work.serious-exit", [])
+    if all(
+        (work_loop, work_serious_loop, work_enter, work_tap, work_serious_exit)
+    ):
+        normal_neutral = reader.reconstruct(work_loop[0])
+        serious_neutral = reader.reconstruct(work_serious_loop[0])
+        work_boundaries = (
+            ("enter_to_normal", reader.reconstruct(work_enter[-1]), normal_neutral),
+            ("tap_from_normal", reader.reconstruct(work_tap[0]), normal_neutral),
+            ("tap_to_normal", reader.reconstruct(work_tap[-1]), normal_neutral),
+            (
+                "serious_exit_from_serious",
+                reader.reconstruct(work_serious_exit[0]),
+                serious_neutral,
+            ),
+            (
+                "serious_exit_to_normal",
+                reader.reconstruct(work_serious_exit[-1]),
+                normal_neutral,
+            ),
+        )
+        for boundary, first, second in work_boundaries:
+            if not np.array_equal(first, second):
+                add_failure(
+                    failures,
+                    "sequence.work_boundary",
+                    "work-mode transition boundary must be byte-exact",
+                    boundary=boundary,
+                    rgba_equal=False,
+                    alpha_equal=bool(
+                        np.array_equal(first[..., 3], second[..., 3])
+                    ),
                 )
 
     boarding = manifest_sequences.get("roam.boarding", [])
@@ -1419,11 +1576,25 @@ def analyze_surface(
         if geometry[pair["from"] - 1]["pixel_sha256"]
         == geometry[pair["to"] - 1]["pixel_sha256"]
     ]
-    if duplicate_pairs:
+    allowed_neutral_duplicate_pairs: list[int] = []
+    unexpected_duplicate_pairs = duplicate_pairs
+    if sequence_name in ("work.loop", "work.serious-loop"):
+        neutral_hash = geometry[0]["pixel_sha256"]
+        allowed_neutral_duplicate_pairs = [
+            frame_number
+            for frame_number in duplicate_pairs
+            if geometry[frame_number - 1]["pixel_sha256"] == neutral_hash
+        ]
+        unexpected_duplicate_pairs = [
+            frame_number
+            for frame_number in duplicate_pairs
+            if frame_number not in allowed_neutral_duplicate_pairs
+        ]
+    if unexpected_duplicate_pairs:
         violations.append(
             {
                 "metric": "adjacent_duplicate",
-                "from_frames": duplicate_pairs,
+                "from_frames": unexpected_duplicate_pairs,
                 "limit": 0,
             }
         )
@@ -1665,6 +1836,9 @@ def analyze_surface(
             ),
             "edge_contact": edge_contact,
             "adjacent_duplicate_pairs_from_1_based": duplicate_pairs,
+            "allowed_work_neutral_duplicate_pairs_from_1_based": (
+                allowed_neutral_duplicate_pairs
+            ),
             "worst_pairs": pair_worst[:12],
             "worst_centers": center_worst[:12],
             "report_only_finding_count": len(report_only_findings),
@@ -1718,6 +1892,7 @@ def analyze_sequence(
     applied_waivers: list[dict[str, Any]] = []
     is_loop = (
         name.endswith(".loop") or
+        name.endswith("-loop") or
         name.startswith("edge.") or
         name.removeprefix("roam.") in ROAM_LOOP_SEQUENCES or
         name == "reminder.hold"
@@ -1838,6 +2013,7 @@ def write_worst_contacts(
         resources = sequences[name]
         is_loop = (
             name.endswith(".loop") or
+            name.endswith("-loop") or
             name.startswith("edge.") or
             name.removeprefix("roam.") in ROAM_LOOP_SEQUENCES or
             name == "reminder.hold"
@@ -1988,6 +2164,8 @@ def main() -> int:
     for name in SEQUENCE_EXPRESSIONS:
         resources = manifest_sequences.get(name, [])
         if len(resources) < 2 or any(resource not in reconstructed for resource in resources):
+            continue
+        if name in MOTION_ANALYSIS_EXCLUDED_SEQUENCES:
             continue
         try:
             sequence_result, sequence_candidates = analyze_sequence(
