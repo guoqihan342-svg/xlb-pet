@@ -309,6 +309,7 @@ public partial class MainWindow : Window
     private bool _pointerDown;
     private bool _dragStarted;
     private bool _dragInteractionActive;
+    private bool _dragPreservesWorkMode;
     private EdgeDockDragContext? _edgeDockDragContext;
     private AnimationClip? _activeClip;
     private int _activeFrameIndex = -1;
@@ -2376,6 +2377,7 @@ public partial class MainWindow : Window
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
+        _dragPreservesWorkMode = false;
         _pointerDownPosition = default;
         _pointerDownScreenPosition = default;
         _latestDragScreenPosition = default;
@@ -2408,6 +2410,7 @@ public partial class MainWindow : Window
 
         DeferIdleSpritePageTrim();
         _workEnterAfterEdgePeekExitRequested = false;
+        _dragPreservesWorkMode = false;
         _workPointerClickCount = e.ClickCount;
         if (_workState == WorkState.Typing && e.ClickCount >= 2)
         {
@@ -2452,6 +2455,7 @@ public partial class MainWindow : Window
             _pointerDown = false;
             _dragStarted = false;
             _dragInteractionActive = false;
+            _dragPreservesWorkMode = false;
             _edgeDockDragContext = null;
             _suppressClickReactionAfterRoamInterruption = false;
             _workPointerClickCount = 0;
@@ -2500,11 +2504,23 @@ public partial class MainWindow : Window
             return;
         }
 
+        BeginDirectPetDrag(
+            currentPosition,
+            currentScreenPosition);
+
+        e.Handled = true;
+    }
+
+    private void BeginDirectPetDrag(
+        Point currentPosition,
+        Point currentScreenPosition)
+    {
         CancelPendingWorkSingleClick();
-        if (_workState != WorkState.Idle)
-        {
-            StopWorkModeImmediately(restoreIdleFrame: true);
-        }
+        _workPointerClickCount = 0;
+        // A real drag owns window position only. Keep every work animation
+        // state and its absolute clock intact so moving the working pet cannot
+        // restart a pose, become a click, or briefly fall back to idle.
+        _dragPreservesWorkMode = _workState != WorkState.Idle;
         CancelTodoOpenAfterEdgeRoamStop();
         if (_isEdgeRoaming)
         {
@@ -2535,8 +2551,6 @@ public partial class MainWindow : Window
         ContinueDirectPetDrag(
             currentPosition,
             currentScreenPosition);
-
-        e.Handled = true;
     }
 
     private void PetHost_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -2555,7 +2569,8 @@ public partial class MainWindow : Window
             ContinueDirectPetDrag(
                 releaseLocalPosition,
                 _latestDragScreenPosition);
-            CompleteDirectPetDrag(updateEdgeDock: true);
+            CompleteDirectPetDrag(
+                updateEdgeDock: !_dragPreservesWorkMode);
             e.Handled = true;
             return;
         }
@@ -2608,13 +2623,15 @@ public partial class MainWindow : Window
             _latestDragScreenPosition = GetScreenPointOrFallback(
                 e.GetPosition(this),
                 _latestDragScreenPosition);
-            CompleteDirectPetDrag(updateEdgeDock: true);
+            CompleteDirectPetDrag(
+                updateEdgeDock: !_dragPreservesWorkMode);
             return;
         }
 
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
+        _dragPreservesWorkMode = false;
         _directDragPhysicalGeometryReady = false;
         _directDragTopClamped = false;
         _directDragTopClampPointerYInPhysicalPixels = double.NaN;
@@ -2811,6 +2828,7 @@ public partial class MainWindow : Window
     private void CompleteDirectPetDrag(bool updateEdgeDock)
     {
         var hadActiveDrag = _dragStarted;
+        var preservedWorkMode = _dragPreservesWorkMode;
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
@@ -2824,7 +2842,7 @@ public partial class MainWindow : Window
 
         try
         {
-            if (hadActiveDrag && updateEdgeDock)
+            if (hadActiveDrag && updateEdgeDock && !preservedWorkMode)
             {
                 UpdateEdgeDockAfterDrag();
             }
@@ -2832,7 +2850,9 @@ public partial class MainWindow : Window
         finally
         {
             _edgeDockDragContext = null;
+            _dragPreservesWorkMode = false;
             _suppressClickReactionAfterRoamInterruption = false;
+            _workPointerClickCount = 0;
             RestartAutomaticCountdown();
             RefreshWorkModeButton();
             RefreshSnoreBubbleAnimationState();
@@ -2993,14 +3013,7 @@ public partial class MainWindow : Window
         DeferIdleSpritePageTrim();
         if (_workState == WorkState.Idle)
         {
-            if (_edgeDock == EdgeDock.None)
-            {
-                _ = TryEnterWorkMode();
-            }
-            else
-            {
-                _ = TryEnterWorkModeAfterEdgePeekExit();
-            }
+            _ = TryEnterWorkMode();
         }
         else if (_workState == WorkState.Typing && !_workExitRequested)
         {
@@ -3948,15 +3961,11 @@ public partial class MainWindow : Window
             WorkModeFacingCompensation.ScaleX = facingCompensation;
         }
         var canEnter = !workActive && CanEnterWorkMode();
-        var canEnterAfterEdgePeek =
-            !workActive && CanEnterWorkModeAfterEdgePeekExit();
         var todoOpenPending = _openTodoAfterWorkExitRequested ||
                               _todoOpenAfterWorkExitQueued;
         var shouldShow = !todoOpenPending &&
-                         (workActive || canEnter || canEnterAfterEdgePeek ||
-                          _workEnterAfterEdgePeekExitRequested);
+                         (workActive || canEnter);
         var shouldEnable = canEnter ||
-                           canEnterAfterEdgePeek ||
                            (_workState == WorkState.Typing &&
                             !_workExitRequested);
         var buttonOpacity = shouldShow ? 1d : 0d;

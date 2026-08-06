@@ -240,6 +240,9 @@ internal static partial class Program
                         nameof(AssertWorkModeClockAndInputContract),
                         () => AssertWorkModeClockAndInputContract(window));
                     RunCheck(
+                        nameof(AssertWorkModeDragContinuationContract),
+                        () => AssertWorkModeDragContinuationContract(window));
+                    RunCheck(
                         nameof(AssertWorkModeRuntimeStateContract),
                         () => AssertWorkModeRuntimeStateContract(window));
                     RunCheck(
@@ -413,6 +416,9 @@ internal static partial class Program
                 RunCheck(
                     nameof(AssertWorkModeClockAndInputContract),
                     () => AssertWorkModeClockAndInputContract(window));
+                RunCheck(
+                    nameof(AssertWorkModeDragContinuationContract),
+                    () => AssertWorkModeDragContinuationContract(window));
                 RunCheck(
                     nameof(AssertWorkModeRuntimeStateContract),
                     () => AssertWorkModeRuntimeStateContract(window));
@@ -1242,7 +1248,7 @@ internal static partial class Program
                             Margin = new Thickness(0, 9, 0, 0),
                              TextWrapping = TextWrapping.Wrap,
                              Text =
-                                "普通状态是自然双手打字。单击：只敲头，结束后回普通 1 倍速；双击：才会进入 2 倍速认真打字，再双击可续期。左/右/下吸附时也可点「去打工」，会先缩回再开工。"
+                                "普通状态是自然双手打字。单击：只敲头，结束后回普通 1 倍速；双击：才会进入 2 倍速认真打字，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续，拖动不算点击也不会吸附；左/右/下探头时隐藏「去打工」。"
                         },
                         new TextBlock
                         {
@@ -2227,6 +2233,8 @@ internal static partial class Program
                 "SpritePageRoamResidentBudgetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
         var pinnedPageNames = GetExpectedPinnedSpritePageNames(window);
+        var startupIdlePageName = GetSpriteFrameInfo(
+            GetField<object>(window, "_idleFrame")).PageName;
 
         long CapacityOf(string pageName) =>
             RoundUpSpritePageCapacity(
@@ -2310,9 +2318,14 @@ internal static partial class Program
                     .Take(2))
                 .ToHashSet(StringComparer.Ordinal);
             var canonicalBytes = protectedNames.Sum(CapacityOf);
+            var adjacentReusablePageCount = protectedNames.Count(pageName =>
+                !string.Equals(
+                    pageName,
+                    startupIdlePageName,
+                    StringComparison.Ordinal));
             var adjacentReuseWorstCaseBytes = checked(
                 canonicalBytes +
-                (long)protectedNames.Count * capacityBucketBytes);
+                (long)adjacentReusablePageCount * capacityBucketBytes);
             maximumOrdinaryBytes = Math.Max(
                 maximumOrdinaryBytes,
                 adjacentReuseWorstCaseBytes);
@@ -6360,6 +6373,9 @@ internal static partial class Program
         var pointerMove = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseMove");
+        var beginDirectDrag = ExtractPrivateMethodSource(
+            mainSource,
+            "BeginDirectPetDrag");
         var pointerUp = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseLeftButtonUp");
@@ -6848,21 +6864,24 @@ internal static partial class Program
                    "immediate:",
                    StringComparison.Ordinal) &&
                pointerMove.Contains(
+                   "BeginDirectPetDrag(",
+                   StringComparison.Ordinal) &&
+               beginDirectDrag.Contains(
                    "if (_isEdgeRoaming)",
                    StringComparison.Ordinal) &&
-               pointerMove.Contains(
+               beginDirectDrag.Contains(
                    "immediate: true",
                    StringComparison.Ordinal) &&
-                pointerMove.IndexOf(
+                beginDirectDrag.IndexOf(
                     "immediate: true",
                     StringComparison.Ordinal) <
-                pointerMove.IndexOf(
+                beginDirectDrag.IndexOf(
                     "TryPrepareDirectPetDragGeometry(",
                     StringComparison.Ordinal) &&
-               pointerMove.Contains(
+               beginDirectDrag.Contains(
                    "ContinueDirectPetDrag(",
                    StringComparison.Ordinal) &&
-               !pointerMove.Contains(
+               !beginDirectDrag.Contains(
                    "DragMove(",
                    StringComparison.Ordinal) &&
                pointerUp.Contains(
@@ -9958,6 +9977,9 @@ internal static partial class Program
         var dragMoveSource = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseMove");
+        var beginDragSource = ExtractPrivateMethodSource(
+            mainSource,
+            "BeginDirectPetDrag");
         var dragDownSource = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseLeftButtonDown");
@@ -9973,16 +9995,16 @@ internal static partial class Program
         var physicalWorkAreaSource = ExtractPrivateMethodSource(
             monitorSource,
             "TryGetPhysicalWorkAreaAt");
-        var dragOriginCapture = dragMoveSource.IndexOf(
+        var dragOriginCapture = beginDragSource.IndexOf(
             "var dragOriginDock = _edgeDock;",
             StringComparison.Ordinal);
-        var edgeExit = dragMoveSource.IndexOf(
+        var edgeExit = beginDragSource.IndexOf(
             "ExitEdgePeek(",
             StringComparison.Ordinal);
-        var dragContextCapture = dragMoveSource.IndexOf(
+        var dragContextCapture = beginDragSource.IndexOf(
             "_edgeDockDragContext = new EdgeDockDragContext(",
             StringComparison.Ordinal);
-        var prepareDirectDrag = dragMoveSource.IndexOf(
+        var prepareDirectDrag = beginDragSource.IndexOf(
             "TryPrepareDirectPetDragGeometry(",
             StringComparison.Ordinal);
         Assert(dragOriginCapture >= 0 &&
@@ -9990,9 +10012,12 @@ internal static partial class Program
                dragContextCapture > edgeExit &&
                prepareDirectDrag > dragContextCapture &&
                dragMoveSource.Contains(
+                   "BeginDirectPetDrag(",
+                   StringComparison.Ordinal) &&
+               beginDragSource.Contains(
                    "ContinueDirectPetDrag(",
                    StringComparison.Ordinal) &&
-               !dragMoveSource.Contains("DragMove(", StringComparison.Ordinal) &&
+               !beginDragSource.Contains("DragMove(", StringComparison.Ordinal) &&
                directMoveSource.Contains(
                    "TryGetPhysicalBounds(",
                    StringComparison.Ordinal) &&
@@ -10053,7 +10078,10 @@ internal static partial class Program
             mainSource,
             "PetHost_LostMouseCapture");
         Assert(lostCaptureSource.Contains(
-                   "CompleteDirectPetDrag(updateEdgeDock: true)",
+                   "CompleteDirectPetDrag(",
+                   StringComparison.Ordinal) &&
+               lostCaptureSource.Contains(
+                   "updateEdgeDock: !_dragPreservesWorkMode",
                    StringComparison.Ordinal) &&
                lostCaptureSource.Contains(
                    "if (!_dragInteractionActive)",
@@ -18780,6 +18808,18 @@ internal static partial class Program
         var mouseMove = ExtractPrivateMethodSource(
             source,
             "PetHost_MouseMove");
+        var beginDirectDrag = ExtractPrivateMethodSource(
+            source,
+            "BeginDirectPetDrag");
+        var mouseUp = ExtractPrivateMethodSource(
+            source,
+            "PetHost_MouseLeftButtonUp");
+        var lostMouseCapture = ExtractPrivateMethodSource(
+            source,
+            "PetHost_LostMouseCapture");
+        var completeDirectDrag = ExtractPrivateMethodSource(
+            source,
+            "CompleteDirectPetDrag");
         var rightClick = ExtractPrivateMethodSource(
             source,
             "PetHost_MouseRightButtonUp");
@@ -18913,15 +18953,34 @@ internal static partial class Program
             "if (!movedFarEnough)",
             StringComparison.Ordinal);
         var cancelPending = mouseMove.IndexOf(
-            "CancelPendingWorkSingleClick()",
-            StringComparison.Ordinal);
-        var stopWork = mouseMove.IndexOf(
-            "StopWorkModeImmediately",
+            "BeginDirectPetDrag(",
             StringComparison.Ordinal);
         Assert(thresholdReturn >= 0 &&
                cancelPending > thresholdReturn &&
-               stopWork > cancelPending,
-            "Sub-threshold pointer motion must preserve work; only a real drag cancels pending click and exits.");
+               beginDirectDrag.Contains(
+                   "CancelPendingWorkSingleClick()",
+                   StringComparison.Ordinal) &&
+               beginDirectDrag.Contains(
+                   "_workPointerClickCount = 0",
+                   StringComparison.Ordinal) &&
+               beginDirectDrag.Contains(
+                   "_dragPreservesWorkMode = _workState != WorkState.Idle",
+                   StringComparison.Ordinal) &&
+               !beginDirectDrag.Contains(
+                   "StopWorkModeImmediately",
+                   StringComparison.Ordinal) &&
+               mouseUp.Contains(
+                   "updateEdgeDock: !_dragPreservesWorkMode",
+                   StringComparison.Ordinal) &&
+               lostMouseCapture.Contains(
+                   "updateEdgeDock: !_dragPreservesWorkMode",
+                   StringComparison.Ordinal) &&
+               completeDirectDrag.Contains(
+                   "updateEdgeDock && !preservedWorkMode",
+                   StringComparison.Ordinal),
+            "Sub-threshold pointer motion must preserve click arbitration; a real " +
+            "work drag must cancel the click while preserving work and suppressing " +
+            "edge docking on normal release and lost capture.");
         Assert(rightClick.IndexOf(
                    "CancelPendingWorkSingleClick()",
                    StringComparison.Ordinal) >= 0 &&
@@ -19374,6 +19433,169 @@ internal static partial class Program
             "the authored work-exit instead of returning to the normal loop.");
     }
 
+    private static void AssertWorkModeDragContinuationContract(MainWindow window)
+    {
+        PrepareWorkModeIdleState(window);
+        var monitorType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
+        var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+        var workArea = (Rect)InvokeStatic(
+            monitorType,
+            "GetForVisual",
+            window,
+            petSizeViewbox)!;
+        var visibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        var safeLeft = workArea.Left + Math.Max(
+            24,
+            (workArea.Width - visibleBounds.Width) / 2);
+        var safeTop = workArea.Top + Math.Max(
+            24,
+            (workArea.Height - visibleBounds.Height) / 2);
+        window.Left += safeLeft - visibleBounds.Left;
+        window.Top += safeTop - visibleBounds.Top;
+        window.UpdateLayout();
+
+        EnterWorkTypingForTest(window);
+        var loopClip = GetField<object>(window, "_workLoopClip");
+        var anchorTimestamp = Stopwatch.GetTimestamp();
+        const double anchorFramePosition = 17.25;
+        const double playbackRate = 1;
+        SetField(window, "_activeClip", loopClip);
+        SetField(window, "_activeFrameIndex", 17);
+        SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
+        SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
+        SetField(window, "_workLoopPlaybackRate", playbackRate);
+        SetField(window, "_workFastUntilTimestamp", 0L);
+        Invoke(window, "HandleWorkPetClick", 1);
+        var singleClickTimer = GetField<DispatcherTimer>(
+            window,
+            "_workSingleClickTimer");
+        Assert(singleClickTimer.IsEnabled,
+            "Work-drag setup must begin with one pending single-click decision.");
+
+        var petHost = GetField<Grid>(window, "PetHost");
+        var grabPosition = petHost.TranslatePoint(
+            new Point(petHost.ActualWidth / 2, petHost.ActualHeight / 2),
+            window);
+        var grabScreenPosition = window.PointToScreen(grabPosition);
+        var movedScreenPosition = grabScreenPosition + new Vector(36, 22);
+        var movedPosition = window.PointFromScreen(movedScreenPosition);
+        SetField(window, "_pointerDownPosition", grabPosition);
+        SetField(window, "_pointerDownScreenPosition", grabScreenPosition);
+        SetField(window, "_latestDragScreenPosition", grabScreenPosition);
+        SetField(window, "_pointerDown", true);
+        SetField(window, "_dragStarted", false);
+        SetField(window, "_dragInteractionActive", true);
+        SetField(window, "_workPointerClickCount", 1);
+        Invoke(
+            window,
+            "BeginDirectPetDrag",
+            movedPosition,
+            movedScreenPosition);
+
+        Assert(GetField<bool>(window, "_dragStarted") &&
+               GetField<bool>(window, "_dragInteractionActive") &&
+               GetField<bool>(window, "_dragPreservesWorkMode") &&
+               !GetField<bool>(window, "_pointerDown") &&
+               GetField<int>(window, "_workPointerClickCount") == 0 &&
+               !singleClickTimer.IsEnabled &&
+               GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0 &&
+               string.Equals(
+                   GetRawField(window, "_workState")?.ToString(),
+                   "Typing",
+                   StringComparison.Ordinal) &&
+               ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
+               GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                   anchorTimestamp &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopAnchorFramePosition") -
+                   anchorFramePosition) <= 0.000001 &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopPlaybackRate") -
+                   playbackRate) <= 0.000001,
+            "Beginning a real work drag must cancel click arbitration while " +
+            "preserving Typing, the active loop, and every absolute-clock anchor.");
+
+        visibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        var contactBounds = (Rect)Invoke(
+            window,
+            "GetPetContactBounds",
+            visibleBounds)!;
+        window.Left += workArea.Left - contactBounds.Left;
+        window.UpdateLayout();
+        contactBounds = (Rect)Invoke(
+            window,
+            "GetPetContactBounds",
+            (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!)!;
+        Assert(Math.Abs(contactBounds.Left - workArea.Left) <= 1.01,
+            "Work-drag release setup must place the visible pet on the left edge.");
+
+        var releaseTimestamp = Stopwatch.GetTimestamp();
+        // Pass true deliberately: the production completion guard itself must
+        // still refuse edge docking for a gesture that began in work mode.
+        Invoke(window, "CompleteDirectPetDrag", true);
+        var expectedReleasePhase = anchorFramePosition +
+            Math.Max(0, releaseTimestamp - anchorTimestamp) /
+            (double)Stopwatch.Frequency * 60 * playbackRate;
+        var actualReleasePhase = (double)Invoke(
+            window,
+            "GetWorkLoopFramePositionAt",
+            releaseTimestamp)!;
+        Assert(!GetField<bool>(window, "_dragStarted") &&
+               !GetField<bool>(window, "_dragInteractionActive") &&
+               !GetField<bool>(window, "_dragPreservesWorkMode") &&
+               string.Equals(
+                   GetRawField(window, "_edgeDock")?.ToString(),
+                   "None",
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_workState")?.ToString(),
+                   "Typing",
+                   StringComparison.Ordinal) &&
+               ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
+               GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                   anchorTimestamp &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopAnchorFramePosition") -
+                   anchorFramePosition) <= 0.000001 &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopPlaybackRate") -
+                   playbackRate) <= 0.000001 &&
+               Math.Abs(actualReleasePhase - expectedReleasePhase) <= 0.000001 &&
+               !GetField<bool>(window, "_workTapPhaseSyncRequested") &&
+               !GetField<bool>(window, "_workSeriousEnterRequested") &&
+               !GetField<bool>(window, "_workExitRequested"),
+            "Releasing a working pet on a screen edge must continue the same " +
+            "absolute typing phase, never count as a click, and never edge-dock.");
+
+        var continuationTimestamp = checked(
+            releaseTimestamp + Stopwatch.Frequency / 20);
+        var continuationPhase = (double)Invoke(
+            window,
+            "GetWorkLoopFramePositionAt",
+            continuationTimestamp)!;
+        Invoke(window, "AdvanceWorkLoop", continuationTimestamp);
+        var expectedFrameIndex = (int)Math.Floor(continuationPhase) % 96;
+        Assert(continuationPhase > actualReleasePhase &&
+               GetField<int>(window, "_activeFrameIndex") == expectedFrameIndex &&
+               ReferenceEquals(GetRawField(window, "_activeClip"), loopClip),
+            "After work-drag release, the absolute loop must keep advancing from " +
+            "its original phase instead of restarting or pausing.");
+
+        visibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        window.Left += safeLeft - visibleBounds.Left;
+        window.Top += safeTop - visibleBounds.Top;
+        window.UpdateLayout();
+        PrepareWorkModeIdleState(window);
+    }
+
     private static void AssertWorkModeRuntimeStateContract(MainWindow window)
     {
         PrepareWorkModeIdleState(window);
@@ -19579,9 +19801,9 @@ internal static partial class Program
         var workButtonClick = ExtractPrivateMethodSource(
             source,
             "WorkModeButton_Click");
-        var completeEdgeEntry = ExtractPrivateMethodSource(
+        var refreshWorkButton = ExtractPrivateMethodSource(
             source,
-            "CompleteWorkModeEntryAfterEdgePeekExit");
+            "RefreshWorkModeButton");
         var loadEdgeFrames = ExtractPrivateMethodSource(
             source,
             "LoadEdgeFrameSequence");
@@ -19709,18 +19931,19 @@ internal static partial class Program
                refreshSnore.Contains("!_dragStarted", StringComparison.Ordinal),
             "Snore rendering must be gated off for every pressed or dragging pointer state.");
         Assert(workButtonClick.Contains(
+                   "_ = TryEnterWorkMode()",
+                   StringComparison.Ordinal) &&
+               !workButtonClick.Contains(
                    "TryEnterWorkModeAfterEdgePeekExit()",
                    StringComparison.Ordinal) &&
-               completeEdgeEntry.IndexOf(
-                   "ExitEdgePeek",
-                   StringComparison.Ordinal) >= 0 &&
-               completeEdgeEntry.IndexOf(
-                   "TryEnterWorkMode()",
-                   StringComparison.Ordinal) >
-               completeEdgeEntry.IndexOf(
-                   "ExitEdgePeek",
+               !refreshWorkButton.Contains(
+                   "CanEnterWorkModeAfterEdgePeekExit()",
+                   StringComparison.Ordinal) &&
+               !refreshWorkButton.Contains(
+                   "_workEnterAfterEdgePeekExitRequested",
                    StringComparison.Ordinal),
-            "Left/right/bottom edge entry must finish and exit edge-peek before work entry.");
+            "Left/right/bottom edge-peek must hide the work button; neither its " +
+            "visibility logic nor its Click handler may offer an edge-exit entry path.");
         Assert(loadEdgeFrames.Contains(
                    "string.Equals(pageNamePrefix, \"edge-left\"",
                    StringComparison.Ordinal) &&
@@ -20422,63 +20645,43 @@ internal static partial class Program
                 : GetField<Array>(window, "_edgeBottomFrames");
             PrimeSpritePageForFrame(
                 window,
-                edgeFrames.GetValue(edgeFrames.Length - 1)!);
+                 edgeFrames.GetValue(edgeFrames.Length - 1)!);
             Invoke(window, "EnterEdgePeek", GetNestedEnum("EdgeDock", edgeName));
             Invoke(window, "RefreshWorkModeButton");
-            Assert((bool)Invoke(window, "CanEnterWorkModeAfterEdgePeekExit")!,
-                $"{edgeName} stable edge-peek must permit work entry.");
+            Assert(!(bool)Invoke(window, "CanEnterWorkMode")!,
+                $"{edgeName} stable edge-peek must block direct work entry.");
             AssertWorkButtonContract(
                 window,
                 phase: $"{edgeName} stable edge-peek",
                 expectedState: "Idle",
                 expectedContent: "去打工",
-                expectedOpacity: 1,
-                expectedIsEnabled: true,
-                expectedIsHitTestVisible: true);
+                expectedOpacity: 0,
+                expectedIsEnabled: false,
+                expectedIsHitTestVisible: false);
 
-            var retreatStartFrameIndex = edgeFrames.Length / 2 - 1;
-            PrimeSpritePageForFrame(
-                window,
-                edgeFrames.GetValue(retreatStartFrameIndex)!);
-            SetField(window, "_edgePeekFrameIndex", retreatStartFrameIndex);
-            Invoke(
-                window,
-                "ShowStableFrame",
-                edgeFrames.GetValue(retreatStartFrameIndex)!);
             Invoke(
                 window,
                 "WorkModeButton_Click",
                 button,
                 new RoutedEventArgs(Button.ClickEvent, button));
-            Assert(GetField<bool>(window, "_workEnterAfterEdgePeekExitRequested") &&
+            Assert(!GetField<bool>(window, "_workEnterAfterEdgePeekExitRequested") &&
                    string.Equals(
                        GetRawField(window, "_edgeDock")?.ToString(),
                        edgeName,
-                       StringComparison.Ordinal),
-                $"{edgeName} work entry must wait for the authored edge retreat.");
-            AssertWorkButtonContract(
-                window,
-                phase: $"{edgeName} edge-retreat wait",
-                expectedState: "Idle",
-                expectedContent: "去打工",
-                expectedOpacity: 1,
-                expectedIsEnabled: false,
-                expectedIsHitTestVisible: false);
-
-            SetField(window, "_edgePeekFrameIndex", edgeFrames.Length - 1);
-            Invoke(window, "CompleteWorkModeEntryAfterEdgePeekExit");
-            Assert(GetRawField(window, "_edgeDock")?.ToString() == "None" &&
+                       StringComparison.Ordinal) &&
                    string.Equals(
                        GetRawField(window, "_workState")?.ToString(),
-                       "Entering",
-                       StringComparison.Ordinal),
-                $"{edgeName} 去打工 must exit edge-peek before entering work.");
+                       "Idle",
+                       StringComparison.Ordinal) &&
+                   GetRawField(window, "_activeClip") is null,
+                $"{edgeName} hidden work button must remain a no-op even when " +
+                "its Click handler is invoked reflectively.");
             AssertWorkButtonContract(
                 window,
-                phase: $"{edgeName} post-retreat Entering",
-                expectedState: "Entering",
-                expectedContent: "下班啦",
-                expectedOpacity: 1,
+                phase: $"{edgeName} post-reflection click",
+                expectedState: "Idle",
+                expectedContent: "去打工",
+                expectedOpacity: 0,
                 expectedIsEnabled: false,
                 expectedIsHitTestVisible: false);
         }
@@ -20609,6 +20812,7 @@ internal static partial class Program
         SetField(window, "_dragInteractionActive", false);
         SetField(window, "_pointerDown", false);
         SetField(window, "_dragStarted", false);
+        SetField(window, "_dragPreservesWorkMode", false);
         SetField(window, "_isPetSizeTransitioning", false);
         SetField(window, "_isPetSizePreviewSessionActive", false);
         SetField(window, "_isPetSizeAdjustmentActive", false);
