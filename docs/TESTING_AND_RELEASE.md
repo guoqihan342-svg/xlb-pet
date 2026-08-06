@@ -232,7 +232,20 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## 10. v1.0.55 发布验证
+## 10. v1.0.56 发布验证
+
+以下结果于 `2026-08-07` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境完成。正式 EXE 已替换本地旧版并启动，Release 附件也已在独立目录重新下载复核。
+
+| 项目 | 结果 |
+| --- | --- |
+| 源码版本 | `v1.0.56`；正式源码提交 `41669694ccae89944502b97d943d1c0ba768eb5c` |
+| Release 构建 | 主项目通过，`0` 警告、`0` 错误；框架依赖 win-x64 单文件发布成功 |
+| 回归测试 | `TodoStoreChecks` 通过；Python 动画 QA `15/15` 通过；`--work-mode-only` 为 `11/11`；完整 `UiStateChecks` 为 `48/48`；图集运动 QA `passed=true`、失败数 `0` |
+| 打工实机交互 | 真实 WPF 预览稳定进入 `Typing / work-loop / 1x`，按钮内容与无障碍名称均显示“去睡觉”；待机普通吸附仍隐藏“去打工” |
+| EXE 与进程冒烟 | `128,913,542` 字节，文件版本 `1.0.56.0`，产品版本包含 `41669694...`，SHA-256 `BEC0C51A1D98DA377AF08921F2814340356AF7C04A9979B032230B856CD119DE`；替换本地 v1.0.55 后启动并持续响应 |
+| GitHub Release | 已发布 [v1.0.56](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.56)，目标提交 `41669694ccae89944502b97d943d1c0ba768eb5c`；附件与独立回下载均为 `128,913,542` 字节，SHA-256 完全一致 |
+
+## 11. v1.0.55 发布验证
 
 以下结果于 `2026-08-06` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境重新执行。Release 指向正式源码提交，附件已从 GitHub 独立回下载复核。
 
@@ -248,7 +261,7 @@ git status --short --ignored
 | EXE 与进程冒烟 | `128,913,030` 字节（`122.94 MiB`），文件版本 `1.0.55.0`，产品版本包含 `3b0ef48...`，SHA-256 `4BEA28D93DEBFA27CFD4273384EA82F233B3FFF39BFD0BB4D98E24ABC0FD5BBA`，`NotSigned`；30 秒持续响应，私有内存 `209.97–210.94 MiB`、工作集 `283.63–284.65 MiB`；二次启动自行退出且仅保留一个实例 |
 | GitHub Release | 已发布 [v1.0.55](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.55)，目标提交 `3b0ef48bca22c0bfa5afb96ec95753b0cee31fb7`；附件与独立回下载均为 `128,913,030` 字节，SHA-256 均为 `4BEA28D93DEBFA27CFD4273384EA82F233B3FFF39BFD0BB4D98E24ABC0FD5BBA` |
 
-## 11. v1.0.54 历史发布验证
+## 12. v1.0.54 历史发布验证
 
 以下结果于 `2026-08-05` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境完成。该版本的 v6 动画已经在 `v1.0.55` 按用户偏好回退，本节只保留历史发布事实。
 
@@ -265,7 +278,7 @@ git status --short --ignored
 | EXE 发布与实机冒烟 | `130,228,870` 字节（`124.20 MiB`），文件版本 `1.0.54.0`，产品版本包含 `11800af0...`，SHA-256 `FCD5E1B2729929692A85DF6605C3A679B34FC349536C8C149F6549CB4370742A`，`NotSigned`；持续响应，私有内存约 `212.02 MiB`、工作集约 `296.17 MiB`；二次启动退出且仅保留一个实例 |
 | GitHub Release | 已发布 [v1.0.54](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.54)，目标提交 `11800af0db9ef690c7a7987232aef6c090b2bfe3`；附件 `130,228,870` 字节，GitHub 摘要和独立回下载 SHA-256 均为 `FCD5E1B2729929692A85DF6605C3A679B34FC349536C8C149F6549CB4370742A` |
 
-## 12. v1.0.53 历史发布验证
+## 13. v1.0.53 历史发布验证
 
 以下结果只保留 `v1.0.53` 的历史证据，不能作为 `v1.0.55` 的通过结果。
 
