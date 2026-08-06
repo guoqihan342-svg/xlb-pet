@@ -13,6 +13,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Xml.Linq;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -1248,7 +1249,7 @@ internal static partial class Program
                             Margin = new Thickness(0, 9, 0, 0),
                              TextWrapping = TextWrapping.Wrap,
                              Text =
-                                "普通状态是自然双手打字。单击：只敲头，结束后回普通 1 倍速；双击：才会进入 2 倍速认真打字，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续，拖动不算点击也不会吸附；左/右/下探头时隐藏「去打工」。"
+                                "普通状态是自然双手打字。单击：只敲头，结束后回普通 1 倍速；双击：才会进入 2 倍速认真打字，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续；拖到左/右/下边缘会保持打工并吸附，顶部不吸附。普通探头状态隐藏「去打工」。"
                         },
                         new TextBlock
                         {
@@ -1317,11 +1318,14 @@ internal static partial class Program
                 ? "无"
                 : GetProperty<string>(activeClip, "ActionName");
             var rate = GetField<double>(preview, "_workLoopPlaybackRate");
+            var edgeDock = GetRawField(preview, "_edgeDock")?.ToString() ?? "?";
+            var workEdgeDock = GetRawField(preview, "_workEdgeDock")?.ToString() ?? "?";
             var singlePending = GetField<DispatcherTimer>(
                 preview,
                 "_workSingleClickTimer").IsEnabled;
             stateText.Text =
-                $"当前：{state} / {clipName} / {rate:0.#}x" +
+                $"当前：{state} / {clipName} / {rate:0.#}x / " +
+                $"吸附:{(workEdgeDock != "None" ? $"工作-{workEdgeDock}" : edgeDock)}" +
                 (singlePending ? " / 正在等待双击判定…" : string.Empty);
         };
 
@@ -10081,7 +10085,7 @@ internal static partial class Program
                    "CompleteDirectPetDrag(",
                    StringComparison.Ordinal) &&
                lostCaptureSource.Contains(
-                   "updateEdgeDock: !_dragPreservesWorkMode",
+                   "updateEdgeDock: true",
                    StringComparison.Ordinal) &&
                lostCaptureSource.Contains(
                    "if (!_dragInteractionActive)",
@@ -18820,6 +18824,9 @@ internal static partial class Program
         var completeDirectDrag = ExtractPrivateMethodSource(
             source,
             "CompleteDirectPetDrag");
+        var updateEdgeDockAfterDrag = ExtractPrivateMethodSource(
+            source,
+            "UpdateEdgeDockAfterDrag");
         var rightClick = ExtractPrivateMethodSource(
             source,
             "PetHost_MouseRightButtonUp");
@@ -18970,17 +18977,26 @@ internal static partial class Program
                    "StopWorkModeImmediately",
                    StringComparison.Ordinal) &&
                mouseUp.Contains(
-                   "updateEdgeDock: !_dragPreservesWorkMode",
+                   "updateEdgeDock: true",
                    StringComparison.Ordinal) &&
                lostMouseCapture.Contains(
-                   "updateEdgeDock: !_dragPreservesWorkMode",
+                   "updateEdgeDock: true",
                    StringComparison.Ordinal) &&
                completeDirectDrag.Contains(
-                   "updateEdgeDock && !preservedWorkMode",
+                   "hadActiveDrag && updateEdgeDock",
+                   StringComparison.Ordinal) &&
+               updateEdgeDockAfterDrag.Contains(
+                   "_dragPreservesWorkMode && _workState != WorkState.Idle",
+                   StringComparison.Ordinal) &&
+               updateEdgeDockAfterDrag.Contains(
+                   "_workEdgeDock = touchedEdge",
+                   StringComparison.Ordinal) &&
+               updateEdgeDockAfterDrag.Contains(
+                   "EnterEdgePeek(touchedEdge)",
                    StringComparison.Ordinal),
             "Sub-threshold pointer motion must preserve click arbitration; a real " +
-            "work drag must cancel the click while preserving work and suppressing " +
-            "edge docking on normal release and lost capture.");
+            "work drag must cancel the click while preserving work and still run " +
+            "the shared edge-snap calculation on normal release and lost capture.");
         Assert(rightClick.IndexOf(
                    "CancelPendingWorkSingleClick()",
                    StringComparison.Ordinal) >= 0 &&
@@ -19526,18 +19542,19 @@ internal static partial class Program
             window,
             "GetPetContactBounds",
             visibleBounds)!;
-        window.Left += workArea.Left - contactBounds.Left;
+        const double preSnapGap = 6;
+        window.Left += workArea.Left + preSnapGap - contactBounds.Left;
         window.UpdateLayout();
         contactBounds = (Rect)Invoke(
             window,
             "GetPetContactBounds",
             (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!)!;
-        Assert(Math.Abs(contactBounds.Left - workArea.Left) <= 1.01,
-            "Work-drag release setup must place the visible pet on the left edge.");
+        Assert(Math.Abs(contactBounds.Left - workArea.Left - preSnapGap) <= 1.01,
+            "Work-drag release setup must place the visible pet inside the left snap threshold.");
 
         var releaseTimestamp = Stopwatch.GetTimestamp();
-        // Pass true deliberately: the production completion guard itself must
-        // still refuse edge docking for a gesture that began in work mode.
+        // Work dragging must use the same external multi-monitor edge detector
+        // as idle dragging while keeping the live work clip intact.
         Invoke(window, "CompleteDirectPetDrag", true);
         var expectedReleasePhase = anchorFramePosition +
             Math.Max(0, releaseTimestamp - anchorTimestamp) /
@@ -19552,6 +19569,10 @@ internal static partial class Program
                string.Equals(
                    GetRawField(window, "_edgeDock")?.ToString(),
                    "None",
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_workEdgeDock")?.ToString(),
+                   "Left",
                    StringComparison.Ordinal) &&
                string.Equals(
                    GetRawField(window, "_workState")?.ToString(),
@@ -19570,8 +19591,24 @@ internal static partial class Program
                !GetField<bool>(window, "_workTapPhaseSyncRequested") &&
                !GetField<bool>(window, "_workSeriousEnterRequested") &&
                !GetField<bool>(window, "_workExitRequested"),
-            "Releasing a working pet on a screen edge must continue the same " +
-            "absolute typing phase, never count as a click, and never edge-dock.");
+            "Releasing a working pet on the left screen edge must snap without " +
+            "entering EdgePeek, keep the same absolute typing phase, and never " +
+            "count as a click.");
+
+        visibleBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        Assert(Math.Abs(visibleBounds.Left - workArea.Left) <= 1.01,
+            "A working pet released inside the left threshold must use the same " +
+            "pixel-aligned window snap as ordinary edge docking.");
+        AssertWorkButtonContract(
+            window,
+            phase: "left-snapped work",
+            expectedState: "Typing",
+            expectedContent: "去睡觉",
+            expectedOpacity: 1,
+            expectedIsEnabled: true,
+            expectedIsHitTestVisible: true);
 
         var continuationTimestamp = checked(
             releaseTimestamp + Stopwatch.Frequency / 20);
@@ -19586,6 +19623,36 @@ internal static partial class Program
                ReferenceEquals(GetRawField(window, "_activeClip"), loopClip),
             "After work-drag release, the absolute loop must keep advancing from " +
             "its original phase instead of restarting or pausing.");
+
+        var edgeLeftFrames = GetField<Array>(window, "_edgeLeftFrames");
+        PrimeSpritePageForFrame(
+            window,
+            edgeLeftFrames.GetValue(edgeLeftFrames.Length - 1)!);
+        Invoke(window, "StartWorkExitClip");
+        var exitClip = GetField<object>(window, "_workExitClip");
+        Invoke(window, "CompleteActiveClipAt", exitClip, continuationTimestamp);
+        Assert(string.Equals(
+                   GetRawField(window, "_workState")?.ToString(),
+                   "Idle",
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_workEdgeDock")?.ToString(),
+                   "None",
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_edgeDock")?.ToString(),
+                   "Left",
+                   StringComparison.Ordinal),
+            "Clicking 去睡觉 after a work snap must hand the same edge to the " +
+            "ordinary idle peek state only after the authored work exit finishes.");
+        AssertWorkButtonContract(
+            window,
+            phase: "idle after left-snapped work exit",
+            expectedState: "Idle",
+            expectedContent: "去打工",
+            expectedOpacity: 0,
+            expectedIsEnabled: false,
+            expectedIsHitTestVisible: false);
 
         visibleBounds = (Rect)Invoke(
             window,
@@ -19654,7 +19721,7 @@ internal static partial class Program
                !GetField<bool>(window, "_isSnoreBubbleAnimating") &&
                !GetField<DispatcherTimer>(window, "_automaticTimer").IsEnabled &&
                string.Equals(button.Tag as string, "Working", StringComparison.Ordinal) &&
-               string.Equals(button.Content as string, "下班啦", StringComparison.Ordinal),
+               string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal),
             "Entering work must atomically stop idle breathing, snore, and automatic activity: " +
             $"state={GetRawField(window, "_workState")}, " +
             $"clip={GetProperty<string>(GetField<object>(window, "_activeClip"), "ActionName")}, " +
@@ -19705,9 +19772,9 @@ internal static partial class Program
                !todoWindow.IsVisible &&
                button.Opacity < 0.01 &&
                !button.IsHitTestVisible &&
-               string.Equals(button.Content as string, "下班啦", StringComparison.Ordinal) &&
+               string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal) &&
                stateAfterRightClick is "Typing" or "Exiting",
-            "Right-click must cancel pending tap, hide the 下班啦 control immediately, " +
+            "Right-click must cancel pending tap, hide the 去睡觉 control immediately, " +
             "and keep Todo hidden until work exit completes.");
 
         if (string.Equals(stateAfterRightClick, "Typing", StringComparison.Ordinal))
@@ -19814,7 +19881,7 @@ internal static partial class Program
                workButtonDown.Contains(
                    "CancelPendingWorkSingleClick()",
                    StringComparison.Ordinal),
-            "Right-button press and 下班啦 pointer-down must cancel a pending " +
+            "Right-button press and 去睡觉 pointer-down must cancel a pending " +
             "single click before either button waits for MouseUp.");
         Assert(scheduleSingleClick.Contains(
                    "PrefetchPendingWorkTransitionPages()",
@@ -19970,7 +20037,7 @@ internal static partial class Program
             window,
             phase: "Entering",
             expectedState: "Entering",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: false,
             expectedIsHitTestVisible: false);
@@ -19983,7 +20050,7 @@ internal static partial class Program
             window,
             phase: "Typing",
             expectedState: "Typing",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: true,
             expectedIsHitTestVisible: true);
@@ -19992,7 +20059,7 @@ internal static partial class Program
             window,
             phase: "Tap",
             expectedState: "Typing",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: true,
             expectedIsHitTestVisible: true);
@@ -20001,7 +20068,7 @@ internal static partial class Program
             window,
             phase: "Exiting",
             expectedState: "Exiting",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: false,
             expectedIsHitTestVisible: false);
@@ -20009,13 +20076,13 @@ internal static partial class Program
         Invoke(window, "RequestWorkExit");
         Assert(button.Opacity < 0.01 &&
                !button.IsHitTestVisible &&
-               string.Equals(button.Content as string, "下班啦", StringComparison.Ordinal) &&
+               string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal) &&
                string.Equals(
                    GetRawField(window, "_workState")?.ToString(),
                    "Exiting",
                    StringComparison.Ordinal),
             "A Todo request recorded after work exit has already started must hide " +
-            "下班啦 synchronously inside RequestWorkExit, without waiting for Rendering.");
+            "去睡觉 synchronously inside RequestWorkExit, without waiting for Rendering.");
 
         PrepareWorkModeIdleState(window);
         EnterWorkTypingForTest(window);
@@ -20044,7 +20111,7 @@ internal static partial class Program
 
         Invoke(window, "HandleWorkPetClick", 1);
         Assert(singleClickTimer.IsEnabled,
-            "下班啦 pointer-down cancellation setup requires a pending single click.");
+            "去睡觉 pointer-down cancellation setup requires a pending single click.");
         var workButtonDownArgs = new MouseButtonEventArgs(
             Mouse.PrimaryDevice,
             Environment.TickCount,
@@ -20060,7 +20127,7 @@ internal static partial class Program
             workButtonDownArgs);
         Assert(!singleClickTimer.IsEnabled &&
                GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0,
-            "Pressing 下班啦 must cancel a pending head tap before Click/MouseUp.");
+            "Pressing 去睡觉 must cancel a pending head tap before Click/MouseUp.");
 
         PrepareWorkModeIdleState(window);
         EnterWorkTypingForTest(window);
@@ -20154,7 +20221,7 @@ internal static partial class Program
             window,
             phase: "Post-tap normal loop",
             expectedState: "Typing",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: true,
             expectedIsHitTestVisible: true);
@@ -20214,7 +20281,7 @@ internal static partial class Program
             window,
             phase: "Serious-enter after double-click",
             expectedState: "Typing",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: true,
             expectedIsHitTestVisible: true);
@@ -20286,7 +20353,7 @@ internal static partial class Program
             window,
             phase: "Serious-exit",
             expectedState: "Typing",
-            expectedContent: "下班啦",
+            expectedContent: "去睡觉",
             expectedOpacity: 1,
             expectedIsEnabled: true,
             expectedIsHitTestVisible: true);
@@ -20772,6 +20839,10 @@ internal static partial class Program
                    button.Content as string,
                    expectedContent,
                    StringComparison.Ordinal) &&
+               string.Equals(
+                   AutomationProperties.GetName(button),
+                   expectedContent,
+                   StringComparison.Ordinal) &&
                Math.Abs(button.Opacity - expectedOpacity) <= 0.001 &&
                button.IsEnabled == expectedIsEnabled &&
                button.IsHitTestVisible == expectedIsHitTestVisible,
@@ -20779,6 +20850,7 @@ internal static partial class Program
             $"state={actualState}/{expectedState}, " +
             $"tag={button.Tag}/{expectedTag}, " +
             $"content={button.Content}/{expectedContent}, " +
+            $"automation={AutomationProperties.GetName(button)}/{expectedContent}, " +
             $"opacity={button.Opacity:F3}/{expectedOpacity:F3}, " +
             $"enabled={button.IsEnabled}/{expectedIsEnabled}, " +
             $"hit={button.IsHitTestVisible}/{expectedIsHitTestVisible}.");
@@ -20813,6 +20885,7 @@ internal static partial class Program
         SetField(window, "_pointerDown", false);
         SetField(window, "_dragStarted", false);
         SetField(window, "_dragPreservesWorkMode", false);
+        SetField(window, "_workEdgeDock", GetNestedEnum("EdgeDock", "None"));
         SetField(window, "_isPetSizeTransitioning", false);
         SetField(window, "_isPetSizePreviewSessionActive", false);
         SetField(window, "_isPetSizeAdjustmentActive", false);

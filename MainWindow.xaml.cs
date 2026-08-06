@@ -310,6 +310,7 @@ public partial class MainWindow : Window
     private bool _dragStarted;
     private bool _dragInteractionActive;
     private bool _dragPreservesWorkMode;
+    private EdgeDock _workEdgeDock;
     private EdgeDockDragContext? _edgeDockDragContext;
     private AnimationClip? _activeClip;
     private int _activeFrameIndex = -1;
@@ -1881,6 +1882,10 @@ public partial class MainWindow : Window
             interrupted: true,
             immediate: true);
         ExitEdgePeek(restartAutomaticCountdown: false);
+        // A monitor/DPI recovery may clamp the window away from the exact edge
+        // that was recorded while working. Do not hand a stale edge to idle
+        // when the user later chooses 去睡觉.
+        _workEdgeDock = EdgeDock.None;
 
         _petSizeLogicalAnchor = null;
         _todoWindowPositionCache.InvalidateGeometry();
@@ -2352,7 +2357,7 @@ public partial class MainWindow : Window
             _workState != WorkState.Idle)
         {
             // Cancel before Button waits for MouseUp. Otherwise a pending
-            // single-click timer can fire while the user is pressing 下班啦.
+            // single-click timer can fire while the user is pressing 去睡觉.
             CancelPendingWorkSingleClick();
         }
     }
@@ -2378,6 +2383,7 @@ public partial class MainWindow : Window
         _dragStarted = false;
         _dragInteractionActive = false;
         _dragPreservesWorkMode = false;
+        _workEdgeDock = EdgeDock.None;
         _pointerDownPosition = default;
         _pointerDownScreenPosition = default;
         _latestDragScreenPosition = default;
@@ -2521,6 +2527,13 @@ public partial class MainWindow : Window
         // state and its absolute clock intact so moving the working pet cannot
         // restart a pose, become a click, or briefly fall back to idle.
         _dragPreservesWorkMode = _workState != WorkState.Idle;
+        if (_dragPreservesWorkMode)
+        {
+            // A work snap owns only the last release position. Clear that
+            // marker as soon as a new drag begins; the authored work pose and
+            // its absolute animation clock remain untouched.
+            _workEdgeDock = EdgeDock.None;
+        }
         CancelTodoOpenAfterEdgeRoamStop();
         if (_isEdgeRoaming)
         {
@@ -2569,8 +2582,7 @@ public partial class MainWindow : Window
             ContinueDirectPetDrag(
                 releaseLocalPosition,
                 _latestDragScreenPosition);
-            CompleteDirectPetDrag(
-                updateEdgeDock: !_dragPreservesWorkMode);
+            CompleteDirectPetDrag(updateEdgeDock: true);
             e.Handled = true;
             return;
         }
@@ -2623,8 +2635,7 @@ public partial class MainWindow : Window
             _latestDragScreenPosition = GetScreenPointOrFallback(
                 e.GetPosition(this),
                 _latestDragScreenPosition);
-            CompleteDirectPetDrag(
-                updateEdgeDock: !_dragPreservesWorkMode);
+            CompleteDirectPetDrag(updateEdgeDock: true);
             return;
         }
 
@@ -2828,7 +2839,6 @@ public partial class MainWindow : Window
     private void CompleteDirectPetDrag(bool updateEdgeDock)
     {
         var hadActiveDrag = _dragStarted;
-        var preservedWorkMode = _dragPreservesWorkMode;
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
@@ -2842,7 +2852,7 @@ public partial class MainWindow : Window
 
         try
         {
-            if (hadActiveDrag && updateEdgeDock && !preservedWorkMode)
+            if (hadActiveDrag && updateEdgeDock)
             {
                 UpdateEdgeDockAfterDrag();
             }
@@ -3126,6 +3136,7 @@ public partial class MainWindow : Window
         _workExitTargetFramePosition = double.PositiveInfinity;
         _workFastUntilTimestamp = 0;
         _workLoopPlaybackRate = 1;
+        _workEdgeDock = EdgeDock.None;
         // The first work page may still be loading, so the current visible
         // descriptor can remain idle for a few render ticks. Hide the snore
         // bubble from the high-level state change itself instead of waiting
@@ -3384,6 +3395,8 @@ public partial class MainWindow : Window
     private void FinishWorkExit()
     {
         var openTodo = _openTodoAfterWorkExitRequested;
+        var workEdgeDock = _workEdgeDock;
+        _workEdgeDock = EdgeDock.None;
         _workState = WorkState.Idle;
         _workExitRequested = false;
         _workTapPhaseSyncRequested = false;
@@ -3410,7 +3423,18 @@ public partial class MainWindow : Window
         ShowStableFrame(_idleFrame);
         RequestIdleSpritePageTrim();
         ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
-        RestartAutomaticCountdown();
+        if (!openTodo && workEdgeDock != EdgeDock.None)
+        {
+            // Work snapping intentionally does not enter the edge-peek state,
+            // because that state owns different frames. Once the authored work
+            // exit reaches idle, hand the same edge over to the normal docked
+            // idle animation without ever clearing a live work clip.
+            EnterEdgePeek(workEdgeDock);
+        }
+        else
+        {
+            RestartAutomaticCountdown();
+        }
         ScheduleUnpinnedPetSizePreviewCommit();
         RefreshWorkModeButton();
         UpdateVisualClockSubscription();
@@ -3424,6 +3448,7 @@ public partial class MainWindow : Window
     {
         CancelPendingWorkSingleClick();
         CancelTodoOpenAfterWorkExit();
+        _workEdgeDock = EdgeDock.None;
         if (_workState == WorkState.Idle)
         {
             return;
@@ -3991,7 +4016,7 @@ public partial class MainWindow : Window
             WorkModeButton.Tag = visualStateTag;
         }
 
-        var automationName = workActive ? "下班啦" : "去打工";
+        var automationName = workActive ? "去睡觉" : "去打工";
         if (!string.Equals(
                 WorkModeButton.Content as string,
                 automationName,
@@ -4078,6 +4103,10 @@ public partial class MainWindow : Window
 
         if (touchedEdge == EdgeDock.None)
         {
+            if (_dragPreservesWorkMode)
+            {
+                _workEdgeDock = EdgeDock.None;
+            }
             RestartAutomaticCountdown();
             return;
         }
@@ -4113,6 +4142,19 @@ public partial class MainWindow : Window
                 break;
         }
 
+        if (_dragPreservesWorkMode && _workState != WorkState.Idle)
+        {
+            // Reuse the exact same multi-monitor edge detection and pixel-
+            // aligned position as idle docking, but do not enter EdgePeek:
+            // EnterEdgePeek owns a different sprite clock and would clear the
+            // live work clip. The work loop therefore stays on its original
+            // absolute phase while the window is snapped to the edge.
+            _workEdgeDock = touchedEdge;
+            RefreshWorkModeButton();
+            return;
+        }
+
+        _workEdgeDock = EdgeDock.None;
         EnterEdgePeek(touchedEdge);
     }
 
