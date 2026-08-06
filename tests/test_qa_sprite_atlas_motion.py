@@ -83,7 +83,7 @@ class WorkTypingLoopContractTests(unittest.TestCase):
         return [frame_number.to_bytes(4, "little") for frame_number in range(count)]
 
     @staticmethod
-    def _natural_loop_payloads(unique_pose_count: int = 70) -> list[bytes]:
+    def _natural_loop_payloads(unique_pose_count: int = 56) -> list[bytes]:
         if unique_pose_count < 2:
             raise ValueError("natural loop needs neutral plus an articulated pose")
         seams = set(motion_qa.WORK_TYPING_NEUTRAL_SEAM_INDICES)
@@ -102,16 +102,16 @@ class WorkTypingLoopContractTests(unittest.TestCase):
         self.assertEqual(96, motion_qa.WORK_PHASE_FRAME_COUNTS["loop"])
         self.assertEqual(96, motion_qa.WORK_PHASE_FRAME_COUNTS["serious-loop"])
         self.assertEqual(96, motion_qa.WORK_TYPING_LOOP_PERIOD_FRAMES)
-        self.assertEqual(70, motion_qa.WORK_TYPING_LOOP_MIN_UNIQUE_POSES)
+        self.assertEqual(56, motion_qa.WORK_TYPING_LOOP_MIN_UNIQUE_POSES)
         self.assertEqual(
-            (0, 12, 24, 36, 48, 60, 72, 84),
+            (0, 10, 21, 33, 44, 56, 69, 81, 93),
             motion_qa.WORK_TYPING_NEUTRAL_SEAM_INDICES,
         )
-        self.assertEqual(3, motion_qa.WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES)
+        self.assertEqual(5, motion_qa.WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES)
 
-    def test_70_unique_poses_with_exact_neutral_seams_pass_both_loops(self) -> None:
-        payloads = self._natural_loop_payloads(70)
-        self.assertEqual(70, len(set(payloads)))
+    def test_56_unique_poses_with_exact_neutral_seams_pass_both_loops(self) -> None:
+        payloads = self._natural_loop_payloads(56)
+        self.assertEqual(56, len(set(payloads)))
         for phase in ("loop", "serious-loop"):
             with self.subTest(phase=phase):
                 self.assertEqual([], self._validate(phase, payloads))
@@ -140,49 +140,49 @@ class WorkTypingLoopContractTests(unittest.TestCase):
             )
         )
 
-    def test_fewer_than_70_distinct_articulated_poses_is_rejected(self) -> None:
-        payloads = self._natural_loop_payloads(69)
+    def test_fewer_than_56_distinct_articulated_poses_is_rejected(self) -> None:
+        payloads = self._natural_loop_payloads(55)
         failures = self._validate("loop", payloads)
 
         self.assertTrue(
             any(
                 failure["code"] == "sequence.work_cycle_unique"
-                and failure["minimum"] == 70
-                and failure["actual"] == 69
+                and failure["minimum"] == 56
+                and failure["actual"] == 55
                 for failure in failures
             )
         )
 
     def test_a_declared_neutral_seam_with_different_pixels_is_rejected(self) -> None:
         payloads = self._natural_loop_payloads()
-        payloads[48] = b"not-neutral"
+        payloads[44] = b"not-neutral"
         failures = self._validate("serious-loop", payloads)
 
         self.assertTrue(
             any(
                 failure["code"] == "sequence.work_neutral_seams"
-                and 48 in failure["indices_0_based"]
+                and 44 in failure["indices_0_based"]
                 for failure in failures
             )
         )
 
-    def test_more_than_three_identical_frames_in_a_row_is_rejected(self) -> None:
+    def test_more_than_five_identical_frames_in_a_row_is_rejected(self) -> None:
         payloads = self._natural_loop_payloads()
-        payloads[25:29] = [b"long-static-hold"] * 4
+        payloads[25:31] = [b"long-static-hold"] * 6
         failures = self._validate("loop", payloads)
 
         self.assertTrue(
             any(
                 failure["code"] == "sequence.work_still_run"
-                and failure["maximum"] == 3
-                and failure["actual"] == 4
+                and failure["maximum"] == 5
+                and failure["actual"] == 6
                 for failure in failures
             )
         )
 
-    def test_three_frame_cyclic_neutral_rest_is_allowed(self) -> None:
+    def test_five_frame_cyclic_neutral_rest_is_allowed(self) -> None:
         payloads = self._natural_loop_payloads()
-        payloads[94:96] = [b"neutral"] * 2
+        payloads[92:96] = [b"neutral"] * 4
 
         self.assertEqual([], self._validate("loop", payloads))
 

@@ -35,8 +35,8 @@ TAP_HAND_PATH = GENERATED_SOURCES / "luban-work-tap-hand-v1-alpha.png"
 SERIOUS_REFERENCE_PATH = GENERATED_SOURCES / "luban-work-serious-v2-alpha.png"
 IDLE_PATH = ASSETS / "luban-idle.png"
 QA_PATH = GENERATED_SOURCES / "luban-work-animation-qa.json"
-ARM_CONTACT_PATH = GENERATED_SOURCES / "luban-work-arm-motion-contact-v6.png"
-FACE_CONTACT_PATH = GENERATED_SOURCES / "luban-work-face-comparison-v6.png"
+ARM_CONTACT_PATH = GENERATED_SOURCES / "luban-work-arm-motion-contact-v5.png"
+FACE_CONTACT_PATH = GENERATED_SOURCES / "luban-work-face-comparison-v5.png"
 NORMALIZED_WORK_PATH = GENERATED_SOURCES / "luban-work-home-row-normalized-v5-alpha.png"
 NORMALIZED_UNDERLAY_PATH = (
     GENERATED_SOURCES / "luban-work-keyboard-underlay-normalized-v5-alpha.png"
@@ -58,23 +58,6 @@ NORMALIZED_SERIOUS_REFERENCE_PATH = (
 )
 NORMALIZED_SERIOUS_WORK_PATH = (
     GENERATED_SOURCES / "luban-work-serious-normalized-v2-alpha.png"
-)
-ARMLESS_REFERENCE_PATH = GENERATED_SOURCES / "luban-work-armless-underlay-v6-alpha.png"
-LEFT_PRELIFT_REFERENCE_PATH = GENERATED_SOURCES / "luban-work-left-prelift-v6-alpha.png"
-RIGHT_PRELIFT_REFERENCE_PATH = (
-    GENERATED_SOURCES / "luban-work-viewer-right-prelift-v6c-alpha.png"
-)
-NORMALIZED_ARMLESS_REFERENCE_PATH = (
-    GENERATED_SOURCES / "luban-work-armless-underlay-normalized-v6-alpha.png"
-)
-NORMALIZED_LEFT_PRELIFT_REFERENCE_PATH = (
-    GENERATED_SOURCES / "luban-work-left-prelift-normalized-v6-alpha.png"
-)
-NORMALIZED_RIGHT_PRELIFT_REFERENCE_PATH = (
-    GENERATED_SOURCES / "luban-work-viewer-right-prelift-normalized-v6-alpha.png"
-)
-NORMALIZED_V6_UNDERLAY_PATH = (
-    GENERATED_SOURCES / "luban-work-articulated-underlay-normalized-v6-alpha.png"
 )
 
 # The v4 rig keeps the shoulder, elbow, torso and keyboard fixed.  Only the
@@ -234,135 +217,6 @@ V5_TYPING_PRESS_CURVE = (
     (3.0, 0.42),
     (4.0, 0.16),
     (5.0, 0.0),
-)
-
-# v6 treats each visible arm as one connected articulated layer.  The shoulder
-# is intentionally allowed to react, while displacement increases through the
-# elbow, cuff, wrist, palm and finger joints.  This replaces the v5 hand-only
-# elastic patch whose proximal joints were pixel-locked.
-V6_NEUTRAL_SEAM_INDICES = (0, 12, 24, 36, 48, 60, 72, 84)
-V6_TYPING_PRESS_CURVE = (
-    (-6.0, 0.0),
-    (-5.0, 0.04),
-    (-4.0, 0.13),
-    (-3.0, 0.30),
-    (-2.0, 0.56),
-    (-1.0, 0.82),
-    (0.0, 1.0),
-    (1.0, 0.86),
-    (2.0, 0.58),
-    (3.0, 0.28),
-    (4.0, 0.09),
-    (5.0, 0.0),
-)
-
-# Six strong presses form three irregular bursts.  The two deliberately small
-# events are hand re-positioning gestures, not key presses; they keep the arms
-# alive during the two natural pauses without turning the loop into a metronome.
-V6_NORMAL_TYPING_EVENTS = (
-    (7.0, "left", "index", 0.96, True),
-    (19.0, "right", "middle", 0.84, True),
-    (31.0, "right", "index", 0.93, True),
-    (43.0, "left", "middle", 0.22, False),
-    (55.0, "left", "middle", 0.89, True),
-    (67.0, "right", "index", 0.95, True),
-    (79.0, "right", "middle", 0.20, False),
-    (90.0, "left", "index", 0.92, True),
-)
-V6_SERIOUS_TYPING_EVENTS = (
-    (6.0, "left", "index", 0.92, True),
-    (18.0, "right", "index", 0.24, False),
-    (30.0, "right", "middle", 0.98, True),
-    (42.0, "left", "middle", 0.22, False),
-    (54.0, "right", "index", 0.94, True),
-    (66.0, "left", "index", 0.24, False),
-    (78.0, "left", "middle", 1.00, True),
-    (90.0, "right", "middle", 0.20, False),
-)
-
-V6_ARM_RIGS = (
-    {
-        "name": "left",
-        "allowed_roi": (134, 315, 218, 440),
-        "arm_contour": (
-            (176, 321), (193, 329), (204, 346), (207, 368),
-            (204, 389), (208, 405), (202, 420), (190, 427),
-            (173, 425), (156, 416), (149, 402), (146, 381),
-            (145, 357), (153, 337),
-        ),
-        "controls": {
-            "shoulder": (180.0, 327.0),
-            "upper-arm": (171.0, 341.0),
-            "elbow": (158.0, 355.0),
-            "cuff-top": (174.0, 352.0),
-            "cuff-bottom": (176.0, 371.0),
-            "wrist": (176.0, 377.0),
-            "palm": (181.0, 391.0),
-            "index-0": (193.0, 392.0),
-            "index-1": (198.0, 401.0),
-            "index-2": (198.0, 411.0),
-            "middle-0": (183.0, 393.0),
-            "middle-1": (185.0, 405.0),
-            "middle-2": (186.0, 420.0),
-            "ring-0": (172.0, 392.0),
-            "ring-1": (171.0, 403.0),
-            "ring-2": (171.0, 414.0),
-            "little-0": (162.0, 390.0),
-            "little-1": (160.0, 399.0),
-            "little-2": (160.0, 408.0),
-        },
-        "lift": {
-            "shoulder": (0.08, -0.35),
-            "upper-arm": (0.25, -0.75),
-            "elbow": (0.45, -1.30),
-            "cuff-top": (0.65, -1.90),
-            "cuff-bottom": (0.80, -2.50),
-            "wrist": (0.95, -3.10),
-            "palm": (0.85, -3.80),
-        },
-        "arc_sign": 1.0,
-    },
-    {
-        "name": "right",
-        "allowed_roi": (205, 322, 318, 454),
-        "arm_contour": (
-            (259, 326), (280, 330), (300, 347), (311, 371),
-            (313, 397), (305, 421), (287, 438), (267, 445),
-            (245, 438), (224, 436), (213, 424), (211, 405),
-            (220, 385), (239, 369), (244, 344),
-        ),
-        "controls": {
-            "shoulder": (267.0, 331.0),
-            "upper-arm": (284.0, 346.0),
-            "elbow": (296.0, 367.0),
-            "cuff-top": (290.0, 382.0),
-            "cuff-bottom": (280.0, 401.0),
-            "wrist": (270.0, 393.0),
-            "palm": (253.0, 402.0),
-            "index-0": (235.0, 400.0),
-            "index-1": (232.0, 412.0),
-            "index-2": (229.0, 425.0),
-            "middle-0": (248.0, 402.0),
-            "middle-1": (245.0, 415.0),
-            "middle-2": (244.0, 429.0),
-            "ring-0": (260.0, 403.0),
-            "ring-1": (259.0, 415.0),
-            "ring-2": (260.0, 427.0),
-            "little-0": (271.0, 403.0),
-            "little-1": (273.0, 413.0),
-            "little-2": (271.0, 421.0),
-        },
-        "lift": {
-            "shoulder": (-0.08, -0.35),
-            "upper-arm": (-0.25, -0.72),
-            "elbow": (-0.45, -1.25),
-            "cuff-top": (-0.62, -1.85),
-            "cuff-bottom": (-0.78, -2.45),
-            "wrist": (-0.92, -3.05),
-            "palm": (-0.82, -3.72),
-        },
-        "arc_sign": -1.0,
-    },
 )
 NEUTRAL_BROW_ERASE_REGIONS = (
     (174, 196, 201, 211),
@@ -1515,281 +1369,6 @@ def build_work_loop_v5(
     ]
 
 
-def build_v6_arm_model(
-    neutral: Image.Image,
-    rig: dict[str, object],
-) -> dict[str, object]:
-    name = rig.get("name")
-    allowed_roi = rig.get("allowed_roi")
-    arm_contour = rig.get("arm_contour")
-    rig_controls = rig.get("controls")
-    lift = rig.get("lift")
-    if (
-        not isinstance(name, str)
-        or not isinstance(allowed_roi, tuple)
-        or not isinstance(arm_contour, tuple)
-        or not isinstance(rig_controls, dict)
-        or not isinstance(lift, dict)
-    ):
-        raise TypeError("Invalid v6 articulated-arm rig")
-
-    rgba = pixel_array(neutral)
-    red = rgba[..., 0].astype(np.int16)
-    green = rgba[..., 1].astype(np.int16)
-    blue = rgba[..., 2].astype(np.int16)
-    alpha = rgba[..., 3]
-    allowed = _v5_polygon_mask((arm_contour,)) > 0
-    purple = (
-        (alpha > 0)
-        & (blue > 92)
-        & ((blue - red) > 8)
-        & ((blue - green) > 10)
-    )
-    skin = (
-        (alpha > 0)
-        & (red > 150)
-        & (green > 70)
-        & (green < 220)
-        & (blue < 220)
-        & ((red - green) > 14)
-        & ((green - blue) > 4)
-    )
-    core = (purple | skin) & allowed
-    near = cv2.dilate(
-        core.astype(np.uint8),
-        np.ones((5, 5), dtype=np.uint8),
-        iterations=1,
-    ) > 0
-    dark_outline = (
-        (alpha > 0)
-        & (red < 175)
-        & (green < 145)
-        & (blue < 155)
-    )
-    mask = core | (near & allowed & (dark_outline | (alpha < 250)))
-    mask = cv2.morphologyEx(
-        mask.astype(np.uint8),
-        cv2.MORPH_CLOSE,
-        np.ones((3, 3), dtype=np.uint8),
-    ) > 0
-    if name == "right":
-        yy, xx = np.mgrid[0 : CANVAS_SIZE[1], 0 : CANVAS_SIZE[0]]
-        mask &= ~((xx < 248) & (yy < 383))
-    if int(mask.sum()) < 1700:
-        raise AssertionError(f"{name} full-arm matte is unexpectedly small")
-
-    layer_pixels = rgba.copy()
-    layer_pixels[..., 3] = np.where(mask, layer_pixels[..., 3], 0)
-    layer_pixels[~mask, :3] = 0
-    controls = {
-        control_name: tuple(point)
-        for control_name, point in rig_controls.items()
-    }
-    left, top, right, bottom = allowed_roi
-    boundary_anchors = (
-        (left, top),
-        ((left + right) / 2.0, top),
-        (right - 1, top),
-        (right - 1, bottom - 1),
-        ((left + right) / 2.0, bottom - 1),
-        (left, bottom - 1),
-    )
-    for index, point in enumerate(boundary_anchors):
-        controls[f"anchor-{index}"] = (float(point[0]), float(point[1]))
-
-    return {
-        "kind": "v6-articulated-arm",
-        "name": name,
-        "allowed_roi": allowed_roi,
-        "mask": mask,
-        "layer": clean_transparent_rgb(Image.fromarray(layer_pixels, "RGBA")),
-        "controls": controls,
-        "lift": {key: tuple(value) for key, value in lift.items()},
-        "arc_sign": float(rig["arc_sign"]),
-        "crop_box": (
-            max(0, left - 8),
-            max(0, top - 8),
-            min(CANVAS_SIZE[0], right + 8),
-            min(CANVAS_SIZE[1], bottom + 8),
-        ),
-        "fingers": {
-            finger: tuple(
-                controls[f"{finger}-{joint_index}"]
-                for joint_index in range(3)
-            )
-            for finger in ("index", "middle", "ring", "little")
-        },
-    }
-
-
-def build_v6_inpaint_underlay(
-    neutral: Image.Image,
-    arm_models: tuple[dict[str, object], ...],
-) -> Image.Image:
-    rgba = pixel_array(neutral)
-    erase = np.zeros(rgba.shape[:2], dtype=np.uint8)
-    for model in arm_models:
-        mask = model.get("mask")
-        if not isinstance(mask, np.ndarray):
-            raise TypeError("Invalid v6 articulated-arm matte")
-        erase |= cv2.dilate(
-            mask.astype(np.uint8),
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
-            iterations=1,
-        )
-    output = rgba.copy()
-    for channel in range(4):
-        output[..., channel] = cv2.inpaint(
-            rgba[..., channel],
-            erase * 255,
-            4.0,
-            cv2.INPAINT_TELEA,
-        )
-    output[output[..., 3] == 0, :3] = 0
-    return clean_transparent_rgb(Image.fromarray(output, "RGBA"))
-
-
-def typing_press_amount_v6(frame_position: float, center: float) -> float:
-    relative = (frame_position - center + LOOP_FRAME_COUNT / 2.0) % LOOP_FRAME_COUNT
-    relative -= LOOP_FRAME_COUNT / 2.0
-    if (
-        relative <= V6_TYPING_PRESS_CURVE[0][0]
-        or relative >= V6_TYPING_PRESS_CURVE[-1][0]
-    ):
-        return 0.0
-    for (first_x, first_y), (second_x, second_y) in zip(
-        V6_TYPING_PRESS_CURVE,
-        V6_TYPING_PRESS_CURVE[1:],
-        strict=True,
-    ):
-        if first_x <= relative <= second_x:
-            progress = smoothstep((relative - first_x) / (second_x - first_x))
-            return first_y + (second_y - first_y) * progress
-    return 0.0
-
-
-def v6_arm_displacements(
-    model: dict[str, object],
-    amount: float,
-    active_finger: str,
-) -> dict[str, np.ndarray]:
-    controls = model.get("controls")
-    lift = model.get("lift")
-    if not isinstance(controls, dict) or not isinstance(lift, dict):
-        raise TypeError("Invalid v6 articulated-arm buffers")
-    displacements = {
-        name: np.zeros(2, dtype=np.float64)
-        for name in controls
-    }
-    for name, vector in lift.items():
-        displacements[name] = np.asarray(vector, dtype=np.float64) * amount
-
-    sign = float(model.get("arc_sign", 1.0))
-    secondary_finger = "middle" if active_finger == "index" else "index"
-    palm_lift = lift.get("palm")
-    if not isinstance(palm_lift, tuple):
-        raise TypeError("Missing v6 palm lift")
-    for finger_name in ("index", "middle", "ring", "little"):
-        if finger_name == active_finger:
-            scales = (1.00, 1.38, 1.82)
-            lateral = 0.35 * sign
-        elif finger_name == secondary_finger:
-            scales = (0.90, 1.02, 1.08)
-            lateral = -0.18 * sign
-        elif finger_name == "ring":
-            scales = (0.80, 0.86, 0.91)
-            lateral = -0.24 * sign
-        else:
-            scales = (0.72, 0.77, 0.82)
-            lateral = -0.32 * sign
-        for joint_index, scale in enumerate(scales):
-            displacements[f"{finger_name}-{joint_index}"] = np.asarray(
-                (
-                    palm_lift[0] * scale + lateral * joint_index,
-                    palm_lift[1] * scale,
-                ),
-                dtype=np.float64,
-            ) * amount
-    return displacements
-
-
-def v6_arm_states_at(
-    frame_position: float,
-    events: tuple[tuple[float, str, str, float, bool], ...],
-) -> dict[str, tuple[float, str]]:
-    states: dict[str, tuple[float, str]] = {
-        "left": (0.0, "index"),
-        "right": (0.0, "index"),
-    }
-    reactions = {"left": 0.0, "right": 0.0}
-    for center, side, finger, strength, _ in events:
-        amount = typing_press_amount_v6(frame_position, center) * strength
-        if amount > states[side][0]:
-            states[side] = (amount, finger)
-        other = "right" if side == "left" else "left"
-        reactions[other] = max(reactions[other], amount * 0.08)
-    for side in ("left", "right"):
-        if reactions[side] > states[side][0]:
-            states[side] = (reactions[side], "middle")
-    return states
-
-
-def render_work_pose_v6(
-    expression: Image.Image,
-    underlay: Image.Image,
-    arm_models: tuple[dict[str, object], ...],
-    *,
-    typing_frame_position: float,
-    events: tuple[tuple[float, str, str, float, bool], ...],
-) -> Image.Image:
-    states = v6_arm_states_at(typing_frame_position, events)
-    if all(amount <= 1e-8 for amount, _ in states.values()):
-        return expression.copy()
-
-    output = pixel_array(expression).copy()
-    replacement = pixel_array(underlay)
-    for model in arm_models:
-        name = model.get("name")
-        mask = model.get("mask")
-        if not isinstance(name, str) or not isinstance(mask, np.ndarray):
-            raise TypeError("Invalid v6 articulated-arm model")
-        if states[name][0] <= 1e-8:
-            continue
-        output[mask] = replacement[mask]
-    pose = clean_transparent_rgb(Image.fromarray(output, "RGBA"))
-    for model in arm_models:
-        name = model.get("name")
-        if not isinstance(name, str):
-            raise TypeError("Invalid v6 articulated-arm side")
-        amount, active_finger = states[name]
-        if amount <= 1e-8:
-            continue
-        articulated = warp_v5_hand_layer(
-            model,
-            v6_arm_displacements(model, amount, active_finger),
-        )
-        pose.alpha_composite(articulated)
-    return clean_transparent_rgb(pose)
-
-
-def build_work_loop_v6(
-    expression: Image.Image,
-    underlay: Image.Image,
-    arm_models: tuple[dict[str, object], ...],
-    events: tuple[tuple[float, str, str, float, bool], ...],
-) -> list[Image.Image]:
-    return [
-        render_work_pose_v6(
-            expression,
-            underlay,
-            arm_models,
-            typing_frame_position=float(frame_index),
-            events=events,
-        )
-        for frame_index in range(LOOP_FRAME_COUNT)
-    ]
-
-
 def remove_isolated_temporal_shimmer(
     frames: list[Image.Image],
     *,
@@ -2144,70 +1723,6 @@ def build_serious_exit_v5(
             typing_frame_position=0.0,
         )
         frames.append(frame)
-    return frames
-
-
-def build_work_tap_v6(
-    neutral: Image.Image,
-    underlay: Image.Image,
-    arm_models: tuple[dict[str, object], ...],
-    hand: Image.Image,
-) -> list[Image.Image]:
-    frames: list[Image.Image] = []
-    for frame_index in range(TAP_FRAME_COUNT):
-        base_frame = render_work_pose_v6(
-            neutral,
-            underlay,
-            arm_models,
-            typing_frame_position=0.0,
-            events=V6_NORMAL_TYPING_EVENTS,
-        )
-        hand_x, hand_y, impact = tap_hand_pose(frame_index, hand.height)
-        if hand_y < CANVAS_SIZE[1] and hand_y + hand.height > 0:
-            base_frame.alpha_composite(hand, (round(hand_x), round(hand_y)))
-        if impact > 0.0:
-            star = draw_star_layer(
-                (305.0, 83.0),
-                10.5 * math.sin(math.pi * impact),
-                frame_index * 0.28,
-            )
-            base_frame.alpha_composite(star)
-        frames.append(clean_transparent_rgb(base_frame))
-    return frames
-
-
-def build_serious_exit_v6(
-    neutral: Image.Image,
-    underlay: Image.Image,
-    clean_face: Image.Image,
-    serious_reference: Image.Image,
-    serious_neutral: Image.Image,
-    arm_models: tuple[dict[str, object], ...],
-) -> list[Image.Image]:
-    frames: list[Image.Image] = []
-    for frame_index in range(SERIOUS_EXIT_FRAME_COUNT):
-        value = frame_index / (SERIOUS_EXIT_FRAME_COUNT - 1)
-        relaxed = smoothstep(value)
-        expression = build_expression_pose(
-            neutral,
-            clean_face,
-            serious_reference,
-            serious_neutral,
-            1.0 - relaxed,
-        )
-        # Traverse exactly two 12-frame serious typing cells while the brows
-        # relax. Both endpoints are neutral seams, so reversing selected frames
-        # for serious entry keeps the hands moving without a transition pop.
-        typing_position = 24.0 * value
-        frames.append(
-            render_work_pose_v6(
-                expression,
-                underlay,
-                arm_models,
-                typing_frame_position=typing_position,
-                events=V6_SERIOUS_TYPING_EVENTS,
-            )
-        )
     return frames
 
 
@@ -3612,410 +3127,14 @@ def build_qa_v5(
     }
 
 
-def build_qa_v6(
-    neutral: Image.Image,
-    reference_poses: tuple[Image.Image, ...],
-    serious_neutral: Image.Image,
-    arm_models: tuple[dict[str, object], ...],
-    enter_frames: list[Image.Image],
-    loop_frames: list[Image.Image],
-    tap_frames: list[Image.Image],
-    serious_loop_frames: list[Image.Image],
-    serious_exit_frames: list[Image.Image],
-) -> dict[str, object]:
-    if len(reference_poses) != 3 or len(arm_models) != 2:
-        raise ValueError("v6 QA requires three generated references and two arms")
-
-    sequences = {
-        "work-enter": sequence_metrics(enter_frames, wrap=False),
-        "work-loop": sequence_metrics(loop_frames, wrap=True),
-        "work-tap": sequence_metrics(tap_frames, wrap=False),
-        "work-serious-loop": sequence_metrics(serious_loop_frames, wrap=True),
-        "work-serious-exit": sequence_metrics(serious_exit_frames, wrap=False),
-    }
-    normal_digests = [frame_digest(pixel_array(frame)) for frame in loop_frames]
-    serious_digests = [
-        frame_digest(pixel_array(frame)) for frame in serious_loop_frames
-    ]
-    normal_neutral_digest = normal_digests[0]
-    serious_neutral_digest = serious_digests[0]
-
-    def maximum_identical_run(digests: list[str]) -> int:
-        if len(set(digests)) == 1:
-            return len(digests)
-        linear_runs: list[int] = []
-        run = 1
-        for index in range(1, len(digests)):
-            if digests[index] == digests[index - 1]:
-                run += 1
-            else:
-                linear_runs.append(run)
-                run = 1
-        linear_runs.append(run)
-        if digests[0] == digests[-1]:
-            prefix = 1
-            while prefix < len(digests) and digests[prefix] == digests[0]:
-                prefix += 1
-            suffix = 1
-            while suffix < len(digests) and digests[-1 - suffix] == digests[-1]:
-                suffix += 1
-            linear_runs.append(prefix + suffix)
-        return max(linear_runs)
-
-    seams = {
-        "normal_loop_declared_seams_equal_neutral": all(
-            normal_digests[index] == normal_neutral_digest
-            for index in V6_NEUTRAL_SEAM_INDICES
-        ),
-        "serious_loop_declared_seams_equal_neutral": all(
-            serious_digests[index] == serious_neutral_digest
-            for index in V6_NEUTRAL_SEAM_INDICES
-        ),
-        "enter_last_equals_normal_neutral": frame_digest(
-            pixel_array(enter_frames[-1])
-        ) == normal_neutral_digest,
-        "tap_first_equals_normal_neutral": frame_digest(
-            pixel_array(tap_frames[0])
-        ) == normal_neutral_digest,
-        "tap_last_equals_normal_neutral": frame_digest(
-            pixel_array(tap_frames[-1])
-        ) == normal_neutral_digest,
-        "serious_exit_first_equals_serious_neutral": frame_digest(
-            pixel_array(serious_exit_frames[0])
-        ) == serious_neutral_digest,
-        "serious_exit_last_equals_normal_neutral": frame_digest(
-            pixel_array(serious_exit_frames[-1])
-        ) == normal_neutral_digest,
-        "normal_loop_wrap_is_exact": normal_digests[-1] == normal_digests[0],
-        "serious_loop_wrap_is_exact": serious_digests[-1] == serious_digests[0],
-    }
-
-    allowed_union = np.zeros((CANVAS_SIZE[1], CANVAS_SIZE[0]), dtype=bool)
-    model_by_name: dict[str, dict[str, object]] = {}
-    arm_metrics: list[dict[str, object]] = []
-    for model in arm_models:
-        name = model.get("name")
-        allowed_roi = model.get("allowed_roi")
-        mask = model.get("mask")
-        layer = model.get("layer")
-        if (
-            not isinstance(name, str)
-            or not isinstance(allowed_roi, tuple)
-            or not isinstance(mask, np.ndarray)
-            or not isinstance(layer, Image.Image)
-        ):
-            raise TypeError("Invalid v6 articulated-arm QA model")
-        model_by_name[name] = model
-        allowed_union |= rectangular_support(allowed_roi)
-        layer_alpha = pixel_array(layer)[..., 3]
-        arm_metrics.append(
-            {
-                "name": name,
-                "matte_pixels": int(mask.sum()),
-                "layer_pixels_outside_matte": int(
-                    np.logical_and(layer_alpha > 0, ~mask).sum()
-                ),
-            }
-        )
-
-    static_metrics = {
-        "normal_outside_arm_rois_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames,
-            neutral,
-            ~allowed_union,
-        ),
-        "serious_outside_arm_rois_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames,
-            serious_neutral,
-            ~allowed_union,
-        ),
-        "normal_face_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames,
-            neutral,
-            rectangular_support(FACE_REGION),
-        ),
-        "serious_face_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames,
-            serious_neutral,
-            rectangular_support(FACE_REGION),
-        ),
-        "computer_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames,
-            neutral,
-            rectangular_support(COMPUTER_LOCK_REGION),
-        ),
-        "serious_computer_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames,
-            serious_neutral,
-            rectangular_support(COMPUTER_LOCK_REGION),
-        ),
-    }
-
-    event_metrics: list[dict[str, object]] = []
-    for mode_name, events, rendered_frames in (
-        ("normal", V6_NORMAL_TYPING_EVENTS, loop_frames),
-        ("serious_runtime_2x", V6_SERIOUS_TYPING_EVENTS, serious_loop_frames),
-    ):
-        for center, side, finger, strength, is_press in events:
-            if not is_press:
-                continue
-            model = model_by_name[side]
-            fingers = model.get("fingers")
-            layer = model.get("layer")
-            lift = model.get("lift")
-            if (
-                not isinstance(fingers, dict)
-                or not isinstance(layer, Image.Image)
-                or not isinstance(lift, dict)
-            ):
-                raise TypeError("Invalid v6 event model")
-            tip = fingers[finger][2]
-            marker = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
-            ImageDraw.Draw(marker).ellipse(
-                (tip[0] - 2.0, tip[1] - 2.0, tip[0] + 2.0, tip[1] + 2.0),
-                fill=(255, 255, 255, 255),
-            )
-            displacement_map = v6_arm_displacements(model, strength, finger)
-            warped_marker = warp_v5_hand_layer(model, displacement_map, marker)
-            measured_tip_displacement = math.dist(
-                alpha_centroid(pixel_array(marker)),
-                alpha_centroid(pixel_array(warped_marker)),
-            )
-            event_metrics.append(
-                {
-                    "mode": mode_name,
-                    "peak_frame_0_based": int(center),
-                    "side": side,
-                    "finger": finger,
-                    "strength": strength,
-                    "active_finger_joint_count": len(fingers[finger]),
-                    "measured_raster_tip_displacement_px": measured_tip_displacement,
-                    "shoulder_displacement_px": float(
-                        np.linalg.norm(displacement_map["shoulder"])
-                    ),
-                    "elbow_displacement_px": float(
-                        np.linalg.norm(displacement_map["elbow"])
-                    ),
-                    "wrist_displacement_px": float(
-                        np.linalg.norm(displacement_map["wrist"])
-                    ),
-                    "rendered_peak_changed_pixels_in_arm_roi": changed_pixel_count(
-                        rendered_frames[int(center)],
-                        rendered_frames[0],
-                        rectangular_support(model["allowed_roi"]),
-                    ),
-                }
-            )
-
-    refresh_sampling: dict[str, dict[str, object]] = {}
-    for refresh_rate in (30, 59, 60, 120, 144):
-        refresh_sampling[str(refresh_rate)] = {}
-        for label, digests, playback_speed in (
-            ("normal", normal_digests, 1.0),
-            ("serious_runtime_2x", serious_digests, 2.0),
-        ):
-            duration = LOOP_FRAME_COUNT / (60.0 * playback_speed)
-            sample_count = math.ceil(duration * refresh_rate)
-            indices = [
-                int(
-                    math.floor(
-                        sample / refresh_rate * 60.0 * playback_speed
-                    )
-                )
-                % LOOP_FRAME_COUNT
-                for sample in range(sample_count)
-            ]
-            refresh_sampling[str(refresh_rate)][label] = {
-                "sample_count": sample_count,
-                "distinct_authored_frame_indices": len(set(indices)),
-                "distinct_rendered_bitmaps": len({digests[index] for index in indices}),
-                "duration_seconds": duration,
-                "sampling_duration_error_seconds": abs(
-                    sample_count / refresh_rate - duration
-                ),
-                "one_refresh_period_seconds": 1.0 / refresh_rate,
-            }
-
-    normal_press_centers = [
-        center
-        for center, _, _, _, is_press in V6_NORMAL_TYPING_EVENTS
-        if is_press
-    ]
-    normal_press_gaps = [
-        second - first
-        for first, second in zip(
-            normal_press_centers,
-            normal_press_centers[1:] + [normal_press_centers[0] + LOOP_FRAME_COUNT],
-            strict=True,
-        )
-    ]
-    normal_press_gap_cv = float(
-        np.std(normal_press_gaps) / np.mean(normal_press_gaps)
-    )
-
-    invariants = {
-        "neutral_bbox_alpha8": list(visible_bbox(neutral)),
-        "generated_reference_bboxes_alpha8": [
-            list(visible_bbox(pose)) for pose in reference_poses
-        ],
-        "declared_neutral_seam_indices_0_based": list(V6_NEUTRAL_SEAM_INDICES),
-        "normal_actual_neutral_pause_indices_0_based": [
-            index
-            for index, digest in enumerate(normal_digests)
-            if digest == normal_neutral_digest
-        ],
-        "serious_actual_neutral_pause_indices_0_based": [
-            index
-            for index, digest in enumerate(serious_digests)
-            if digest == serious_neutral_digest
-        ],
-        "normal_maximum_consecutive_identical_frames": maximum_identical_run(
-            normal_digests
-        ),
-        "serious_maximum_consecutive_identical_frames": maximum_identical_run(
-            serious_digests
-        ),
-        "normal_loop_seconds": LOOP_FRAME_COUNT / 60.0,
-        "serious_loop_seconds_at_runtime_2x": LOOP_FRAME_COUNT / 120.0,
-        "normal_key_presses_per_second": sum(
-            1 for *_, is_press in V6_NORMAL_TYPING_EVENTS if is_press
-        ) / (LOOP_FRAME_COUNT / 60.0),
-        "serious_key_presses_per_second": sum(
-            1 for *_, is_press in V6_SERIOUS_TYPING_EVENTS if is_press
-        ) / (LOOP_FRAME_COUNT / 120.0),
-        "normal_strong_press_gap_coefficient_of_variation": normal_press_gap_cv,
-        "arm_models": arm_metrics,
-        "events": event_metrics,
-        "static_locks": static_metrics,
-        "refresh_sampling": refresh_sampling,
-        "serious_expression_changed_pixels": changed_pixel_count(
-            serious_loop_frames[0],
-            loop_frames[0],
-            rectangular_support(FACE_REGION),
-        ),
-    }
-
-    failures: list[str] = []
-    expected_counts = {
-        "work-enter": ENTER_FRAME_COUNT,
-        "work-loop": LOOP_FRAME_COUNT,
-        "work-tap": TAP_FRAME_COUNT,
-        "work-serious-loop": SERIOUS_LOOP_FRAME_COUNT,
-        "work-serious-exit": SERIOUS_EXIT_FRAME_COUNT,
-    }
-    for name, expected_count in expected_counts.items():
-        metrics = sequences[name]
-        if metrics["frame_count"] != expected_count:
-            failures.append(f"{name} frame count")
-        if not metrics["all_rgba_450x550"]:
-            failures.append(f"{name} frame geometry")
-        if metrics["maximum_transparent_rgb_nonzero_pixels"] != 0:
-            failures.append(f"{name} transparent RGB")
-    if sequences["work-loop"]["unique_frame_count"] < 70:
-        failures.append("normal loop pose diversity")
-    if sequences["work-serious-loop"]["unique_frame_count"] < 70:
-        failures.append("serious loop pose diversity")
-    if sequences["work-tap"]["unique_frame_count"] < 36:
-        failures.append("tap pose diversity")
-    if sequences["work-serious-exit"]["unique_frame_count"] < 20:
-        failures.append("serious exit pose diversity")
-    for name, passed in seams.items():
-        if not passed:
-            failures.append(name)
-    for name, changed in static_metrics.items():
-        if changed != 0:
-            failures.append(name)
-    for metrics in arm_metrics:
-        if metrics["matte_pixels"] < 1700:
-            failures.append(f"{metrics['name']} full-arm matte too small")
-        if metrics["layer_pixels_outside_matte"] != 0:
-            failures.append(f"{metrics['name']} layer escaped matte")
-    for metrics in event_metrics:
-        displacement = metrics["measured_raster_tip_displacement_px"]
-        if not 5.5 <= displacement <= 9.5:
-            failures.append(
-                f"frame {metrics['peak_frame_0_based']} raster tip displacement"
-            )
-        if metrics["active_finger_joint_count"] != 3:
-            failures.append(f"{metrics['side']} {metrics['finger']} joint count")
-        if not (
-            metrics["shoulder_displacement_px"]
-            < metrics["elbow_displacement_px"]
-            < metrics["wrist_displacement_px"]
-            < displacement
-        ):
-            failures.append(f"{metrics['side']} proximal-to-distal motion chain")
-        if metrics["rendered_peak_changed_pixels_in_arm_roi"] < 1700:
-            failures.append(f"{metrics['side']} {metrics['finger']} visible motion")
-    if invariants["normal_maximum_consecutive_identical_frames"] > 3:
-        failures.append("normal loop excessive still run")
-    if invariants["serious_maximum_consecutive_identical_frames"] > 3:
-        failures.append("serious loop excessive still run")
-    expected_index_coverage = {
-        "30": {"normal": 48, "serious_runtime_2x": 24},
-        "59": {"normal": 95, "serious_runtime_2x": 48},
-        "60": {"normal": 96, "serious_runtime_2x": 48},
-        "120": {"normal": 96, "serious_runtime_2x": 96},
-        "144": {"normal": 96, "serious_runtime_2x": 96},
-    }
-    minimum_bitmap_coverage = {
-        "30": {"normal": 38, "serious_runtime_2x": 15},
-        "59": {"normal": 72, "serious_runtime_2x": 38},
-        "60": {"normal": 73, "serious_runtime_2x": 38},
-        "120": {"normal": 73, "serious_runtime_2x": 73},
-        "144": {"normal": 73, "serious_runtime_2x": 73},
-    }
-    for refresh_rate, modes in refresh_sampling.items():
-        for mode_name, metrics in modes.items():
-            if metrics["distinct_authored_frame_indices"] != expected_index_coverage[
-                refresh_rate
-            ][mode_name]:
-                failures.append(f"{refresh_rate}Hz {mode_name} clock coverage")
-            if metrics["distinct_rendered_bitmaps"] < minimum_bitmap_coverage[
-                refresh_rate
-            ][mode_name]:
-                failures.append(f"{refresh_rate}Hz {mode_name} visible pose coverage")
-            if metrics["sampling_duration_error_seconds"] > metrics[
-                "one_refresh_period_seconds"
-            ] + 1e-12:
-                failures.append(f"{refresh_rate}Hz {mode_name} duration")
-    if not 80 <= invariants["serious_expression_changed_pixels"] <= 4000:
-        failures.append("serious expression locality")
-
-    source_paths = (
-        WORK_ANCHOR_PATH,
-        ARMLESS_REFERENCE_PATH,
-        LEFT_PRELIFT_REFERENCE_PATH,
-        RIGHT_PRELIFT_REFERENCE_PATH,
-        TAP_HAND_PATH,
-        SERIOUS_REFERENCE_PATH,
-        IDLE_PATH,
-    )
-    return {
-        "version": 6,
-        "canvas": {"width": CANVAS_SIZE[0], "height": CANVAS_SIZE[1], "mode": "RGBA"},
-        "sources": {
-            str(path.relative_to(ROOT)).replace("\\", "/"): source_sha256(path)
-            for path in source_paths
-        },
-        "sequences": sequences,
-        "contacts": {
-            "arm_motion": str(ARM_CONTACT_PATH.relative_to(ROOT)).replace("\\", "/"),
-            "face_transition": str(FACE_CONTACT_PATH.relative_to(ROOT)).replace("\\", "/"),
-        },
-        "seams": seams,
-        "invariants": invariants,
-        "failures": failures,
-        "passed": not failures,
-    }
-
-
 def main() -> None:
     for required in (
         WORK_ANCHOR_PATH,
-        ARMLESS_REFERENCE_PATH,
-        LEFT_PRELIFT_REFERENCE_PATH,
-        RIGHT_PRELIFT_REFERENCE_PATH,
+        KEYBOARD_UNDERLAY_PATH,
+        LEFT_INDEX_DOWN_PATH,
+        RIGHT_INDEX_DOWN_PATH,
+        LEFT_MIDDLE_DOWN_PATH,
+        RIGHT_MIDDLE_DOWN_PATH,
         TAP_HAND_PATH,
         SERIOUS_REFERENCE_PATH,
         IDLE_PATH,
@@ -4025,37 +3144,34 @@ def main() -> None:
 
     idle = load_idle()
     neutral = load_work_neutral()
-    armless_reference = normalize_key_pose_to_neutral_bbox(
-        ARMLESS_REFERENCE_PATH,
-        neutral,
-    )
-    left_prelift_reference = normalize_key_pose_to_neutral_bbox(
-        LEFT_PRELIFT_REFERENCE_PATH,
-        neutral,
-    )
-    right_prelift_reference = normalize_key_pose_to_neutral_bbox(
-        RIGHT_PRELIFT_REFERENCE_PATH,
-        neutral,
-    )
+    with Image.open(KEYBOARD_UNDERLAY_PATH) as opened:
+        underlay = fit_source_to_runtime_canvas(
+            opened,
+            maximum_size=WORK_MAX_SIZE,
+            bottom=WORK_BOTTOM,
+        )
+    left_index_down = normalize_key_pose_to_neutral_bbox(LEFT_INDEX_DOWN_PATH, neutral)
+    right_index_down = normalize_key_pose_to_neutral_bbox(RIGHT_INDEX_DOWN_PATH, neutral)
+    left_middle_down = normalize_key_pose_to_neutral_bbox(LEFT_MIDDLE_DOWN_PATH, neutral)
+    right_middle_down = normalize_key_pose_to_neutral_bbox(RIGHT_MIDDLE_DOWN_PATH, neutral)
     serious_reference = load_serious_reference()
     clean_face = inpaint_neutral_brows(neutral)
     serious_neutral = build_serious_neutral(neutral, serious_reference)
-    # Image-generated v6 poses are immutable anatomical/art-direction guides.
-    # Runtime frames preserve the approved neutral face and computer, articulate
-    # each complete arm from shoulder to fingers, and use a deterministic local
-    # inpaint only for the narrow pixels exposed behind the lifted limb.
-    arm_models = tuple(
-        build_v6_arm_model(neutral, rig)
-        for rig in V6_ARM_RIGS
+    # Generated contact poses remain immutable anatomy references. Runtime v5
+    # uses the approved home-row character plus a clean keyboard underlay and
+    # two independent semantic hand/cuff mattes.
+    hand_models = tuple(
+        build_v5_hand_model(neutral, underlay, rig)
+        for rig in V5_HAND_RIGS
     )
-    underlay = build_v6_inpaint_underlay(neutral, arm_models)
     hand = load_tap_hand()
     save_png_atomically(neutral, NORMALIZED_WORK_PATH)
-    save_png_atomically(underlay, NORMALIZED_V6_UNDERLAY_PATH)
+    save_png_atomically(underlay, NORMALIZED_UNDERLAY_PATH)
     for pose, destination in (
-        (armless_reference, NORMALIZED_ARMLESS_REFERENCE_PATH),
-        (left_prelift_reference, NORMALIZED_LEFT_PRELIFT_REFERENCE_PATH),
-        (right_prelift_reference, NORMALIZED_RIGHT_PRELIFT_REFERENCE_PATH),
+        (left_index_down, NORMALIZED_LEFT_INDEX_DOWN_PATH),
+        (right_index_down, NORMALIZED_RIGHT_INDEX_DOWN_PATH),
+        (left_middle_down, NORMALIZED_LEFT_MIDDLE_DOWN_PATH),
+        (right_middle_down, NORMALIZED_RIGHT_MIDDLE_DOWN_PATH),
     ):
         save_png_atomically(pose, destination)
     save_png_atomically(
@@ -4065,58 +3181,49 @@ def main() -> None:
     save_png_atomically(serious_neutral, NORMALIZED_SERIOUS_WORK_PATH)
 
     loop_frames = remove_isolated_temporal_shimmer(
-        build_work_loop_v6(
-            neutral,
-            underlay,
-            arm_models,
-            V6_NORMAL_TYPING_EVENTS,
-        ),
+        build_work_loop_v5(neutral, underlay, hand_models),
         wrap=True,
-        protected_indices=V6_NEUTRAL_SEAM_INDICES,
+        protected_indices=V5_NEUTRAL_SEAM_INDICES,
     )
     serious_loop_frames = remove_isolated_temporal_shimmer(
-        build_work_loop_v6(
-            serious_neutral,
-            underlay,
-            arm_models,
-            V6_SERIOUS_TYPING_EVENTS,
-        ),
+        build_work_loop_v5(serious_neutral, underlay, hand_models),
         wrap=True,
-        protected_indices=V6_NEUTRAL_SEAM_INDICES,
+        protected_indices=V5_NEUTRAL_SEAM_INDICES,
     )
     enter_frames = build_work_enter(idle, loop_frames[0])
     tap_frames = remove_isolated_temporal_shimmer(
-        build_work_tap_v6(
+        build_work_tap_v5(
             neutral,
             underlay,
-            arm_models,
+            clean_face,
+            serious_reference,
+            serious_neutral,
+            hand_models,
             hand,
         ),
         wrap=False,
         protected_indices=(0, TAP_FRAME_COUNT - 1),
     )
     serious_exit_frames = remove_isolated_temporal_shimmer(
-        build_serious_exit_v6(
+        build_serious_exit_v5(
             neutral,
             underlay,
             clean_face,
             serious_reference,
             serious_neutral,
-            arm_models,
+            hand_models,
         ),
         wrap=False,
         protected_indices=(0, SERIOUS_EXIT_FRAME_COUNT - 1),
     )
 
-    qa = build_qa_v6(
+    qa = build_qa_v5(
+        idle,
         neutral,
-        (
-            armless_reference,
-            left_prelift_reference,
-            right_prelift_reference,
-        ),
+        underlay,
+        (left_index_down, right_index_down, left_middle_down, right_middle_down),
         serious_neutral,
-        arm_models,
+        hand_models,
         enter_frames,
         loop_frames,
         tap_frames,
@@ -4138,7 +3245,7 @@ def main() -> None:
         "serious-exit": write_sequence("serious-exit", serious_exit_frames),
     }
 
-    print("Built v6 full-arm articulated work animation from immutable local sources.")
+    print("Built v5 semantic articulated work animation from immutable local sources.")
     for name in ("enter", "loop", "tap", "serious-loop", "serious-exit"):
         metrics = qa["sequences"][f"work-{name}"]
         print(
@@ -4150,9 +3257,11 @@ def main() -> None:
         )
     print(
         "locked-region drift: "
-        f"outside={qa['invariants']['static_locks']['normal_outside_arm_rois_maximum_changed_pixels']}, "
-        f"face={qa['invariants']['static_locks']['normal_face_maximum_changed_pixels']}, "
-        f"computer={qa['invariants']['static_locks']['computer_maximum_changed_pixels']}"
+        f"outside={qa['invariants']['static_locks']['normal_outside_hand_rois_maximum_changed_pixels']}, "
+        f"computer={qa['invariants']['static_locks']['computer_maximum_changed_pixels']}, "
+        f"keyboard={qa['invariants']['static_locks']['non_target_keyboard_maximum_changed_pixels']}, "
+        f"shoulder={qa['invariants']['static_locks']['shoulder_maximum_changed_pixels']}, "
+        f"torso={qa['invariants']['static_locks']['torso_maximum_changed_pixels']}"
     )
     print(
         "natural typing motion: "

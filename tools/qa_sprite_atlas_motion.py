@@ -63,9 +63,9 @@ WORK_PHASE_FRAME_COUNTS = {
 }
 WORK_TYPING_LOOP_PHASES = frozenset(("loop", "serious-loop"))
 WORK_TYPING_LOOP_PERIOD_FRAMES = 96
-WORK_TYPING_LOOP_MIN_UNIQUE_POSES = 70
-WORK_TYPING_NEUTRAL_SEAM_INDICES = (0, 12, 24, 36, 48, 60, 72, 84)
-WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES = 3
+WORK_TYPING_LOOP_MIN_UNIQUE_POSES = 56
+WORK_TYPING_NEUTRAL_SEAM_INDICES = (0, 10, 21, 33, 44, 56, 69, 81, 93)
+WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES = 5
 WORK_TRANSITION_MIN_UNIQUE_POSES = {
     "enter": 48,
     # Tap deliberately has byte-identical normal-neutral endpoints.
@@ -1011,7 +1011,7 @@ def validate_resource_contract(
             unique_count = len(set(frame_hashes))
             if phase in WORK_TYPING_LOOP_PHASES:
                 # Count validation above owns malformed/legacy lengths. Only
-                # index into declared seam positions once the full v6 cycle is
+                # index into declared seam positions once the full v5 cycle is
                 # present, so diagnostics fail closed instead of crashing.
                 if len(frame_hashes) == WORK_TYPING_LOOP_PERIOD_FRAMES:
                     if unique_count < WORK_TYPING_LOOP_MIN_UNIQUE_POSES:

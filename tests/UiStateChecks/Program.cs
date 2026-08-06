@@ -2227,8 +2227,6 @@ internal static partial class Program
                 "SpritePageRoamResidentBudgetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
         var pinnedPageNames = GetExpectedPinnedSpritePageNames(window);
-        var startupIdlePageName = GetSpriteFrameInfo(
-            GetField<object>(window, "_idleFrame")).PageName;
 
         long CapacityOf(string pageName) =>
             RoundUpSpritePageCapacity(
@@ -2312,14 +2310,9 @@ internal static partial class Program
                     .Take(2))
                 .ToHashSet(StringComparer.Ordinal);
             var canonicalBytes = protectedNames.Sum(CapacityOf);
-            var adjacentReusablePageCount = protectedNames.Count(pageName =>
-                !string.Equals(
-                    pageName,
-                    startupIdlePageName,
-                    StringComparison.Ordinal));
             var adjacentReuseWorstCaseBytes = checked(
                 canonicalBytes +
-                (long)adjacentReusablePageCount * capacityBucketBytes);
+                (long)protectedNames.Count * capacityBucketBytes);
             maximumOrdinaryBytes = Math.Max(
                 maximumOrdinaryBytes,
                 adjacentReuseWorstCaseBytes);
@@ -18438,20 +18431,15 @@ internal static partial class Program
         string sequence)
     {
         var digests = GetDecodedWorkFramePixelDigests(frames);
-        var neutralSeams = new[] { 0, 12, 24, 36, 48, 60, 72, 84 };
-        var keyPressCenters = string.Equals(
-                sequence,
-                "serious-loop",
-                StringComparison.Ordinal)
-            ? new[] { 6, 30, 54, 78 }
-            : new[] { 7, 19, 31, 55, 67, 90 };
+        var neutralSeams = new[] { 0, 10, 21, 33, 44, 56, 69, 81, 93 };
+        var keyPressCenters = new[] { 4, 15, 27, 38, 50, 63, 75, 87 };
         var neutralDigest = digests[0];
         var maximumIdenticalRun = GetMaximumCyclicIdenticalRun(digests);
         Assert(frames.Length == 96 &&
-               digests.Distinct(StringComparer.Ordinal).Count() >= 70 &&
-               maximumIdenticalRun <= 3,
+               digests.Distinct(StringComparer.Ordinal).Count() >= 56 &&
+               maximumIdenticalRun <= 5,
             $"Work {sequence} must retain a diverse 96-frame natural cycle " +
-            $"without fake texture jitter or a static hold longer than three " +
+            $"without fake texture jitter or a static hold longer than five " +
             $"authored frames; unique={digests.Distinct(StringComparer.Ordinal).Count()}, " +
             $"maximum identical run={maximumIdenticalRun}.");
         Assert(neutralSeams.All(index =>
@@ -18460,7 +18448,7 @@ internal static partial class Program
                        neutralDigest,
                        StringComparison.Ordinal)),
             $"Work {sequence} neutral micro-seams must be pixel-identical at " +
-            $"0/12/24/36/48/60/72/84.");
+            $"0/10/21/33/44/56/69/81/93.");
         foreach (var center in keyPressCenters)
         {
             var localDigests = Enumerable.Range(center - 2, 5)
@@ -18545,7 +18533,7 @@ internal static partial class Program
         var seriousExitDigests =
             GetDecodedWorkFramePixelDigests(seriousExitFrames);
         var tapDigests = GetDecodedWorkFramePixelDigests(tapFrames);
-        var neutralSeams = new[] { 0, 12, 24, 36, 48, 60, 72, 84 };
+        var neutralSeams = new[] { 0, 10, 21, 33, 44, 56, 69, 81, 93 };
         var normalNeutralDigest = loopDigests[0];
         var seriousNeutralDigest = seriousLoopDigests[0];
 
@@ -18864,9 +18852,9 @@ internal static partial class Program
                 "WorkNeutralMicroSeamFrameIndices",
                 StaticFlags)?.GetValue(null) ?? Array.Empty<int>());
         var expectedNeutralMicroSeams =
-            new[] { 0, 12, 24, 36, 48, 60, 72, 84 };
+            new[] { 0, 10, 21, 33, 44, 56, 69, 81, 93 };
         Assert(neutralMicroSeams.SequenceEqual(expectedNeutralMicroSeams),
-            "The 96-frame typing cycle must expose its eight authored neutral " +
+            "The 96-frame typing cycle must expose its nine authored neutral " +
             "micro-seams to the runtime state machine.");
         var maximumForwardSeamFrames = 0d;
         for (var eighthFrame = -96 * 8; eighthFrame <= 96 * 16; eighthFrame++)
@@ -18886,21 +18874,21 @@ internal static partial class Program
                 wrappedTarget += 96d;
             }
 
-            Assert(waitFrames >= -0.000001 && waitFrames <= 12.000001 &&
+            Assert(waitFrames >= -0.000001 && waitFrames <= 13.000001 &&
                    neutralMicroSeams.Any(seam =>
                        Math.Abs(wrappedTarget - seam) <= 0.000001),
                 $"Neutral micro-seam lookup must move forward without a phase " +
-                $"jump and wait at most 12 authored frames: " +
+                $"jump and wait at most 13 authored frames: " +
                 $"phase={framePosition:F3}, target={target:F3}.");
         }
         var maximumNormalWaitMilliseconds =
             maximumForwardSeamFrames / 60d * 1000d;
         var maximumFastWaitMilliseconds =
             maximumForwardSeamFrames / (60d * 2d) * 1000d;
-        Assert(maximumNormalWaitMilliseconds <= 200.01d &&
-               maximumFastWaitMilliseconds <= 100.01d,
-            $"Neutral seam wait must stay within 12 frames at 1x and about " +
-            $"100ms at 2x; actual {maximumNormalWaitMilliseconds:F2}ms/" +
+        Assert(maximumNormalWaitMilliseconds <= 217d &&
+               maximumFastWaitMilliseconds <= 109d,
+            $"Neutral seam wait must stay within 13 frames at 1x and about " +
+            $"109ms at 2x; actual {maximumNormalWaitMilliseconds:F2}ms/" +
             $"{maximumFastWaitMilliseconds:F2}ms.");
 
         var nativeDoubleClickMilliseconds = GetDoubleClickTimeForWorkTest();
@@ -19045,9 +19033,9 @@ internal static partial class Program
             window,
             "_workSeriousEnterTargetFramePosition");
         Assert(seriousEnterTarget >= phaseBefore &&
-               seriousEnterTarget - phaseBefore <= 12.000001,
+               seriousEnterTarget - phaseBefore <= 13.000001,
             "The immediate 2x response must reach its serious-entry seam within " +
-            "12 authored frames (about 100ms).");
+            "13 authored frames (about 109ms).");
         var seriousEnterTimestamp = checked(
             clickTimestamp +
             (long)Math.Ceiling(
@@ -19227,9 +19215,9 @@ internal static partial class Program
                    GetField<object>(window, "_workSeriousLoopClip")) &&
                Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
                    0.000001 &&
-               fastTapWaitMilliseconds is >= 0 and <= 100.01,
+               fastTapWaitMilliseconds is >= 0 and <= 109,
             $"Confirmed tap waiting at 2x must keep serious speed and reach a " +
-            $"neutral seam within about 100ms, actual {fastTapWaitMilliseconds:F2}ms.");
+            $"neutral seam within about 109ms, actual {fastTapWaitMilliseconds:F2}ms.");
         Invoke(window, "CancelPendingWorkSingleClick");
         Assert(!GetField<bool>(window, "_workTapPhaseSyncRequested") &&
                Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
@@ -19269,7 +19257,7 @@ internal static partial class Program
         Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
                GetField<bool>(window, "_workTapPhaseSyncRequested") &&
                tapTarget >= phaseBeforeSingleConfirmation &&
-               tapTarget - phaseBeforeSingleConfirmation <= 12.1d &&
+               tapTarget - phaseBeforeSingleConfirmation <= 13.1d &&
                Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
                    0.000001 &&
                GetField<long>(window, "_workLoopAnchorTimestamp") ==
@@ -19358,9 +19346,9 @@ internal static partial class Program
                GetField<long>(window, "_workLoopAnchorTimestamp") ==
                    fastExitAnchorTimestamp &&
                fastExitTarget > 93.25d &&
-               (fastExitTarget - 93.25d) / 120d * 1000d <= 100.01d,
+               (fastExitTarget - 93.25d) / 120d * 1000d <= 109d,
             "Requesting exit during serious typing must preserve the 2x phase " +
-            "and reach the next neutral seam within about 100ms.");
+            "and reach the next neutral seam within about 109ms.");
         var fastExitSeamTimestamp = checked(
             fastExitAnchorTimestamp +
             (long)Math.Ceiling(
@@ -19886,7 +19874,7 @@ internal static partial class Program
             GetField<double>(window, "_workTapTargetFramePosition");
         Assert(GetField<bool>(window, "_workTapPhaseSyncRequested") &&
                tapTargetPosition >= phaseBeforeTapConfirmation &&
-               tapTargetPosition - phaseBeforeTapConfirmation <= 12.1 &&
+               tapTargetPosition - phaseBeforeTapConfirmation <= 13.1 &&
                Math.Abs(
                    GetField<double>(window, "_workLoopPlaybackRate") -
                    scheduledRate) <= 0.000001,
@@ -19965,7 +19953,7 @@ internal static partial class Program
                    0.000001 &&
                GetField<bool>(window, "_workSeriousEnterRequested") &&
                seriousEnterTarget >= 17.25d &&
-               seriousEnterTarget - 17.25d <= 12.1d &&
+               seriousEnterTarget - 17.25d <= 13.1d &&
                GetField<long>(window, "_workFastUntilTimestamp") == 0,
             "Only an explicit double click may immediately accelerate the " +
             "unchanged normal keyboard phase and request serious entry.");
@@ -20093,7 +20081,7 @@ internal static partial class Program
         EnterWorkTypingForTest(window);
         var seriousLoopFramesForColdWrap =
             GetField<Array>(window, "_workSeriousLoopFrames");
-        const int coldWrapSeamFrameIndex = 84;
+        const int coldWrapSeamFrameIndex = 93;
         var coldWrapSeamFrame =
             seriousLoopFramesForColdWrap.GetValue(coldWrapSeamFrameIndex)!;
         var coldWrapFirstFrame = seriousLoopFramesForColdWrap.GetValue(0)!;
@@ -20105,7 +20093,7 @@ internal static partial class Program
                    coldWrapSeamPageName,
                    coldWrapFirstPageName,
                    StringComparison.Ordinal),
-            "Cold-wrap regression requires serious seam 085 and frame 001 on different atlas pages.");
+            "Cold-wrap regression requires serious seam 094 and frame 001 on different atlas pages.");
         PrimeSpritePageForFrame(window, coldWrapSeamFrame);
         WaitForSpritePagePrefetchToSettle(window);
         EvictResidentSpritePageForTest(window, coldWrapFirstPageName);
@@ -20122,7 +20110,7 @@ internal static partial class Program
                Equals(
                    GetRawField(window, "_currentSpriteFrame"),
                    coldWrapSeamFrame),
-            "Serious-loop cold-wrap setup must truly display neutral seam 085 first.");
+            "Serious-loop cold-wrap setup must truly display neutral seam 094 first.");
         var coldWrapRequestedImmediately =
             string.Equals(
                 GetRawField(window, "_desiredSpritePageName") as string,
@@ -20135,7 +20123,7 @@ internal static partial class Program
             GetField<IDictionary>(window, "_residentSpritePages")
                 .Contains(coldWrapFirstPageName);
         Assert(coldWrapRequestedImmediately,
-            "Displaying serious-loop neutral seam 085 must immediately prefetch " +
+            "Displaying serious-loop neutral seam 094 must immediately prefetch " +
             "the cyclic frame-001 page, before the first 2x advance reaches frame 096.");
         WaitForPrefetchedSpritePage(window, coldWrapFirstFrame);
 
@@ -20180,7 +20168,7 @@ internal static partial class Program
             GetField<double>(window, "_workTapTargetFramePosition");
         Assert(GetField<bool>(window, "_workTapPhaseSyncRequested") &&
                seriousTapTarget >= 81.25d &&
-               seriousTapTarget - 81.25d <= 12.1d,
+               seriousTapTarget - 81.25d <= 13.1d,
             "A serious-mode single click must first select the nearest neutral seam.");
         var seriousTapSeamTimestamp = checked(
             seriousTapAnchorTimestamp +
@@ -20291,7 +20279,7 @@ internal static partial class Program
                Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
                    0.000001 &&
                exitTarget >= exitPhaseImmediatelyBefore &&
-               exitTarget - exitPhaseImmediatelyBefore <= 12.1,
+               exitTarget - exitPhaseImmediatelyBefore <= 13.1,
             "Requesting exit during typing must preserve the absolute phase and " +
             "1x rate while selecting the next neutral micro-seam.");
         var exitHalfwayTimestamp = checked(
