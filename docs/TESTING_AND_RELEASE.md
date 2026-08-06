@@ -234,7 +234,19 @@ git status --short --ignored
 
 ## 10. v1.0.55 发布验证
 
-`v1.0.55` 必须从正式源码提交重新发布。实际提交、EXE 字节数、SHA-256、实机冒烟和 GitHub Release 回下载结果由发布后的证据提交补齐；不得提前复用 `v1.0.53` 或 `v1.0.54` 的二进制数据。
+以下结果于 `2026-08-06` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境重新执行。Release 指向正式源码提交，附件已从 GitHub 独立回下载复核。
+
+| 项目 | 结果 |
+| --- | --- |
+| 源码版本 | `v1.0.55`；正式源码提交 `3b0ef48bca22c0bfa5afb96ec95753b0cee31fb7` |
+| Release 构建 | 主项目通过，`0` 警告、`0` 错误；框架依赖 win-x64 单文件发布成功 |
+| 存储与 Python 契约 | `TodoStoreChecks` 通过；Python 动画 QA `15/15` 通过 |
+| `--work-mode-only` | `11/11` 通过；包含 65 张独特循环位图、9 个精确接缝、单/双击、打工拖动保持 state/clip/绝对相位/倍速、拖动不吸附，以及左/右/下吸附隐藏并禁用入口 |
+| 完整 `UiStateChecks` | `48/48` 通过，最终输出 `UI state checks passed.`；普通分页需求 `61/64 MiB`，巡游分页需求 `101/104 MiB` |
+| 图集运动 QA | `passed=true`、失败数 `0`；最终图集 `55` 页、`1696` 个逻辑帧；正式打工资源恢复为 `v1.0.53` 的 v5 `48/96/48/96/24` 契约 |
+| 打工实机交互 | 真实 WPF 预览进入 `Typing / work-loop / 1x` 后拖动成功；松手并继续观察后仍保持同一工作循环和倍速，没有切回待机或触发点击反应 |
+| EXE 与进程冒烟 | `128,913,030` 字节（`122.94 MiB`），文件版本 `1.0.55.0`，产品版本包含 `3b0ef48...`，SHA-256 `4BEA28D93DEBFA27CFD4273384EA82F233B3FFF39BFD0BB4D98E24ABC0FD5BBA`，`NotSigned`；30 秒持续响应，私有内存 `209.97–210.94 MiB`、工作集 `283.63–284.65 MiB`；二次启动自行退出且仅保留一个实例 |
+| GitHub Release | 已发布 [v1.0.55](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.55)，目标提交 `3b0ef48bca22c0bfa5afb96ec95753b0cee31fb7`；附件与独立回下载均为 `128,913,030` 字节，SHA-256 均为 `4BEA28D93DEBFA27CFD4273384EA82F233B3FFF39BFD0BB4D98E24ABC0FD5BBA` |
 
 ## 11. v1.0.54 历史发布验证
 
