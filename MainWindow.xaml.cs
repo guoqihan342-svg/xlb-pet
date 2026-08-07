@@ -927,28 +927,6 @@ public partial class MainWindow : Window
                 $"actual {frames.Length}");
         }
 
-        if (string.Equals(pageNamePrefix, "edge-left", StringComparison.Ordinal))
-        {
-            // The authored side-peek envelope extends two source pixels past
-            // the 399px display surface. Keeping that negative destination
-            // clipped the lower supporting arm on both the left pose and its
-            // mirrored right pose. Shift only this edge sequence inward by the
-            // minimum amount so every authored atlas pixel remains visible.
-            for (var index = 0; index < frames.Length; index++)
-            {
-                var frame = frames[index];
-                var minimumDestinationX = Math.Max(0, frame.DestinationX);
-                var maximumDestinationX = DisplayPixelWidth - frame.Width;
-                var destinationX = Math.Min(
-                    minimumDestinationX,
-                    maximumDestinationX);
-                if (destinationX != frame.DestinationX)
-                {
-                    frames[index] = frame with { DestinationX = destinationX };
-                }
-            }
-        }
-
         return frames;
     }
 
@@ -11491,6 +11469,12 @@ public partial class MainWindow : Window
 
     private void TodoWindow_TodoChanged(TodoItem item)
     {
+        var oldIndex = _todos.IndexOf(item);
+        if (item.IsCompleted && oldIndex >= 0 && oldIndex < _todos.Count - 1)
+        {
+            _todos.Move(oldIndex, _todos.Count - 1);
+        }
+
         SaveTodos();
     }
 

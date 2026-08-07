@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using System.Collections.ObjectModel;
 using System.Buffers.Binary;
 using System.ComponentModel;
@@ -263,6 +264,8 @@ internal static partial class Program
                 {
                     RunCheck(nameof(AssertExactEdgeContactContract),
                         AssertExactEdgeContactContract);
+                    RunCheck(nameof(AssertEdgeFrameSequenceContract),
+                        () => AssertEdgeFrameSequenceContract(window));
                     RunCheck(nameof(AssertSupportedEdgeDockIntegration),
                         () => AssertSupportedEdgeDockIntegration(window));
                     RunCheck(nameof(AssertTodoClosePreservesEdgePeek),
@@ -345,6 +348,8 @@ internal static partial class Program
                     RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
                     RunCheck(nameof(AssertScheduledTaskTabContract),
                         AssertScheduledTaskTabContract);
+                    RunCheck(nameof(AssertCompletedTodoMovesToEndContract),
+                        () => AssertCompletedTodoMovesToEndContract(window));
                     RunCheck(nameof(AssertTodoReorderPersistenceContract),
                         () => AssertTodoReorderPersistenceContract(window));
                     return 0;
@@ -399,6 +404,8 @@ internal static partial class Program
                 RunCheck(nameof(AssertTodoCutContract), AssertTodoCutContract);
                 RunCheck(nameof(AssertScheduledTaskTabContract),
                     AssertScheduledTaskTabContract);
+                RunCheck(nameof(AssertCompletedTodoMovesToEndContract),
+                    () => AssertCompletedTodoMovesToEndContract(window));
                 RunCheck(nameof(AssertTodoReorderPersistenceContract),
                     () => AssertTodoReorderPersistenceContract(window));
                 RunCheck(nameof(AssertScheduledTaskEditContract),
@@ -494,6 +501,45 @@ internal static partial class Program
 
     private static int RunTodoInteractionPreview(Application application)
     {
+        var previewTodos = new ObservableCollection<TodoItem>
+        {
+            new()
+            {
+                Text = string.Concat(Enumerable.Repeat(
+                    "可见两行选择测试：鼠标向下拖动时不能滚进隐藏文字。",
+                    8))
+            },
+            new()
+            {
+                Text = "第二条待办用于确认悬停框始终优先显示在行左侧。"
+            },
+            new()
+            {
+                Text = "第三条待办用于检查普通行的萌蓝悬停底色。"
+            },
+            new()
+            {
+                Text = "第四条已完成待办用于检查蓝色圆角悬停卡片。",
+                IsCompleted = true
+            },
+            new()
+            {
+                Text = "第五条待办用于触发列表内部的蓝色滚动条。"
+            },
+            new()
+            {
+                Text = "第六条待办用于检查滚动后的行样式。"
+            },
+            new()
+            {
+                Text = "第七条已完成待办用于检查回收容器样式。",
+                IsCompleted = true
+            },
+            new()
+            {
+                Text = "第八条待办用于检查列表末尾。"
+            }
+        };
         var preview = new TodoWindow
         {
             AllowsTransparency = false,
@@ -503,44 +549,16 @@ internal static partial class Program
             Top = 220,
             Topmost = false,
             WindowStyle = WindowStyle.SingleBorderWindow,
-            Todos = new ObservableCollection<TodoItem>
+            Todos = previewTodos
+        };
+        preview.TodoChanged += item =>
+        {
+            var oldIndex = previewTodos.IndexOf(item);
+            if (item.IsCompleted &&
+                oldIndex >= 0 &&
+                oldIndex < previewTodos.Count - 1)
             {
-                new()
-                {
-                    Text = string.Concat(Enumerable.Repeat(
-                        "可见两行选择测试：鼠标向下拖动时不能滚进隐藏文字。",
-                        8))
-                },
-                new()
-                {
-                    Text = "第二条待办用于确认悬停框始终优先显示在行左侧。"
-                },
-                new()
-                {
-                    Text = "第三条待办用于检查普通行的萌蓝悬停底色。"
-                },
-                new()
-                {
-                    Text = "第四条已完成待办用于检查蓝色圆角悬停卡片。",
-                    IsCompleted = true
-                },
-                new()
-                {
-                    Text = "第五条待办用于触发列表内部的蓝色滚动条。"
-                },
-                new()
-                {
-                    Text = "第六条待办用于检查滚动后的行样式。"
-                },
-                new()
-                {
-                    Text = "第七条已完成待办用于检查回收容器样式。",
-                    IsCompleted = true
-                },
-                new()
-                {
-                    Text = "第八条待办用于检查列表末尾。"
-                }
+                previewTodos.Move(oldIndex, previewTodos.Count - 1);
             }
         };
         if (preview.Content is FrameworkElement previewContent)
@@ -1891,14 +1909,14 @@ internal static partial class Program
             "luban-edge-left-smooth-001.png");
         var negativeInfo = GetSpriteFrameInfo(negativeDestinationFrame);
         Assert(negativeInfo.DestinationX < 0 &&
-               runtimeSideInfo.DestinationX == 0 &&
+               runtimeSideInfo.DestinationX == negativeInfo.DestinationX &&
                runtimeSideInfo.Width == negativeInfo.Width &&
                string.Equals(
                    runtimeSideInfo.Name,
                    negativeInfo.Name,
                    StringComparison.Ordinal),
-            "清单/raw atlas必须保留负DestinationX脏矩形夹具，而左右贴边运行envelope" +
-            "必须只平移到X=0且完整保留原始手臂宽度");
+            "左右贴边运行帧必须原样保留清单中的负DestinationX透明gutter，" +
+            "不能二次平移并在左右屏幕边缘留下缺臂缝隙");
         Assert(!string.Equals(
                 idleInfo.PageName,
                 negativeInfo.PageName,
@@ -6078,6 +6096,48 @@ internal static partial class Program
             GetNestedEnum("EdgeDock", "Right"))!;
         Assert(ReferenceEquals(leftFrames, rightFrames),
             "右侧探头必须镜像复用完整edge-left序列，不能维护另一套跳号帧");
+
+        var displayStride = RenderPixelWidth * 4;
+        var sideFramePixels =
+            new byte[RenderPixelWidth * RenderPixelHeight * 4];
+        var mirroredSideFramePixels =
+            new byte[sideFramePixels.Length];
+        var mirrorMatrix = Matrix.Identity;
+        mirrorMatrix.ScaleAt(
+            -1,
+            1,
+            RenderPixelWidth / 2d,
+            RenderPixelHeight / 2d);
+        foreach (var frame in leftFrames.Cast<object>())
+        {
+            var frameInfo = GetSpriteFrameInfo(frame);
+            Assert(frameInfo.DestinationX == -2,
+                $"左右探头帧必须保留2px透明gutter：{frameInfo.Name}");
+            PrimeSpritePageForFrame(window, frame);
+            InvokeOverload(window, "CopyFramePixels", frame, sideFramePixels);
+            var leftEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
+                .Count(y => sideFramePixels[y * displayStride + 3] >= 24);
+            Assert(leftEdgeAlphaPixels >= 40,
+                $"{frameInfo.Name} 的下方支撑手臂必须连续接触左屏幕边缘；" +
+                $"当前有效边缘Alpha像素={leftEdgeAlphaPixels}");
+
+            InvokeStatic(
+                typeof(MainWindow),
+                "TransformPremultipliedPixels",
+                sideFramePixels,
+                mirroredSideFramePixels,
+                RenderPixelWidth,
+                RenderPixelHeight,
+                mirrorMatrix);
+            var mirroredRightEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
+                .Count(y => mirroredSideFramePixels[
+                    y * displayStride +
+                    (RenderPixelWidth - 1) * 4 +
+                    3] >= 24);
+            Assert(mirroredRightEdgeAlphaPixels == leftEdgeAlphaPixels,
+                $"{frameInfo.Name} 经生产像素变换镜像到右侧后必须保留同样的" +
+                "支撑手臂边缘接触");
+        }
 
         foreach (var supportedFrameCount in new[] { 16, 24, ExpectedEdgePeekFrameCount })
         {
@@ -12288,6 +12348,67 @@ internal static partial class Program
                    "data.uVersion = NotifyIconVersion4",
                    StringComparison.Ordinal),
             "原生托盘必须通过Shell_NotifyIcon和主窗HWND工作，并在Explorer重启后恢复图标");
+        Assert(traySource.Contains(
+                   "TryGetTrayMenuScreenPoint(out var screenPoint)",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "GetCursorPos(out var cursorPoint)",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "Shell_NotifyIconGetRect(",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "Marshal.SizeOf<NotifyIconIdentifier>()",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "owner.PointFromScreen(screenPoint)",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "_menu.PlacementTarget = _owner",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "_menu.PlacementRectangle = new Rect(",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "PlacementMode.RelativePoint",
+                   StringComparison.Ordinal) &&
+               !traySource.Contains(
+                   "PlacementMode.MousePoint",
+                   StringComparison.Ordinal),
+            "托盘右键菜单必须以Win32光标屏幕坐标为锚点，转换为owner相对DIP后打开；" +
+            "光标查询失败时必须回退到通知图标矩形，不能使用无WPF鼠标事件时会" +
+            "回退到屏幕左上角的MousePoint");
+
+        var placementOwner = new Window
+        {
+            Width = 120,
+            Height = 90,
+            Left = -10000,
+            Top = -10000,
+            ShowActivated = false,
+            WindowStyle = WindowStyle.None
+        };
+        try
+        {
+            placementOwner.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var expectedPlacementPoint = new Point(27, 19);
+            var screenPoint = placementOwner.PointToScreen(expectedPlacementPoint);
+            var actualPlacementPoint = (Point)InvokeStatic(
+                trayType,
+                "ConvertTrayMenuPlacementPoint",
+                placementOwner,
+                screenPoint)!;
+            AssertClose(actualPlacementPoint.X, expectedPlacementPoint.X,
+                "托盘菜单屏幕坐标转换必须保留X方向DPI位置");
+            AssertClose(actualPlacementPoint.Y, expectedPlacementPoint.Y,
+                "托盘菜单屏幕坐标转换必须保留Y方向DPI位置");
+        }
+        finally
+        {
+            placementOwner.Close();
+        }
+
         Assert(!projectSource.Contains(
                    "Microsoft.WindowsDesktop.App.WindowsForms",
                    StringComparison.Ordinal) &&
@@ -19663,6 +19784,118 @@ internal static partial class Program
         PrepareWorkModeIdleState(window);
     }
 
+    private static void AssertCompletedTodoMovesToEndContract(MainWindow window)
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-todo-completed-order-{Guid.NewGuid():N}");
+        var todoPath = Path.Combine(tempDirectory, "todos.json");
+        var todoStore = new TodoStore(todoPath);
+        var originalTodoStore = GetField<TodoStore>(window, "_todoStore");
+        var todos = GetField<ObservableCollection<TodoItem>>(window, "_todos");
+        var originalTodos = todos.ToArray();
+        SetField(window, "_todoStore", todoStore);
+
+        try
+        {
+            todos.Clear();
+            var first = new TodoItem { Text = "第一项" };
+            var second = new TodoItem { Text = "第二项" };
+            var third = new TodoItem { Text = "第三项" };
+            var fourth = new TodoItem { Text = "第四项" };
+            todos.Add(first);
+            todos.Add(second);
+            todos.Add(third);
+            todos.Add(fourth);
+            var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+
+            var moveNotifications = 0;
+            NotifyCollectionChangedEventHandler collectionChanged = (_, eventArgs) =>
+            {
+                if (eventArgs.Action == NotifyCollectionChangedAction.Move)
+                {
+                    moveNotifications++;
+                }
+            };
+            todos.CollectionChanged += collectionChanged;
+            try
+            {
+                var secondCheckBox = new CheckBox
+                {
+                    DataContext = second,
+                    IsChecked = true
+                };
+                Invoke(
+                    todoWindow,
+                    "TodoCheckBox_Click",
+                    secondCheckBox,
+                    new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert(todos.SequenceEqual(new[] { first, third, fourth, second }) &&
+                       second.IsCompleted &&
+                       moveNotifications == 1,
+                    "真实勾选事件完成中间待办后必须只移动当前项到最后，" +
+                    "其他项相对顺序保持不变");
+
+                var persistedAfterFirstCompletion = todoStore.Load();
+                Assert(persistedAfterFirstCompletion.Select(item => item.Text)
+                           .SequenceEqual(new[] { "第一项", "第三项", "第四项", "第二项" }) &&
+                       persistedAfterFirstCompletion[^1].IsCompleted,
+                    "完成项自动移动后的最终顺序和完成状态必须立即持久化");
+
+                third.IsCompleted = true;
+                Invoke(window, "TodoWindow_TodoChanged", third);
+                Assert(todos.SequenceEqual(new[] { first, fourth, second, third }) &&
+                       moveNotifications == 2,
+                    "连续勾选时，新完成项必须追加到最底部，并保留先前完成项顺序");
+
+                var notificationsBeforeNoOp = moveNotifications;
+                third.Text = "已经在末尾的第三项";
+                Invoke(window, "TodoWindow_TodoChanged", third);
+                Assert(todos.SequenceEqual(new[] { first, fourth, second, third }) &&
+                       moveNotifications == notificationsBeforeNoOp,
+                    "完成项已经位于最后时不得产生无意义的二次 Move");
+
+                var persistedAfterNoOp = todoStore.Load();
+                Assert(persistedAfterNoOp[^1].Text == "已经在末尾的第三项" &&
+                       persistedAfterNoOp[^1].IsCompleted,
+                    "末项无需移动时仍必须保存最新状态");
+
+                second.IsCompleted = false;
+                Invoke(window, "TodoWindow_TodoChanged", second);
+                Assert(todos.SequenceEqual(new[] { first, fourth, second, third }) &&
+                       moveNotifications == notificationsBeforeNoOp,
+                    "取消完成只更新状态，不应覆盖用户当前的手动排序");
+
+                var persistedAfterReopen = todoStore.Load();
+                Assert(!persistedAfterReopen[2].IsCompleted &&
+                       persistedAfterReopen[3].IsCompleted,
+                    "取消完成后必须保留当前顺序并立即保存未完成状态");
+            }
+            finally
+            {
+                todos.CollectionChanged -= collectionChanged;
+            }
+        }
+        finally
+        {
+            SetField(window, "_todoStore", originalTodoStore);
+            todos.Clear();
+            foreach (var item in originalTodos)
+            {
+                todos.Add(item);
+            }
+
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // 临时持久化文件清理失败不应掩盖完成项排序契约结果。
+            }
+        }
+    }
+
     private static void AssertWorkModeRuntimeStateContract(MainWindow window)
     {
         PrepareWorkModeIdleState(window);
@@ -20011,13 +20244,18 @@ internal static partial class Program
                    StringComparison.Ordinal),
             "Left/right/bottom edge-peek must hide the work button; neither its " +
             "visibility logic nor its Click handler may offer an edge-exit entry path.");
-        Assert(loadEdgeFrames.Contains(
+        Assert(!loadEdgeFrames.Contains(
                    "string.Equals(pageNamePrefix, \"edge-left\"",
                    StringComparison.Ordinal) &&
-               loadEdgeFrames.Contains("Math.Max(0, frame.DestinationX)", StringComparison.Ordinal) &&
-               loadEdgeFrames.Contains("DisplayPixelWidth - frame.Width", StringComparison.Ordinal),
-            "The shared left/right side-peek sequence must be shifted wholly inside " +
-            "the runtime viewport so its supporting arms are never clipped.");
+               !loadEdgeFrames.Contains(
+                   "Math.Max(0, frame.DestinationX)",
+                   StringComparison.Ordinal) &&
+               !loadEdgeFrames.Contains(
+                   "DisplayPixelWidth - frame.Width",
+                   StringComparison.Ordinal),
+            "The shared left/right side-peek sequence must preserve the atlas " +
+            "destination metadata; shifting its transparent gutter at runtime " +
+            "creates the clipped supporting-arm seam.");
 
         PrepareWorkModeIdleState(window);
         var button = GetField<Button>(window, "WorkModeButton");
@@ -20698,10 +20936,12 @@ internal static partial class Program
         foreach (var edgeFrame in edgeLeftFrames.Cast<object>())
         {
             var info = GetSpriteFrameInfo(edgeFrame);
-            Assert(info.DestinationX >= 0 &&
+            Assert(info.DestinationX == -2 &&
+                   info.DestinationX + info.Width > 0 &&
                    info.DestinationX + info.Width <= displayPixelWidth,
-                $"Side-peek frame {info.Name} exceeds the {displayPixelWidth}px " +
-                $"viewport: x={info.DestinationX}, width={info.Width}.");
+                $"Side-peek frame {info.Name} must retain its -2px transparent " +
+                $"gutter while intersecting the {displayPixelWidth}px viewport: " +
+                $"x={info.DestinationX}, width={info.Width}.");
         }
 
         foreach (var edgeName in new[] { "Left", "Right", "Bottom" })

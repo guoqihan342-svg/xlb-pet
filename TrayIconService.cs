@@ -120,7 +120,7 @@ internal sealed class TrayIconService : IDisposable
             Foreground = MenuForegroundBrush,
             HasDropShadow = true,
             Padding = new Thickness(5),
-            Placement = PlacementMode.MousePoint,
+            Placement = PlacementMode.RelativePoint,
             StaysOpen = false,
             Template = CreateContextMenuTemplate()
         };
@@ -371,14 +371,72 @@ internal sealed class TrayIconService : IDisposable
             return;
         }
 
+        if (!TryGetTrayMenuScreenPoint(out var screenPoint))
+        {
+            // Both native anchor queries can transiently fail while Explorer
+            // or the input desktop is switching. An owner-relative fallback
+            // is still preferable to WPF's parentless (0,0) popup.
+            screenPoint = _owner.PointToScreen(
+                new Point(_owner.ActualWidth / 2, _owner.ActualHeight / 2));
+        }
+
+        var placementPoint = ConvertTrayMenuPlacementPoint(
+            _owner,
+            screenPoint);
+
         // Resetting IsOpen also moves an already-open menu to the latest
         // pointer location after a second tray right-click.
         _menu.IsOpen = false;
-        _menu.Placement = PlacementMode.MousePoint;
+        _menu.PlacementTarget = _owner;
+        _menu.PlacementRectangle = new Rect(
+            placementPoint,
+            new Size(0, 0));
+        _menu.Placement = PlacementMode.RelativePoint;
         _menu.HorizontalOffset = 0;
         _menu.VerticalOffset = 0;
         _menu.IsOpen = true;
     }
+
+    private bool TryGetTrayMenuScreenPoint(out Point screenPoint)
+    {
+        if (GetCursorPos(out var cursorPoint))
+        {
+            screenPoint = new Point(cursorPoint.X, cursorPoint.Y);
+            return true;
+        }
+
+        if (_windowHandle != IntPtr.Zero)
+        {
+            var identifier = new NotifyIconIdentifier
+            {
+                cbSize = checked(
+                    (uint)Marshal.SizeOf<NotifyIconIdentifier>()),
+                hWnd = _windowHandle,
+                uID = TrayIconId
+            };
+            if (Shell_NotifyIconGetRect(
+                    ref identifier,
+                    out var iconRectangle) == 0 &&
+                iconRectangle.Right > iconRectangle.Left &&
+                iconRectangle.Bottom > iconRectangle.Top)
+            {
+                screenPoint = new Point(
+                    iconRectangle.Left +
+                    (iconRectangle.Right - iconRectangle.Left) / 2d,
+                    iconRectangle.Top +
+                    (iconRectangle.Bottom - iconRectangle.Top) / 2d);
+                return true;
+            }
+        }
+
+        screenPoint = default;
+        return false;
+    }
+
+    private static Point ConvertTrayMenuPlacementPoint(
+        Window owner,
+        Point screenPoint) =>
+        owner.PointFromScreen(screenPoint);
 
     private void ExitItem_Click(object sender, RoutedEventArgs e)
     {
@@ -605,6 +663,11 @@ internal sealed class TrayIconService : IDisposable
         uint message,
         ref NotifyIconData data);
 
+    [DllImport("shell32.dll", SetLastError = true)]
+    private static extern int Shell_NotifyIconGetRect(
+        ref NotifyIconIdentifier identifier,
+        out NativeRect iconLocation);
+
     [DllImport(
         "shell32.dll",
         CharSet = CharSet.Unicode,
@@ -622,6 +685,10 @@ internal sealed class TrayIconService : IDisposable
         SetLastError = true)]
     private static extern uint RegisterWindowMessageW(
         string messageName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativePoint point);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -666,6 +733,31 @@ internal sealed class TrayIconService : IDisposable
         public uint dwInfoFlags;
         public Guid guidItem;
         public IntPtr hBalloonIcon;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NotifyIconIdentifier
+    {
+        public uint cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public Guid guidItem;
     }
 
     private readonly record struct IconEntry(
