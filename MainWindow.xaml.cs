@@ -2948,6 +2948,12 @@ public partial class MainWindow : Window
     private void WorkModeButton_Click(object sender, RoutedEventArgs e)
     {
         e.Handled = true;
+        if (_edgeDock != EdgeDock.None ||
+            !WorkModeButton.IsHitTestVisible)
+        {
+            return;
+        }
+
         DeferIdleSpritePageTrim();
         if (_workState == WorkState.Idle)
         {
@@ -3769,19 +3775,40 @@ public partial class MainWindow : Window
         }
 
         var workActive = _workState != WorkState.Idle;
-        var facingCompensation = PetFacingScale.ScaleX < 0 ? -1d : 1d;
+        var mirrored = PetFacingScale.ScaleX < 0;
+        var facingCompensation = mirrored ? -1d : 1d;
         if (WorkModeFacingCompensation.ScaleX != facingCompensation)
         {
             WorkModeFacingCompensation.ScaleX = facingCompensation;
         }
+        var iconAlignment = mirrored
+            ? HorizontalAlignment.Right
+            : HorizontalAlignment.Left;
+        if (WorkModeButton.HorizontalAlignment != iconAlignment)
+        {
+            WorkModeButton.HorizontalAlignment = iconAlignment;
+        }
         var canEnter = !workActive && CanEnterWorkMode();
         var todoOpenPending = _openTodoAfterWorkExitRequested ||
                               _todoOpenAfterWorkExitQueued;
+        // Preserve the existing work-dock exit path: ordinary edge-peek hides
+        // the idle sun, while a working pet keeps its moon available so the
+        // user can still return to rest without dragging away first.
+        var docked = _edgeDock != EdgeDock.None;
         var shouldShow = !todoOpenPending &&
+                         !docked &&
                          (workActive || canEnter);
-        var shouldEnable = canEnter ||
-                           (_workState == WorkState.Typing &&
-                            !_workExitRequested);
+        var shouldEnable = shouldShow &&
+                           (canEnter ||
+                            (_workState == WorkState.Typing &&
+                             !_workExitRequested));
+        var buttonVisibility = shouldShow
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (WorkModeButton.Visibility != buttonVisibility)
+        {
+            WorkModeButton.Visibility = buttonVisibility;
+        }
         var buttonOpacity = shouldShow ? 1d : 0d;
         if (WorkModeButton.Opacity != buttonOpacity)
         {
@@ -3806,13 +3833,9 @@ public partial class MainWindow : Window
         }
 
         var automationName = workActive ? "去睡觉" : "去打工";
-        if (!string.Equals(
-                WorkModeButton.Content as string,
-                automationName,
-                StringComparison.Ordinal))
-        {
-            WorkModeButton.Content = automationName;
-        }
+        var helpText = workActive
+            ? "月亮图标，点击让小鲁班回去休息"
+            : "太阳图标，点击让小鲁班去打工";
         if (!string.Equals(
                 AutomationProperties.GetName(WorkModeButton),
                 automationName,
@@ -3820,6 +3843,17 @@ public partial class MainWindow : Window
         {
             AutomationProperties.SetName(WorkModeButton, automationName);
         }
+        if (!string.Equals(
+                AutomationProperties.GetHelpText(WorkModeButton),
+                helpText,
+                StringComparison.Ordinal))
+        {
+            AutomationProperties.SetHelpText(WorkModeButton, helpText);
+        }
+
+        WorkModeButton.ToolTip = workActive
+            ? "月亮：去睡觉"
+            : "太阳：去打工";
     }
 
     private void UpdateEdgeDockAfterDrag()
@@ -4219,6 +4253,20 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
+        _edgeDock = dock;
+        CancelTodoOpenAfterEdgeRoamStop();
+        CancelTodoOpenAfterWorkExit();
+        if (_bubbleMode == BubbleMode.Todo)
+        {
+            SetBubbleMode(BubbleMode.None);
+        }
+        else if (_todoWindow.IsVisible)
+        {
+            // Todo and scheduled tasks share this owned panel. A docked pet
+            // must not leave either tab floating behind at its old position.
+            HideTodoWindowVisual();
+        }
+
         if (_activeClip is { } activeClip)
         {
             _activeClip = null;
@@ -4233,15 +4281,9 @@ public partial class MainWindow : Window
         }
 
         RequestIdleSpritePageTrim();
-        _edgeDock = dock;
-        // Side-edge contact should start its first peek immediately. Frame 001
-        // advances after one motion interval; only a completed side loop may
-        // hold frame 048 for the long remainder of the 10-second cycle.
-        // Bottom docking keeps its established rest-first timing.
-        _edgePeekFrameIndex = dock is EdgeDock.Left or EdgeDock.Right
-            ? 0
-            : restFrameIndex;
-        var entryFrame = frames[_edgePeekFrameIndex];
+        // Match the established v1.0.57 docking cadence: every supported edge
+        // first settles on the authored rest pose, then begins the peek cycle.
+        _edgePeekFrameIndex = restFrameIndex;
         var targetFacingScaleX = dock == EdgeDock.Right ? -1 : 1;
         if (Math.Abs(PetFacingScale.ScaleX - targetFacingScaleX) > 0.001)
         {
@@ -4258,9 +4300,9 @@ public partial class MainWindow : Window
 
         PetFacingScale.ScaleY = 1;
         _nextFrameBlendDuration = EdgeFrameBlendDuration;
-        ShowStableFrame(entryFrame);
+        ShowStableFrame(restFrame);
         if (_currentSpriteFrame is SpriteFrame displayedFrame &&
-            displayedFrame == entryFrame)
+            displayedFrame == restFrame)
         {
             StartEdgePeekFrameClockAt(Stopwatch.GetTimestamp());
         }

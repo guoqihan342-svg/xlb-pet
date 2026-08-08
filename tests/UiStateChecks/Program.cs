@@ -268,8 +268,8 @@ internal static partial class Program
                         () => AssertEdgeFrameSequenceContract(window));
                     RunCheck(nameof(AssertSupportedEdgeDockIntegration),
                         () => AssertSupportedEdgeDockIntegration(window));
-                    RunCheck(nameof(AssertTodoClosePreservesEdgePeek),
-                        () => AssertTodoClosePreservesEdgePeek(window));
+                    RunCheck(nameof(AssertEdgePeekClosesTaskPanel),
+                        () => AssertEdgePeekClosesTaskPanel(window));
                     return 0;
                 }
 
@@ -392,8 +392,8 @@ internal static partial class Program
                 RunCheck(nameof(AssertSnoreBubbleAnimationContract),
                     () => AssertSnoreBubbleAnimationContract(window));
                 RunCheck(nameof(AssertSupportedEdgeDockIntegration), () => AssertSupportedEdgeDockIntegration(window));
-                RunCheck(nameof(AssertTodoClosePreservesEdgePeek),
-                    () => AssertTodoClosePreservesEdgePeek(window));
+                RunCheck(nameof(AssertEdgePeekClosesTaskPanel),
+                    () => AssertEdgePeekClosesTaskPanel(window));
                 RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
@@ -1267,7 +1267,7 @@ internal static partial class Program
                             Margin = new Thickness(0, 9, 0, 0),
                              TextWrapping = TextWrapping.Wrap,
                              Text =
-                                "普通状态是自然双手打字。单击：画面保持不变；双击：立即 2 倍速，并在最近自然接缝切换认真表情，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续；拖到左/右/下边缘会保持打工并吸附，顶部不吸附。普通探头状态隐藏「去打工」。"
+                                "普通状态是自然双手打字。单击：画面保持不变；双击：立即 2 倍速，并在最近自然接缝切换认真表情，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续；拖到左/右/下边缘会保持打工并吸附，顶部不吸附。待机左上角显示萌太阳，打工时切换为萌月亮；普通探头状态隐藏太阳。"
                         },
                         new TextBlock
                         {
@@ -3789,9 +3789,7 @@ internal static partial class Program
         {
             var edgeContract = coldEdgeContracts[edgeContractIndex];
             var edgeFrames = GetField<Array>(window, edgeContract.FieldName);
-            var edgeEntryFrameIndex = edgeContract.Dock is "Left" or "Right"
-                ? 0
-                : edgeFrames.Length - 1;
+            var edgeEntryFrameIndex = edgeFrames.Length - 1;
             var edgeEntryFrame = edgeFrames.GetValue(edgeEntryFrameIndex)!;
             var edgePageName = GetSpriteFrameInfo(edgeEntryFrame).PageName;
             var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
@@ -3810,8 +3808,8 @@ internal static partial class Program
                     GetField<Image>(window, "PillowImage").Opacity == 1d &&
                     GetField<ScaleTransform>(window, "PetFacingScale").ScaleX ==
                     (edgeContract.Dock == "Right" ? -1 : 1),
-                $"进入{edgeContract.Dock}冷边缘页必须等待正确入口姿势，保留旧像素、冻结时钟；" +
-                "左右从第001帧立即探头，Bottom保留末帧休息，Right只镜像复用Left序列");
+                $"进入{edgeContract.Dock}冷边缘页必须等待末尾休息姿势，保留旧像素、冻结时钟；" +
+                "三边统一恢复v1.0.57的rest-first节奏，Right只镜像复用Left序列");
 
             var edgePrefetchTask = GetRawField(window, "_spritePagePrefetchTask") as Task;
             var edgeCancellation = GetRawField(window, "_spritePagePrefetchCancellation")
@@ -6114,6 +6112,7 @@ internal static partial class Program
         Assert(ReferenceEquals(leftFrames, rightFrames),
             "右侧探头必须镜像复用完整edge-left序列，不能维护另一套跳号帧");
 
+        var displayStride = RenderPixelWidth * 4;
         var sideFramePixels =
             new byte[RenderPixelWidth * RenderPixelHeight * 4];
         var mirroredSideFramePixels =
@@ -6131,35 +6130,11 @@ internal static partial class Program
                 $"左右探头帧必须保留2px透明gutter：{frameInfo.Name}");
             PrimeSpritePageForFrame(window, frame);
             InvokeOverload(window, "CopyFramePixels", frame, sideFramePixels);
-            var leftUpperGrip = GetLargestAlphaComponentTouchingHorizontalEdge(
-                sideFramePixels,
-                RenderPixelWidth,
-                RenderPixelHeight,
-                roiLeft: 0,
-                roiTop: 175,
-                roiRightExclusive: 100,
-                roiBottomExclusive: 270,
-                touchRight: false);
-            var leftLowerArm = GetLargestAlphaComponentTouchingHorizontalEdge(
-                sideFramePixels,
-                RenderPixelWidth,
-                RenderPixelHeight,
-                roiLeft: 0,
-                roiTop: 300,
-                roiRightExclusive: 200,
-                roiBottomExclusive: 400,
-                touchRight: false);
-            Assert(leftUpperGrip.Area >= 8000 &&
-                   leftUpperGrip.MinX == 0 &&
-                   leftUpperGrip.MaxX >= 95,
-                $"{frameInfo.Name} 的上方抓边手必须保持完整连通；" +
-                $"area={leftUpperGrip.Area}, x={leftUpperGrip.MinX}..{leftUpperGrip.MaxX}");
-            Assert(leftLowerArm.Area >= 12000 &&
-                   leftLowerArm.MinX <= 2 &&
-                   leftLowerArm.MaxX >= 175,
-                $"{frameInfo.Name} 的下方手掌和前臂必须从0..2px抗锯齿接触带" +
-                $"连续伸入人物主体；area={leftLowerArm.Area}, " +
-                $"x={leftLowerArm.MinX}..{leftLowerArm.MaxX}");
+            var leftEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
+                .Count(y => sideFramePixels[y * displayStride + 3] >= 24);
+            Assert(leftEdgeAlphaPixels >= 40,
+                $"{frameInfo.Name} 的下方支撑手臂必须连续接触左屏幕边缘；" +
+                $"当前有效边缘Alpha像素={leftEdgeAlphaPixels}");
 
             InvokeStatic(
                 typeof(MainWindow),
@@ -6169,30 +6144,14 @@ internal static partial class Program
                 RenderPixelWidth,
                 RenderPixelHeight,
                 mirrorMatrix);
-            var rightUpperGrip = GetLargestAlphaComponentTouchingHorizontalEdge(
-                mirroredSideFramePixels,
-                RenderPixelWidth,
-                RenderPixelHeight,
-                roiLeft: RenderPixelWidth - 100,
-                roiTop: 175,
-                roiRightExclusive: RenderPixelWidth,
-                roiBottomExclusive: 270,
-                touchRight: true);
-            var rightLowerArm = GetLargestAlphaComponentTouchingHorizontalEdge(
-                mirroredSideFramePixels,
-                RenderPixelWidth,
-                RenderPixelHeight,
-                roiLeft: RenderPixelWidth - 200,
-                roiTop: 300,
-                roiRightExclusive: RenderPixelWidth,
-                roiBottomExclusive: 400,
-                touchRight: true);
-            Assert(rightUpperGrip.Area == leftUpperGrip.Area &&
-                   rightLowerArm.Area == leftLowerArm.Area &&
-                   RenderPixelWidth - 1 - rightLowerArm.MaxX == leftLowerArm.MinX &&
-                   RenderPixelWidth - 1 - rightLowerArm.MinX == leftLowerArm.MaxX,
+            var mirroredRightEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
+                .Count(y => mirroredSideFramePixels[
+                    y * displayStride +
+                    (RenderPixelWidth - 1) * 4 +
+                    3] >= 24);
+            Assert(mirroredRightEdgeAlphaPixels == leftEdgeAlphaPixels,
                 $"{frameInfo.Name} 经生产像素变换镜像到右侧后必须保留同样的" +
-                "完整抓边手掌和前臂连通组件");
+                "支撑手臂边缘接触");
         }
 
         foreach (var supportedFrameCount in new[] { 16, 24, ExpectedEdgePeekFrameCount })
@@ -10258,12 +10217,11 @@ internal static partial class Program
 
         foreach (var edge in new[] { "Left", "Right", "Bottom" })
         {
-            var isSideEdge = edge is "Left" or "Right";
             var edgeFrames = edge is "Left" or "Right"
                 ? GetField<Array>(window, "_edgeLeftFrames")
                 : GetField<Array>(window, "_edgeBottomFrames");
             var restFrameIndex = edgeFrames.Length - 1;
-            var expectedEntryFrameIndex = isSideEdge ? 0 : restFrameIndex;
+            var expectedEntryFrameIndex = restFrameIndex;
             var fullyPeekedFrameIndex = edgeFrames.Length / 2 - 1;
             var edgeRestHold = (TimeSpan)InvokeStatic(
                 typeof(MainWindow),
@@ -10311,16 +10269,12 @@ internal static partial class Program
                        edgeFrames.GetValue(expectedEntryFrameIndex)) &&
                    deadline > edgeStartTimestamp &&
                    deadline != long.MaxValue &&
-                   ((isSideEdge &&
-                     !edgePeekHoldTimer.IsEnabled &&
-                     GetField<bool>(window, "_isVisualClockSubscribed")) ||
-                    (!isSideEdge &&
-                     edgePeekHoldTimer.IsEnabled &&
-                     !GetField<bool>(window, "_isVisualClockSubscribed"))) &&
+                   edgePeekHoldTimer.IsEnabled &&
+                   !GetField<bool>(window, "_isVisualClockSubscribed") &&
                    GetField<ScaleTransform>(window, "PetFacingScale").ScaleX ==
                    (edge == "Right" ? -1 : 1),
-                $"真实拖拽落点贴住{edge}边缘时必须使用对应入口节奏；" +
-                "左右在一帧内从第001姿势立即探头，Bottom保留末帧休息，右侧仅镜像左侧序列");
+                $"真实拖拽落点贴住{edge}边缘时必须从末尾休息姿势进入；" +
+                "三边统一恢复v1.0.57的rest-first节奏，静止时暂停Rendering，右侧仅镜像左侧序列");
 
             edgePeekHoldTimer.Stop();
             AdvanceEdgePeekForControlledClock(window, deadline);
@@ -10519,7 +10473,7 @@ internal static partial class Program
         PumpDispatcher(TimeSpan.FromMilliseconds(15));
     }
 
-    private static void AssertTodoClosePreservesEdgePeek(MainWindow window)
+    private static void AssertEdgePeekClosesTaskPanel(MainWindow window)
     {
         if (!window.IsVisible)
         {
@@ -10551,34 +10505,80 @@ internal static partial class Program
                 var edgeFrames = edge is "Left" or "Right"
                     ? GetField<Array>(window, "_edgeLeftFrames")
                     : GetField<Array>(window, "_edgeBottomFrames");
-                var entryFrameIndex = edge is "Left" or "Right"
-                    ? 0
-                    : edgeFrames.Length - 1;
+                var entryFrameIndex = edgeFrames.Length - 1;
                 var entryFrame = edgeFrames.GetValue(entryFrameIndex)!;
+                var showScheduledTasks = edge != "Left";
 
                 Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
+                Invoke(
+                    todoWindow,
+                    "SelectTaskPage",
+                    showScheduledTasks,
+                    false);
                 PumpDispatcher(TimeSpan.FromMilliseconds(20));
                 Assert(todoWindow.IsVisible &&
-                       GetField<object>(window, "_bubbleMode").ToString() == "Todo",
-                    $"{edge} 吸附回归的前置条件必须真实打开待办窗口");
+                       GetField<object>(window, "_bubbleMode").ToString() == "Todo" &&
+                       GetField<RadioButton>(
+                           todoWindow,
+                           showScheduledTasks
+                               ? "ScheduledTaskTabButton"
+                               : "TodoTabButton").IsChecked == true,
+                    $"{edge} 吸附回归的前置条件必须真实打开" +
+                    (showScheduledTasks ? "定时任务" : "待办事项") + "页面");
 
                 // Opening Todo can trim an unprotected edge page after earlier
                 // cache-pressure checks. Pin the exact entry pose only after
                 // the panel has completed that state transition.
                 PrimeSpritePageForFrame(window, entryFrame);
+                SetField(window, "_openTodoAfterEdgeRoamStopRequested", true);
+                Invoke(window, "QueueTodoOpenAfterEdgeRoamStop");
+                SetField(window, "_openTodoAfterWorkExitRequested", true);
+                Invoke(window, "QueueTodoOpenAfterWorkExit");
                 var edgeEntryTimestamp = Stopwatch.GetTimestamp();
                 Invoke(window, "EnterEdgePeek", GetNestedEnum("EdgeDock", edge));
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
                 var deadlineBeforeClose =
                     GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
-                Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
+                Assert(!todoWindow.IsVisible &&
+                       GetField<object>(window, "_bubbleMode").ToString() == "None" &&
+                       !GetField<bool>(
+                           window,
+                           "_openTodoAfterEdgeRoamStopRequested") &&
+                       !GetField<bool>(window, "_openTodoAfterWorkExitRequested") &&
+                       GetField<object>(window, "_edgeDock").ToString() == edge &&
                        deadlineBeforeClose > edgeEntryTimestamp &&
                        deadlineBeforeClose != long.MaxValue &&
                        GetRawField(window, "_activeClip") is null &&
-                       Equals(GetRawField(window, "_currentSpriteFrame"), entryFrame),
-                    $"待办打开时进入 {edge} 吸附必须从对应入口姿势取得视觉所有权");
+                       Equals(GetRawField(window, "_currentSpriteFrame"), entryFrame) &&
+                       GetField<DispatcherTimer>(
+                           window,
+                           "_edgePeekHoldTimer").IsEnabled &&
+                       !GetField<bool>(window, "_isVisualClockSubscribed"),
+                    $"进入 {edge} 吸附必须立即关闭任务面板、取消迟到重开请求，" +
+                    "并从v1.0.57末尾休息姿势取得视觉所有权；" +
+                    $"visible={todoWindow.IsVisible}, " +
+                    $"bubble={GetField<object>(window, "_bubbleMode")}, " +
+                    $"edge={GetField<object>(window, "_edgeDock")}, " +
+                    $"deadline={deadlineBeforeClose}/{edgeEntryTimestamp}, " +
+                    $"frame={Equals(GetRawField(window, "_currentSpriteFrame"), entryFrame)}, " +
+                    $"clip={GetRawField(window, "_activeClip") is not null}, " +
+                    $"hold={GetField<DispatcherTimer>(window, "_edgePeekHoldTimer").IsEnabled}, " +
+                    $"render={GetField<bool>(window, "_isVisualClockSubscribed")}, " +
+                    $"roamReq={GetField<bool>(window, "_openTodoAfterEdgeRoamStopRequested")}/" +
+                    $"{GetField<bool>(window, "_todoOpenAfterEdgeRoamStopQueued")}, " +
+                    $"workReq={GetField<bool>(window, "_openTodoAfterWorkExitRequested")}/" +
+                    $"{GetField<bool>(window, "_todoOpenAfterWorkExitQueued")}");
 
-                // ProcessOutsideTodoClose、关闭按钮、Alt+F4 和右键切换最终
-                // 都调用这一状态切换。直接验证共用终点可避免 CI 焦点时序噪声。
+                Invoke(window, "ProcessTodoOpenAfterEdgeRoamStop");
+                Invoke(window, "ProcessTodoOpenAfterWorkExit");
+                Assert(!todoWindow.IsVisible &&
+                       !GetField<bool>(window, "_todoOpenAfterEdgeRoamStopQueued") &&
+                       !GetField<bool>(window, "_todoOpenAfterWorkExitQueued"),
+                    $"{edge} 吸附后的迟到Dispatcher回调必须只清除队列标记，" +
+                    "不能重新打开待办或定时任务页面");
+
+                // The normal outside-close endpoint remains idempotent after
+                // docking has already closed the owned task panel.
                 Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
                 PumpDispatcher(TimeSpan.FromMilliseconds(10));
 
@@ -10602,7 +10602,7 @@ internal static partial class Program
                        Math.Abs(
                            facingScale.ScaleX - (edge == "Right" ? -1 : 1)) <=
                        0.000001,
-                    $"点击外部收起待办后必须保留 {edge} 吸附、朝向、边缘帧和视觉时钟，不能播放 todo-close 回待机");
+                    $"任务面板自动关闭后必须保留 {edge} 吸附、朝向、边缘帧和视觉时钟，不能播放 todo-close 回待机");
 
                 GetField<DispatcherTimer>(window, "_edgePeekHoldTimer").Stop();
                 AdvanceEdgePeekForControlledClock(window, preservedDeadline);
@@ -10611,7 +10611,7 @@ internal static partial class Program
                        preservedDeadline &&
                        edgeFrames.Cast<object>().Contains(
                            GetRawField(window, "_currentSpriteFrame")),
-                    $"收起待办后 {edge} 边缘动画必须继续推进，不能只留下僵死的吸附枚举");
+                    $"关闭任务面板后 {edge} 边缘动画必须继续推进，不能只留下僵死的吸附枚举");
 
                 Invoke(window, "ExitEdgePeek", false, true);
             }
@@ -11936,7 +11936,8 @@ internal static partial class Program
                 window,
                 petViewbox)!;
             var todoEdgeFrames = GetField<Array>(window, "_edgeLeftFrames");
-            var todoEdgeEntryFrame = todoEdgeFrames.GetValue(0)!;
+            var todoEdgeEntryFrame =
+                todoEdgeFrames.GetValue(todoEdgeFrames.Length - 1)!;
             PrimeSpritePageForFrame(window, todoEdgeEntryFrame);
             var todoWindowBounds = (Rect)Invoke(
                 window,
@@ -11970,34 +11971,18 @@ internal static partial class Program
             var todoEdgeDeadline =
                 GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
             Assert(todoEdgeDeadline > todoEdgeStartTimestamp &&
-                   todoEdgeDeadline != long.MaxValue,
-                "Todo 打开时边缘探头必须从第一帧立即建立有限的绝对时间截止点");
-            Assert(todoWindow.IsVisible &&
-                   GetField<object>(window, "_bubbleMode").ToString() == "Todo" &&
-                   todoEdgeFrames.Cast<object>().Contains(
-                       GetField<object>(window, "_currentSpriteFrame")),
-                "Todo 打开时边缘动画必须立即显示探头序列，同时待办窗口继续可见");
+                   todoEdgeDeadline != long.MaxValue &&
+                   !todoWindow.IsVisible &&
+                   GetField<object>(window, "_bubbleMode").ToString() == "None" &&
+                   Equals(
+                       GetField<object>(window, "_currentSpriteFrame"),
+                       todoEdgeEntryFrame) &&
+                   GetField<DispatcherTimer>(
+                       window,
+                       "_edgePeekHoldTimer").IsEnabled &&
+                   !GetField<bool>(window, "_isVisualClockSubscribed"),
+                "Todo 打开时拖到左边缘必须自动关闭任务面板，并恢复v1.0.57末帧休息入口");
 
-            SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "Left"));
-            var inFlightEdgeTimestamp = Stopwatch.GetTimestamp();
-            SetField(window, "_edgePeekFrameDeadlineTimestamp", inFlightEdgeTimestamp);
-            AdvanceEdgePeekForControlledClock(window, inFlightEdgeTimestamp);
-            Assert(GetField<object>(window, "_edgeDock").ToString() == "Left" &&
-                   GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
-                       inFlightEdgeTimestamp,
-                "Todo 打开时在途边缘 Tick 必须继续推进而不是清理探头状态");
-            Assert(todoWindow.IsVisible &&
-                   GetField<object>(window, "_bubbleMode").ToString() == "Todo" &&
-                   todoEdgeFrames.Cast<object>().Contains(
-                       GetField<object>(window, "_currentSpriteFrame")),
-                "Todo 打开时推进边缘 Tick 后仍须保持待办窗口和边缘序列");
-
-            todoWindow.Close();
-            PumpDispatcher(TimeSpan.FromMilliseconds(30));
-            Assert(!todoWindow.IsVisible,
-                "Alt+F4/系统关闭待办窗口时应取消销毁并安全隐藏");
-            Assert(GetField<object>(window, "_bubbleMode").ToString() == "None",
-                "Alt+F4 收起后 MainWindow 的 BubbleMode 必须同步为 None");
             var preservedTodoEdgeDeadline =
                 GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
             Assert(GetRawField(window, "_activeClip") is null &&
@@ -12010,17 +11995,18 @@ internal static partial class Program
                     GetField<DispatcherTimer>(
                         window,
                         "_edgePeekHoldTimer").IsEnabled),
-                "已吸附时收起 Todo 只能隐藏面板，必须保留边缘探头状态、帧和绝对时钟");
+                "自动关闭 Todo 后必须保留边缘探头状态、帧和绝对时钟");
+            GetField<DispatcherTimer>(window, "_edgePeekHoldTimer").Stop();
             AdvanceEdgePeekForControlledClock(window, preservedTodoEdgeDeadline);
             Assert(GetField<object>(window, "_edgeDock").ToString() == "Left" &&
                    GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
                    preservedTodoEdgeDeadline,
-                "已吸附时收起 Todo 后边缘探头必须继续推进，不能回到待机或停在僵死帧");
+                "自动关闭 Todo 后边缘探头必须继续推进，不能回到待机或停在僵死帧");
 
             Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(todoWindow.IsVisible,
-                "Alt+F4 收起后应能再次复用同一个 TodoWindow 成功打开");
+                "贴边自动关闭后应能再次复用同一个 TodoWindow 成功打开");
             Assert(ReferenceEquals(todoWindow.Owner, window),
                 "重新打开后 Owned Window 关系必须保持");
             Assert(GetField<object>(window, "_edgeDock").ToString() == "None",
@@ -12334,6 +12320,18 @@ internal static partial class Program
             appSource,
             "TrayIconService_ExitRequested");
         var disposeMethod = traySource;
+        var queueTrayMenu = ExtractPrivateMethodSource(
+            traySource,
+            "QueueTrayMenu");
+        var showQueuedTrayMenu = ExtractPrivateMethodSource(
+            traySource,
+            "ShowQueuedTrayMenu");
+        var menuClosed = ExtractPrivateMethodSource(
+            traySource,
+            "Menu_Closed");
+        var ownerDeactivated = ExtractPrivateMethodSource(
+            traySource,
+            "Owner_Deactivated");
 
         var mutexAcquisition = startupMethod.IndexOf(
             "_singleInstanceMutex.WaitOne(0)",
@@ -12369,8 +12367,15 @@ internal static partial class Program
                    StringComparison.Ordinal) &&
                 traySource.Contains(
                    "MenuSelectionBorderBrush",
-                   StringComparison.Ordinal),
-            "托盘菜单必须保留微软雅黑、萌橘色高亮和“退出小鲁班”，点击后只发布正常退出请求");
+                   StringComparison.Ordinal) &&
+                traySource.Contains(
+                    "HorizontalAlignment.Left",
+                    StringComparison.Ordinal) &&
+                traySource.Contains(
+                    "UseLayoutRounding = true",
+                    StringComparison.Ordinal),
+            "托盘菜单必须保留微软雅黑、萌橘色高亮、左对齐整像素布局和“退出小鲁班”，" +
+            "点击后只发布正常退出请求");
         Assert(appXaml.Contains(
                    "ShutdownMode=\"OnMainWindowClose\"",
                    StringComparison.Ordinal) &&
@@ -12399,6 +12404,9 @@ internal static partial class Program
                disposeMethod.Contains(
                     "_exitItem.Click -= ExitItem_Click",
                    StringComparison.Ordinal) &&
+               disposeMethod.Contains(
+                    "_owner.Deactivated -= Owner_Deactivated",
+                   StringComparison.Ordinal) &&
                exitMethod.Contains(
                    "trayIconService.ExitRequested -=",
                    StringComparison.Ordinal) &&
@@ -12425,8 +12433,36 @@ internal static partial class Program
                    "data.uVersion = NotifyIconVersion4",
                    StringComparison.Ordinal),
             "原生托盘必须通过Shell_NotifyIcon和主窗HWND工作，并在Explorer重启后恢复图标");
-        Assert(traySource.Contains(
-                   "TryGetTrayMenuScreenPoint(out var screenPoint)",
+        var foregroundIndex = showQueuedTrayMenu.IndexOf(
+            "SetForegroundWindow(_windowHandle)",
+            StringComparison.Ordinal);
+        var openIndex = showQueuedTrayMenu.IndexOf(
+            "_menu.IsOpen = true",
+            StringComparison.Ordinal);
+        Assert(queueTrayMenu.Contains(
+                   "TryGetTrayMenuScreenPoint(preferCursor, out var screenPoint)",
+                   StringComparison.Ordinal) &&
+               queueTrayMenu.Contains("_menuOpenQueued", StringComparison.Ordinal) &&
+               queueTrayMenu.Contains(
+                   "DispatcherPriority.Input",
+                   StringComparison.Ordinal) &&
+               foregroundIndex >= 0 &&
+               openIndex > foregroundIndex &&
+               !showQueuedTrayMenu.Contains(
+                   "_menu.IsOpen = false",
+                   StringComparison.Ordinal) &&
+               traySource.Contains(
+                   "_owner.Deactivated += Owner_Deactivated",
+                   StringComparison.Ordinal) &&
+               ownerDeactivated.Contains(
+                   "_menu.IsOpen = false",
+                   StringComparison.Ordinal) &&
+               menuClosed.Contains(
+                   "Shell_NotifyIconW(NimSetFocus",
+                   StringComparison.Ordinal) &&
+               menuClosed.Contains("PostMessageW(", StringComparison.Ordinal) &&
+               !traySource.Contains(
+                   "_owner.PointToScreen(",
                    StringComparison.Ordinal) &&
                traySource.Contains(
                    "GetCursorPos(out var cursorPoint)",
@@ -12453,8 +12489,9 @@ internal static partial class Program
                    "PlacementMode.MousePoint",
                    StringComparison.Ordinal),
             "托盘右键菜单必须以Win32光标屏幕坐标为锚点，转换为owner相对DIP后打开；" +
-            "光标查询失败时必须回退到通知图标矩形，不能使用无WPF鼠标事件时会" +
-            "回退到屏幕左上角的MousePoint");
+            "原生回调必须合并到Input Dispatcher，前台化owner后只打开一次；" +
+            "外点/失活必须关闭，关闭后用NIM_SETFOCUS与WM_NULL归还通知区焦点；" +
+            "两种原生锚点都失败时本次不打开，不能乱跳到桌宠中心或MousePoint");
 
         var placementOwner = new Window
         {
@@ -17429,14 +17466,30 @@ internal static partial class Program
             "边缘序列必须只从左/下独立smooth分页动态加载，右侧镜像复用左侧；" +
             "顶部状态、分页与枚举分支必须彻底移除，同时允许16/24/48等四阶段长度");
         Assert(enterEdgePeek.Contains(
+                   "_edgePeekFrameIndex = restFrameIndex",
+                   StringComparison.Ordinal) &&
+               !enterEdgePeek.Contains(
                    "dock is EdgeDock.Left or EdgeDock.Right",
                    StringComparison.Ordinal) &&
-               enterEdgePeek.Contains("? 0", StringComparison.Ordinal) &&
-               enterEdgePeek.Contains(": restFrameIndex", StringComparison.Ordinal) &&
                enterEdgePeek.Contains(
-                   "var entryFrame = frames[_edgePeekFrameIndex]",
+                   "ShowStableFrame(restFrame)",
                    StringComparison.Ordinal) &&
-               enterEdgePeek.Contains("ShowStableFrame(entryFrame)", StringComparison.Ordinal) &&
+               enterEdgePeek.Contains("_edgeDock = dock", StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(
+                   "CancelTodoOpenAfterEdgeRoamStop()",
+                   StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(
+                   "CancelTodoOpenAfterWorkExit()",
+                   StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(
+                   "if (_bubbleMode == BubbleMode.Todo)",
+                   StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(
+                   "SetBubbleMode(BubbleMode.None)",
+                   StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(
+                   "HideTodoWindowVisual()",
+                   StringComparison.Ordinal) &&
                mainSource.Contains(
                    "new DispatcherTimer(DispatcherPriority.Render)",
                    StringComparison.Ordinal) &&
@@ -17479,7 +17532,8 @@ internal static partial class Program
                    "while (timestamp >= _edgePeekFrameDeadlineTimestamp",
                    StringComparison.Ordinal) <
                advanceEdgePeek.IndexOf("ShowStableFrame(targetFrame)", StringComparison.Ordinal),
-            "左右探头必须从第001帧立即入场、底边保留末帧休息进入，冷页显示前冻结，随后按绝对时间单向闭环且每次回调只提交最终姿势；" +
+            "左右及底边必须恢复v1.0.57末帧休息入口，贴边前同步关闭任务面板并取消延迟重开；" +
+            "冷页显示前冻结，随后按绝对时间单向闭环且每次回调只提交最终姿势；" +
             "两个长静止端点必须暂停Rendering并由低频hold timer唤醒，退出与关闭必须清理timer；" +
             "已失败分页必须安全终止而不能long.MaxValue永久空转");
         Assert(mainSource.Contains(
@@ -18494,51 +18548,56 @@ internal static partial class Program
             .Value;
 
         Assert(Attribute("FontFamily") == "Microsoft YaHei" &&
-               Attribute("Width") == "92" &&
-               Attribute("Height") == "28" &&
-               Attribute("Content") == "去打工" &&
+               Attribute("Width") == "42" &&
+               Attribute("Height") == "42" &&
+               Attribute("Margin") == "6,6,6,0" &&
+               Attribute("HorizontalAlignment") == "Left" &&
+               Attribute("Content") is null &&
                Attribute("Tag") == "Idle" &&
+               Attribute("Visibility") == "Collapsed" &&
                Attribute("Click") == "WorkModeButton_Click",
-            "Work mode must use the isolated Microsoft YaHei 92x28 on-pet button " +
-            "with its dedicated click handler.");
-        var chrome = workButton
+            "Work mode must use a 42x42 text-free icon hit target at the pet's " +
+            "visual top-left with its dedicated click handler.");
+        var iconRoot = workButton
             .Descendants()
             .Single(element =>
-                element.Name.LocalName == "Border" &&
+                element.Name.LocalName == "Grid" &&
                 element.Attributes().Any(attribute =>
                     attribute.Name.LocalName == "Name" &&
-                    attribute.Value == "WorkButtonChrome"));
-        Assert(chrome.Attributes().Any(attribute =>
-                   attribute.Name.LocalName == "CornerRadius" &&
-                   attribute.Value == "14") &&
-               chrome.Descendants().Any(element =>
-                   element.Name.LocalName == "LinearGradientBrush") &&
-               workButton.Descendants().Any(element =>
-                    element.Name.LocalName == "Path") &&
+                    attribute.Value == "WorkIconRoot"));
+        var namedIcons = workButton
+            .Descendants()
+            .Where(element =>
+                element.Name.LocalName == "Viewbox" &&
+                element.Attributes().Any(attribute =>
+                    attribute.Name.LocalName == "Name" &&
+                    attribute.Value is "SunIcon" or "MoonIcon"))
+            .ToArray();
+        Assert(iconRoot.Attributes().Any(attribute =>
+                   attribute.Name.LocalName == "Background" &&
+                   attribute.Value == "Transparent") &&
+               namedIcons.Length == 2 &&
+               namedIcons.All(icon => icon.Attributes().Any(attribute =>
+                   attribute.Name.LocalName == "Width" &&
+                   attribute.Value == "32")) &&
                workButton.Descendants().Count(element =>
-                    element.Name.LocalName == "TextBlock" &&
-                    element.Attributes().Any(attribute =>
-                        attribute.Name.LocalName == "FontFamily" &&
-                        attribute.Value == "Microsoft YaHei")) == 1 &&
-               workButton.Descendants().Any(element =>
-                   element.Name.LocalName == "TextBlock" &&
-                   element.Attributes().Any(attribute =>
-                       attribute.Name.LocalName == "Text" &&
-                       attribute.Value == "{TemplateBinding Content}")),
-            "Work mode button must remain a cute fully rounded capsule with its " +
-            "own icon and one atomic YaHei content label.");
-        Assert(workButton.Descendants().Any(element =>
-                   element.Name.LocalName == "TextBlock" &&
-                   element.Attributes().Any(attribute =>
-                       attribute.Name.LocalName == "Text" &&
-                       attribute.Value == "{TemplateBinding Content}")) &&
+                   element.Name.LocalName == "TextBlock") == 0 &&
+               workButton.Descendants().Count(element =>
+                   element.Name.LocalName == "Path") >= 5 &&
                !workButton.Descendants().Any(element =>
-                   element.Name.LocalName == "DataTrigger" &&
+                   element.Name.LocalName == "DropShadowEffect"),
+            "Work mode must use cute code-native sun/moon vectors without text, " +
+            "bitmap scaling, or transparent-window shadow effects.");
+        Assert(workButton.Descendants().Any(element =>
+                   element.Name.LocalName == "Trigger" &&
+                   element.Attributes().Any(attribute =>
+                       attribute.Name.LocalName == "Property" &&
+                       attribute.Value == "Tag") &&
                    element.Attributes().Any(attribute =>
                        attribute.Name.LocalName == "Value" &&
                        attribute.Value == "Working")),
-            "Work mode labels must switch through one Content value so the old and " +
-            "new text cannot cross-fade or flash together.");
+            "The icon template must switch atomically from sun to moon through " +
+            "the existing Idle/Working Tag, with no old/new text flash.");
 
         var protectedFiles = new[]
         {
@@ -20071,95 +20130,6 @@ internal static partial class Program
         }
     }
 
-    private static (int Area, int MinX, int MaxX)
-        GetLargestAlphaComponentTouchingHorizontalEdge(
-            byte[] pixels,
-            int pixelWidth,
-            int pixelHeight,
-            int roiLeft,
-            int roiTop,
-            int roiRightExclusive,
-            int roiBottomExclusive,
-            bool touchRight)
-    {
-        const byte alphaThreshold = 24;
-        const int contactBandWidth = 6;
-        Assert(pixelWidth > 0 && pixelHeight > 0 &&
-               pixels.Length == pixelWidth * pixelHeight * 4,
-            "边缘连通组件检查需要完整的Pbgra32像素画布");
-        Assert(roiLeft >= 0 && roiTop >= 0 &&
-               roiRightExclusive <= pixelWidth &&
-               roiBottomExclusive <= pixelHeight &&
-               roiLeft < roiRightExclusive && roiTop < roiBottomExclusive,
-            "边缘连通组件ROI必须位于像素画布内");
-
-        var visited = new bool[pixelWidth * pixelHeight];
-        var pending = new Queue<int>();
-        var bestArea = 0;
-        var bestMinX = -1;
-        var bestMaxX = -1;
-        for (var startY = roiTop; startY < roiBottomExclusive; startY++)
-        {
-            for (var startX = roiLeft; startX < roiRightExclusive; startX++)
-            {
-                var startIndex = startY * pixelWidth + startX;
-                if (visited[startIndex] ||
-                    pixels[startIndex * 4 + 3] < alphaThreshold)
-                {
-                    continue;
-                }
-
-                visited[startIndex] = true;
-                pending.Enqueue(startIndex);
-                var area = 0;
-                var minX = startX;
-                var maxX = startX;
-                var touchesContactBand = false;
-                while (pending.Count > 0)
-                {
-                    var index = pending.Dequeue();
-                    var y = index / pixelWidth;
-                    var x = index - y * pixelWidth;
-                    area++;
-                    minX = Math.Min(minX, x);
-                    maxX = Math.Max(maxX, x);
-                    touchesContactBand |= touchRight
-                        ? x >= pixelWidth - contactBandWidth
-                        : x < contactBandWidth;
-
-                    for (var neighborY = Math.Max(roiTop, y - 1);
-                         neighborY <= Math.Min(roiBottomExclusive - 1, y + 1);
-                         neighborY++)
-                    {
-                        for (var neighborX = Math.Max(roiLeft, x - 1);
-                             neighborX <= Math.Min(roiRightExclusive - 1, x + 1);
-                             neighborX++)
-                        {
-                            var neighborIndex = neighborY * pixelWidth + neighborX;
-                            if (visited[neighborIndex] ||
-                                pixels[neighborIndex * 4 + 3] < alphaThreshold)
-                            {
-                                continue;
-                            }
-
-                            visited[neighborIndex] = true;
-                            pending.Enqueue(neighborIndex);
-                        }
-                    }
-                }
-
-                if (touchesContactBand && area > bestArea)
-                {
-                    bestArea = area;
-                    bestMinX = minX;
-                    bestMaxX = maxX;
-                }
-            }
-        }
-
-        return (bestArea, bestMinX, bestMaxX);
-    }
-
     private static void AssertWorkModeRuntimeStateContract(MainWindow window)
     {
         PrepareWorkModeIdleState(window);
@@ -20173,10 +20143,31 @@ internal static partial class Program
 
         Assert((bool)Invoke(window, "CanEnterWorkMode")! &&
                button.IsEnabled && button.IsHitTestVisible &&
+               button.Visibility == Visibility.Visible &&
                button.Opacity > 0.99 &&
                string.Equals(button.Tag as string, "Idle", StringComparison.Ordinal) &&
-               string.Equals(button.Content as string, "去打工", StringComparison.Ordinal),
-            "The work button must be available only at the fully settled idle pose.");
+               button.Content is null &&
+               string.Equals(
+                   AutomationProperties.GetName(button),
+                   "去打工",
+                   StringComparison.Ordinal),
+            "The sun icon must be available only at the fully settled idle pose.");
+
+        var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
+        var iconFacingCompensation = GetField<ScaleTransform>(
+            window,
+            "WorkModeFacingCompensation");
+        facingScale.ScaleX = -1;
+        Invoke(window, "RefreshWorkModeButton");
+        Assert(button.HorizontalAlignment == HorizontalAlignment.Right &&
+               Math.Abs(iconFacingCompensation.ScaleX + 1d) <= 0.000001,
+            "人物水平镜像时图标布局必须换到父画布右侧并反向补偿，" +
+            "最终仍固定在屏幕视觉左上角且太阳脸不倒转");
+        facingScale.ScaleX = 1;
+        Invoke(window, "RefreshWorkModeButton");
+        Assert(button.HorizontalAlignment == HorizontalAlignment.Left &&
+               Math.Abs(iconFacingCompensation.ScaleX - 1d) <= 0.000001,
+            "人物恢复正向后太阳必须回到画布左侧并清除镜像补偿");
 
         SetField(window, "_isReminderActive", true);
         Assert(!(bool)Invoke(window, "CanEnterWorkMode")!,
@@ -20218,7 +20209,11 @@ internal static partial class Program
                !GetField<bool>(window, "_isSnoreBubbleAnimating") &&
                !GetField<DispatcherTimer>(window, "_automaticTimer").IsEnabled &&
                string.Equals(button.Tag as string, "Working", StringComparison.Ordinal) &&
-               string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal),
+               button.Content is null &&
+               string.Equals(
+                   AutomationProperties.GetName(button),
+                   "去睡觉",
+                   StringComparison.Ordinal),
             "Entering work must atomically stop idle breathing, snore, and automatic activity: " +
             $"state={GetRawField(window, "_workState")}, " +
             $"clip={GetProperty<string>(GetField<object>(window, "_activeClip"), "ActionName")}, " +
@@ -20270,11 +20265,16 @@ internal static partial class Program
             GetRawField(window, "_workState")?.ToString();
         Assert(GetField<bool>(window, "_openTodoAfterWorkExitRequested") &&
                !todoWindow.IsVisible &&
+               button.Visibility == Visibility.Collapsed &&
                button.Opacity < 0.01 &&
                !button.IsHitTestVisible &&
-               string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal) &&
+               button.Content is null &&
+               string.Equals(
+                   AutomationProperties.GetName(button),
+                   "去睡觉",
+                   StringComparison.Ordinal) &&
                stateAfterRightClick is "Typing" or "Exiting",
-            "Right-click must hide the 去睡觉 control immediately, " +
+            "Right-click must hide the moon control immediately, " +
             "and keep Todo hidden until work exit completes.");
 
         if (string.Equals(stateAfterRightClick, "Typing", StringComparison.Ordinal))
@@ -20296,9 +20296,14 @@ internal static partial class Program
                GetSpriteFrameInfo(GetField<object>(window, "_currentSpriteFrame")).Name ==
                    GetSpriteFrameInfo(idleFrame).Name &&
                !todoWindow.IsVisible &&
+               button.Visibility == Visibility.Collapsed &&
                button.Opacity < 0.01 &&
                !button.IsHitTestVisible &&
-               string.Equals(button.Content as string, "去打工", StringComparison.Ordinal),
+               button.Content is null &&
+               string.Equals(
+                   AutomationProperties.GetName(button),
+                   "去打工",
+                   StringComparison.Ordinal),
             "Completing the reverse work transition must publish logical idle while " +
             "keeping the return-to-work control hidden until deferred Todo opens.");
         PumpDispatcher(TimeSpan.FromMilliseconds(80));
@@ -20660,9 +20665,7 @@ internal static partial class Program
             var edgeFrames = edgeName is "Left" or "Right"
                 ? edgeLeftFrames
                 : GetField<Array>(window, "_edgeBottomFrames");
-            var entryFrameIndex = edgeName is "Left" or "Right"
-                ? 0
-                : edgeFrames.Length - 1;
+            var entryFrameIndex = edgeFrames.Length - 1;
             PrimeSpritePageForFrame(
                 window,
                 edgeFrames.GetValue(entryFrameIndex)!);
@@ -20726,6 +20729,15 @@ internal static partial class Program
             StringComparison.Ordinal)
                 ? "Idle"
                 : "Working";
+        var expectedVisibility = expectedOpacity > 0.5
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        var expectedHelpText = expectedTag == "Idle"
+            ? "太阳图标，点击让小鲁班去打工"
+            : "月亮图标，点击让小鲁班回去休息";
+        _ = button.ApplyTemplate();
+        var sunIcon = button.Template.FindName("SunIcon", button) as FrameworkElement;
+        var moonIcon = button.Template.FindName("MoonIcon", button) as FrameworkElement;
         var actualState = GetRawField(window, "_workState")?.ToString();
         Assert(string.Equals(
                    actualState,
@@ -20735,22 +20747,34 @@ internal static partial class Program
                    button.Tag as string,
                    expectedTag,
                    StringComparison.Ordinal) &&
-               string.Equals(
-                   button.Content as string,
-                   expectedContent,
-                   StringComparison.Ordinal) &&
+               button.Content is null &&
                string.Equals(
                    AutomationProperties.GetName(button),
                    expectedContent,
                    StringComparison.Ordinal) &&
+               string.Equals(
+                   AutomationProperties.GetHelpText(button),
+                   expectedHelpText,
+                   StringComparison.Ordinal) &&
+               button.Visibility == expectedVisibility &&
                Math.Abs(button.Opacity - expectedOpacity) <= 0.001 &&
                button.IsEnabled == expectedIsEnabled &&
-               button.IsHitTestVisible == expectedIsHitTestVisible,
-            $"{phase} work-button contract mismatch: " +
+               button.IsHitTestVisible == expectedIsHitTestVisible &&
+               sunIcon is not null && moonIcon is not null &&
+               sunIcon.Visibility ==
+                   (expectedTag == "Idle"
+                       ? Visibility.Visible
+                       : Visibility.Collapsed) &&
+               moonIcon.Visibility ==
+                   (expectedTag == "Working"
+                       ? Visibility.Visible
+                       : Visibility.Collapsed),
+            $"{phase} work-icon contract mismatch: " +
             $"state={actualState}/{expectedState}, " +
             $"tag={button.Tag}/{expectedTag}, " +
-            $"content={button.Content}/{expectedContent}, " +
+            $"content={button.Content}/null, " +
             $"automation={AutomationProperties.GetName(button)}/{expectedContent}, " +
+            $"visibility={button.Visibility}/{expectedVisibility}, " +
             $"opacity={button.Opacity:F3}/{expectedOpacity:F3}, " +
             $"enabled={button.IsEnabled}/{expectedIsEnabled}, " +
             $"hit={button.IsHitTestVisible}/{expectedIsHitTestVisible}.");

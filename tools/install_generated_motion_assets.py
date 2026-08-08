@@ -71,30 +71,15 @@ EDGE_PEEK_REVEAL_OFFSETS = {
     "top": (18, 10, 0, 10),
     "bottom": (24, 12, 0, 12),
 }
-# The side-peek source keeps both gripping hands on the boundary while the
-# head and torso lean independently.  Translating the whole sprite clips the
-# hands and the old scanline fill stretched sleeve colours into visible bands.
-# These build-time masks retain the authored contact anatomy instead.  The
-# opposite edge mirrors this same left-facing sequence at runtime.
-EDGE_LEFT_CONTACT_ALPHA_THRESHOLD = 8
-EDGE_LEFT_CONTACT_SKIN_COMPONENT_MIN_AREA = 40
-EDGE_LEFT_CONTACT_SKIN_DILATION = 7
-EDGE_LEFT_CONTACT_SLEEVE_COMPONENT_MIN_AREA = 100
-EDGE_LEFT_CONTACT_SLEEVE_DILATION = 13
-EDGE_LEFT_CONTACT_HAND_ELLIPSES = (
-    (17, 242, 34, 37),
-    (17, 379, 39, 43),
-)
-EDGE_LEFT_CONTACT_FOREARM_POLYGON = (
-    (20, 337),
-    (75, 345),
-    (170, 370),
-    (175, 420),
-    (130, 435),
-    (35, 430),
-    (0, 410),
-    (0, 355),
-)
+# The side-peek artwork ends with a short curved sleeve/body tail.  During the
+# deepest reveal that curve starts a few pixels inside the runtime canvas,
+# exposing a transparent wedge directly below the lower gripping hand.  The
+# opposite edge mirrors this same left-facing sequence, so repairing this one
+# contact strip fixes both sides without changing the authored source sheet.
+EDGE_LEFT_SLEEVE_TAIL_ROWS = 50
+EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS = 2
+EDGE_LEFT_SLEEVE_MAX_GAP = 24
+EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD = 24
 # The older action sheets use several different head/body proportions. A
 # single brim target either enlarges the head or makes the standing body pop
 # shorter. These per-group targets keep every action visually aligned.
@@ -459,144 +444,61 @@ def translate_rgba_without_wrap(
     return canvas
 
 
-def ellipse_mask(
-    width: int,
-    height: int,
-    center_x: int,
-    center_y: int,
-    radius_x: int,
-    radius_y: int,
-) -> np.ndarray:
-    """Return a boolean ellipse without resampling source artwork."""
+def repair_left_edge_sleeve_continuation(frame: Image.Image) -> Image.Image:
+    """Continue the lower purple sleeve through the left screen boundary.
 
-    y_coordinates, x_coordinates = np.ogrid[:height, :width]
-    return (
-        ((x_coordinates - center_x) / radius_x) ** 2
-        + ((y_coordinates - center_y) / radius_y) ** 2
-        <= 1
-    )
-
-
-def components_touching_left_contact(
-    seed: np.ndarray,
-    *,
-    minimum_area: int,
-    maximum_left: int,
-) -> np.ndarray:
-    """Keep substantial seed components connected to the screen boundary."""
-
-    component_count, labels, statistics, _ = cv2.connectedComponentsWithStats(
-        seed.astype(np.uint8),
-        connectivity=8,
-    )
-    selected = [
-        component
-        for component in range(1, component_count)
-        if statistics[component, cv2.CC_STAT_AREA] >= minimum_area
-        and statistics[component, cv2.CC_STAT_LEFT] <= maximum_left
-    ]
-    if not selected:
-        return np.zeros(seed.shape, dtype=np.uint8)
-    return np.isin(labels, selected).astype(np.uint8)
-
-
-def build_left_edge_contact_mask(frame: Image.Image) -> Image.Image:
-    """Isolate the two boundary grips and the visible lower forearm.
-
-    Skin-connected components are selected only inside tight hand ellipses, so
-    the nearby eyes and face never become part of the fixed layer.  The lower
-    sleeve starts from saturated-purple authored pixels and expands just far
-    enough to retain its cuff and outline.  No pixels are synthesized or
-    stretched: the mask only chooses which original pixels remain anchored.
+    The added pixels are limited to the narrow transparent wedge beneath the
+    lower gripping hand.  They are copied from purple sleeve pixels on the same
+    scanline, so no character detail, scale, pose, or source artwork changes.
+    The last two antialiased rows remain untouched to preserve the curved lower
+    outline.
     """
 
-    rgba = np.asarray(frame.convert("RGBA"), dtype=np.uint8)
-    height, width = rgba.shape[:2]
-    alpha = rgba[..., 3]
-    red = rgba[..., 0].astype(np.int16)
-    green = rgba[..., 1].astype(np.int16)
-    blue = rgba[..., 2].astype(np.int16)
-    visible = alpha >= EDGE_LEFT_CONTACT_ALPHA_THRESHOLD
-    skin = (
-        visible
-        & (red >= 150)
-        & (red * 100 >= green * 104)
-        & (green >= 55)
-        & (blue >= 45)
+    repaired = frame.convert("RGBA")
+    alpha = repaired.getchannel("A")
+    solid = alpha.point(
+        lambda value: 255
+        if value >= EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+        else 0
     )
+    bounds = solid.getbbox()
+    if bounds is None:
+        return repaired
 
-    contact = np.zeros((height, width), dtype=np.uint8)
-    hand_kernel = np.ones(
-        (EDGE_LEFT_CONTACT_SKIN_DILATION,) * 2,
-        dtype=np.uint8,
-    )
-    for center_x, center_y, radius_x, radius_y in (
-        EDGE_LEFT_CONTACT_HAND_ELLIPSES
-    ):
-        hand_ellipse = ellipse_mask(
-            width,
-            height,
-            center_x,
-            center_y,
-            radius_x,
-            radius_y,
-        )
-        hand_core = components_touching_left_contact(
-            skin & hand_ellipse,
-            minimum_area=EDGE_LEFT_CONTACT_SKIN_COMPONENT_MIN_AREA,
-            maximum_left=9,
-        )
-        hand = cv2.dilate(hand_core, hand_kernel, iterations=1)
-        contact |= (hand & hand_ellipse & (alpha > 0)).astype(np.uint8)
+    pixels = repaired.load()
+    start_y = max(bounds[1], bounds[3] - EDGE_LEFT_SLEEVE_TAIL_ROWS)
+    end_y = max(start_y, bounds[3] - EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS)
+    for y in range(start_y, end_y):
+        visible_x = [
+            x
+            for x in range(min(EDGE_LEFT_SLEEVE_MAX_GAP + 1, repaired.width))
+            if pixels[x, y][3] >= EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+        ]
+        if not visible_x:
+            continue
+        gap_width = visible_x[0]
+        if gap_width <= 0 or gap_width > EDGE_LEFT_SLEEVE_MAX_GAP:
+            continue
 
-    y_coordinates, x_coordinates = np.ogrid[:height, :width]
-    forearm_region = (
-        (y_coordinates >= 345)
-        & (y_coordinates <= 430)
-        & (x_coordinates <= 175)
-    )
-    purple_core = (
-        visible
-        & forearm_region
-        & (blue * 100 >= red * 82)
-        & (blue * 100 >= green * 108)
-        & (red < 210)
-    )
-    sleeve_core = components_touching_left_contact(
-        purple_core,
-        minimum_area=EDGE_LEFT_CONTACT_SLEEVE_COMPONENT_MIN_AREA,
-        maximum_left=139,
-    )
-    sleeve = cv2.dilate(
-        sleeve_core,
-        np.ones(
-            (EDGE_LEFT_CONTACT_SLEEVE_DILATION,) * 2,
-            dtype=np.uint8,
-        ),
-        iterations=1,
-    )
-    forearm_envelope = np.zeros((height, width), dtype=np.uint8)
-    cv2.fillPoly(
-        forearm_envelope,
-        [np.asarray(EDGE_LEFT_CONTACT_FOREARM_POLYGON, dtype=np.int32)],
-        1,
-    )
-    contact |= (
-        sleeve & forearm_envelope & (alpha > 0)
-    ).astype(np.uint8)
-    return Image.fromarray(contact * 255, mode="L")
+        # Pick only the existing purple clothing/body pixels as the extension
+        # source.  This keeps skin from being stretched underneath the hand.
+        purple_x = []
+        for x in range(gap_width, min(repaired.width, gap_width + 72)):
+            red, green, blue, pixel_alpha = pixels[x, y]
+            if (
+                pixel_alpha >= EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+                and blue * 100 >= red * 85
+                and blue * 100 >= green * 115
+                and red < 190
+            ):
+                purple_x.append(x)
+        if not purple_x:
+            continue
 
-
-def compose_left_edge_contact_layer(
-    original: Image.Image,
-    translated: Image.Image,
-) -> Image.Image:
-    """Restore authored boundary grips over independently moving anatomy."""
-
-    source = original.convert("RGBA")
-    fixed_layer = Image.new("RGBA", source.size, (0, 0, 0, 0))
-    fixed_layer.paste(source, (0, 0), build_left_edge_contact_mask(source))
-    return Image.alpha_composite(translated.convert("RGBA"), fixed_layer)
+        for x in range(gap_width):
+            source_index = min(gap_width - 1 - x, len(purple_x) - 1)
+            pixels[x, y] = pixels[purple_x[source_index], y]
+    return repaired
 
 
 def resize_sprite(
@@ -1099,7 +1001,7 @@ def translate_edge_peek_frame(
         ),
     )
     if edge_name == "left":
-        translated = compose_left_edge_contact_layer(frame, translated)
+        translated = repair_left_edge_sleeve_continuation(translated)
     return translated
 
 

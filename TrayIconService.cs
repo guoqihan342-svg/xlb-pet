@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace LubanDesktopPet;
 
@@ -17,6 +18,7 @@ internal sealed class TrayIconService : IDisposable
     private const uint TrayIconId = 1;
     private const int TrayCallbackMessage = 0x8000 + 0x51;
     private const int WmContextMenu = 0x007B;
+    private const int WmNull = 0x0000;
     private const int WmRightButtonUp = 0x0205;
     private const uint NimAdd = 0x00000000;
     private const uint NimDelete = 0x00000002;
@@ -45,23 +47,28 @@ internal sealed class TrayIconService : IDisposable
     private readonly ContextMenu _menu;
     private readonly MenuItem _exitItem;
     private readonly HwndSourceHook _messageHook;
+    private readonly Action _showQueuedTrayMenuAction;
     private readonly uint _taskbarCreatedMessage;
     private HwndSource? _hwndSource;
     private IntPtr _windowHandle;
     private IntPtr _iconHandle;
     private bool _iconAdded;
+    private bool _menuOpenQueued;
     private bool _disposed;
+    private Point _queuedMenuScreenPoint;
 
     public TrayIconService(Window owner)
     {
         _owner = owner ?? throw new ArgumentNullException(nameof(owner));
         _messageHook = WindowMessageHook;
+        _showQueuedTrayMenuAction = ShowQueuedTrayMenu;
         _taskbarCreatedMessage =
             RegisterWindowMessageW("TaskbarCreated");
         _menu = CreateTrayMenu(out _exitItem);
         _exitItem.Click += ExitItem_Click;
         _menu.Closed += Menu_Closed;
         _owner.SourceInitialized += Owner_SourceInitialized;
+        _owner.Deactivated += Owner_Deactivated;
 
         try
         {
@@ -85,7 +92,9 @@ internal sealed class TrayIconService : IDisposable
         }
 
         _disposed = true;
+        _menuOpenQueued = false;
         _owner.SourceInitialized -= Owner_SourceInitialized;
+        _owner.Deactivated -= Owner_Deactivated;
         _exitItem.Click -= ExitItem_Click;
         _menu.Closed -= Menu_Closed;
         _menu.IsOpen = false;
@@ -121,8 +130,10 @@ internal sealed class TrayIconService : IDisposable
             HasDropShadow = true,
             Padding = new Thickness(5),
             Placement = PlacementMode.RelativePoint,
+            SnapsToDevicePixels = true,
             StaysOpen = false,
-            Template = CreateContextMenuTemplate()
+            Template = CreateContextMenuTemplate(),
+            UseLayoutRounding = true
         };
 
         var itemStyle = new Style(typeof(MenuItem));
@@ -235,8 +246,17 @@ internal sealed class TrayIconService : IDisposable
             ContentPresenter.RecognizesAccessKeyProperty,
             true);
         header.SetValue(
+            FrameworkElement.HorizontalAlignmentProperty,
+            HorizontalAlignment.Left);
+        header.SetValue(
             FrameworkElement.VerticalAlignmentProperty,
             VerticalAlignment.Center);
+        header.SetValue(
+            UIElement.SnapsToDevicePixelsProperty,
+            true);
+        header.SetValue(
+            FrameworkElement.UseLayoutRoundingProperty,
+            true);
         border.AppendChild(header);
 
         var template = new ControlTemplate(typeof(MenuItem))
@@ -299,6 +319,14 @@ internal sealed class TrayIconService : IDisposable
         AttachToOwnerWindow();
     }
 
+    private void Owner_Deactivated(object? sender, EventArgs e)
+    {
+        if (!_disposed && _menu.IsOpen)
+        {
+            _menu.IsOpen = false;
+        }
+    }
+
     private void AttachToOwnerWindow()
     {
         if (_disposed || _hwndSource is not null)
@@ -357,36 +385,53 @@ internal sealed class TrayIconService : IDisposable
             unchecked((ushort)lParam.ToInt64());
         if (notification is WmContextMenu or WmRightButtonUp)
         {
-            ShowTrayMenu();
+            QueueTrayMenu(preferCursor: notification == WmRightButtonUp);
         }
 
         handled = true;
         return IntPtr.Zero;
     }
 
-    private void ShowTrayMenu()
+    private void QueueTrayMenu(bool preferCursor)
     {
-        if (_disposed)
+        if (_disposed || _menu.IsOpen ||
+            !TryGetTrayMenuScreenPoint(preferCursor, out var screenPoint))
         {
             return;
         }
 
-        if (!TryGetTrayMenuScreenPoint(out var screenPoint))
+        _queuedMenuScreenPoint = screenPoint;
+        if (_menuOpenQueued)
         {
-            // Both native anchor queries can transiently fail while Explorer
-            // or the input desktop is switching. An owner-relative fallback
-            // is still preferable to WPF's parentless (0,0) popup.
-            screenPoint = _owner.PointToScreen(
-                new Point(_owner.ActualWidth / 2, _owner.ActualHeight / 2));
+            return;
         }
 
+        // Explorer can report WM_CONTEXTMENU and WM_RBUTTONUP for one gesture.
+        // Leave the native callback before opening WPF's Popup HWND so the two
+        // notifications coalesce instead of closing and reopening the menu in
+        // the same message stack.
+        _menuOpenQueued = true;
+        _ = _owner.Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            _showQueuedTrayMenuAction);
+    }
+
+    private void ShowQueuedTrayMenu()
+    {
+        _menuOpenQueued = false;
+        if (_disposed || _menu.IsOpen || _windowHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // A notification-area context menu must make its owner the foreground
+        // window before opening. Otherwise StaysOpen=false cannot reliably
+        // capture outside clicks when the transparent pet was in the background.
+        _ = SetForegroundWindow(_windowHandle);
         var placementPoint = ConvertTrayMenuPlacementPoint(
             _owner,
-            screenPoint);
+            _queuedMenuScreenPoint);
 
-        // Resetting IsOpen also moves an already-open menu to the latest
-        // pointer location after a second tray right-click.
-        _menu.IsOpen = false;
         _menu.PlacementTarget = _owner;
         _menu.PlacementRectangle = new Rect(
             placementPoint,
@@ -397,11 +442,12 @@ internal sealed class TrayIconService : IDisposable
         _menu.IsOpen = true;
     }
 
-    private bool TryGetTrayMenuScreenPoint(out Point screenPoint)
+    private bool TryGetTrayMenuScreenPoint(
+        bool preferCursor,
+        out Point screenPoint)
     {
-        if (GetCursorPos(out var cursorPoint))
+        if (preferCursor && TryGetCursorScreenPoint(out screenPoint))
         {
-            screenPoint = new Point(cursorPoint.X, cursorPoint.Y);
             return true;
         }
 
@@ -427,6 +473,23 @@ internal sealed class TrayIconService : IDisposable
                     (iconRectangle.Bottom - iconRectangle.Top) / 2d);
                 return true;
             }
+        }
+
+        if (!preferCursor && TryGetCursorScreenPoint(out screenPoint))
+        {
+            return true;
+        }
+
+        screenPoint = default;
+        return false;
+    }
+
+    private static bool TryGetCursorScreenPoint(out Point screenPoint)
+    {
+        if (GetCursorPos(out var cursorPoint))
+        {
+            screenPoint = new Point(cursorPoint.X, cursorPoint.Y);
+            return true;
         }
 
         screenPoint = default;
@@ -460,6 +523,11 @@ internal sealed class TrayIconService : IDisposable
 
         var data = CreateNotifyIconData();
         _ = Shell_NotifyIconW(NimSetFocus, ref data);
+        _ = PostMessageW(
+            _windowHandle,
+            WmNull,
+            IntPtr.Zero,
+            IntPtr.Zero);
     }
 
     private void AddTrayIcon()
@@ -689,6 +757,18 @@ internal sealed class TrayIconService : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessageW(
+        IntPtr windowHandle,
+        int message,
+        IntPtr wParam,
+        IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
