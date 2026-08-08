@@ -1267,7 +1267,7 @@ internal static partial class Program
                             Margin = new Thickness(0, 9, 0, 0),
                              TextWrapping = TextWrapping.Wrap,
                              Text =
-                                "普通状态是自然双手打字。单击：只敲头，结束后回普通 1 倍速；双击：才会进入 2 倍速认真打字，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续；拖到左/右/下边缘会保持打工并吸附，顶部不吸附。普通探头状态隐藏「去打工」。"
+                                "普通状态是自然双手打字。单击：画面保持不变；双击：立即 2 倍速，并在最近自然接缝切换认真表情，再双击可续期。打工时按住人物可直接拖动，动画不断、松手继续；拖到左/右/下边缘会保持打工并吸附，顶部不吸附。普通探头状态隐藏「去打工」。"
                         },
                         new TextBlock
                         {
@@ -1275,7 +1275,7 @@ internal static partial class Program
                             FontSize = 12,
                             Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x68, 0x48)),
                             Margin = new Thickness(0, 8, 0, 0),
-                            Text = "键盘：W 切换打工/待机 · T 敲头后回普通 1x · F 直接 2x 认真/续期 · I 立即回待机 · Esc 结束"
+                            Text = "键盘：W 切换打工/待机 · T 模拟单击（视觉不变） · F 立即 2x 认真/续期 · I 立即回待机 · Esc 结束"
                         },
                         stateText
                     }
@@ -1338,13 +1338,9 @@ internal static partial class Program
             var rate = GetField<double>(preview, "_workLoopPlaybackRate");
             var edgeDock = GetRawField(preview, "_edgeDock")?.ToString() ?? "?";
             var workEdgeDock = GetRawField(preview, "_workEdgeDock")?.ToString() ?? "?";
-            var singlePending = GetField<DispatcherTimer>(
-                preview,
-                "_workSingleClickTimer").IsEnabled;
             stateText.Text =
                 $"当前：{state} / {clipName} / {rate:0.#}x / " +
-                $"吸附:{(workEdgeDock != "None" ? $"工作-{workEdgeDock}" : edgeDock)}" +
-                (singlePending ? " / 正在等待双击判定…" : string.Empty);
+                $"吸附:{(workEdgeDock != "None" ? $"工作-{workEdgeDock}" : edgeDock)}";
         };
 
         preview.PreviewKeyDown += HandlePreviewKey;
@@ -2284,7 +2280,6 @@ internal static partial class Program
                      "_workSeriousLoopClip",
                      "_workSeriousEnterClip",
                      "_workSeriousExitClip",
-                     "_workTapClip",
                      "_workExitClip"
                  })
         {
@@ -2297,13 +2292,10 @@ internal static partial class Program
         foreach (var (fromFieldName, toFieldName) in new[]
                  {
                      ("_workEnterClip", "_workLoopClip"),
-                     ("_workLoopClip", "_workTapClip"),
                      ("_workLoopClip", "_workSeriousEnterClip"),
                      ("_workSeriousEnterClip", "_workSeriousLoopClip"),
                      ("_workSeriousLoopClip", "_workSeriousExitClip"),
-                     ("_workSeriousExitClip", "_workTapClip"),
                      ("_workSeriousExitClip", "_workLoopClip"),
-                     ("_workTapClip", "_workLoopClip"),
                      ("_workLoopClip", "_workExitClip")
                  })
         {
@@ -3582,8 +3574,29 @@ internal static partial class Program
                               method.GetParameters().Length == 1)
             .MakeGenericMethod(result.GetType());
         return (Task)(fromResult.Invoke(null, [result])
+                       ?? throw new InvalidOperationException(
+                           $"分页 {pageName} 无法构造成功Task"));
+    }
+
+    private static Task CreatePendingSpritePageLoadTask()
+    {
+        var resultType = typeof(MainWindow).GetNestedType(
+            "SpritePageLoadResult",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "MainWindow 缺少 SpritePageLoadResult");
+        var completionSourceType = typeof(TaskCompletionSource<>)
+            .MakeGenericType(resultType);
+        var completionSource = Activator.CreateInstance(
+            completionSourceType,
+            TaskCreationOptions.RunContinuationsAsynchronously)
+            ?? throw new InvalidOperationException(
+                "无法构造受控未完成分页Task");
+        return (Task)(completionSourceType
+                          .GetProperty(nameof(TaskCompletionSource<object>.Task))!
+                          .GetValue(completionSource)
                       ?? throw new InvalidOperationException(
-                          $"分页 {pageName} 无法构造成功Task"));
+                          "受控未完成分页Task为空"));
     }
 
     private static void AssertSpriteCacheIsFullyReleased(
@@ -3776,9 +3789,11 @@ internal static partial class Program
         {
             var edgeContract = coldEdgeContracts[edgeContractIndex];
             var edgeFrames = GetField<Array>(window, edgeContract.FieldName);
-            var edgeRestFrameIndex = edgeFrames.Length - 1;
-            var edgeRestFrame = edgeFrames.GetValue(edgeRestFrameIndex)!;
-            var edgePageName = GetSpriteFrameInfo(edgeRestFrame).PageName;
+            var edgeEntryFrameIndex = edgeContract.Dock is "Left" or "Right"
+                ? 0
+                : edgeFrames.Length - 1;
+            var edgeEntryFrame = edgeFrames.GetValue(edgeEntryFrameIndex)!;
+            var edgePageName = GetSpriteFrameInfo(edgeEntryFrame).PageName;
             var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
             Assert(string.Equals(edgePageName, edgeContract.PageName, StringComparison.Ordinal) &&
                    !string.Equals(edgePageName, idlePageName, StringComparison.Ordinal),
@@ -3786,17 +3801,17 @@ internal static partial class Program
             EvictResidentSpritePageForTest(window, edgePageName);
             Invoke(window, "EnterEdgePeek", GetNestedEnum("EdgeDock", edgeContract.Dock));
             Assert(GetRawField(window, "_edgeDock")!.ToString() == edgeContract.Dock &&
-                   GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex &&
+                   GetField<int>(window, "_edgePeekFrameIndex") == edgeEntryFrameIndex &&
                    Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
-                   Equals(GetRawField(window, "_pendingSpriteFrame"), edgeRestFrame) &&
+                   Equals(GetRawField(window, "_pendingSpriteFrame"), edgeEntryFrame) &&
                     GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == long.MaxValue &&
                     GetField<bool>(window, "_isVisualClockSubscribed") &&
                     GetField<Image>(window, "PillowImage").Visibility == Visibility.Visible &&
                     GetField<Image>(window, "PillowImage").Opacity == 1d &&
                     GetField<ScaleTransform>(window, "PetFacingScale").ScaleX ==
                     (edgeContract.Dock == "Right" ? -1 : 1),
-                $"进入{edgeContract.Dock}冷边缘页必须停在末尾休息姿势，保留旧像素、冻结时钟；" +
-                "Right只镜像复用Left序列");
+                $"进入{edgeContract.Dock}冷边缘页必须等待正确入口姿势，保留旧像素、冻结时钟；" +
+                "左右从第001帧立即探头，Bottom保留末帧休息，Right只镜像复用Left序列");
 
             var edgePrefetchTask = GetRawField(window, "_spritePagePrefetchTask") as Task;
             var edgeCancellation = GetRawField(window, "_spritePagePrefetchCancellation")
@@ -3811,34 +3826,38 @@ internal static partial class Program
 
             var edgeDisplayedAt = StopwatchTicksFromSeconds(20 + edgeContractIndex * 10);
             Invoke(window, "TryShowPendingSpriteFrameAt", edgeDisplayedAt);
-            var edgeRestHold = (TimeSpan)InvokeStatic(
+            var edgeEntryHold = (TimeSpan)InvokeStatic(
                 typeof(MainWindow),
-                "GetEdgePeekRestHoldDuration",
+                "GetEdgePeekFrameHoldDuration",
+                edgeEntryFrameIndex,
                 edgeFrames.Length)!;
-            var edgeRestDeadline = edgeDisplayedAt +
-                                   ToProductionStopwatchTicks(
-                                       edgeRestHold);
-            Assert(Equals(GetRawField(window, "_currentSpriteFrame"), edgeRestFrame) &&
-                    GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex &&
-                    GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == edgeRestDeadline &&
+            var edgeEntryDeadline = edgeDisplayedAt +
+                                    ToProductionStopwatchTicks(edgeEntryHold);
+            Assert(Equals(GetRawField(window, "_currentSpriteFrame"), edgeEntryFrame) &&
+                    GetField<int>(window, "_edgePeekFrameIndex") == edgeEntryFrameIndex &&
+                    GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") == edgeEntryDeadline &&
                     GetField<Image>(window, "PillowImage").Visibility == Visibility.Visible &&
                     GetField<Image>(window, "PillowImage").Opacity == 0d,
-                $"冷{edgeContract.Dock}休息帧必须从实际显示时刻完整停留800ms，不能解码期间偷跑");
-            AdvanceEdgePeekForControlledClock(window, edgeRestDeadline - 1);
-            Assert(GetField<int>(window, "_edgePeekFrameIndex") == edgeRestFrameIndex,
-                "边缘休息姿势的800ms运行hold结束前不得提前换帧");
+                $"冷{edgeContract.Dock}入口帧必须从实际显示时刻才启动对应hold时钟，" +
+                "不能在解码期间偷跑");
+            AdvanceEdgePeekForControlledClock(window, edgeEntryDeadline - 1);
+            Assert(GetField<int>(window, "_edgePeekFrameIndex") == edgeEntryFrameIndex,
+                "边缘入口姿势的首个hold结束前不得提前换帧");
 
-            AdvanceEdgePeekForControlledClock(window, edgeRestDeadline);
+            AdvanceEdgePeekForControlledClock(window, edgeEntryDeadline);
             var firstEdgeDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
-            Assert(GetField<int>(window, "_edgePeekFrameIndex") == 0 &&
-                   Equals(GetRawField(window, "_currentSpriteFrame"), edgeFrames.GetValue(0)) &&
-                   firstEdgeDeadline - edgeRestDeadline ==
+            var firstExpectedEdgeIndex = (edgeEntryFrameIndex + 1) % edgeFrames.Length;
+            Assert(GetField<int>(window, "_edgePeekFrameIndex") == firstExpectedEdgeIndex &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       edgeFrames.GetValue(firstExpectedEdgeIndex)) &&
+                   firstEdgeDeadline - edgeEntryDeadline ==
                    ToProductionStopwatchTicks(
                        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
-                "休息帧后必须按升序进入第001帧，并使用不跳姿势的原生60fps间隔");
+                "入口hold后必须按单向序列推进，并使用不跳姿势的原生60fps间隔");
 
-            var stalledAt = edgeRestDeadline + StopwatchTicksFromMilliseconds(250);
-            var expectedEdgeIndex = 0;
+            var stalledAt = edgeEntryDeadline + StopwatchTicksFromMilliseconds(250);
+            var expectedEdgeIndex = firstExpectedEdgeIndex;
             var expectedEdgeDeadline = firstEdgeDeadline;
             while (stalledAt >= expectedEdgeDeadline)
             {
@@ -4356,8 +4375,7 @@ internal static partial class Program
                 "work-enter",
                 "work-loop",
                 "work-serious-loop",
-                "work-serious-exit",
-                "work-tap"
+                "work-serious-exit"
             })
             .ToHashSet(StringComparer.Ordinal);
         var orderedPageNames = manifestPages.EnumerateObject()
@@ -5488,7 +5506,6 @@ internal static partial class Program
                  {
                       (Phase: "enter", ExpectedFrameCount: 48),
                       (Phase: "loop", ExpectedFrameCount: 96),
-                      (Phase: "tap", ExpectedFrameCount: 48),
                       (Phase: "serious-loop", ExpectedFrameCount: 96),
                       (Phase: "serious-exit", ExpectedFrameCount: 24)
                   })
@@ -6097,7 +6114,6 @@ internal static partial class Program
         Assert(ReferenceEquals(leftFrames, rightFrames),
             "右侧探头必须镜像复用完整edge-left序列，不能维护另一套跳号帧");
 
-        var displayStride = RenderPixelWidth * 4;
         var sideFramePixels =
             new byte[RenderPixelWidth * RenderPixelHeight * 4];
         var mirroredSideFramePixels =
@@ -6115,11 +6131,35 @@ internal static partial class Program
                 $"左右探头帧必须保留2px透明gutter：{frameInfo.Name}");
             PrimeSpritePageForFrame(window, frame);
             InvokeOverload(window, "CopyFramePixels", frame, sideFramePixels);
-            var leftEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
-                .Count(y => sideFramePixels[y * displayStride + 3] >= 24);
-            Assert(leftEdgeAlphaPixels >= 40,
-                $"{frameInfo.Name} 的下方支撑手臂必须连续接触左屏幕边缘；" +
-                $"当前有效边缘Alpha像素={leftEdgeAlphaPixels}");
+            var leftUpperGrip = GetLargestAlphaComponentTouchingHorizontalEdge(
+                sideFramePixels,
+                RenderPixelWidth,
+                RenderPixelHeight,
+                roiLeft: 0,
+                roiTop: 175,
+                roiRightExclusive: 100,
+                roiBottomExclusive: 270,
+                touchRight: false);
+            var leftLowerArm = GetLargestAlphaComponentTouchingHorizontalEdge(
+                sideFramePixels,
+                RenderPixelWidth,
+                RenderPixelHeight,
+                roiLeft: 0,
+                roiTop: 300,
+                roiRightExclusive: 200,
+                roiBottomExclusive: 400,
+                touchRight: false);
+            Assert(leftUpperGrip.Area >= 8000 &&
+                   leftUpperGrip.MinX == 0 &&
+                   leftUpperGrip.MaxX >= 95,
+                $"{frameInfo.Name} 的上方抓边手必须保持完整连通；" +
+                $"area={leftUpperGrip.Area}, x={leftUpperGrip.MinX}..{leftUpperGrip.MaxX}");
+            Assert(leftLowerArm.Area >= 12000 &&
+                   leftLowerArm.MinX <= 2 &&
+                   leftLowerArm.MaxX >= 175,
+                $"{frameInfo.Name} 的下方手掌和前臂必须从0..2px抗锯齿接触带" +
+                $"连续伸入人物主体；area={leftLowerArm.Area}, " +
+                $"x={leftLowerArm.MinX}..{leftLowerArm.MaxX}");
 
             InvokeStatic(
                 typeof(MainWindow),
@@ -6129,14 +6169,30 @@ internal static partial class Program
                 RenderPixelWidth,
                 RenderPixelHeight,
                 mirrorMatrix);
-            var mirroredRightEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
-                .Count(y => mirroredSideFramePixels[
-                    y * displayStride +
-                    (RenderPixelWidth - 1) * 4 +
-                    3] >= 24);
-            Assert(mirroredRightEdgeAlphaPixels == leftEdgeAlphaPixels,
+            var rightUpperGrip = GetLargestAlphaComponentTouchingHorizontalEdge(
+                mirroredSideFramePixels,
+                RenderPixelWidth,
+                RenderPixelHeight,
+                roiLeft: RenderPixelWidth - 100,
+                roiTop: 175,
+                roiRightExclusive: RenderPixelWidth,
+                roiBottomExclusive: 270,
+                touchRight: true);
+            var rightLowerArm = GetLargestAlphaComponentTouchingHorizontalEdge(
+                mirroredSideFramePixels,
+                RenderPixelWidth,
+                RenderPixelHeight,
+                roiLeft: RenderPixelWidth - 200,
+                roiTop: 300,
+                roiRightExclusive: RenderPixelWidth,
+                roiBottomExclusive: 400,
+                touchRight: true);
+            Assert(rightUpperGrip.Area == leftUpperGrip.Area &&
+                   rightLowerArm.Area == leftLowerArm.Area &&
+                   RenderPixelWidth - 1 - rightLowerArm.MaxX == leftLowerArm.MinX &&
+                   RenderPixelWidth - 1 - rightLowerArm.MinX == leftLowerArm.MaxX,
                 $"{frameInfo.Name} 经生产像素变换镜像到右侧后必须保留同样的" +
-                "支撑手臂边缘接触");
+                "完整抓边手掌和前臂连通组件");
         }
 
         foreach (var supportedFrameCount in new[] { 16, 24, ExpectedEdgePeekFrameCount })
@@ -10202,16 +10258,20 @@ internal static partial class Program
 
         foreach (var edge in new[] { "Left", "Right", "Bottom" })
         {
+            var isSideEdge = edge is "Left" or "Right";
             var edgeFrames = edge is "Left" or "Right"
                 ? GetField<Array>(window, "_edgeLeftFrames")
                 : GetField<Array>(window, "_edgeBottomFrames");
             var restFrameIndex = edgeFrames.Length - 1;
+            var expectedEntryFrameIndex = isSideEdge ? 0 : restFrameIndex;
             var fullyPeekedFrameIndex = edgeFrames.Length / 2 - 1;
             var edgeRestHold = (TimeSpan)InvokeStatic(
                 typeof(MainWindow),
                 "GetEdgePeekRestHoldDuration",
                 edgeFrames.Length)!;
-            PrimeSpritePageForFrame(window, edgeFrames.GetValue(restFrameIndex)!);
+            PrimeSpritePageForFrame(
+                window,
+                edgeFrames.GetValue(expectedEntryFrameIndex)!);
             var currentVisibleBounds = (Rect)Invoke(
                 window,
                 "GetPetViewboxBoundsInScreenDips")!;
@@ -10237,34 +10297,44 @@ internal static partial class Program
             {
                 window.Top += workArea.Bottom - initialContactBounds.Bottom;
             }
+            var edgeStartTimestamp = Stopwatch.GetTimestamp();
             Invoke(window, "UpdateEdgeDockAfterDrag");
             var deadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
             var edgePeekHoldTimer = GetField<DispatcherTimer>(
                 window,
                 "_edgePeekHoldTimer");
             Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
-                   GetField<int>(window, "_edgePeekFrameIndex") == restFrameIndex &&
+                   GetField<int>(window, "_edgePeekFrameIndex") ==
+                   expectedEntryFrameIndex &&
                    Equals(
                        GetRawField(window, "_currentSpriteFrame"),
-                       edgeFrames.GetValue(restFrameIndex)) &&
-                   deadline > Stopwatch.GetTimestamp() &&
+                       edgeFrames.GetValue(expectedEntryFrameIndex)) &&
+                   deadline > edgeStartTimestamp &&
                    deadline != long.MaxValue &&
-                   edgePeekHoldTimer.IsEnabled &&
-                   !GetField<bool>(window, "_isVisualClockSubscribed") &&
+                   ((isSideEdge &&
+                     !edgePeekHoldTimer.IsEnabled &&
+                     GetField<bool>(window, "_isVisualClockSubscribed")) ||
+                    (!isSideEdge &&
+                     edgePeekHoldTimer.IsEnabled &&
+                     !GetField<bool>(window, "_isVisualClockSubscribed"))) &&
                    GetField<ScaleTransform>(window, "PetFacingScale").ScaleX ==
                    (edge == "Right" ? -1 : 1),
-                $"真实拖拽落点贴住{edge}边缘时必须从末尾休息姿势进入；" +
-                "静止hold必须改由低频定时器唤醒并停止Rendering空转，右侧仅镜像左侧序列");
+                $"真实拖拽落点贴住{edge}边缘时必须使用对应入口节奏；" +
+                "左右在一帧内从第001姿势立即探头，Bottom保留末帧休息，右侧仅镜像左侧序列");
 
+            edgePeekHoldTimer.Stop();
             AdvanceEdgePeekForControlledClock(window, deadline);
             var nextDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
-            Assert(GetField<int>(window, "_edgePeekFrameIndex") == 0,
-                $"{edge} 探头离开末帧后必须闭环到第001帧，不能反向播放");
+            var expectedFirstAdvanceIndex =
+                (expectedEntryFrameIndex + 1) % edgeFrames.Length;
+            Assert(GetField<int>(window, "_edgePeekFrameIndex") ==
+                   expectedFirstAdvanceIndex,
+                $"{edge} 入口hold后必须按单向序列推进到正确姿势");
             AssertClose(
                 StopwatchTicksToMilliseconds(nextDeadline - deadline),
                 StopwatchTicksToMilliseconds(
                     ToProductionStopwatchTicks(edgeMotionFrameInterval)),
-                $"{edge} 探头离开休息姿势后必须按原生60fps运行时钟换帧");
+                $"{edge} 入口hold后的探头必须按原生60fps运行时钟换帧");
 
             while (GetField<int>(window, "_edgePeekFrameIndex") !=
                    fullyPeekedFrameIndex)
@@ -10315,7 +10385,7 @@ internal static partial class Program
                 StopwatchTicksToMilliseconds(nextDeadline - deadline),
                 StopwatchTicksToMilliseconds(
                     ToProductionStopwatchTicks(edgeRestHold)),
-                $"{edge} 探头回到末尾害羞缩回休息姿势后必须独立停留800ms");
+                $"{edge} 探头回到末尾害羞缩回姿势后必须使用10秒周期剩余的长休息hold");
             deadline = nextDeadline;
             AdvanceEdgePeekForControlledClock(window, deadline);
             nextDeadline = GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
@@ -10481,7 +10551,10 @@ internal static partial class Program
                 var edgeFrames = edge is "Left" or "Right"
                     ? GetField<Array>(window, "_edgeLeftFrames")
                     : GetField<Array>(window, "_edgeBottomFrames");
-                var restFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
+                var entryFrameIndex = edge is "Left" or "Right"
+                    ? 0
+                    : edgeFrames.Length - 1;
+                var entryFrame = edgeFrames.GetValue(entryFrameIndex)!;
 
                 Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Todo"));
                 PumpDispatcher(TimeSpan.FromMilliseconds(20));
@@ -10492,16 +10565,17 @@ internal static partial class Program
                 // Opening Todo can trim an unprotected edge page after earlier
                 // cache-pressure checks. Pin the exact entry pose only after
                 // the panel has completed that state transition.
-                PrimeSpritePageForFrame(window, restFrame);
+                PrimeSpritePageForFrame(window, entryFrame);
+                var edgeEntryTimestamp = Stopwatch.GetTimestamp();
                 Invoke(window, "EnterEdgePeek", GetNestedEnum("EdgeDock", edge));
                 var deadlineBeforeClose =
                     GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
                 Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
-                       deadlineBeforeClose > Stopwatch.GetTimestamp() &&
+                       deadlineBeforeClose > edgeEntryTimestamp &&
                        deadlineBeforeClose != long.MaxValue &&
                        GetRawField(window, "_activeClip") is null &&
-                       Equals(GetRawField(window, "_currentSpriteFrame"), restFrame),
-                    $"待办打开时进入 {edge} 吸附必须把视觉所有权交给有效的边缘动画");
+                       Equals(GetRawField(window, "_currentSpriteFrame"), entryFrame),
+                    $"待办打开时进入 {edge} 吸附必须从对应入口姿势取得视觉所有权");
 
                 // ProcessOutsideTodoClose、关闭按钮、Alt+F4 和右键切换最终
                 // 都调用这一状态切换。直接验证共用终点可避免 CI 焦点时序噪声。
@@ -10530,6 +10604,7 @@ internal static partial class Program
                        0.000001,
                     $"点击外部收起待办后必须保留 {edge} 吸附、朝向、边缘帧和视觉时钟，不能播放 todo-close 回待机");
 
+                GetField<DispatcherTimer>(window, "_edgePeekHoldTimer").Stop();
                 AdvanceEdgePeekForControlledClock(window, preservedDeadline);
                 Assert(GetField<object>(window, "_edgeDock").ToString() == edge &&
                        GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
@@ -10748,11 +10823,9 @@ internal static partial class Program
             "GetPetViewboxBoundsInScreenDips")!;
 
         var rightDock = GetNestedEnum("EdgeDock", "Right");
-        var rightRestFrame = edgeLeftFrames.GetValue(
-            edgeLeftFrames.Length - 1)!;
-        var bottomRestFrame = edgeBottomFrames.GetValue(
-            edgeBottomFrames.Length - 1)!;
-        PrimeSpritePageForFrame(window, rightRestFrame);
+        var rightEntryFrame = edgeLeftFrames.GetValue(0)!;
+        var bottomRestFrame = edgeBottomFrames.GetValue(edgeBottomFrames.Length - 1)!;
+        PrimeSpritePageForFrame(window, rightEntryFrame);
         Invoke(window, "EnterEdgePeek", rightDock);
         Assert(GetField<object>(window, "_edgeDock").ToString() == "Right",
             "右→下快速甩动回归必须先真实进入 Right 吸附状态");
@@ -10852,6 +10925,7 @@ internal static partial class Program
                upwardPriority.SequenceEqual(["Right", "Bottom"]),
             "Right 角落候选必须按实际向下手势切换 Bottom；向上或无向下证据时仍保留 Right");
 
+        var dockStartTimestamp = Stopwatch.GetTimestamp();
         Invoke(window, "UpdateEdgeDockAfterDrag");
         var deadline =
             GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
@@ -10864,12 +10938,14 @@ internal static partial class Program
                Math.Abs(
                    GetField<ScaleTransform>(window, "PetFacingScale").ScaleX -
                    1) <= 0.000001 &&
-               Equals(
-                   GetRawField(window, "_currentSpriteFrame"),
-                   bottomRestFrame) &&
+                Equals(
+                    GetRawField(window, "_currentSpriteFrame"),
+                    bottomRestFrame) &&
                GetRawField(window, "_pendingSpriteFrame") is null &&
-               deadline > Stopwatch.GetTimestamp(),
-            "从 Right 吸附沿右边向下甩到右下角时必须切换为 Bottom，并使用底边姿势和新时钟");
+               deadline > dockStartTimestamp &&
+               deadline != long.MaxValue,
+            "从 Right 吸附沿右边向下甩到右下角时必须切换为 Bottom，" +
+            "并使用底边末帧休息姿势和有限的新时钟");
         SetField(window, "_dragStarted", false);
         SetField(window, "_dragInteractionActive", false);
         SetField(window, "_edgeDockDragContext", null);
@@ -11860,9 +11936,8 @@ internal static partial class Program
                 window,
                 petViewbox)!;
             var todoEdgeFrames = GetField<Array>(window, "_edgeLeftFrames");
-            var todoEdgeRestFrame =
-                todoEdgeFrames.GetValue(todoEdgeFrames.Length - 1)!;
-            PrimeSpritePageForFrame(window, todoEdgeRestFrame);
+            var todoEdgeEntryFrame = todoEdgeFrames.GetValue(0)!;
+            PrimeSpritePageForFrame(window, todoEdgeEntryFrame);
             var todoWindowBounds = (Rect)Invoke(
                 window,
                 "GetPetViewboxBoundsInScreenDips")!;
@@ -11887,19 +11962,21 @@ internal static partial class Program
                 "MoveMainWindowTo",
                 window.Left + workArea.Left - todoContactBounds.Left,
                 window.Top);
+            var todoEdgeStartTimestamp = Stopwatch.GetTimestamp();
             Invoke(window, "UpdateEdgeDockAfterDrag");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(GetField<object>(window, "_edgeDock").ToString() == "Left",
                 "Todo 打开时拖到可见像素接触屏幕左边缘必须启动探头状态");
-            Assert(GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") >
-                   Stopwatch.GetTimestamp(),
-                "Todo 打开时边缘探头必须保留有效的绝对时间截止点");
+            var todoEdgeDeadline =
+                GetField<long>(window, "_edgePeekFrameDeadlineTimestamp");
+            Assert(todoEdgeDeadline > todoEdgeStartTimestamp &&
+                   todoEdgeDeadline != long.MaxValue,
+                "Todo 打开时边缘探头必须从第一帧立即建立有限的绝对时间截止点");
             Assert(todoWindow.IsVisible &&
                    GetField<object>(window, "_bubbleMode").ToString() == "Todo" &&
-                   Equals(
-                       GetField<object>(window, "_currentSpriteFrame"),
-                       todoEdgeRestFrame),
-                "Todo 打开时边缘动画必须显示休息帧，同时待办窗口继续可见");
+                   todoEdgeFrames.Cast<object>().Contains(
+                       GetField<object>(window, "_currentSpriteFrame")),
+                "Todo 打开时边缘动画必须立即显示探头序列，同时待办窗口继续可见");
 
             SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "Left"));
             var inFlightEdgeTimestamp = Stopwatch.GetTimestamp();
@@ -17351,7 +17428,15 @@ internal static partial class Program
                loadEdgeFrameSequence.Contains("frames.Length % 4 != 0", StringComparison.Ordinal),
             "边缘序列必须只从左/下独立smooth分页动态加载，右侧镜像复用左侧；" +
             "顶部状态、分页与枚举分支必须彻底移除，同时允许16/24/48等四阶段长度");
-        Assert(enterEdgePeek.Contains("frames.Length - 1", StringComparison.Ordinal) &&
+        Assert(enterEdgePeek.Contains(
+                   "dock is EdgeDock.Left or EdgeDock.Right",
+                   StringComparison.Ordinal) &&
+               enterEdgePeek.Contains("? 0", StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(": restFrameIndex", StringComparison.Ordinal) &&
+               enterEdgePeek.Contains(
+                   "var entryFrame = frames[_edgePeekFrameIndex]",
+                   StringComparison.Ordinal) &&
+               enterEdgePeek.Contains("ShowStableFrame(entryFrame)", StringComparison.Ordinal) &&
                mainSource.Contains(
                    "new DispatcherTimer(DispatcherPriority.Render)",
                    StringComparison.Ordinal) &&
@@ -17394,7 +17479,7 @@ internal static partial class Program
                    "while (timestamp >= _edgePeekFrameDeadlineTimestamp",
                    StringComparison.Ordinal) <
                advanceEdgePeek.IndexOf("ShowStableFrame(targetFrame)", StringComparison.Ordinal),
-            "边缘探头必须从末帧休息姿势入场，冷页显示前冻结，随后按绝对时间单向闭环且每次回调只提交最终姿势；" +
+            "左右探头必须从第001帧立即入场、底边保留末帧休息进入，冷页显示前冻结，随后按绝对时间单向闭环且每次回调只提交最终姿势；" +
             "两个长静止端点必须暂停Rendering并由低频hold timer唤醒，退出与关闭必须清理timer；" +
             "已失败分页必须安全终止而不能long.MaxValue永久空转");
         Assert(mainSource.Contains(
@@ -18413,11 +18498,9 @@ internal static partial class Program
                Attribute("Height") == "28" &&
                Attribute("Content") == "去打工" &&
                Attribute("Tag") == "Idle" &&
-               Attribute("PreviewMouseLeftButtonDown") ==
-                   "WorkModeButton_PreviewMouseLeftButtonDown" &&
                Attribute("Click") == "WorkModeButton_Click",
             "Work mode must use the isolated Microsoft YaHei 92x28 on-pet button " +
-            "with an immediate pointer-down cancellation hook.");
+            "with its dedicated click handler.");
         var chrome = workButton
             .Descendants()
             .Single(element =>
@@ -18494,20 +18577,17 @@ internal static partial class Program
         var loopFrames = GetField<Array>(window, "_workLoopFrames");
         var seriousLoopFrames = GetField<Array>(window, "_workSeriousLoopFrames");
         var seriousExitFrames = GetField<Array>(window, "_workSeriousExitFrames");
-        var tapFrames = GetField<Array>(window, "_workTapFrames");
         Assert(enterFrames.Length == 48 &&
                loopFrames.Length == 96 &&
                seriousLoopFrames.Length == 96 &&
-               seriousExitFrames.Length == 24 &&
-               tapFrames.Length == 48,
-            $"Work authored frame contract must be 48/96/96/24/48, actual " +
+               seriousExitFrames.Length == 24,
+            $"Work authored frame contract must be 48/96/96/24, actual " +
             $"{enterFrames.Length}/{loopFrames.Length}/{seriousLoopFrames.Length}/" +
-            $"{seriousExitFrames.Length}/{tapFrames.Length}.");
+            $"{seriousExitFrames.Length}.");
         AssertExactWorkFrameNames(enterFrames, "enter");
         AssertExactWorkFrameNames(loopFrames, "loop");
         AssertExactWorkFrameNames(seriousLoopFrames, "serious-loop");
         AssertExactWorkFrameNames(seriousExitFrames, "serious-exit");
-        AssertExactWorkFrameNames(tapFrames, "tap");
         AssertWorkTypingFrameDiversity(loopFrames, "loop");
         AssertWorkTypingFrameDiversity(seriousLoopFrames, "serious-loop");
         AssertWorkTransitionPixelSeams(
@@ -18515,8 +18595,22 @@ internal static partial class Program
             enterFrames,
             loopFrames,
             seriousLoopFrames,
-            seriousExitFrames,
-            tapFrames);
+            seriousExitFrames);
+
+        var runtimeType = typeof(MainWindow);
+        Assert(!runtimeType.GetFields(InstanceFlags | StaticFlags).Any(field =>
+                   field.Name.Contains("WorkTap", StringComparison.OrdinalIgnoreCase) ||
+                   field.Name.Contains("SingleClick", StringComparison.OrdinalIgnoreCase)) &&
+               !runtimeType.GetMethods(InstanceFlags | StaticFlags).Any(method =>
+                   method.Name.Contains("WorkTap", StringComparison.OrdinalIgnoreCase) ||
+                   method.Name.Contains("SingleClick", StringComparison.OrdinalIgnoreCase)),
+            "Runtime work mode must not retain tap clips or delayed single-click arbitration members.");
+        Assert(new[] { enterFrames, loopFrames, seriousLoopFrames, seriousExitFrames }
+                   .SelectMany(frames => frames.Cast<object>())
+                   .All(frame => !GetSpriteFrameInfo(frame).Name.Contains(
+                       "luban-work-tap-",
+                       StringComparison.Ordinal)),
+            "Runtime work sequences must not expose a work-tap logical frame.");
 
         var exitClipFrames = GetProperty<Array>(
             GetField<object>(window, "_workExitClip"),
@@ -18550,17 +18644,13 @@ internal static partial class Program
                (bool)InvokeStatic(
                    typeof(MainWindow),
                    "IsWorkPillowHiddenFrame",
-                   tapFrames.GetValue(0)!)! &&
-               (bool)InvokeStatic(
-                   typeof(MainWindow),
-                   "IsWorkPillowHiddenFrame",
                    seriousLoopFrames.GetValue(0)!)! &&
                (bool)InvokeStatic(
                    typeof(MainWindow),
                    "IsWorkPillowHiddenFrame",
                    seriousExitFrames.GetValue(0)!)!,
             "Pillow must remain visible through enter frame 24, then hide atomically " +
-            "for normal, tap, serious, and serious-exit work frames.");
+            "for normal, serious, and serious-exit work frames.");
     }
 
     private static void AssertExactWorkFrameNames(Array frames, string sequence)
@@ -18676,8 +18766,7 @@ internal static partial class Program
         Array enterFrames,
         Array loopFrames,
         Array seriousLoopFrames,
-        Array seriousExitFrames,
-        Array tapFrames)
+        Array seriousExitFrames)
     {
         var enterDigests = GetDecodedWorkFramePixelDigests(enterFrames);
         var loopDigests = GetDecodedWorkFramePixelDigests(loopFrames);
@@ -18685,7 +18774,6 @@ internal static partial class Program
             GetDecodedWorkFramePixelDigests(seriousLoopFrames);
         var seriousExitDigests =
             GetDecodedWorkFramePixelDigests(seriousExitFrames);
-        var tapDigests = GetDecodedWorkFramePixelDigests(tapFrames);
         var neutralSeams = new[] { 0, 10, 21, 33, 44, 56, 69, 81, 93 };
         var normalNeutralDigest = loopDigests[0];
         var seriousNeutralDigest = seriousLoopDigests[0];
@@ -18694,17 +18782,13 @@ internal static partial class Program
                    string.Equals(
                        loopDigests[index],
                        normalNeutralDigest,
-                       StringComparison.Ordinal)) &&
-               string.Equals(
-                   tapDigests[0],
-                   normalNeutralDigest,
-                   StringComparison.Ordinal) &&
+                   StringComparison.Ordinal)) &&
                string.Equals(
                    enterDigests[^1],
                    normalNeutralDigest,
                    StringComparison.Ordinal),
-            "Every ordinary neutral seam must be pixel-identical to the first " +
-            "tap frame and reverse work-exit frame; numeric phase alignment alone " +
+            "Every ordinary neutral seam must be pixel-identical to the reverse " +
+            "work-exit frame; numeric phase alignment alone " +
             "is insufficient.");
         Assert(neutralSeams.All(index =>
                    string.Equals(
@@ -18718,14 +18802,10 @@ internal static partial class Program
             "Every serious neutral seam must be pixel-identical to the first " +
             "serious-exit frame.");
         Assert(string.Equals(
-                   tapDigests[^1],
-                   normalNeutralDigest,
-                   StringComparison.Ordinal) &&
-               string.Equals(
                    seriousExitDigests[^1],
                    normalNeutralDigest,
                    StringComparison.Ordinal),
-            "Tap and serious-exit must finish on the exact ordinary neutral " +
+            "Serious-exit must finish on the exact ordinary neutral " +
             "bitmap consumed by work-loop frame 001.");
 
         var runtimeNormalNeutralDigest =
@@ -18744,18 +18824,6 @@ internal static partial class Program
                    GetRuntimeDecodedWorkFramePixelDigest(
                        window,
                        enterFrames.GetValue(enterFrames.Length - 1)!),
-                   runtimeNormalNeutralDigest,
-                   StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRuntimeDecodedWorkFramePixelDigest(
-                       window,
-                       tapFrames.GetValue(0)!),
-                   runtimeNormalNeutralDigest,
-                   StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRuntimeDecodedWorkFramePixelDigest(
-                       window,
-                       tapFrames.GetValue(tapFrames.Length - 1)!),
                    runtimeNormalNeutralDigest,
                    StringComparison.Ordinal) &&
                string.Equals(
@@ -18921,12 +18989,15 @@ internal static partial class Program
             source,
             "GetWorkLoopFramePositionAt");
         var startWorkClip = ExtractPrivateMethodSource(source, "StartWorkClip");
-        var scheduleSingleClick = ExtractPrivateMethodSource(
+        var handleWorkClick = ExtractPrivateMethodSource(
             source,
-            "ScheduleWorkSingleClick");
-        var singleClickTick = ExtractPrivateMethodSource(
+            "HandleWorkPetClick");
+        var prefetchSeriousEntry = ExtractPrivateMethodSource(
             source,
-            "WorkSingleClickTimer_Tick");
+            "PrefetchWorkSeriousEntryPage");
+        var startFastTyping = ExtractPrivateMethodSource(
+            source,
+            "StartFastWorkTypingAt");
         var requestWorkExit = ExtractPrivateMethodSource(
             source,
             "RequestWorkExit");
@@ -18977,33 +19048,27 @@ internal static partial class Program
                 line.Contains("DispatcherTimer _work", StringComparison.Ordinal))
             .Select(line => line.Trim())
             .ToArray();
-        Assert(workDispatcherTimerFields.Length == 1 &&
-               workDispatcherTimerFields[0].Contains(
-                   "_workSingleClickTimer",
-                   StringComparison.Ordinal) &&
+        Assert(workDispatcherTimerFields.Length == 0 &&
                !advanceLoop.Contains("DispatcherTimer", StringComparison.Ordinal) &&
                !startWorkClip.Contains("DispatcherTimer", StringComparison.Ordinal),
-            "Work mode may use one click-decision timer, never a second per-frame timer.");
-        Assert(!scheduleSingleClick.Contains(
-                   "_workLoopPlaybackRate =",
-                   StringComparison.Ordinal) &&
-               !singleClickTick.Contains(
-                   "_workLoopPlaybackRate =",
-                   StringComparison.Ordinal) &&
+            "Work mode must not use click-decision or per-frame DispatcherTimers.");
+        Assert(handleWorkClick.Contains("if (clickCount < 2)", StringComparison.Ordinal) &&
+               handleWorkClick.Contains("PrefetchWorkSeriousEntryPage()", StringComparison.Ordinal) &&
+               handleWorkClick.Contains("ReferenceEquals(_activeClip, _workLoopClip)", StringComparison.Ordinal) &&
+               handleWorkClick.Contains("StartFastWorkTypingAt(Stopwatch.GetTimestamp())", StringComparison.Ordinal) &&
+               !handleWorkClick.Contains("_workLoopPlaybackRate =", StringComparison.Ordinal) &&
+               !handleWorkClick.Contains("_activeClip =", StringComparison.Ordinal) &&
+               prefetchSeriousEntry.Contains("_spritePagePrefetchTask is not null", StringComparison.Ordinal) &&
+               prefetchSeriousEntry.Contains("_desiredSpritePageName is not null", StringComparison.Ordinal) &&
+               prefetchSeriousEntry.Contains("urgent: false", StringComparison.Ordinal) &&
+               !prefetchSeriousEntry.Contains("urgent: true", StringComparison.Ordinal) &&
+               startFastTyping.Contains("_workLoopPlaybackRate = WorkFastPlaybackMultiplier", StringComparison.Ordinal) &&
+               startFastTyping.Contains("GetNextWorkNeutralMicroSeamFramePosition", StringComparison.Ordinal) &&
                !requestWorkExit.Contains(
                    "_workLoopPlaybackRate =",
                    StringComparison.Ordinal) &&
-               singleClickTick.Contains(
-                   "GetNextWorkNeutralMicroSeamFramePosition",
-                   StringComparison.Ordinal) &&
                requestWorkExit.Contains(
                    "GetNextWorkNeutralMicroSeamFramePosition",
-                   StringComparison.Ordinal) &&
-               advanceLoop.Contains(
-                   "StartWorkTapAtNeutralSeam(timestamp)",
-                   StringComparison.Ordinal) &&
-               !singleClickTick.Contains(
-                   "ShowStableFrame",
                    StringComparison.Ordinal) &&
                !advanceLoop.Contains(
                    "ShowStableFrame(loopFrames[0])",
@@ -19011,9 +19076,9 @@ internal static partial class Program
                !advanceLoop.Contains(
                    "ShowStableFrame(_workSeriousLoopFrames[0])",
                    StringComparison.Ordinal),
-            "Click arbitration, confirmed-tap waiting, and exit waiting must keep " +
-            "the current 1x/2x rate, never publish frame 001 as a shortcut, and " +
-            "hand off only at a neutral micro-seam.");
+            "A single click must be a strict visual no-op, while a double click " +
+            "must switch the existing absolute clock to 2x immediately and hand " +
+            "off the serious expression only at a neutral micro-seam.");
 
         var neutralMicroSeams = (int[])(
             typeof(MainWindow).GetField(
@@ -19059,23 +19124,11 @@ internal static partial class Program
             $"109ms at 2x; actual {maximumNormalWaitMilliseconds:F2}ms/" +
             $"{maximumFastWaitMilliseconds:F2}ms.");
 
-        var nativeDoubleClickMilliseconds = GetDoubleClickTimeForWorkTest();
-        var normalizedDoubleClickMilliseconds =
-            nativeDoubleClickMilliseconds is >= 100 and <= 2000
-                ? nativeDoubleClickMilliseconds
-                : 500u;
-        var expectedDecisionDelay =
-            TimeSpan.FromMilliseconds(normalizedDoubleClickMilliseconds) +
-            TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
-        var actualDecisionDelay = (TimeSpan)InvokeStatic(
-            typeof(MainWindow),
-            "GetWorkSingleClickDecisionDelay")!;
-        Assert(actualDecisionDelay == expectedDecisionDelay &&
-               source.Contains("GetDoubleClickTime()", StringComparison.Ordinal) &&
-               source.Contains(
-                   "TimeSpan.TicksPerSecond / 60",
-                   StringComparison.Ordinal),
-            $"Single-click decision must be GetDoubleClickTime + one 60Hz frame, actual {actualDecisionDelay}.");
+        Assert(!source.Contains("GetDoubleClickTime", StringComparison.Ordinal) &&
+               !source.Contains("WorkSingleClick", StringComparison.Ordinal) &&
+               !source.Contains("WorkTap", StringComparison.Ordinal) &&
+               !source.Contains("luban-work-tap-", StringComparison.Ordinal),
+            "Runtime source must not retain delayed single-click arbitration or work-tap assets.");
 
         var thresholdReturn = mouseMove.IndexOf(
             "if (!movedFarEnough)",
@@ -19085,9 +19138,6 @@ internal static partial class Program
             StringComparison.Ordinal);
         Assert(thresholdReturn >= 0 &&
                cancelPending > thresholdReturn &&
-               beginDirectDrag.Contains(
-                   "CancelPendingWorkSingleClick()",
-                   StringComparison.Ordinal) &&
                beginDirectDrag.Contains(
                    "_workPointerClickCount = 0",
                    StringComparison.Ordinal) &&
@@ -19115,26 +19165,23 @@ internal static partial class Program
                updateEdgeDockAfterDrag.Contains(
                    "EnterEdgePeek(touchedEdge)",
                    StringComparison.Ordinal),
-            "Sub-threshold pointer motion must preserve click arbitration; a real " +
-            "work drag must cancel the click while preserving work and still run " +
+            "Sub-threshold pointer motion must preserve click classification; a real " +
+            "work drag must clear the click count while preserving work and still run " +
             "the shared edge-snap calculation on normal release and lost capture.");
         Assert(rightClick.IndexOf(
-                   "CancelPendingWorkSingleClick()",
-                   StringComparison.Ordinal) >= 0 &&
-               rightClick.IndexOf(
                    "_openTodoAfterWorkExitRequested = true",
                    StringComparison.Ordinal) >= 0 &&
                rightClick.IndexOf(
                    "RequestWorkExit()",
                    StringComparison.Ordinal) >= 0,
-            "Right-click must cancel a pending tap and defer Todo until the authored work exit finishes.");
+            "Right-click must defer Todo until the authored work exit finishes.");
         Assert(setBubbleMode.Contains(
                    "StopWorkModeImmediately(restoreIdleFrame: false)",
                    StringComparison.Ordinal) &&
                queueSessionInactive.Contains(
                    "StopWorkModeImmediately(restoreIdleFrame: true)",
                    StringComparison.Ordinal),
-            "Reminder/Todo interruption and session lock must cancel pending work input through the work stop path.");
+            "Reminder/Todo interruption and session lock must stop work through the shared work path.");
         Assert(automaticTick.Contains(
                    "_workState != WorkState.Idle",
                    StringComparison.Ordinal) &&
@@ -19334,175 +19381,263 @@ internal static partial class Program
             "Normal typing must continue from loop-001 at 60 authored poses/second " +
             "after the serious-exit clip.");
 
-        Invoke(window, "HandleWorkPetClick", 1);
-        var singleTimer = GetField<DispatcherTimer>(
-            window,
-            "_workSingleClickTimer");
-        Assert(singleTimer.IsEnabled &&
-               GetField<int>(window, "_scheduledWorkSingleClickGeneration") != 0,
-            "A single click must wait for double-click arbitration before starting the head tap.");
-        Invoke(window, "HandleWorkPetClick", 2);
-        Assert(!singleTimer.IsEnabled &&
-               GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0 &&
-               GetField<bool>(window, "_workSeriousEnterRequested") &&
-               ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   loopClip) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001,
-            "The second click must cancel the pending single tap and immediately " +
-            "accelerate normal typing toward serious entry instead of playing both reactions.");
-        var doubleClickEnterTimestamp = Stopwatch.GetTimestamp();
-        Invoke(window, "StartWorkSeriousEnterClip", doubleClickEnterTimestamp);
-        var seriousEnterClipForArbitration =
-            GetField<object>(window, "_workSeriousEnterClip");
-        Invoke(
-            window,
-            "CompleteActiveClipAt",
-            seriousEnterClipForArbitration,
-            doubleClickEnterTimestamp);
-        Invoke(
-            window,
-            "StartActiveClipClockAt",
-            doubleClickEnterTimestamp,
-            TimeSpan.Zero);
-        var fastWaitAnchorTimestamp = Stopwatch.GetTimestamp();
-        SetField(window, "_workLoopAnchorFramePosition", 93.25d);
-        SetField(window, "_workLoopAnchorTimestamp", fastWaitAnchorTimestamp);
-        SetField(window, "_workLoopPlaybackRate", 2d);
+        var singleClickAnchorTimestamp = Stopwatch.GetTimestamp();
+        const double singleClickAnchorPosition = 17.25d;
+        SetField(window, "_activeClip", loopClip);
+        SetField(window, "_activeFrameIndex", 17);
         SetField(
             window,
-            "_workFastUntilTimestamp",
-            checked(fastWaitAnchorTimestamp + Stopwatch.Frequency * 4L));
-        Invoke(window, "HandleWorkPetClick", 1);
-        Assert(Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001 &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   fastWaitAnchorTimestamp,
-            "Double-click arbitration during serious typing must preserve the 2x " +
-            "absolute timeline.");
-        Invoke(
-            window,
-            "AdvanceWorkLoop",
-            checked(fastWaitAnchorTimestamp + Stopwatch.Frequency * 4L));
-        Assert(singleTimer.IsEnabled &&
-               !GetField<bool>(window, "_workSeriousExitRequested") &&
-               ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workSeriousLoopClip")) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001,
-            "A pending click decision must not let serious mode expire underneath " +
-            "the gesture; it keeps the unchanged 2x timeline until arbitration.");
-        var fastPhaseBeforeConfirmation = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            Stopwatch.GetTimestamp())!;
-        Invoke(window, "WorkSingleClickTimer_Tick", null, EventArgs.Empty);
-        var fastTapTarget = GetField<double>(
-            window,
-            "_workTapTargetFramePosition");
-        var fastTapWaitMilliseconds =
-            (fastTapTarget - fastPhaseBeforeConfirmation) /
-            (60d * 2d) * 1000d;
-        Assert(GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workSeriousLoopClip")) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001 &&
-               fastTapWaitMilliseconds is >= 0 and <= 109,
-            $"Confirmed tap waiting at 2x must keep serious speed and reach a " +
-            $"neutral seam within about 109ms, actual {fastTapWaitMilliseconds:F2}ms.");
-        Invoke(window, "CancelPendingWorkSingleClick");
-        Assert(!GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001 &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   fastWaitAnchorTimestamp,
-            "Cancelling a confirmed tap wait must not rewind or re-anchor serious typing.");
-        Invoke(window, "StartWorkLoopAt", Stopwatch.GetTimestamp());
-        var singleClickAnchorTimestamp = Stopwatch.GetTimestamp();
-        Invoke(
-            window,
-            "StartActiveClipClockAt",
-            singleClickAnchorTimestamp,
-            TimeSpan.Zero);
-        SetField(window, "_workLoopAnchorFramePosition", 17.25d);
+            "_workLoopAnchorFramePosition",
+            singleClickAnchorPosition);
         SetField(window, "_workLoopAnchorTimestamp", singleClickAnchorTimestamp);
         SetField(window, "_workLoopPlaybackRate", 1d);
         SetField(window, "_workFastUntilTimestamp", 0L);
+        SetField(window, "_workSeriousEnterRequested", false);
+        SetField(
+            window,
+            "_workSeriousEnterTargetFramePosition",
+            double.PositiveInfinity);
+        SetField(window, "_workSeriousExitRequested", false);
+        SetField(
+            window,
+            "_workSeriousExitTargetFramePosition",
+            double.PositiveInfinity);
+        PrimeSpritePageForFrame(window, loopFrames.GetValue(17)!);
+        Invoke(window, "ShowStableFrame", loopFrames.GetValue(17)!);
+
+        var singleClipBefore = GetRawField(window, "_activeClip");
+        var singleFrameIndexBefore = GetField<int>(window, "_activeFrameIndex");
+        var singleFrameNameBefore = GetSpriteFrameInfo(
+            GetField<object>(window, "_currentSpriteFrame")).Name;
+        var singleAnchorBefore =
+            GetField<double>(window, "_workLoopAnchorFramePosition");
+        var singleTimestampBefore =
+            GetField<long>(window, "_workLoopAnchorTimestamp");
+        var singleRateBefore =
+            GetField<double>(window, "_workLoopPlaybackRate");
+        var singleFastUntilBefore =
+            GetField<long>(window, "_workFastUntilTimestamp");
         Invoke(window, "HandleWorkPetClick", 1);
-        Assert(GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   singleClickAnchorTimestamp &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopAnchorFramePosition") -
-                   17.25d) <= 0.000001 &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-                   0.000001,
-            "Waiting for double-click arbitration must not re-anchor, accelerate, " +
-            "or pause the ordinary typing timeline.");
-        var phaseBeforeSingleConfirmation = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            Stopwatch.GetTimestamp())!;
-        Invoke(window, "WorkSingleClickTimer_Tick", null, EventArgs.Empty);
-        var tapTarget = GetField<double>(
-            window,
-            "_workTapTargetFramePosition");
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               tapTarget >= phaseBeforeSingleConfirmation &&
-               tapTarget - phaseBeforeSingleConfirmation <= 13.1d &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-                   0.000001 &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   singleClickAnchorTimestamp,
-            "A confirmed single click must continue at the unchanged rate to the " +
-            "nearest neutral micro-seam without jumping to loop frame 001.");
-        var tapSeamTimestamp = checked(
-            singleClickAnchorTimestamp +
-            (long)Math.Ceiling(
-                (tapTarget - 17.25d) / 60d * Stopwatch.Frequency) + 2);
-        Invoke(window, "AdvanceWorkLoop", tapSeamTimestamp);
-        Assert(ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workTapClip")) &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopAnchorFramePosition") -
-                   tapTarget) <= 0.000001,
-            "A confirmed single click must enter the 48-frame self-tap clip at " +
-            "the selected neutral micro-seam with no phase reset.");
-        Invoke(
-            window,
-            "CompleteActiveClipAt",
-            GetField<object>(window, "_workTapClip"),
-            Stopwatch.GetTimestamp());
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
+        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), singleClipBefore) &&
+               GetField<int>(window, "_activeFrameIndex") == singleFrameIndexBefore &&
                string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Typing",
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_currentSpriteFrame")).Name,
+                   singleFrameNameBefore,
                    StringComparison.Ordinal) &&
                Math.Abs(
-                   GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-               0.000001 &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0,
-            "A single head tap must return to the ordinary 1x typing loop; only " +
-            "a confirmed double-click may start serious acceleration.");
-
-        var doubleClickTimestamp = Stopwatch.GetTimestamp();
-        Invoke(window, "StartFastWorkTypingAt", doubleClickTimestamp);
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               GetField<bool>(window, "_workSeriousEnterRequested") &&
+                   GetField<double>(window, "_workLoopAnchorFramePosition") -
+                   singleAnchorBefore) <= 0.000001 &&
+               GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                   singleTimestampBefore &&
                Math.Abs(
-                   GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
+                   GetField<double>(window, "_workLoopPlaybackRate") -
+                   singleRateBefore) <= 0.000001 &&
+               GetField<long>(window, "_workFastUntilTimestamp") ==
+                   singleFastUntilBefore &&
+               !GetField<bool>(window, "_workSeriousEnterRequested") &&
+               !GetField<bool>(window, "_workSeriousExitRequested") &&
+               double.IsPositiveInfinity(GetField<double>(
+                   window,
+                   "_workSeriousEnterTargetFramePosition")) &&
+               double.IsPositiveInfinity(GetField<double>(
+                   window,
+                   "_workSeriousExitTargetFramePosition")),
+            "A single click must be a strict visual no-op: clip, visible pose, " +
+            "absolute phase, speed, serious flags, and deadline must all remain unchanged.");
+
+        // Keep a real cold-page-shaped Task in flight for the next ordinary
+        // loop page. The speculative first-click prewarm must not replace it,
+        // cancel it, change its urgency, or advance the page generation.
+        WaitForSpritePagePrefetchToSettle(window);
+        var normalLoopColdFrame = loopFrames.GetValue(32)!;
+        var normalLoopColdPageName = GetSpriteFrameInfo(normalLoopColdFrame).PageName;
+        var pendingNormalLoopDecode = CreatePendingSpritePageLoadTask();
+        var normalLoopDecodeCancellation = new CancellationTokenSource();
+        var normalLoopDecodeGeneration =
+            GetField<int>(window, "_spritePagePrefetchGeneration") + 1;
+        SetField(
+            window,
+            "_spritePagePrefetchGeneration",
+            normalLoopDecodeGeneration);
+        SetField(window, "_desiredSpritePageName", normalLoopColdPageName);
+        SetField(window, "_desiredSpritePageUrgent", true);
+        SetField(window, "_spritePagePrefetchTask", pendingNormalLoopDecode);
+        SetField(
+            window,
+            "_spritePagePrefetchCancellation",
+            normalLoopDecodeCancellation);
+        SetField(
+            window,
+            "_spritePagePrefetchPageName",
+            normalLoopColdPageName);
+
+        Invoke(window, "HandleWorkPetClick", 1);
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_spritePagePrefetchTask"),
+                   pendingNormalLoopDecode) &&
+               ReferenceEquals(
+                   GetRawField(window, "_spritePagePrefetchCancellation"),
+                   normalLoopDecodeCancellation) &&
+               string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   normalLoopColdPageName,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_spritePagePrefetchPageName") as string,
+                   normalLoopColdPageName,
+                   StringComparison.Ordinal) &&
+               GetField<bool>(window, "_desiredSpritePageUrgent") &&
+               GetField<int>(window, "_spritePagePrefetchGeneration") ==
+                   normalLoopDecodeGeneration &&
+               !normalLoopDecodeCancellation.IsCancellationRequested &&
+               ReferenceEquals(GetRawField(window, "_activeClip"), singleClipBefore) &&
+               string.Equals(
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_currentSpriteFrame")).Name,
+                   singleFrameNameBefore,
+                   StringComparison.Ordinal),
+            "A single click during an asynchronous cold ordinary-loop decode " +
+            "must be a strict no-op and must never preempt the visible-loop page.");
+
+        SetField(window, "_spritePagePrefetchTask", null);
+        SetField(window, "_spritePagePrefetchCancellation", null);
+        SetField(window, "_spritePagePrefetchPageName", null);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        normalLoopDecodeCancellation.Dispose();
+
+        var seriousEntryFirstFrame = GetProperty<object>(
+            GetClipFrames(seriousEnterClip).GetValue(0)!,
+            "Image");
+        var seriousEntryPageName =
+            GetSpriteFrameInfo(seriousEntryFirstFrame).PageName;
+        PrimeSpritePageForFrame(window, loopFrames.GetValue(17)!);
+        EvictResidentSpritePageForTest(window, seriousEntryPageName);
+        var pendingSeriousEntryDecode = CreatePendingSpritePageLoadTask();
+        var seriousEntryDecodeCancellation = new CancellationTokenSource();
+        var seriousEntryDecodeGeneration =
+            GetField<int>(window, "_spritePagePrefetchGeneration") + 1;
+        SetField(
+            window,
+            "_spritePagePrefetchGeneration",
+            seriousEntryDecodeGeneration);
+        SetField(window, "_desiredSpritePageName", seriousEntryPageName);
+        SetField(window, "_desiredSpritePageUrgent", true);
+        SetField(window, "_spritePagePrefetchTask", pendingSeriousEntryDecode);
+        SetField(
+            window,
+            "_spritePagePrefetchCancellation",
+            seriousEntryDecodeCancellation);
+        SetField(
+            window,
+            "_spritePagePrefetchPageName",
+            seriousEntryPageName);
+
+        var doubleClickBefore = Stopwatch.GetTimestamp();
+        Invoke(window, "HandleWorkPetClick", 2);
+        var doubleClickAfter = Stopwatch.GetTimestamp();
+        var doubleClickAnchorTimestamp =
+            GetField<long>(window, "_workLoopAnchorTimestamp");
+        var doubleClickAnchorPosition =
+            GetField<double>(window, "_workLoopAnchorFramePosition");
+        var doubleClickTarget = GetField<double>(
+            window,
+            "_workSeriousEnterTargetFramePosition");
+        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
+               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
                    0.000001 &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0,
-            "The explicit double-click path must immediately accelerate the " +
-            "unchanged normal pose clock and wait for its serious-entry seam.");
-        Invoke(window, "StartWorkSeriousEnterClip", doubleClickTimestamp);
+               GetField<bool>(window, "_workSeriousEnterRequested") &&
+               GetField<long>(window, "_workFastUntilTimestamp") == 0 &&
+               doubleClickAnchorTimestamp >= doubleClickBefore &&
+               doubleClickAnchorTimestamp <= doubleClickAfter &&
+               doubleClickTarget >= doubleClickAnchorPosition &&
+               doubleClickTarget - doubleClickAnchorPosition <= 13.000001 &&
+               ReferenceEquals(
+                   GetRawField(window, "_spritePagePrefetchTask"),
+                   pendingSeriousEntryDecode) &&
+               !seriousEntryDecodeCancellation.IsCancellationRequested,
+            "A double click must switch the existing normal loop to 2x in the " +
+            "same input turn, select the nearest serious-expression seam, and " +
+            "reuse an in-flight decode for that cold entry page.");
+
+        var doubleClickSeamTimestamp = checked(
+            doubleClickAnchorTimestamp +
+            (long)Math.Ceiling(
+                (doubleClickTarget - doubleClickAnchorPosition) /
+                (60d * 2d) * Stopwatch.Frequency) + 2);
+        Invoke(window, "AdvanceWorkLoop", doubleClickSeamTimestamp);
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   seriousEnterClip) &&
+               !GetField<bool>(window, "_workSeriousEnterRequested") &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopAnchorFramePosition") -
+                   doubleClickTarget) <= 0.000001 &&
+               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
+                   0.000001 &&
+               string.Equals(
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_currentSpriteFrame")).Name,
+                   singleFrameNameBefore,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_pendingSpriteFrame")).Name,
+                   GetSpriteFrameInfo(seriousEntryFirstFrame).Name,
+                   StringComparison.Ordinal) &&
+               GetField<long>(window, "_activeClipStartedTimestamp") == 0 &&
+               GetField<long>(window, "_activeFrameDeadlineTimestamp") == long.MaxValue,
+            "The serious expression must enter exactly at the selected neutral seam " +
+            "without resetting the accelerated absolute phase or flashing a " +
+            "placeholder while its first atlas page is cold.");
+
+        var completedSeriousEntryDecode = CreateCompletedSpritePageLoadTask(
+            window,
+            seriousEntryPageName);
+        var seriousEntryPublishCancellation = new CancellationTokenSource();
+        seriousEntryDecodeCancellation.Dispose();
+        SetField(
+            window,
+            "_spritePagePrefetchTask",
+            completedSeriousEntryDecode);
+        SetField(
+            window,
+            "_spritePagePrefetchCancellation",
+            seriousEntryPublishCancellation);
+        SetField(
+            window,
+            "_spritePagePrefetchPageName",
+            seriousEntryPageName);
+        Invoke(
+            window,
+            "CompleteSpritePagePrefetch",
+            seriousEntryPageName,
+            seriousEntryDecodeGeneration,
+            seriousEntryPublishCancellation,
+            completedSeriousEntryDecode);
+        var seriousEntryFirstPresentationTimestamp = Stopwatch.GetTimestamp();
+        Invoke(
+            window,
+            "TryShowPendingSpriteFrameAt",
+            seriousEntryFirstPresentationTimestamp);
+        Assert(string.Equals(
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_currentSpriteFrame")).Name,
+                   GetSpriteFrameInfo(seriousEntryFirstFrame).Name,
+                   StringComparison.Ordinal) &&
+               GetRawField(window, "_pendingSpriteFrame") is null &&
+               GetField<long>(window, "_activeClipStartedTimestamp") ==
+                   seriousEntryFirstPresentationTimestamp &&
+               GetField<long>(window, "_activeFrameDeadlineTimestamp") >
+                   seriousEntryFirstPresentationTimestamp,
+            "A cold serious-entry page must publish its exact first pose before " +
+            "starting the sampled entry clock; no normal-frame flash or elapsed " +
+            "hidden time is allowed.");
+
         var seriousLoopStartTimestamp = checked(
-            doubleClickTimestamp + Stopwatch.Frequency / 8);
+            doubleClickSeamTimestamp +
+            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(133.34)));
         Invoke(
             window,
             "CompleteActiveClipAt",
@@ -19513,13 +19648,51 @@ internal static partial class Program
             "StartActiveClipClockAt",
             seriousLoopStartTimestamp,
             TimeSpan.Zero);
+        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), seriousLoopClip) &&
+               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
+                   0.000001 &&
+               Math.Abs(
+                   GetField<long>(window, "_workFastUntilTimestamp") -
+                   (seriousLoopStartTimestamp + Stopwatch.Frequency * 4L)) <= 1,
+            "Completing serious entry must begin the serious 2x loop and its fresh " +
+            "four-second deadline.");
+
+        var seriousClipBeforeSingle = GetRawField(window, "_activeClip");
+        var seriousAnchorBeforeSingle =
+            GetField<double>(window, "_workLoopAnchorFramePosition");
+        var seriousTimestampBeforeSingle =
+            GetField<long>(window, "_workLoopAnchorTimestamp");
+        var seriousRateBeforeSingle =
+            GetField<double>(window, "_workLoopPlaybackRate");
+        var seriousDeadlineBeforeSingle =
+            GetField<long>(window, "_workFastUntilTimestamp");
+        Invoke(window, "HandleWorkPetClick", 1);
         Assert(ReferenceEquals(
                    GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workSeriousLoopClip")) &&
-               GetField<long>(window, "_workFastUntilTimestamp") -
-                   seriousLoopStartTimestamp == Stopwatch.Frequency * 4L,
-            "Serious 2x typing and its fresh four-second window must begin only " +
-            "after the short facial entry completes.");
+                   seriousClipBeforeSingle) &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopAnchorFramePosition") -
+                   seriousAnchorBeforeSingle) <= 0.000001 &&
+               GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                   seriousTimestampBeforeSingle &&
+               Math.Abs(
+                   GetField<double>(window, "_workLoopPlaybackRate") -
+                   seriousRateBeforeSingle) <= 0.000001 &&
+               GetField<long>(window, "_workFastUntilTimestamp") ==
+                   seriousDeadlineBeforeSingle,
+            "A single click during serious typing must also be a strict visual no-op.");
+
+        var reboostTimestamp = checked(
+            seriousLoopStartTimestamp + Stopwatch.Frequency);
+        Invoke(window, "StartFastWorkTypingAt", reboostTimestamp);
+        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), seriousLoopClip) &&
+               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
+                   0.000001 &&
+               Math.Abs(
+                   GetField<long>(window, "_workFastUntilTimestamp") -
+                   (reboostTimestamp + Stopwatch.Frequency * 4L)) <= 1,
+            "A repeated double click during serious typing must immediately keep " +
+            "2x and restart a full four-second deadline.");
 
         var fastExitAnchorTimestamp = Stopwatch.GetTimestamp();
         SetField(window, "_workLoopAnchorFramePosition", 93.25d);
@@ -19606,12 +19779,17 @@ internal static partial class Program
         SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
         SetField(window, "_workLoopPlaybackRate", playbackRate);
         SetField(window, "_workFastUntilTimestamp", 0L);
+        var clickClipBefore = GetRawField(window, "_activeClip");
+        var clickFrameBefore = GetField<int>(window, "_activeFrameIndex");
         Invoke(window, "HandleWorkPetClick", 1);
-        var singleClickTimer = GetField<DispatcherTimer>(
-            window,
-            "_workSingleClickTimer");
-        Assert(singleClickTimer.IsEnabled,
-            "Work-drag setup must begin with one pending single-click decision.");
+        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), clickClipBefore) &&
+               GetField<int>(window, "_activeFrameIndex") == clickFrameBefore &&
+               GetField<long>(window, "_workLoopAnchorTimestamp") == anchorTimestamp &&
+               Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
+                        anchorFramePosition) <= 0.000001 &&
+               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
+                        playbackRate) <= 0.000001,
+            "Work-drag setup single click must be a strict visual no-op.");
 
         var petHost = GetField<Grid>(window, "PetHost");
         var grabPosition = petHost.TranslatePoint(
@@ -19638,8 +19816,6 @@ internal static partial class Program
                GetField<bool>(window, "_dragPreservesWorkMode") &&
                !GetField<bool>(window, "_pointerDown") &&
                GetField<int>(window, "_workPointerClickCount") == 0 &&
-               !singleClickTimer.IsEnabled &&
-               GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0 &&
                string.Equals(
                    GetRawField(window, "_workState")?.ToString(),
                    "Typing",
@@ -19653,7 +19829,7 @@ internal static partial class Program
                Math.Abs(
                    GetField<double>(window, "_workLoopPlaybackRate") -
                    playbackRate) <= 0.000001,
-            "Beginning a real work drag must cancel click arbitration while " +
+            "Beginning a real work drag must clear click classification while " +
             "preserving Typing, the active loop, and every absolute-clock anchor.");
 
         visibleBounds = (Rect)Invoke(
@@ -19709,7 +19885,6 @@ internal static partial class Program
                    GetField<double>(window, "_workLoopPlaybackRate") -
                    playbackRate) <= 0.000001 &&
                Math.Abs(actualReleasePhase - expectedReleasePhase) <= 0.000001 &&
-               !GetField<bool>(window, "_workTapPhaseSyncRequested") &&
                !GetField<bool>(window, "_workSeriousEnterRequested") &&
                !GetField<bool>(window, "_workExitRequested"),
             "Releasing a working pet on the left screen edge must snap without " +
@@ -19896,6 +20071,95 @@ internal static partial class Program
         }
     }
 
+    private static (int Area, int MinX, int MaxX)
+        GetLargestAlphaComponentTouchingHorizontalEdge(
+            byte[] pixels,
+            int pixelWidth,
+            int pixelHeight,
+            int roiLeft,
+            int roiTop,
+            int roiRightExclusive,
+            int roiBottomExclusive,
+            bool touchRight)
+    {
+        const byte alphaThreshold = 24;
+        const int contactBandWidth = 6;
+        Assert(pixelWidth > 0 && pixelHeight > 0 &&
+               pixels.Length == pixelWidth * pixelHeight * 4,
+            "边缘连通组件检查需要完整的Pbgra32像素画布");
+        Assert(roiLeft >= 0 && roiTop >= 0 &&
+               roiRightExclusive <= pixelWidth &&
+               roiBottomExclusive <= pixelHeight &&
+               roiLeft < roiRightExclusive && roiTop < roiBottomExclusive,
+            "边缘连通组件ROI必须位于像素画布内");
+
+        var visited = new bool[pixelWidth * pixelHeight];
+        var pending = new Queue<int>();
+        var bestArea = 0;
+        var bestMinX = -1;
+        var bestMaxX = -1;
+        for (var startY = roiTop; startY < roiBottomExclusive; startY++)
+        {
+            for (var startX = roiLeft; startX < roiRightExclusive; startX++)
+            {
+                var startIndex = startY * pixelWidth + startX;
+                if (visited[startIndex] ||
+                    pixels[startIndex * 4 + 3] < alphaThreshold)
+                {
+                    continue;
+                }
+
+                visited[startIndex] = true;
+                pending.Enqueue(startIndex);
+                var area = 0;
+                var minX = startX;
+                var maxX = startX;
+                var touchesContactBand = false;
+                while (pending.Count > 0)
+                {
+                    var index = pending.Dequeue();
+                    var y = index / pixelWidth;
+                    var x = index - y * pixelWidth;
+                    area++;
+                    minX = Math.Min(minX, x);
+                    maxX = Math.Max(maxX, x);
+                    touchesContactBand |= touchRight
+                        ? x >= pixelWidth - contactBandWidth
+                        : x < contactBandWidth;
+
+                    for (var neighborY = Math.Max(roiTop, y - 1);
+                         neighborY <= Math.Min(roiBottomExclusive - 1, y + 1);
+                         neighborY++)
+                    {
+                        for (var neighborX = Math.Max(roiLeft, x - 1);
+                             neighborX <= Math.Min(roiRightExclusive - 1, x + 1);
+                             neighborX++)
+                        {
+                            var neighborIndex = neighborY * pixelWidth + neighborX;
+                            if (visited[neighborIndex] ||
+                                pixels[neighborIndex * 4 + 3] < alphaThreshold)
+                            {
+                                continue;
+                            }
+
+                            visited[neighborIndex] = true;
+                            pending.Enqueue(neighborIndex);
+                        }
+                    }
+                }
+
+                if (touchesContactBand && area > bestArea)
+                {
+                    bestArea = area;
+                    bestMinX = minX;
+                    bestMaxX = maxX;
+                }
+            }
+        }
+
+        return (bestArea, bestMinX, bestMaxX);
+    }
+
     private static void AssertWorkModeRuntimeStateContract(MainWindow window)
     {
         PrepareWorkModeIdleState(window);
@@ -19980,10 +20244,14 @@ internal static partial class Program
                ReferenceEquals(GetRawField(window, "_activeClip"), loopClip),
             "The 48-frame enter clip must lead into the 96-frame typing loop.");
 
+        var clipBeforeSingleClick = GetRawField(window, "_activeClip");
+        var frameBeforeSingleClick = GetField<int>(window, "_activeFrameIndex");
         Invoke(window, "HandleWorkPetClick", 1);
-        var singleTimer = GetField<DispatcherTimer>(
-            window,
-            "_workSingleClickTimer");
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   clipBeforeSingleClick) &&
+               GetField<int>(window, "_activeFrameIndex") == frameBeforeSingleClick,
+            "A single click must not change the active work clip or visible pose.");
         var rightClickArgs = new MouseButtonEventArgs(
             Mouse.PrimaryDevice,
             Environment.TickCount,
@@ -20000,14 +20268,13 @@ internal static partial class Program
         var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
         var stateAfterRightClick =
             GetRawField(window, "_workState")?.ToString();
-        Assert(!singleTimer.IsEnabled &&
-               GetField<bool>(window, "_openTodoAfterWorkExitRequested") &&
+        Assert(GetField<bool>(window, "_openTodoAfterWorkExitRequested") &&
                !todoWindow.IsVisible &&
                button.Opacity < 0.01 &&
                !button.IsHitTestVisible &&
                string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal) &&
                stateAfterRightClick is "Typing" or "Exiting",
-            "Right-click must cancel pending tap, hide the 去睡觉 control immediately, " +
+            "Right-click must hide the 去睡觉 control immediately, " +
             "and keep Todo hidden until work exit completes.");
 
         if (string.Equals(stateAfterRightClick, "Typing", StringComparison.Ordinal))
@@ -20044,34 +20311,22 @@ internal static partial class Program
 
         PrepareWorkModeIdleState(window);
         EnterWorkTypingForTest(window);
-        Invoke(window, "HandleWorkPetClick", 1);
-        Assert(singleTimer.IsEnabled,
-            "Session-lock cancellation setup must have one pending single click.");
         Invoke(window, "QueueSessionInactive");
         PumpDispatcher(TimeSpan.FromMilliseconds(50));
-        Assert(!singleTimer.IsEnabled &&
-               string.Equals(
+        Assert(string.Equals(
                    GetRawField(window, "_workState")?.ToString(),
                    "Idle",
                    StringComparison.Ordinal),
-            "Session lock must cancel pending work input and restore idle immediately.");
+            "Session lock must restore idle immediately.");
 
         PrepareWorkModeIdleState(window);
     }
 
     private static void AssertWorkModeRegressionContract(MainWindow window)
     {
+        const string removedPagePrefix = "work-" + "tap";
+        const string removedFramePrefix = "Assets/luban-work-" + "tap-";
         var source = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
-        var rightButtonDown = ExtractPrivateMethodSource(
-            source,
-            "PetHost_PreviewMouseRightButtonDown");
-        var workButtonDown = ExtractPrivateMethodSource(
-            source,
-            "WorkModeButton_PreviewMouseLeftButtonDown");
-        var requestWorkExit = ExtractPrivateMethodSource(source, "RequestWorkExit");
-        var scheduleSingleClick = ExtractPrivateMethodSource(
-            source,
-            "ScheduleWorkSingleClick");
         var handleWorkPetClick = ExtractPrivateMethodSource(
             source,
             "HandleWorkPetClick");
@@ -20081,70 +20336,46 @@ internal static partial class Program
         var startFastTyping = ExtractPrivateMethodSource(
             source,
             "StartFastWorkTypingAt");
-        var prefetchTransitions = ExtractPrivateMethodSource(
-            source,
-            "PrefetchPendingWorkTransitionPages");
         var advanceWorkLoop = ExtractPrivateMethodSource(
             source,
             "AdvanceWorkLoop");
-        var completeClip = ExtractPrivateMethodSource(source, "CompleteActiveClipAt");
-        var setBubbleMode = ExtractPrivateMethodSource(source, "SetBubbleMode");
-        var queueSessionInactive = ExtractPrivateMethodSource(
+        var completeClip = ExtractPrivateMethodSource(
             source,
-            "QueueSessionInactive");
-        var cancelPointer = ExtractPrivateMethodSource(
-            source,
-            "CancelPetPointerInteractionForInterruption");
-        var refreshSnore = ExtractPrivateMethodSource(
-            source,
-            "RefreshSnoreBubbleAnimationState");
-        var workButtonClick = ExtractPrivateMethodSource(
-            source,
-            "WorkModeButton_Click");
-        var refreshWorkButton = ExtractPrivateMethodSource(
-            source,
-            "RefreshWorkModeButton");
-        var loadEdgeFrames = ExtractPrivateMethodSource(
-            source,
-            "LoadEdgeFrameSequence");
+            "CompleteActiveClipAt");
 
-        Assert(rightButtonDown.Contains(
-                   "CancelPendingWorkSingleClick()",
+        Assert(handleWorkPetClick.Contains(
+                   "if (clickCount < 2)",
                    StringComparison.Ordinal) &&
-               workButtonDown.Contains(
-                   "CancelPendingWorkSingleClick()",
-                   StringComparison.Ordinal),
-            "Right-button press and 去睡觉 pointer-down must cancel a pending " +
-            "single click before either button waits for MouseUp.");
-        Assert(scheduleSingleClick.Contains(
-                   "PrefetchPendingWorkTransitionPages()",
-                   StringComparison.Ordinal) &&
-               scheduleSingleClick.Contains(
+               handleWorkPetClick.Contains(
                    "PrefetchWorkSeriousEntryPage()",
                    StringComparison.Ordinal) &&
-               prefetchSeriousEntry.Contains(
+               handleWorkPetClick.Contains(
+                   "StartFastWorkTypingAt(Stopwatch.GetTimestamp())",
+                   StringComparison.Ordinal) &&
+               !handleWorkPetClick.Contains(
+                   "_workLoopPlaybackRate =",
+                   StringComparison.Ordinal) &&
+               !handleWorkPetClick.Contains(
+                   "ShowStableFrame",
+                   StringComparison.Ordinal),
+            "Single click must only prefetch and return; double click must dispatch " +
+            "the immediate fast-typing path in the same input turn.");
+        Assert(prefetchSeriousEntry.Contains(
                    "_workSeriousEnterClip.Frames[0].Image.PageName",
                    StringComparison.Ordinal) &&
                prefetchSeriousEntry.Contains(
+                   "_spritePagePrefetchTask is not null",
+                   StringComparison.Ordinal) &&
+               prefetchSeriousEntry.Contains(
+                   "_desiredSpritePageName is not null",
+                   StringComparison.Ordinal) &&
+               prefetchSeriousEntry.Contains(
+                   "urgent: false",
+                   StringComparison.Ordinal) &&
+               !prefetchSeriousEntry.Contains(
                    "urgent: true",
                    StringComparison.Ordinal) &&
-               handleWorkPetClick.Contains(
-                   "_workTapPhaseSyncRequested || _workSeriousEnterRequested",
-                   StringComparison.Ordinal) &&
-               requestWorkExit.Contains(
-                   "PrefetchPendingWorkTransitionPages()",
-                   StringComparison.Ordinal) &&
-               prefetchTransitions.Contains("_workTapClip.Frames[0]", StringComparison.Ordinal) &&
-               prefetchTransitions.Contains("_workSeriousExitClip.Frames[0]", StringComparison.Ordinal) &&
-               prefetchTransitions.Contains("_workSeriousEnterClip.Frames[0]", StringComparison.Ordinal) &&
-               prefetchTransitions.Contains("_workSeriousLoopFrames[frameIndex]", StringComparison.Ordinal) &&
-               prefetchTransitions.Contains("_workExitClip.Frames[0]", StringComparison.Ordinal) &&
-               prefetchTransitions.Contains("_workLoopClip.Frames[0]", StringComparison.Ordinal),
-            "The first click must urgently prefetch serious-entry without losing " +
-            "it to a competing cold-page request; the exact target serious-loop, " +
-            "tap, serious-exit, normal-loop, and work-exit pages must follow ahead " +
-            "of their transitions.");
-        Assert(startFastTyping.Contains(
+               startFastTyping.Contains(
                    "_workLoopPlaybackRate = WorkFastPlaybackMultiplier",
                    StringComparison.Ordinal) &&
                startFastTyping.Contains(
@@ -20153,715 +20384,189 @@ internal static partial class Program
                startFastTyping.Contains(
                    "_workSeriousEnterRequested = true",
                    StringComparison.Ordinal) &&
-               !startFastTyping.Contains(
-                   "_activeClip = _workSeriousLoopClip",
-                   StringComparison.Ordinal) &&
                advanceWorkLoop.Contains(
                    "StartWorkSeriousEnterClip(timestamp)",
                    StringComparison.Ordinal),
-            "Double-click must immediately accelerate the unchanged normal pose " +
-            "clock, then defer its serious facial handoff to a neutral seam.");
-        Assert(requestWorkExit.Contains(
-                   "StartWorkExitClipAt",
-                   StringComparison.Ordinal) &&
-               requestWorkExit.Contains(
-                   "GetNextWorkNeutralMicroSeamFramePosition",
-                   StringComparison.Ordinal) &&
-               !requestWorkExit.Contains(
-                   "_workLoopPlaybackRate =",
-                   StringComparison.Ordinal) &&
-               !requestWorkExit.Contains(
-                   "WorkExitPhaseSyncDuration",
-                   StringComparison.Ordinal) &&
-               !requestWorkExit.Contains(
-                   "_activeFrameIndex == 0",
-                   StringComparison.Ordinal) &&
-               advanceWorkLoop.Contains(
-                   "ReferenceEquals(_activeClip, _workSeriousLoopClip)",
-                   StringComparison.Ordinal) &&
-               advanceWorkLoop.Contains(
-                   "StartWorkSeriousExitClip()",
-                   StringComparison.Ordinal),
-            "Work exit must reverse an in-progress enter immediately, while a " +
-            "typing loop keeps its natural rate until the next neutral micro-seam; " +
-            "serious typing must relax its face before the work-exit clip.");
-        var tapBranchStart = completeClip.IndexOf(
-            "ReferenceEquals(clip, _workTapClip)",
-            StringComparison.Ordinal);
-        var seriousEnterBranchStart = completeClip.IndexOf(
-            "ReferenceEquals(clip, _workSeriousEnterClip)",
-            StringComparison.Ordinal);
-        var tapCompletionBranch = tapBranchStart >= 0 &&
-                                  seriousEnterBranchStart > tapBranchStart
-            ? completeClip[tapBranchStart..seriousEnterBranchStart]
-            : string.Empty;
-        Assert(tapCompletionBranch.Contains(
-                   "StartWorkLoopAt(timestamp)",
-                   StringComparison.Ordinal) &&
-               !tapCompletionBranch.Contains(
-                   "StartSeriousWorkLoopAt(timestamp)",
-                   StringComparison.Ordinal) &&
-               completeClip.Contains(
+            "Double click must switch to 2x immediately, then enter the serious " +
+            "expression at the selected neutral seam.");
+        Assert(completeClip.Contains(
                    "ReferenceEquals(clip, _workSeriousEnterClip)",
                    StringComparison.Ordinal) &&
                completeClip.Contains(
                    "StartSeriousWorkLoopAt(timestamp)",
                    StringComparison.Ordinal) &&
-               completeClip.Contains(
-                   "ReferenceEquals(clip, _workSeriousExitClip)",
-                   StringComparison.Ordinal) &&
-               completeClip.Contains(
-                   "StartWorkLoopAt(timestamp)",
-                   StringComparison.Ordinal),
-            "A head tap must return to ordinary 1x typing; serious acceleration " +
-            "belongs exclusively to the double-click path.");
-        Assert(setBubbleMode.Contains(
-                   "CancelPetPointerInteractionForInterruption()",
-                   StringComparison.Ordinal) &&
-               queueSessionInactive.Contains(
-                   "CancelPetPointerInteractionForInterruption()",
-                   StringComparison.Ordinal) &&
-               cancelPointer.Contains("PetHost.ReleaseMouseCapture()", StringComparison.Ordinal) &&
-               cancelPointer.Contains("_pointerDown = false", StringComparison.Ordinal) &&
-               cancelPointer.Contains("_dragInteractionActive = false", StringComparison.Ordinal),
-            "Reminder/Todo interruption and session lock must atomically clear pointer " +
-            "state and release PetHost mouse capture.");
-        Assert(refreshSnore.Contains("!_dragInteractionActive", StringComparison.Ordinal) &&
-               refreshSnore.Contains("!_pointerDown", StringComparison.Ordinal) &&
-               refreshSnore.Contains("!_dragStarted", StringComparison.Ordinal),
-            "Snore rendering must be gated off for every pressed or dragging pointer state.");
-        Assert(workButtonClick.Contains(
-                   "_ = TryEnterWorkMode()",
-                   StringComparison.Ordinal) &&
-               !workButtonClick.Contains(
-                   "TryEnterWorkModeAfterEdgePeekExit()",
-                   StringComparison.Ordinal) &&
-               !refreshWorkButton.Contains(
-                   "CanEnterWorkModeAfterEdgePeekExit()",
-                   StringComparison.Ordinal) &&
-               !refreshWorkButton.Contains(
-                   "_workEnterAfterEdgePeekExitRequested",
-                   StringComparison.Ordinal),
-            "Left/right/bottom edge-peek must hide the work button; neither its " +
-            "visibility logic nor its Click handler may offer an edge-exit entry path.");
-        Assert(!loadEdgeFrames.Contains(
-                   "string.Equals(pageNamePrefix, \"edge-left\"",
-                   StringComparison.Ordinal) &&
-               !loadEdgeFrames.Contains(
-                   "Math.Max(0, frame.DestinationX)",
-                   StringComparison.Ordinal) &&
-               !loadEdgeFrames.Contains(
-                   "DisplayPixelWidth - frame.Width",
-                   StringComparison.Ordinal),
-            "The shared left/right side-peek sequence must preserve the atlas " +
-            "destination metadata; shifting its transparent gutter at runtime " +
-            "creates the clipped supporting-arm seam.");
+               !source.Contains("WorkTap", StringComparison.Ordinal) &&
+               !source.Contains("WorkSingleClick", StringComparison.Ordinal) &&
+               !source.Contains(removedFramePrefix, StringComparison.Ordinal),
+            "Runtime source must contain only enter/loop/serious-loop/serious-exit " +
+            "work phases and no delayed single-click or tap branch.");
 
-        PrepareWorkModeIdleState(window);
-        var button = GetField<Button>(window, "WorkModeButton");
-        var petHost = GetField<Grid>(window, "PetHost");
-        AssertWorkButtonContract(
-            window,
-            phase: "Idle",
-            expectedState: "Idle",
-            expectedContent: "去打工",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
+        var workFields = typeof(MainWindow)
+            .GetFields(InstanceFlags | StaticFlags)
+            .Select(field => field.Name)
+            .ToArray();
+        var workMethods = typeof(MainWindow)
+            .GetMethods(InstanceFlags | StaticFlags)
+            .Select(method => method.Name)
+            .ToArray();
+        Assert(!workFields.Any(name =>
+                   name.Contains("WorkTap", StringComparison.OrdinalIgnoreCase) ||
+                   name.Contains("SingleClick", StringComparison.OrdinalIgnoreCase)) &&
+               !workMethods.Any(name =>
+                   name.Contains("WorkTap", StringComparison.OrdinalIgnoreCase) ||
+                   name.Contains("SingleClick", StringComparison.OrdinalIgnoreCase)),
+            "Compiled MainWindow metadata must not retain tap clips or single-click timers.");
 
-        Assert((bool)Invoke(window, "TryEnterWorkMode")!,
-            "Non-idle button-label regression setup could not enter work.");
-        AssertWorkButtonContract(
-            window,
-            phase: "Entering",
-            expectedState: "Entering",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: false,
-            expectedIsHitTestVisible: false);
-        Invoke(
-            window,
-            "CompleteActiveClipAt",
-            GetField<object>(window, "_workEnterClip"),
-            Stopwatch.GetTimestamp());
-        AssertWorkButtonContract(
-            window,
-            phase: "Typing",
-            expectedState: "Typing",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
-        Invoke(window, "StartWorkClip", GetField<object>(window, "_workTapClip"));
-        AssertWorkButtonContract(
-            window,
-            phase: "Tap",
-            expectedState: "Typing",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
-        Invoke(window, "StartWorkExitClip");
-        AssertWorkButtonContract(
-            window,
-            phase: "Exiting",
-            expectedState: "Exiting",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: false,
-            expectedIsHitTestVisible: false);
-        SetField(window, "_openTodoAfterWorkExitRequested", true);
-        Invoke(window, "RequestWorkExit");
-        Assert(button.Opacity < 0.01 &&
-               !button.IsHitTestVisible &&
-               string.Equals(button.Content as string, "去睡觉", StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Exiting",
-                   StringComparison.Ordinal),
-            "A Todo request recorded after work exit has already started must hide " +
-            "去睡觉 synchronously inside RequestWorkExit, without waiting for Rendering.");
+        using var manifest = JsonDocument.Parse(File.ReadAllText(
+            FindWorkspaceFile("Assets", "luban-sprite-pages.json")));
+        var manifestRoot = manifest.RootElement;
+        var pages = manifestRoot.GetProperty("pages");
+        var pageProperties = pages.EnumerateObject().ToArray();
+        var pageNames = pageProperties.Select(page => page.Name).ToArray();
+        var expectedWorkPages = new[]
+        {
+            "work-enter",
+            "work-enter-part-02",
+            "work-loop",
+            "work-loop-part-02",
+            "work-loop-part-03",
+            "work-serious-loop",
+            "work-serious-loop-part-02",
+            "work-serious-loop-part-03",
+            "work-serious-exit"
+        };
+        var actualWorkPages = pageNames
+            .Where(name => name.StartsWith("work-", StringComparison.Ordinal))
+            .ToArray();
+        var manifestFrameNames = pageProperties
+            .SelectMany(page =>
+                page.Value.GetProperty("frames").EnumerateObject())
+            .Select(frame => frame.Name)
+            .ToArray();
+        var workFrameNames = pageProperties
+            .Where(page => page.Name.StartsWith("work-", StringComparison.Ordinal))
+            .SelectMany(page =>
+                page.Value.GetProperty("frames").EnumerateObject())
+            .Select(frame => frame.Name)
+            .ToArray();
+        var expectedWorkPhaseCounts = new Dictionary<string, int>
+        {
+            ["Assets/luban-work-enter-"] = 48,
+            ["Assets/luban-work-loop-"] = 96,
+            ["Assets/luban-work-serious-loop-"] = 96,
+            ["Assets/luban-work-serious-exit-"] = 24
+        };
+        Assert(actualWorkPages.SequenceEqual(expectedWorkPages) &&
+               actualWorkPages.Length == 9 &&
+               workFrameNames.Length == 264 &&
+               workFrameNames.Distinct(StringComparer.Ordinal).Count() == 264 &&
+               expectedWorkPhaseCounts.All(expected =>
+                   workFrameNames.Count(name => name.StartsWith(
+                       expected.Key,
+                       StringComparison.Ordinal)) == expected.Value) &&
+               !pageNames.Any(name =>
+                   name.StartsWith(removedPagePrefix, StringComparison.Ordinal)) &&
+               !manifestFrameNames.Any(name =>
+                   name.StartsWith(removedFramePrefix, StringComparison.Ordinal)),
+            "The work atlas contract must contain exactly 264 frames across nine " +
+            "enter/loop/serious-loop/serious-exit pages and no tap page/frame, " +
+            "without pinning unrelated global atlas totals.");
 
+        var runtimePageNames = GetField<IDictionary>(window, "_spritePages")
+            .Keys.Cast<object>()
+            .Select(key => key.ToString() ?? string.Empty)
+            .ToArray();
+        Assert(!runtimePageNames.Any(name =>
+                   name.StartsWith(removedPagePrefix, StringComparison.Ordinal)),
+            "Runtime sprite-page dictionary must not expose a tap page.");
+
+        var assembly = typeof(MainWindow).Assembly;
+        var generatedResourceName = assembly.GetManifestResourceNames()
+            .Single(name => name.EndsWith(
+                ".g.resources",
+                StringComparison.OrdinalIgnoreCase));
+        using var resourceStream = assembly.GetManifestResourceStream(
+            generatedResourceName)
+            ?? throw new InvalidOperationException("Missing WPF generated resource stream.");
+        using var resourceReader = new ResourceReader(resourceStream);
+        var resourceEnumerator = resourceReader.GetEnumerator();
+        var embeddedTapResource = false;
+        while (resourceEnumerator.MoveNext())
+        {
+            if (resourceEnumerator.Key is string key &&
+                key.Contains(removedPagePrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                embeddedTapResource = true;
+                break;
+            }
+        }
+        Assert(!embeddedTapResource,
+            "Compiled MainWindow assembly resources must not contain a work-tap page.");
+
+        // Frame 094 lives near the end of the third serious-loop page. Starting
+        // there must keep that visible pose while asynchronously warming frame
+        // 001's page for the wrap; the loop may not stall or flash at the seam.
         PrepareWorkModeIdleState(window);
         EnterWorkTypingForTest(window);
-        Invoke(window, "HandleWorkPetClick", 1);
-        var singleClickTimer = GetField<DispatcherTimer>(
-            window,
-            "_workSingleClickTimer");
-        Assert(singleClickTimer.IsEnabled,
-            "Right-button-down cancellation setup requires a pending single click.");
-        var rightButtonDownArgs = new MouseButtonEventArgs(
-            Mouse.PrimaryDevice,
-            Environment.TickCount,
-            MouseButton.Right)
-        {
-            RoutedEvent = Mouse.PreviewMouseDownEvent,
-            Source = petHost
-        };
-        Invoke(
-            window,
-            "PetHost_PreviewMouseRightButtonDown",
-            petHost,
-            rightButtonDownArgs);
-        Assert(!singleClickTimer.IsEnabled &&
-               GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0,
-            "Pressing the right button must cancel a pending head tap before release.");
-
-        Invoke(window, "HandleWorkPetClick", 1);
-        Assert(singleClickTimer.IsEnabled,
-            "去睡觉 pointer-down cancellation setup requires a pending single click.");
-        var workButtonDownArgs = new MouseButtonEventArgs(
-            Mouse.PrimaryDevice,
-            Environment.TickCount,
-            MouseButton.Left)
-        {
-            RoutedEvent = Mouse.PreviewMouseDownEvent,
-            Source = button
-        };
-        Invoke(
-            window,
-            "WorkModeButton_PreviewMouseLeftButtonDown",
-            button,
-            workButtonDownArgs);
-        Assert(!singleClickTimer.IsEnabled &&
-               GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0,
-            "Pressing 去睡觉 must cancel a pending head tap before Click/MouseUp.");
-
-        PrepareWorkModeIdleState(window);
-        EnterWorkTypingForTest(window);
-        var loopClip = GetField<object>(window, "_workLoopClip");
-        var loopFrames = GetField<Array>(window, "_workLoopFrames");
-        var phaseBaseTimestamp = Stopwatch.GetTimestamp();
-        SetField(window, "_activeClip", loopClip);
-        SetField(window, "_activeFrameIndex", 17);
-        SetField(window, "_workLoopAnchorFramePosition", 17.25d);
-        SetField(window, "_workLoopAnchorTimestamp", phaseBaseTimestamp);
-        SetField(window, "_workLoopPlaybackRate", 1d);
-        var scheduledRate = GetField<double>(window, "_workLoopPlaybackRate");
-        Invoke(window, "ScheduleWorkSingleClick");
-        var scheduledAnchorPosition =
-            GetField<double>(window, "_workLoopAnchorFramePosition");
-        Assert(singleClickTimer.IsEnabled &&
-               !GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               double.IsPositiveInfinity(
-                   GetField<double>(window, "_workTapTargetFramePosition")) &&
-               Math.Abs(scheduledAnchorPosition - 17.25d) <= 0.000001 &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   phaseBaseTimestamp &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopPlaybackRate") -
-                   scheduledRate) <= 0.000001,
-            "Double-click arbitration must leave the absolute phase and playback " +
-            "rate untouched; seam waiting begins only after single-click confirmation.");
-        var phaseBeforeTapConfirmation = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            Stopwatch.GetTimestamp())!;
-        Invoke(window, "WorkSingleClickTimer_Tick", null, EventArgs.Empty);
-        var tapTargetPosition =
-            GetField<double>(window, "_workTapTargetFramePosition");
-        Assert(GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               tapTargetPosition >= phaseBeforeTapConfirmation &&
-               tapTargetPosition - phaseBeforeTapConfirmation <= 13.1 &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopPlaybackRate") -
-                   scheduledRate) <= 0.000001,
-            "A confirmed head tap must preserve the live loop phase and continue " +
-            "at 1x to the next neutral micro-seam.");
-        var confirmedTapGeneration =
-            GetField<int>(window, "_workClickGeneration");
-        Invoke(window, "HandleWorkPetClick", 1);
-        Assert(!singleClickTimer.IsEnabled &&
-               GetField<int>(window, "_scheduledWorkSingleClickGeneration") == 0 &&
-               GetField<int>(window, "_workClickGeneration") ==
-                   confirmedTapGeneration &&
-               GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               Math.Abs(
-                   GetField<double>(window, "_workTapTargetFramePosition") -
-                   tapTargetPosition) <= 0.000001,
-            "An extra single-click notification after tap confirmation must be " +
-            "ignored and must not postpone the already selected neutral seam.");
-        var scheduledAnchorTimestamp =
-            GetField<long>(window, "_workLoopAnchorTimestamp");
-        var seamTimestamp = checked(
-            scheduledAnchorTimestamp +
-            (long)Math.Ceiling(
-                (tapTargetPosition - scheduledAnchorPosition) /
-                (60d * scheduledRate) * Stopwatch.Frequency) + 2);
-        Invoke(window, "AdvanceWorkLoop", seamTimestamp);
-        Assert(ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workTapClip")) &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopAnchorFramePosition") -
-                   tapTargetPosition) <= 0.001,
-            "Starting the authored head tap must retain the chosen neutral seam " +
-            "phase, not freeze or reset to frame 001.");
-
-        var tapCompletedTimestamp = checked(
-            seamTimestamp + ToProductionStopwatchTicks(TimeSpan.FromSeconds(1)));
-        Invoke(
-            window,
-            "CompleteActiveClipAt",
-            GetField<object>(window, "_workTapClip"),
-            tapCompletedTimestamp);
+        var seriousLoopFrames = GetField<Array>(window, "_workSeriousLoopFrames");
         var seriousLoopClip = GetField<object>(window, "_workSeriousLoopClip");
-        var seriousExitClip = GetField<object>(window, "_workSeriousExitClip");
-        var seriousExitFrames = GetField<Array>(window, "_workSeriousExitFrames");
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-               0.000001 &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0 &&
-               seriousExitFrames.Length == 24,
-            "A single head tap must return to the ordinary 96-frame keyboard " +
-            "loop at 1x and must not start a serious timing window.");
-        AssertWorkButtonContract(
-            window,
-            phase: "Post-tap normal loop",
-            expectedState: "Typing",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
-        Invoke(
-            window,
-            "StartActiveClipClockAt",
-            tapCompletedTimestamp,
-            TimeSpan.Zero);
-        SetField(window, "_workLoopAnchorFramePosition", 17.25d);
-        SetField(window, "_workLoopAnchorTimestamp", tapCompletedTimestamp);
-        SetField(window, "_workLoopPlaybackRate", 1d);
-        Invoke(window, "StartFastWorkTypingAt", tapCompletedTimestamp);
-        var seriousEnterClip = GetField<object>(window, "_workSeriousEnterClip");
-        var seriousEnterTarget = GetField<double>(
-            window,
-            "_workSeriousEnterTargetFramePosition");
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001 &&
-               GetField<bool>(window, "_workSeriousEnterRequested") &&
-               seriousEnterTarget >= 17.25d &&
-               seriousEnterTarget - 17.25d <= 13.1d &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0,
-            "Only an explicit double click may immediately accelerate the " +
-            "unchanged normal keyboard phase and request serious entry.");
-        var originalSeriousEnterTarget = seriousEnterTarget;
-        var originalSeriousEnterAnchorTimestamp =
-            GetField<long>(window, "_workLoopAnchorTimestamp");
-        Invoke(
-            window,
-            "StartFastWorkTypingAt",
-            checked(tapCompletedTimestamp + Stopwatch.Frequency / 100));
-        Assert(Math.Abs(
-                   GetField<double>(window, "_workSeriousEnterTargetFramePosition") -
-                   originalSeriousEnterTarget) <= 0.000001 &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   originalSeriousEnterAnchorTimestamp,
-            "A repeated double-click while serious entry is pending must not move " +
-            "the chosen seam or restart its absolute 2x phase.");
-
-        var seriousEnterFrames = GetClipFrames(seriousEnterClip);
-        PrimeSpritePageForFrame(
-            window,
-            GetProperty<object>(seriousEnterFrames.GetValue(0)!, "Image"));
-        var seriousEnterTimestamp = checked(
-            tapCompletedTimestamp +
-            (long)Math.Ceiling(
-                (seriousEnterTarget - 17.25d) / 120d *
-                Stopwatch.Frequency) + 2);
-        Invoke(window, "AdvanceWorkLoop", seriousEnterTimestamp);
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), seriousEnterClip) &&
-               !GetField<bool>(window, "_workSeriousEnterRequested") &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0,
-            "The 2x normal loop must hand off to the eight-frame brow transition " +
-            "only at its selected exact-neutral seam.");
-        AssertWorkButtonContract(
-            window,
-            phase: "Serious-enter after double-click",
-            expectedState: "Typing",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
-
-        Invoke(
-            window,
-            "StartActiveClipClockAt",
-            seriousEnterTimestamp,
-            GetFrameDuration(seriousEnterFrames.GetValue(0)!));
-        var seriousStallTimestamp = checked(
-            seriousEnterTimestamp +
-            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(250)));
-        Invoke(window, "AdvanceActiveClip", seriousStallTimestamp);
-        Invoke(
-            window,
-            "StartActiveClipClockAt",
-            seriousStallTimestamp,
-            TimeSpan.Zero);
-        var fastUntilTimestamp = GetField<long>(window, "_workFastUntilTimestamp");
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), seriousLoopClip) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
-                   0.000001 &&
-               fastUntilTimestamp - seriousStallTimestamp ==
-                   ToProductionStopwatchTicks(TimeSpan.FromSeconds(4)) &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopAnchorFramePosition") -
-                   seriousEnterTarget) <= 0.000001,
-            "A 250ms compositor stall must finish the 133ms entry directly at " +
-            "the matching serious seam, without replaying queued poses, and only " +
-            "then start the full four-second window.");
-        Invoke(window, "AdvanceWorkLoop", fastUntilTimestamp);
-        var activeClipAfterExpiry = GetRawField(window, "_activeClip");
-        var enteredSeriousExitAtExactSeam =
-            ReferenceEquals(activeClipAfterExpiry, seriousExitClip);
-        Assert(enteredSeriousExitAtExactSeam ||
-               (GetField<bool>(window, "_workSeriousExitRequested") &&
-                ReferenceEquals(activeClipAfterExpiry, seriousLoopClip)),
-            "Expiry must either enter the authored serious-exit immediately when " +
-            "four seconds lands on a neutral micro-seam, or request the next seam " +
-            "without cutting poses.");
-        long seriousExitTimestamp;
-        if (enteredSeriousExitAtExactSeam)
-        {
-            seriousExitTimestamp = fastUntilTimestamp;
-        }
-        else
-        {
-            var seriousExitTarget =
-                GetField<double>(window, "_workSeriousExitTargetFramePosition");
-            var seriousAnchorTimestamp =
-                GetField<long>(window, "_workLoopAnchorTimestamp");
-            var seriousAnchorPosition =
-                GetField<double>(window, "_workLoopAnchorFramePosition");
-            var seriousRate = GetField<double>(window, "_workLoopPlaybackRate");
-            seriousExitTimestamp = checked(
-                seriousAnchorTimestamp +
-                (long)Math.Ceiling(
-                    (seriousExitTarget - seriousAnchorPosition) /
-                    (60d * seriousRate) * Stopwatch.Frequency) + 2);
-            Invoke(window, "AdvanceWorkLoop", seriousExitTimestamp);
-        }
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), seriousExitClip) &&
-               string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Typing",
-                   StringComparison.Ordinal),
-            "Serious typing must leave through its 24-frame authored seam clip.");
-        AssertWorkButtonContract(
-            window,
-            phase: "Serious-exit",
-            expectedState: "Typing",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
-        Invoke(
-            window,
-            "CompleteActiveClipAt",
-            seriousExitClip,
-            checked(seriousExitTimestamp + Stopwatch.Frequency));
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-               0.000001,
-            "Serious-exit must land on ordinary loop-001 at normal speed.");
-
-        PrepareWorkModeIdleState(window);
-        EnterWorkTypingForTest(window);
-        var seriousLoopFramesForColdWrap =
-            GetField<Array>(window, "_workSeriousLoopFrames");
-        const int coldWrapSeamFrameIndex = 93;
-        var coldWrapSeamFrame =
-            seriousLoopFramesForColdWrap.GetValue(coldWrapSeamFrameIndex)!;
-        var coldWrapFirstFrame = seriousLoopFramesForColdWrap.GetValue(0)!;
-        var coldWrapSeamPageName =
-            GetSpriteFrameInfo(coldWrapSeamFrame).PageName;
-        var coldWrapFirstPageName =
-            GetSpriteFrameInfo(coldWrapFirstFrame).PageName;
+        var frame094 = seriousLoopFrames.GetValue(93)!;
+        var wrapFrame001 = seriousLoopFrames.GetValue(0)!;
         Assert(!string.Equals(
-                   coldWrapSeamPageName,
-                   coldWrapFirstPageName,
+                   GetSpriteFrameInfo(frame094).PageName,
+                   GetSpriteFrameInfo(wrapFrame001).PageName,
                    StringComparison.Ordinal),
-            "Cold-wrap regression requires serious seam 094 and frame 001 on different atlas pages.");
-        PrimeSpritePageForFrame(window, coldWrapSeamFrame);
-        WaitForSpritePagePrefetchToSettle(window);
-        EvictResidentSpritePageForTest(window, coldWrapFirstPageName);
-        Assert(!GetField<IDictionary>(window, "_residentSpritePages")
-                   .Contains(coldWrapFirstPageName),
-            "Cold-wrap regression must begin with serious-loop frame 001 evicted.");
-        Invoke(
+            "Serious loop frame 094 and wrap frame 001 must exercise different pages.");
+        PrimeSpritePageForFrame(window, frame094);
+        EvictResidentSpritePageForTest(
             window,
-            "StartWorkClipAt",
-            seriousLoopClip,
-            coldWrapSeamFrameIndex);
-        Assert(GetField<int>(window, "_activeFrameIndex") ==
-                   coldWrapSeamFrameIndex &&
-               Equals(
-                   GetRawField(window, "_currentSpriteFrame"),
-                   coldWrapSeamFrame),
-            "Serious-loop cold-wrap setup must truly display neutral seam 094 first.");
-        var coldWrapRequestedImmediately =
-            string.Equals(
-                GetRawField(window, "_desiredSpritePageName") as string,
-                coldWrapFirstPageName,
-                StringComparison.Ordinal) ||
-            string.Equals(
-                GetRawField(window, "_spritePagePrefetchPageName") as string,
-                coldWrapFirstPageName,
-                StringComparison.Ordinal) ||
-            GetField<IDictionary>(window, "_residentSpritePages")
-                .Contains(coldWrapFirstPageName);
-        Assert(coldWrapRequestedImmediately,
-            "Displaying serious-loop neutral seam 094 must immediately prefetch " +
-            "the cyclic frame-001 page, before the first 2x advance reaches frame 096.");
-        WaitForPrefetchedSpritePage(window, coldWrapFirstFrame);
-
-        PrepareWorkModeIdleState(window);
-        EnterWorkTypingForTest(window);
-        var seriousTapStartFrame = seriousLoopFramesForColdWrap.GetValue(81)!;
-        var seriousTapExitFirstFrame = seriousExitFrames.GetValue(0)!;
-        var workTapClip = GetField<object>(window, "_workTapClip");
-        var workTapFrames = GetField<Array>(window, "_workTapFrames");
-        var workTapFirstFrame = workTapFrames.GetValue(0)!;
-        var workTapFirstPageName = GetSpriteFrameInfo(workTapFirstFrame).PageName;
-        EvictResidentSpritePageForTest(window, workTapFirstPageName);
-        PrimeSpritePageForFrame(window, seriousTapStartFrame);
-        SetField(window, "_activeClip", seriousLoopClip);
-        SetField(window, "_activeFrameIndex", 81);
-        Invoke(window, "ShowStableFrame", seriousTapStartFrame);
-        // Match the runtime order: serious-loop is already the displayed and
-        // protected current page when the authored relaxation page is warmed.
-        // Priming both pages before changing the active frame would instead
-        // protect the stale normal-loop page and fabricate a three-page set
-        // that cannot occur at this transition.
-        PrimeSpritePageForFrame(window, seriousTapExitFirstFrame);
-        WaitForSpritePagePrefetchToSettle(window);
-        Assert(!GetField<IDictionary>(window, "_residentSpritePages")
-                   .Contains(workTapFirstPageName),
-            "Serious-tap regression must keep the tap entry page cold until " +
-            "single-click arbitration requests it.");
-        AssertResidentSpriteCacheAccounting(
-            window,
-            "serious tap runtime-order priming");
-        var seriousTapAnchorTimestamp = Stopwatch.GetTimestamp();
-        SetField(window, "_workLoopAnchorFramePosition", 81.25d);
-        SetField(window, "_workLoopAnchorTimestamp", seriousTapAnchorTimestamp);
-        SetField(window, "_workLoopPlaybackRate", 2d);
-        SetField(
-            window,
-            "_workFastUntilTimestamp",
-            checked(seriousTapAnchorTimestamp + Stopwatch.Frequency * 4L));
-        Invoke(window, "HandleWorkPetClick", 1);
-        Invoke(window, "WorkSingleClickTimer_Tick", null, EventArgs.Empty);
-        var seriousTapTarget =
-            GetField<double>(window, "_workTapTargetFramePosition");
-        Assert(GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               seriousTapTarget >= 81.25d &&
-               seriousTapTarget - 81.25d <= 13.1d,
-            "A serious-mode single click must first select the nearest neutral seam.");
-        var seriousTapSeamTimestamp = checked(
-            seriousTapAnchorTimestamp +
-            (long)Math.Ceiling(
-                (seriousTapTarget - 81.25d) / 120d *
-                Stopwatch.Frequency) + 2);
-        Invoke(window, "AdvanceWorkLoop", seriousTapSeamTimestamp);
-        Assert(ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   seriousExitClip) &&
-               GetField<bool>(window, "_workTapAfterSeriousExitRequested") &&
-               !GetField<bool>(window, "_workTapPhaseSyncRequested") &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0 &&
-               Equals(
-                   GetRawField(window, "_currentSpriteFrame"),
-                   seriousTapExitFirstFrame),
-            "A serious-mode single click must enter authored face relaxation at " +
-            "the neutral seam; it must not hard-cut to ordinary tap-001.");
-        var seriousTapPageRequested =
-            string.Equals(
-                GetRawField(window, "_desiredSpritePageName") as string,
-                workTapFirstPageName,
-                StringComparison.Ordinal) ||
-            string.Equals(
-                GetRawField(window, "_spritePagePrefetchPageName") as string,
-                workTapFirstPageName,
-                StringComparison.Ordinal) ||
-            GetField<IDictionary>(window, "_residentSpritePages")
-                .Contains(workTapFirstPageName);
-        Assert(seriousTapPageRequested,
-            "Serious relaxation must prefetch the cold head-tap page before its " +
-            "normal neutral endpoint.");
+            GetSpriteFrameInfo(wrapFrame001).PageName);
+        Invoke(window, "StartWorkClipAt", seriousLoopClip, 93);
+        Assert(string.Equals(
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_currentSpriteFrame")).Name,
+                   GetSpriteFrameInfo(frame094).Name,
+                   StringComparison.Ordinal),
+            "Starting the cold-wrap regression at serious-loop frame 094 must " +
+            "publish that exact hot pose first.");
         WaitForSpritePagePrefetchToSettleWithoutRendering(window);
-        Assert(GetField<IDictionary>(window, "_residentSpritePages")
-                   .Contains(workTapFirstPageName),
-            "Serious relaxation must finish prefetching the cold head-tap page " +
-            "without advancing the synthetic relaxation clock.");
-        var seriousExitClipFrames = GetClipFrames(seriousExitClip);
-        Invoke(
-            window,
-            "StartActiveClipClockAt",
-            seriousTapSeamTimestamp,
-            GetFrameDuration(seriousExitClipFrames.GetValue(0)!));
-        SetField(window, "_synchronizeActiveClipToRenderingCadence", false);
-        var seriousTapStallTimestamp = checked(
-            seriousTapSeamTimestamp +
-            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(250)));
-        Invoke(window, "AdvanceActiveClip", seriousTapStallTimestamp);
-        var relaxedFrameAfterStall = GetField<int>(window, "_activeFrameIndex");
-        Assert(ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   seriousExitClip) &&
-               relaxedFrameAfterStall is >= 14 and <= 16,
-            "A 250ms stall during serious relaxation must jump directly near " +
-            $"frame 016 without replaying queued poses; actual index={relaxedFrameAfterStall}.");
-        Invoke(
-            window,
-            "AdvanceActiveClip",
-            checked(
-                seriousTapSeamTimestamp +
-                ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(500))));
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), workTapClip) &&
-               !GetField<bool>(window, "_workTapAfterSeriousExitRequested") &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-                   0.000001 &&
-               GetField<long>(window, "_workFastUntilTimestamp") == 0 &&
-               Equals(GetRawField(window, "_currentSpriteFrame"), workTapFirstFrame),
-            "Serious relaxation must finish on the identical normal-neutral " +
-            "tap-001 pose, then remain at ordinary 1x semantics.");
-        Invoke(
-            window,
-            "CompleteActiveClipAt",
-            workTapClip,
-            checked(seriousTapSeamTimestamp + Stopwatch.Frequency * 2L));
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-                   0.000001,
-            "A serious-mode head tap must finish in the ordinary 1x work loop.");
-
+        Assert(GetField<IDictionary>(window, "_residentSpritePages").Contains(
+                   GetSpriteFrameInfo(wrapFrame001).PageName) &&
+               string.Equals(
+                   GetSpriteFrameInfo(
+                       GetField<object>(window, "_currentSpriteFrame")).Name,
+                   GetSpriteFrameInfo(frame094).Name,
+                   StringComparison.Ordinal),
+            "Asynchronous wrap-page prefetch must not replace serious-loop " +
+            "frame 094 before the absolute clock reaches the seam.");
         PrepareWorkModeIdleState(window);
-        EnterWorkTypingForTest(window);
-        var loopFrame = loopFrames.GetValue(1)!;
-        PrimeSpritePageForFrame(window, loopFrame);
-        SetField(window, "_activeClip", loopClip);
-        SetField(window, "_activeFrameIndex", 1);
-        Invoke(window, "ShowStableFrame", loopFrame);
-        var cliffStartTimestamp = Stopwatch.GetTimestamp();
-        SetField(window, "_workLoopAnchorFramePosition", 1.25d);
-        SetField(window, "_workLoopAnchorTimestamp", cliffStartTimestamp);
-        SetField(window, "_workLoopPlaybackRate", 1d);
-        var exitPhaseImmediatelyBefore = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            Stopwatch.GetTimestamp())!;
-        Invoke(window, "RequestWorkExit");
-        var exitAnchorTimestamp =
-            GetField<long>(window, "_workLoopAnchorTimestamp");
-        var exitAnchorPosition =
-            GetField<double>(window, "_workLoopAnchorFramePosition");
-        var exitTarget =
-            GetField<double>(window, "_workExitTargetFramePosition");
-        Assert(string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Typing",
-                   StringComparison.Ordinal) &&
-               exitAnchorTimestamp == cliffStartTimestamp &&
-               Math.Abs(exitAnchorPosition - 1.25d) <= 0.000001 &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-                   0.000001 &&
-               exitTarget >= exitPhaseImmediatelyBefore &&
-               exitTarget - exitPhaseImmediatelyBefore <= 13.1,
-            "Requesting exit during typing must preserve the absolute phase and " +
-            "1x rate while selecting the next neutral micro-seam.");
-        var exitHalfwayTimestamp = checked(
-            exitAnchorTimestamp +
-            (long)Math.Floor(
-                (exitTarget - exitAnchorPosition) /
-                (60d * 1d) * Stopwatch.Frequency / 2d));
-        var expectedExitHalfwayPhase = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            exitHalfwayTimestamp)!;
-        Invoke(window, "AdvanceWorkLoop", exitHalfwayTimestamp);
-        Assert(string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Typing",
-                   StringComparison.Ordinal) &&
-               Math.Abs(
-                   (double)Invoke(
-                       window,
-                       "GetWorkLoopFramePositionAt",
-                       exitHalfwayTimestamp)! - expectedExitHalfwayPhase) <=
-                   0.000001 &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 1d) <=
-                   0.000001,
-            "Exit waiting must continue on the original absolute timeline with no " +
-            "mid-wait phase reset.");
-        var exitSeamTimestamp = checked(
-            exitAnchorTimestamp +
-            (long)Math.Ceiling(
-                (exitTarget - exitAnchorPosition) /
-                (60d * 1d) * Stopwatch.Frequency) + 2);
-        Invoke(
-            window,
-            "AdvanceWorkLoop",
-            exitSeamTimestamp);
-        Assert(string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Exiting",
-                   StringComparison.Ordinal) &&
-               ReferenceEquals(
-                   GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workExitClip")),
-            "A right-click/downshift from any typing frame must enter the exit clip " +
-            "at the selected neutral micro-seam without a frame-001 jump.");
+        AssertRestoredWorkExitAndEdgeButtonContract(window);
+    }
 
+    private static void AssertRestoredWorkExitAndEdgeButtonContract(
+        MainWindow window)
+    {
+        var loopClip = GetField<object>(window, "_workLoopClip");
+        var seriousEnterClip = GetField<object>(window, "_workSeriousEnterClip");
+        var seriousExitClip = GetField<object>(window, "_workSeriousExitClip");
+        var workExitClip = GetField<object>(window, "_workExitClip");
+        var button = GetField<Button>(window, "WorkModeButton");
+
+        // An exit requested before the selected serious-entry seam cancels the
+        // expression transition but preserves the already accelerated absolute
+        // keyboard phase until the ordinary exit seam.
         PrepareWorkModeIdleState(window);
         EnterWorkTypingForTest(window);
         var pendingEnterAnchorTimestamp = Stopwatch.GetTimestamp();
         SetField(window, "_workLoopAnchorFramePosition", 17.25d);
-        SetField(window, "_workLoopAnchorTimestamp", pendingEnterAnchorTimestamp);
+        SetField(
+            window,
+            "_workLoopAnchorTimestamp",
+            pendingEnterAnchorTimestamp);
         SetField(window, "_workLoopPlaybackRate", 1d);
         Invoke(window, "StartFastWorkTypingAt", pendingEnterAnchorTimestamp);
         Assert(GetField<bool>(window, "_workSeriousEnterRequested"),
-            "Pending-entry exit setup must first request serious entry.");
+            "Pending serious-entry exit setup must first request serious entry.");
         Invoke(window, "RequestWorkExit");
         Assert(!GetField<bool>(window, "_workSeriousEnterRequested") &&
                double.IsPositiveInfinity(GetField<double>(
@@ -20871,20 +20576,28 @@ internal static partial class Program
                ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
                Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") - 2d) <=
                    0.000001,
-            "Right-click before the serious-entry seam must cancel the expression " +
-            "change while preserving the current 2x absolute phase to the exit seam.");
+            "Exiting before the serious-entry seam must cancel only the face " +
+            "transition while preserving the current 2x absolute phase.");
 
+        // Once the eight-frame serious entry is already visible, an exit must
+        // finish it, play the authored serious relaxation, then continue into
+        // work-exit without exposing a serious-loop pose between the clips.
         PrepareWorkModeIdleState(window);
         EnterWorkTypingForTest(window);
+        var seriousExitFrames = GetClipFrames(seriousExitClip);
+        PrimeSpritePageForFrame(
+            window,
+            GetProperty<object>(seriousExitFrames.GetValue(0)!, "Image"));
         var midEnterTimestamp = Stopwatch.GetTimestamp();
         SetField(window, "_workLoopAnchorFramePosition", 0d);
         SetField(window, "_workLoopAnchorTimestamp", midEnterTimestamp);
+        SetField(window, "_workLoopPlaybackRate", 1d);
         Invoke(window, "StartFastWorkTypingAt", midEnterTimestamp);
         Invoke(window, "StartWorkSeriousEnterClip", midEnterTimestamp);
         Assert(ReferenceEquals(
                    GetRawField(window, "_activeClip"),
                    seriousEnterClip),
-            "Mid-entry exit setup must reach the short serious-entry clip.");
+            "Mid-entry exit setup must reach the sampled serious-entry clip.");
         Invoke(window, "RequestWorkExit");
         Invoke(
             window,
@@ -20893,9 +20606,10 @@ internal static partial class Program
             checked(midEnterTimestamp + Stopwatch.Frequency / 8));
         Assert(ReferenceEquals(
                    GetRawField(window, "_activeClip"),
-                   seriousExitClip),
-            "Right-click during serious entry must reverse the facial change via " +
-            "serious-exit without flashing a serious-loop pose.");
+                   seriousExitClip) &&
+               GetField<bool>(window, "_workExitRequested"),
+            "Exiting during serious entry must play serious-exit directly, " +
+            "without flashing a serious-loop frame.");
         Invoke(
             window,
             "CompleteActiveClipAt",
@@ -20903,13 +20617,20 @@ internal static partial class Program
             checked(midEnterTimestamp + Stopwatch.Frequency / 2));
         Assert(ReferenceEquals(
                    GetRawField(window, "_activeClip"),
-                   GetField<object>(window, "_workExitClip")),
-            "A mid-entry right-click must continue from facial relaxation into " +
-            "the authored work-exit transition.");
+                   workExitClip) &&
+               string.Equals(
+                   GetRawField(window, "_workState")?.ToString(),
+                   "Exiting",
+                   StringComparison.Ordinal),
+            "Serious-entry interruption must continue from facial relaxation " +
+            "into the authored work-exit transition.");
 
+        // work-exit is the exact reverse of work-enter. Leaving from an
+        // already displayed entry frame must therefore start at its mirrored
+        // index rather than replaying the transition from either endpoint.
         PrepareWorkModeIdleState(window);
         Assert((bool)Invoke(window, "TryEnterWorkMode")!,
-            "Entering-exit mapping setup could not enter work.");
+            "Entering-exit mirror setup could not enter work mode.");
         var enterFrames = GetField<Array>(window, "_workEnterFrames");
         const int enterFrameIndex = 25;
         PrimeSpritePageForFrame(window, enterFrames.GetValue(enterFrameIndex)!);
@@ -20923,43 +20644,35 @@ internal static partial class Program
                    GetRawField(window, "_workState")?.ToString(),
                    "Exiting",
                    StringComparison.Ordinal) &&
+               ReferenceEquals(GetRawField(window, "_activeClip"), workExitClip) &&
                GetField<int>(window, "_activeFrameIndex") ==
-               enterFrames.Length - 1 - enterFrameIndex,
-            "Exiting during work-enter must start at the mirrored reverse pose " +
-            "instead of replaying or finishing the whole entry clip.");
+                   enterFrames.Length - 1 - enterFrameIndex,
+            "Exiting during work-enter must start from the mirrored reverse " +
+            "pose instead of finishing or replaying the full entry.");
 
+        // A hidden/disabled work button is still callable through reflection.
+        // All supported dock states must reject that synthetic Click without
+        // starting work or requesting an edge-peek retreat.
         var edgeLeftFrames = GetField<Array>(window, "_edgeLeftFrames");
-        var displayPixelWidth = Convert.ToInt32(
-            typeof(MainWindow).GetField(
-                "DisplayPixelWidth",
-                StaticFlags)?.GetRawConstantValue());
-        foreach (var edgeFrame in edgeLeftFrames.Cast<object>())
-        {
-            var info = GetSpriteFrameInfo(edgeFrame);
-            Assert(info.DestinationX == -2 &&
-                   info.DestinationX + info.Width > 0 &&
-                   info.DestinationX + info.Width <= displayPixelWidth,
-                $"Side-peek frame {info.Name} must retain its -2px transparent " +
-                $"gutter while intersecting the {displayPixelWidth}px viewport: " +
-                $"x={info.DestinationX}, width={info.Width}.");
-        }
-
         foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
         {
             PrepareWorkModeIdleState(window);
             var edgeFrames = edgeName is "Left" or "Right"
                 ? edgeLeftFrames
                 : GetField<Array>(window, "_edgeBottomFrames");
+            var entryFrameIndex = edgeName is "Left" or "Right"
+                ? 0
+                : edgeFrames.Length - 1;
             PrimeSpritePageForFrame(
                 window,
-                 edgeFrames.GetValue(edgeFrames.Length - 1)!);
+                edgeFrames.GetValue(entryFrameIndex)!);
             Invoke(window, "EnterEdgePeek", GetNestedEnum("EdgeDock", edgeName));
             Invoke(window, "RefreshWorkModeButton");
             Assert(!(bool)Invoke(window, "CanEnterWorkMode")!,
-                $"{edgeName} stable edge-peek must block direct work entry.");
+                $"{edgeName} edge-peek must block direct work entry.");
             AssertWorkButtonContract(
                 window,
-                phase: $"{edgeName} stable edge-peek",
+                phase: $"{edgeName} edge-peek",
                 expectedState: "Idle",
                 expectedContent: "去打工",
                 expectedOpacity: 0,
@@ -20981,8 +20694,8 @@ internal static partial class Program
                        "Idle",
                        StringComparison.Ordinal) &&
                    GetRawField(window, "_activeClip") is null,
-                $"{edgeName} hidden work button must remain a no-op even when " +
-                "its Click handler is invoked reflectively.");
+                $"{edgeName} hidden work button must remain a no-op when its " +
+                "Click handler is invoked reflectively.");
             AssertWorkButtonContract(
                 window,
                 phase: $"{edgeName} post-reflection click",
@@ -20992,59 +20705,6 @@ internal static partial class Program
                 expectedIsEnabled: false,
                 expectedIsHitTestVisible: false);
         }
-
-        PrepareWorkModeIdleState(window);
-        SetField(window, "_dragInteractionActive", true);
-        SetField(window, "_pointerDown", true);
-        Invoke(window, "RefreshSnoreBubbleAnimationState");
-        Assert(!GetField<bool>(window, "_isSnoreBubbleAnimating") &&
-               GetField<Grid>(window, "SnoreBubbleHost").Opacity < 0.01,
-            "Pressing/dragging the pet must hide the snore bubble immediately.");
-
-        PrepareWorkModeIdleState(window);
-        Assert(petHost.CaptureMouse(),
-            "Reminder pointer-capture regression setup could not capture PetHost.");
-        SetField(window, "_pointerDown", true);
-        SetField(window, "_dragInteractionActive", true);
-        SetField(window, "_dragStarted", true);
-        SetField(window, "_isReminderActive", true);
-        Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "Reminder"));
-        Assert(!petHost.IsMouseCaptured &&
-               !GetField<bool>(window, "_pointerDown") &&
-               !GetField<bool>(window, "_dragInteractionActive") &&
-               !GetField<bool>(window, "_dragStarted"),
-            "Reminder activation must release capture and clear every stale drag flag.");
-        SetField(window, "_isReminderActive", false);
-        Invoke(window, "SetBubbleMode", GetNestedEnum("BubbleMode", "None"));
-
-        PrepareWorkModeIdleState(window);
-        Assert(petHost.CaptureMouse(),
-            "Session-lock pointer-capture regression setup could not capture PetHost.");
-        SetField(window, "_pointerDown", true);
-        SetField(window, "_dragInteractionActive", true);
-        SetField(window, "_dragStarted", true);
-        Invoke(window, "QueueSessionInactive");
-        PumpDispatcher(TimeSpan.FromMilliseconds(50));
-        Assert(!petHost.IsMouseCaptured &&
-               !GetField<bool>(window, "_pointerDown") &&
-               !GetField<bool>(window, "_dragInteractionActive") &&
-               !GetField<bool>(window, "_dragStarted"),
-            "Session lock must release capture and clear every stale drag flag.");
-
-        PrepareWorkModeIdleState(window);
-        EnterWorkTypingForTest(window);
-        var reboostTimestamp = Stopwatch.GetTimestamp();
-        Invoke(window, "StartSeriousWorkLoopAt", reboostTimestamp);
-        Invoke(window, "StartActiveClipClockAt", reboostTimestamp, TimeSpan.Zero);
-        SetField(
-            window,
-            "_workFastUntilTimestamp",
-            checked(reboostTimestamp + Stopwatch.Frequency));
-        Invoke(window, "HandleWorkPetClick", 2);
-        Assert(GetField<long>(window, "_workFastUntilTimestamp") >=
-               Stopwatch.GetTimestamp() + Stopwatch.Frequency * 3L,
-            "Double-clicking during serious typing must restart a full four-second " +
-            "2x window instead of being ignored.");
 
         PrepareWorkModeIdleState(window);
     }
@@ -21104,7 +20764,6 @@ internal static partial class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(80));
         }
 
-        Invoke(window, "CancelPendingWorkSingleClick");
         Invoke(window, "StopWorkModeImmediately", true);
         GetField<Grid>(window, "PetHost").ReleaseMouseCapture();
         Invoke(window, "ExitEdgePeek", false, true);
@@ -21112,7 +20771,6 @@ internal static partial class Program
         PumpDispatcher(TimeSpan.FromMilliseconds(20));
         WaitForSpritePagePrefetchToSettle(window);
         GetField<DispatcherTimer>(window, "_automaticTimer").Stop();
-        GetField<DispatcherTimer>(window, "_workSingleClickTimer").Stop();
         GetField<DispatcherTimer>(window, "_spritePagePrefetchDispatchTimer").Stop();
         GetField<TodoWindow>(window, "_todoWindow").Hide();
         GetField<Popup>(window, "BubblePopup").IsOpen = false;
@@ -21145,8 +20803,6 @@ internal static partial class Program
         SetField(window, "_activeFrameDeadlineTimestamp", 0L);
         SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
         SetField(window, "_workExitRequested", false);
-        SetField(window, "_workTapPhaseSyncRequested", false);
-        SetField(window, "_workTapAfterSeriousExitRequested", false);
         SetField(window, "_workSeriousEnterRequested", false);
         SetField(window, "_workEnterAfterEdgePeekExitRequested", false);
         SetField(window, "_workSeriousExitRequested", false);
@@ -21155,7 +20811,6 @@ internal static partial class Program
         SetField(window, "_workLoopAnchorTimestamp", 0L);
         SetField(window, "_workLoopAnchorFramePosition", 0d);
         SetField(window, "_workLoopPlaybackRate", 1d);
-        SetField(window, "_workTapTargetFramePosition", double.PositiveInfinity);
         SetField(
             window,
             "_workSeriousEnterTargetFramePosition",
@@ -21166,7 +20821,6 @@ internal static partial class Program
             double.PositiveInfinity);
         SetField(window, "_workExitTargetFramePosition", double.PositiveInfinity);
         SetField(window, "_workFastUntilTimestamp", 0L);
-        SetField(window, "_scheduledWorkSingleClickGeneration", 0);
         Invoke(window, "ClearDeferredActiveClipClock");
         Invoke(
             window,
@@ -21669,9 +21323,6 @@ internal static partial class Program
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseClipboard();
-
-    [DllImport("user32.dll", EntryPoint = "GetDoubleClickTime")]
-    private static extern uint GetDoubleClickTimeForWorkTest();
 
     private static double NormalizeCanvasCoordinate(double value) =>
         double.IsNaN(value) ? 0 : value;

@@ -21,9 +21,9 @@ WORK_MAX_SIZE = (420, 480)
 
 ENTER_FRAME_COUNT = 48
 LOOP_FRAME_COUNT = 96
-TAP_FRAME_COUNT = 48
 SERIOUS_LOOP_FRAME_COUNT = 96
 SERIOUS_EXIT_FRAME_COUNT = 24
+SERIOUS_ENTER_SOURCE_FRAME_INDICES = (23, 20, 16, 13, 10, 7, 3, 0)
 
 WORK_ANCHOR_PATH = GENERATED_SOURCES / "luban-work-home-row-v5-alpha.png"
 KEYBOARD_UNDERLAY_PATH = GENERATED_SOURCES / "luban-work-keyboard-underlay-v5-alpha.png"
@@ -31,7 +31,6 @@ LEFT_INDEX_DOWN_PATH = GENERATED_SOURCES / "luban-work-left-index-down-v5-alpha.
 RIGHT_INDEX_DOWN_PATH = GENERATED_SOURCES / "luban-work-right-index-down-v5-alpha.png"
 LEFT_MIDDLE_DOWN_PATH = GENERATED_SOURCES / "luban-work-left-middle-down-v5-alpha.png"
 RIGHT_MIDDLE_DOWN_PATH = GENERATED_SOURCES / "luban-work-right-middle-down-v5-alpha.png"
-TAP_HAND_PATH = GENERATED_SOURCES / "luban-work-tap-hand-v1-alpha.png"
 SERIOUS_REFERENCE_PATH = GENERATED_SOURCES / "luban-work-serious-v2-alpha.png"
 IDLE_PATH = ASSETS / "luban-idle.png"
 QA_PATH = GENERATED_SOURCES / "luban-work-animation-qa.json"
@@ -222,6 +221,7 @@ NEUTRAL_BROW_ERASE_REGIONS = (
     (174, 196, 201, 211),
     (262, 209, 290, 228),
 )
+NEUTRAL_MOUTH_ERASE_REGION = (204, 291, 232, 307)
 BROW_REFERENCE_REGIONS = (
     (145, 194, 190, 217),
     (239, 194, 283, 219),
@@ -229,6 +229,11 @@ BROW_REFERENCE_REGIONS = (
 EXPRESSION_PATCH_REGIONS = (
     (150, 184, 205, 218),
     (240, 184, 294, 231),
+    (202, 289, 234, 309),
+)
+SERIOUS_EYE_LOCK_REGIONS = (
+    (158, 220, 207, 289),
+    (245, 226, 302, 296),
 )
 NEUTRAL_BROW_PATHS = (
     (
@@ -246,17 +251,29 @@ NEUTRAL_BROW_PATHS = (
 )
 SERIOUS_BROW_PATHS = (
     (
-        (161.0, 202.0),
-        (167.0, 202.5),
-        (176.0, 205.5),
-        (183.0, 207.0),
+        (158.0, 198.5),
+        (166.0, 199.5),
+        (176.0, 206.5),
+        (184.0, 210.0),
     ),
     (
-        (253.0, 207.0),
-        (260.0, 205.5),
-        (269.0, 202.5),
-        (276.0, 202.0),
+        (250.0, 211.0),
+        (259.0, 207.0),
+        (270.0, 201.0),
+        (279.0, 199.5),
     ),
+)
+NEUTRAL_MOUTH_PATH = (
+    (210.0, 297.0),
+    (214.0, 301.5),
+    (222.0, 302.0),
+    (226.0, 297.0),
+)
+SERIOUS_MOUTH_PATH = (
+    (209.0, 301.0),
+    (214.0, 296.0),
+    (221.0, 295.0),
+    (227.0, 300.0),
 )
 
 
@@ -367,16 +384,6 @@ def load_idle() -> Image.Image:
     if idle.size != CANVAS_SIZE:
         raise ValueError(f"Idle frame must be {CANVAS_SIZE}, got {idle.size}")
     return idle
-
-
-def load_tap_hand() -> Image.Image:
-    with Image.open(TAP_HAND_PATH) as opened:
-        hand = opened.convert("RGBA").crop(visible_bbox(opened))
-    scale = min(112 / hand.width, 130 / hand.height)
-    return resize_rgba_premultiplied(
-        hand,
-        (max(1, round(hand.width * scale)), max(1, round(hand.height * scale))),
-    )
 
 
 def region_support(
@@ -492,18 +499,19 @@ def sample_serious_brow_colour(reference: Image.Image) -> tuple[int, int, int, i
     return int(median[0]), int(median[1]), int(median[2]), 255
 
 
-def neutral_brow_erase_mask(image: Image.Image) -> np.ndarray:
+def neutral_expression_erase_mask(image: Image.Image) -> np.ndarray:
     rgba = pixel_array(image)
     erase_mask = np.zeros((CANVAS_SIZE[1], CANVAS_SIZE[0]), dtype=np.uint8)
-    for left, top, right, bottom in NEUTRAL_BROW_ERASE_REGIONS:
+    erase_regions = (*NEUTRAL_BROW_ERASE_REGIONS, NEUTRAL_MOUTH_ERASE_REGION)
+    for left, top, right, bottom in erase_regions:
         crop = rgba[top:bottom, left:right]
-        brow_pixels = (
+        expression_pixels = (
             (crop[..., 3] >= 160)
             & (crop[..., 0] <= 205)
             & (crop[..., 1] <= 145)
             & (crop[..., 2] <= 120)
         )
-        erase_mask[top:bottom, left:right][brow_pixels] = 255
+        erase_mask[top:bottom, left:right][expression_pixels] = 255
 
     erase_mask = cv2.dilate(
         erase_mask,
@@ -511,16 +519,16 @@ def neutral_brow_erase_mask(image: Image.Image) -> np.ndarray:
         iterations=1,
     )
     allowed = np.zeros_like(erase_mask)
-    for left, top, right, bottom in NEUTRAL_BROW_ERASE_REGIONS:
+    for left, top, right, bottom in erase_regions:
         allowed[top:bottom, left:right] = 255
     return cv2.bitwise_and(erase_mask, allowed)
 
 
-def inpaint_neutral_brows(image: Image.Image) -> Image.Image:
+def inpaint_neutral_expression(image: Image.Image) -> Image.Image:
     rgba = pixel_array(image).copy()
-    erase_mask = neutral_brow_erase_mask(image)
+    erase_mask = neutral_expression_erase_mask(image)
     if not np.any(erase_mask):
-        raise AssertionError("Neutral eyebrow mask is empty")
+        raise AssertionError("Neutral expression mask is empty")
     rgba[..., :3] = cv2.inpaint(
         rgba[..., :3],
         erase_mask,
@@ -573,7 +581,7 @@ def interpolate_brow_path(
     )
 
 
-def draw_expression_brows(
+def draw_expression_details(
     clean_face: Image.Image,
     serious_reference: Image.Image,
     amount: float,
@@ -601,9 +609,22 @@ def draw_expression_brows(
         draw.line(
             [(round(x * antialias), round(y * antialias)) for x, y in path],
             fill=colour,
-            width=round((2.8 + 0.4 * amount) * antialias),
+            width=round((2.8 + 1.2 * amount) * antialias),
             joint="curve",
         )
+    mouth_path = cubic_bezier_points(
+        *interpolate_brow_path(
+            NEUTRAL_MOUTH_PATH,
+            SERIOUS_MOUTH_PATH,
+            amount,
+        )
+    )
+    draw.line(
+        [(round(x * antialias), round(y * antialias)) for x, y in mouth_path],
+        fill=colour,
+        width=round((2.6 + 0.8 * amount) * antialias),
+        joint="curve",
+    )
     result = clean_face.copy()
     result.alpha_composite(resize_rgba_premultiplied(layer, CANVAS_SIZE))
     return clean_transparent_rgb(result)
@@ -613,8 +634,8 @@ def build_serious_neutral(
     neutral: Image.Image,
     serious_reference: Image.Image,
 ) -> Image.Image:
-    return draw_expression_brows(
-        inpaint_neutral_brows(neutral),
+    return draw_expression_details(
+        inpaint_neutral_expression(neutral),
         serious_reference,
         1.0,
     )
@@ -631,10 +652,10 @@ def build_expression_pose(
         return neutral.copy()
     if amount >= 1.0:
         return serious.copy()
-    # Draw exactly one interpolated brow per eye on a clean skin plate.  Pixel
-    # cross-fading two spatially separated eyebrows creates the obvious
-    # double-brow ghost that the old tap/exit transitions exhibited.
-    return draw_expression_brows(clean_face, serious_reference, amount)
+    # Draw exactly one interpolated brow per eye and one interpolated mouth on
+    # a clean skin plate. Pixel cross-fading separated expressions creates the
+    # obvious ghosting that older transitions exhibited.
+    return draw_expression_details(clean_face, serious_reference, amount)
 
 
 def premultiplied_array(image: Image.Image) -> np.ndarray:
@@ -1109,7 +1130,7 @@ def build_v5_hand_model(
 
     # The cuff is a separate narrow semantic band.  Select the purple fabric
     # nearest the hand, then recover its own antialiased outline.  In
-    # particular, this avoids pulling the upper sleeve/shoulder with a key tap.
+    # particular, this avoids pulling the upper sleeve/shoulder with a key press.
     distance_from_hand = cv2.distanceTransform(
         (~skin_core).astype(np.uint8),
         cv2.DIST_L2,
@@ -1525,105 +1546,6 @@ def build_work_enter(idle: Image.Image, neutral: Image.Image) -> list[Image.Imag
     return frames
 
 
-def draw_star_layer(
-    center: tuple[float, float],
-    radius: float,
-    angle: float,
-) -> Image.Image:
-    if radius <= 0.05:
-        return Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
-    antialias = 4
-    layer = Image.new(
-        "RGBA",
-        (CANVAS_SIZE[0] * antialias, CANVAS_SIZE[1] * antialias),
-        (0, 0, 0, 0),
-    )
-    draw = ImageDraw.Draw(layer)
-    points = star_points(
-        (center[0] * antialias, center[1] * antialias),
-        radius * antialias,
-        angle,
-    )
-    draw.polygon(points, fill=(255, 139, 72, 255))
-    return resize_rgba_premultiplied(layer, CANVAS_SIZE)
-
-
-def tap_hand_pose(frame_index: int, hand_height: int) -> tuple[float, float, float]:
-    hidden_y = -float(hand_height + 4)
-    hover_y = -74.0
-    contact_y = -57.0
-
-    if frame_index <= 0 or frame_index >= 47:
-        return 175.0, hidden_y, 0.0
-    if frame_index <= 15:
-        value = smoothstep((frame_index - 1) / 14.0)
-        return 175.0 + 2.0 * math.sin(value * math.pi), hidden_y + (hover_y - hidden_y) * value, 0.0
-    if frame_index <= 20:
-        value = (frame_index - 15) / 5.0
-        return 177.0, hover_y + math.sin(value * math.pi) * 2.0, 0.0
-    if frame_index <= 24:
-        value = smoothstep((frame_index - 20) / 4.0)
-        return 177.0, hover_y + (contact_y - hover_y) * value, value
-    if frame_index <= 30:
-        value = smoothstep((frame_index - 24) / 6.0)
-        return 177.0 - value, contact_y + (hover_y - contact_y) * value, 1.0 - value
-    if frame_index <= 45:
-        value = smoothstep((frame_index - 30) / 15.0)
-        return 176.0 - value, hover_y + (hidden_y - hover_y) * value, 0.0
-    return 175.0, hidden_y, 0.0
-
-
-def tap_accelerated_frame_position(frame_index: int) -> float:
-    impact_frame = 24
-    if frame_index <= impact_frame:
-        return float(frame_index)
-
-    value = (frame_index - impact_frame) / (TAP_FRAME_COUNT - 1 - impact_frame)
-    # Finish exactly on the 96-frame loop seam, so the serious loop starts with
-    # no hand jump while the visibly increasing cadence sells the click boost.
-    acceleration = 0.44
-    progress = (1.0 - acceleration) * value + acceleration * value * value
-    return impact_frame + (LOOP_FRAME_COUNT - impact_frame) * progress
-
-
-def build_work_tap(
-    neutral: Image.Image,
-    clean_face: Image.Image,
-    serious_reference: Image.Image,
-    serious_neutral: Image.Image,
-    pose_models: tuple[dict[str, object], ...],
-    hand: Image.Image,
-) -> list[Image.Image]:
-    frames: list[Image.Image] = []
-    for frame_index in range(TAP_FRAME_COUNT):
-        expression_progress = smoothstep(max(0.0, (frame_index - 24) / 23.0))
-        expression = build_expression_pose(
-            neutral,
-            clean_face,
-            serious_reference,
-            serious_neutral,
-            expression_progress,
-        )
-        base = render_work_pose(
-            expression,
-            pose_models,
-            typing_frame_position=tap_accelerated_frame_position(frame_index),
-        )
-
-        hand_x, hand_y, impact = tap_hand_pose(frame_index, hand.height)
-        if hand_y < CANVAS_SIZE[1] and hand_y + hand.height > 0:
-            base.alpha_composite(hand, (round(hand_x), round(hand_y)))
-        if impact > 0.0:
-            star = draw_star_layer(
-                (305.0, 83.0),
-                10.5 * math.sin(math.pi * impact),
-                frame_index * 0.28,
-            )
-            base.alpha_composite(star)
-        frames.append(clean_transparent_rgb(base))
-    return frames
-
-
 def serious_exit_frame_position(value: float) -> float:
     # Keep the fast 2x cadence for one authored cycle while the serious brows
     # relax. Both endpoints share loop frame zero, preventing a hand-position pop.
@@ -1654,43 +1576,6 @@ def build_serious_exit(
             typing_frame_position=serious_exit_frame_position(value),
         )
         frames.append(frame)
-    return frames
-
-
-def build_work_tap_v5(
-    neutral: Image.Image,
-    underlay: Image.Image,
-    clean_face: Image.Image,
-    serious_reference: Image.Image,
-    serious_neutral: Image.Image,
-    hand_models: tuple[dict[str, object], ...],
-    hand: Image.Image,
-) -> list[Image.Image]:
-    # A single click is only the playful hand-on-head reaction.  It must not
-    # opt into the serious/double-speed expression; that state belongs solely
-    # to the double-click path.  Holding the articulated hands at the exact
-    # loop seam also makes both ends pixel-identical to the normal work loop.
-    del clean_face, serious_reference, serious_neutral
-    frames: list[Image.Image] = []
-    for frame_index in range(TAP_FRAME_COUNT):
-        base = render_work_pose_v5(
-            neutral,
-            underlay,
-            hand_models,
-            typing_frame_position=0.0,
-        )
-
-        hand_x, hand_y, impact = tap_hand_pose(frame_index, hand.height)
-        if hand_y < CANVAS_SIZE[1] and hand_y + hand.height > 0:
-            base.alpha_composite(hand, (round(hand_x), round(hand_y)))
-        if impact > 0.0:
-            star = draw_star_layer(
-                (305.0, 83.0),
-                10.5 * math.sin(math.pi * impact),
-                frame_index * 0.28,
-            )
-            base.alpha_composite(star)
-        frames.append(clean_transparent_rgb(base))
     return frames
 
 
@@ -1804,15 +1689,29 @@ def write_arm_motion_contact(
 
 
 def write_face_transition_contact(
-    tap_frames: list[Image.Image],
     serious_exit_frames: list[Image.Image],
 ) -> None:
+    # Runtime enters the serious expression by sampling the authored exit
+    # frames in reverse. Keep this sheet aligned with that exact eight-frame
+    # contract and include the complete eyes, brows, and mouth region.
+    serious_enter_frames = [
+        serious_exit_frames[index]
+        for index in SERIOUS_ENTER_SOURCE_FRAME_INDICES
+    ]
     selections = (
-        ("tap recovery to normal", tap_frames, (24, 29, 34, 39, 44, 47)),
-        ("serious exit", serious_exit_frames, (0, 5, 10, 15, 20, 23)),
+        (
+            "serious enter",
+            serious_enter_frames,
+            tuple(range(len(serious_enter_frames))),
+        ),
+        (
+            "serious exit",
+            serious_exit_frames,
+            (0, 3, 7, 10, 13, 16, 20, 23),
+        ),
     )
-    crop_box = (148, 182, 296, 234)
-    cell_size = (444, 156)
+    crop_box = (140, 170, 310, 320)
+    cell_size = (340, 300)
     label_height = 24
     sheet = Image.new(
         "RGBA",
@@ -2020,631 +1919,6 @@ def source_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build_qa(
-    idle: Image.Image,
-    neutral: Image.Image,
-    left_hand_up: Image.Image,
-    right_hand_up: Image.Image,
-    serious_neutral: Image.Image,
-    left_pose_model: dict[str, object],
-    right_pose_model: dict[str, object],
-    enter_frames: list[Image.Image],
-    loop_frames: list[Image.Image],
-    tap_frames: list[Image.Image],
-    serious_loop_frames: list[Image.Image],
-    serious_exit_frames: list[Image.Image],
-) -> dict[str, object]:
-    enter_metrics = sequence_metrics(enter_frames, wrap=False)
-    loop_metrics = sequence_metrics(loop_frames, wrap=True)
-    tap_metrics = sequence_metrics(tap_frames, wrap=False)
-    serious_loop_metrics = sequence_metrics(serious_loop_frames, wrap=True)
-    serious_exit_metrics = sequence_metrics(serious_exit_frames, wrap=False)
-
-    left_target = left_pose_model.get("target")
-    right_target = right_pose_model.get("target")
-    left_core = left_pose_model.get("change_core")
-    right_core = right_pose_model.get("change_core")
-    if (
-        not isinstance(left_target, Image.Image)
-        or not isinstance(right_target, Image.Image)
-        or not isinstance(left_core, np.ndarray)
-        or not isinstance(right_core, np.ndarray)
-    ):
-        raise TypeError("Invalid local pose QA model")
-
-    face_mask = np.zeros((CANVAS_SIZE[1], CANVAS_SIZE[0]), dtype=bool)
-    face_mask[FACE_REGION[1] : FACE_REGION[3], FACE_REGION[0] : FACE_REGION[2]] = True
-    hand_mask = region_support(HAND_MOTION_REGIONS)
-    arm_mask = region_support(
-        (*SHOULDER_MOTION_REGIONS, *FOREARM_MOTION_REGIONS, *HAND_MOTION_REGIONS)
-    )
-    torso_mask = region_support((TORSO_MOTION_REGION,))
-    protected_computer_mask = rectangular_support(PROTECTED_COMPUTER_REGION)
-    head_lock_mask = rectangular_support(HEAD_LOCK_REGION)
-    computer_lock_mask = rectangular_support(COMPUTER_LOCK_REGION)
-
-    union_visible = np.logical_or(
-        pixel_array(idle)[..., 3] >= 8,
-        pixel_array(neutral)[..., 3] >= 8,
-    )
-    for frame_number in (23, 24):
-        cloud = pixel_array(draw_cloud(1.0, frame_number))
-        uncovered = int(np.logical_and(union_visible, cloud[..., 3] < 255).sum())
-        if uncovered:
-            raise AssertionError(
-                f"Peak cloud frame {frame_number + 1} leaves {uncovered} subject pixels uncovered"
-            )
-
-    seams = {
-        "enter_first_equals_idle": frame_digest(pixel_array(enter_frames[0]))
-        == frame_digest(pixel_array(idle)),
-        "enter_last_equals_loop_first": frame_digest(pixel_array(enter_frames[-1]))
-        == frame_digest(pixel_array(loop_frames[0])),
-        "tap_first_equals_loop_first": frame_digest(pixel_array(tap_frames[0]))
-        == frame_digest(pixel_array(loop_frames[0])),
-        "tap_last_equals_serious_loop_first": frame_digest(pixel_array(tap_frames[-1]))
-        == frame_digest(pixel_array(serious_loop_frames[0])),
-        "serious_exit_first_equals_serious_loop_first": frame_digest(
-            pixel_array(serious_exit_frames[0])
-        )
-        == frame_digest(pixel_array(serious_loop_frames[0])),
-        "serious_exit_last_equals_loop_first": frame_digest(
-            pixel_array(serious_exit_frames[-1])
-        )
-        == frame_digest(pixel_array(loop_frames[0])),
-    }
-
-    invariants = {
-        "loop_face_region": list(FACE_REGION),
-        "head_lock_region": list(HEAD_LOCK_REGION),
-        "computer_lock_region": list(COMPUTER_LOCK_REGION),
-        "loop_face_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, face_mask
-        ),
-        "serious_loop_face_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, face_mask
-        ),
-        "loop_protected_computer_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, protected_computer_mask
-        ),
-        "serious_loop_protected_computer_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, protected_computer_mask
-        ),
-        "loop_head_lock_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, head_lock_mask
-        ),
-        "serious_loop_head_lock_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, head_lock_mask
-        ),
-        "loop_computer_lock_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, computer_lock_mask
-        ),
-        "serious_loop_computer_lock_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, computer_lock_mask
-        ),
-        "loop_hand_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, hand_mask
-        ),
-        "loop_arm_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, arm_mask
-        ),
-        "loop_torso_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, torso_mask
-        ),
-        "serious_loop_arm_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, arm_mask
-        ),
-        "serious_loop_torso_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, torso_mask
-        ),
-        "registered_neutral_bbox_alpha8": list(visible_bbox(neutral)),
-        "registered_left_bbox_alpha8": list(visible_bbox(left_hand_up)),
-        "registered_right_bbox_alpha8": list(visible_bbox(right_hand_up)),
-        "loop_period_frames": 24,
-        "loop_periodic_maximum_mismatch_pixels": periodic_mismatch_pixels(
-            loop_frames, 24
-        ),
-        "serious_loop_periodic_maximum_mismatch_pixels": periodic_mismatch_pixels(
-            serious_loop_frames, 24
-        ),
-        "neutral_anchor_frames_1_based": [1, 13, 25, 37, 49, 61],
-        "neutral_anchor_maximum_mismatch_pixels": max(
-            changed_pixel_count(loop_frames[index], neutral)
-            for index in (0, 12, 24, 36, 48, 60)
-        ),
-        "left_peak_frame_1_based": 7,
-        "right_peak_frame_1_based": 19,
-        "left_peak_target_mismatch_pixels": changed_pixel_count(
-            loop_frames[6], left_target
-        ),
-        "right_peak_target_mismatch_pixels": changed_pixel_count(
-            loop_frames[18], right_target
-        ),
-        "left_peak_registered_source_core_mismatch_pixels": changed_pixel_count(
-            loop_frames[6], left_hand_up, left_core
-        ),
-        "right_peak_registered_source_core_mismatch_pixels": changed_pixel_count(
-            loop_frames[18], right_hand_up, right_core
-        ),
-        "left_peak_changed_pixels": changed_pixel_count(loop_frames[6], neutral),
-        "right_peak_changed_pixels": changed_pixel_count(loop_frames[18], neutral),
-        "left_peak_changed_pixels_outside_allowed_roi": changed_pixel_count(
-            loop_frames[6],
-            neutral,
-            ~rectangle_mask(LEFT_POSE_ALLOWED_ROI),
-        ),
-        "right_peak_changed_pixels_outside_allowed_roi": changed_pixel_count(
-            loop_frames[18],
-            neutral,
-            ~rectangle_mask(RIGHT_POSE_ALLOWED_ROI),
-        ),
-        "left_key_pose_core_pixels": int(left_core.sum()),
-        "right_key_pose_core_pixels": int(right_core.sum()),
-        "expression_transition_maximum_brow_components_per_side": maximum_brow_components(
-            [*tap_frames[24:], *serious_exit_frames]
-        ),
-        "normal_cycle_seconds_at_60fps": 24 / 60,
-        "serious_cycle_seconds_at_runtime_2x": 24 / (60 * 2),
-        "serious_samples_per_cycle_at_60hz": 12,
-        "hand_motion_regions": [list(region) for region in HAND_MOTION_REGIONS],
-        "forearm_motion_regions": [
-            list(region) for region in FOREARM_MOTION_REGIONS
-        ],
-        "shoulder_motion_regions": [
-            list(region) for region in SHOULDER_MOTION_REGIONS
-        ],
-        "torso_motion_region": list(TORSO_MOTION_REGION),
-        "protected_computer_region": list(PROTECTED_COMPUTER_REGION),
-        "serious_expression_changed_pixels": int(
-            np.any(
-                pixel_array(serious_neutral) != pixel_array(neutral),
-                axis=2,
-            ).sum()
-        ),
-        "peak_cloud_uncovered_subject_pixels": 0,
-    }
-
-    failures: list[str] = []
-    for name, metrics, expected_count in (
-        ("enter", enter_metrics, ENTER_FRAME_COUNT),
-        ("loop", loop_metrics, LOOP_FRAME_COUNT),
-        ("tap", tap_metrics, TAP_FRAME_COUNT),
-        ("serious-loop", serious_loop_metrics, SERIOUS_LOOP_FRAME_COUNT),
-        ("serious-exit", serious_exit_metrics, SERIOUS_EXIT_FRAME_COUNT),
-    ):
-        if metrics["frame_count"] != expected_count:
-            failures.append(f"{name} frame count")
-        expected_unique = 13 if name in ("loop", "serious-loop") else expected_count
-        if metrics["unique_frame_count"] != expected_unique:
-            failures.append(
-                f"{name} unique pose count (expected {expected_unique})"
-            )
-        if not metrics["all_rgba_450x550"]:
-            failures.append(f"{name} frame geometry")
-        if metrics["maximum_transparent_rgb_nonzero_pixels"] != 0:
-            failures.append(f"{name} transparent RGB")
-
-    for name, metrics in (
-        ("loop", loop_metrics),
-        ("serious-loop", serious_loop_metrics),
-        ("serious-exit", serious_exit_metrics),
-    ):
-        if metrics["minimum_alpha_iou"] < 0.92:
-            failures.append(f"{name} minimum alpha IoU")
-        if metrics["mean_alpha_iou"] < 0.95:
-            failures.append(f"{name} mean alpha IoU")
-        if metrics["maximum_centroid_step_px"] > 1.5:
-            failures.append(f"{name} centroid step")
-        if metrics["maximum_bbox_width_scale_step"] > 0.025:
-            failures.append(f"{name} bbox width scale")
-        if metrics["maximum_bbox_height_scale_step"] > 0.025:
-            failures.append(f"{name} bbox height scale")
-    if invariants["loop_face_maximum_changed_pixels"] != 0:
-        failures.append("loop face drift")
-    if invariants["serious_loop_face_maximum_changed_pixels"] != 0:
-        failures.append("serious loop face drift")
-    if invariants["loop_protected_computer_maximum_changed_pixels"] != 0:
-        failures.append("loop protected computer drift")
-    if invariants["serious_loop_protected_computer_maximum_changed_pixels"] != 0:
-        failures.append("serious loop protected computer drift")
-    if invariants["loop_head_lock_maximum_changed_pixels"] != 0:
-        failures.append("loop head lock drift")
-    if invariants["serious_loop_head_lock_maximum_changed_pixels"] != 0:
-        failures.append("serious loop head lock drift")
-    if invariants["loop_computer_lock_maximum_changed_pixels"] != 0:
-        failures.append("loop computer lock drift")
-    if invariants["serious_loop_computer_lock_maximum_changed_pixels"] != 0:
-        failures.append("serious loop computer lock drift")
-    if invariants["loop_hand_maximum_changed_pixels"] < 800:
-        failures.append("loop hand motion too small")
-    if invariants["loop_arm_maximum_changed_pixels"] < 1800:
-        failures.append("loop arm motion too small")
-    if invariants["loop_torso_maximum_changed_pixels"] < 900:
-        failures.append("loop torso motion too small")
-    if invariants["registered_left_bbox_alpha8"] != invariants[
-        "registered_neutral_bbox_alpha8"
-    ]:
-        failures.append("left key pose registration bbox")
-    if invariants["registered_right_bbox_alpha8"] != invariants[
-        "registered_neutral_bbox_alpha8"
-    ]:
-        failures.append("right key pose registration bbox")
-    if invariants["loop_periodic_maximum_mismatch_pixels"] != 0:
-        failures.append("loop is not exactly 24-frame periodic")
-    if invariants["serious_loop_periodic_maximum_mismatch_pixels"] != 0:
-        failures.append("serious loop is not exactly 24-frame periodic")
-    if invariants["neutral_anchor_maximum_mismatch_pixels"] != 0:
-        failures.append("loop neutral phase anchor drift")
-    for side in ("left", "right"):
-        if invariants[f"{side}_peak_target_mismatch_pixels"] != 0:
-            failures.append(f"{side} peak target mismatch")
-        if invariants[f"{side}_peak_registered_source_core_mismatch_pixels"] != 0:
-            failures.append(f"{side} peak does not preserve real key-pose core")
-        if invariants[f"{side}_peak_changed_pixels"] < 1800:
-            failures.append(f"{side} peak hand lift is too small")
-        if invariants[f"{side}_peak_changed_pixels_outside_allowed_roi"] != 0:
-            failures.append(f"{side} peak escaped its local composite ROI")
-        if invariants[f"{side}_key_pose_core_pixels"] < 500:
-            failures.append(f"{side} key-pose core is too small")
-    if invariants["expression_transition_maximum_brow_components_per_side"] > 1:
-        failures.append("expression transition contains double eyebrows")
-    if not 80 <= invariants["serious_expression_changed_pixels"] <= 4000:
-        failures.append("serious expression locality")
-    for name, passed in seams.items():
-        if not passed:
-            failures.append(name)
-
-    return {
-        "version": 3,
-        "canvas": {"width": CANVAS_SIZE[0], "height": CANVAS_SIZE[1], "mode": "RGBA"},
-        "sources": {
-            str(WORK_ANCHOR_PATH.relative_to(ROOT)).replace("\\", "/"): source_sha256(
-                WORK_ANCHOR_PATH
-            ),
-            str(LEFT_HAND_UP_PATH.relative_to(ROOT)).replace("\\", "/"): source_sha256(
-                LEFT_HAND_UP_PATH
-            ),
-            str(RIGHT_HAND_UP_PATH.relative_to(ROOT)).replace("\\", "/"): source_sha256(
-                RIGHT_HAND_UP_PATH
-            ),
-            str(TAP_HAND_PATH.relative_to(ROOT)).replace("\\", "/"): source_sha256(
-                TAP_HAND_PATH
-            ),
-            str(SERIOUS_REFERENCE_PATH.relative_to(ROOT)).replace(
-                "\\", "/"
-            ): source_sha256(SERIOUS_REFERENCE_PATH),
-            str(IDLE_PATH.relative_to(ROOT)).replace("\\", "/"): source_sha256(IDLE_PATH),
-        },
-        "sequences": {
-            "work-enter": enter_metrics,
-            "work-loop": loop_metrics,
-            "work-tap": tap_metrics,
-            "work-serious-loop": serious_loop_metrics,
-            "work-serious-exit": serious_exit_metrics,
-        },
-        "contacts": {
-            "arm_motion": str(ARM_CONTACT_PATH.relative_to(ROOT)).replace("\\", "/"),
-            "face_transition": str(FACE_CONTACT_PATH.relative_to(ROOT)).replace("\\", "/"),
-        },
-        "seams": seams,
-        "invariants": invariants,
-        "failures": failures,
-        "passed": not failures,
-    }
-
-
-def build_qa_v4(
-    idle: Image.Image,
-    neutral: Image.Image,
-    registered_poses: tuple[Image.Image, ...],
-    serious_neutral: Image.Image,
-    pose_models: tuple[dict[str, object], ...],
-    enter_frames: list[Image.Image],
-    loop_frames: list[Image.Image],
-    tap_frames: list[Image.Image],
-    serious_loop_frames: list[Image.Image],
-    serious_exit_frames: list[Image.Image],
-) -> dict[str, object]:
-    if len(registered_poses) != 4 or len(pose_models) != 4:
-        raise ValueError("Natural typing QA requires four finger contact poses")
-
-    enter_metrics = sequence_metrics(enter_frames, wrap=False)
-    loop_metrics = sequence_metrics(loop_frames, wrap=True)
-    tap_metrics = sequence_metrics(tap_frames, wrap=False)
-    serious_loop_metrics = sequence_metrics(serious_loop_frames, wrap=True)
-    serious_exit_metrics = sequence_metrics(serious_exit_frames, wrap=False)
-
-    face_mask = rectangular_support(FACE_REGION)
-    head_lock_mask = rectangular_support(HEAD_LOCK_REGION)
-    computer_lock_mask = rectangular_support(COMPUTER_LOCK_REGION)
-    hand_mask = region_support(HAND_MOTION_REGIONS)
-    wrist_mask = region_support(WRIST_MOTION_REGIONS)
-    shoulder_mask = region_support(SHOULDER_LOCK_REGIONS)
-    torso_mask = region_support((TORSO_LOCK_REGION,))
-    allowed_masks = [
-        rectangular_support(
-            LEFT_POSE_ALLOWED_ROI if index % 2 == 0 else RIGHT_POSE_ALLOWED_ROI
-        )
-        for index in range(4)
-    ]
-
-    model_metrics: list[dict[str, object]] = []
-    peak_changed_counts: list[int] = []
-    for index, (model, pose, peak_frame) in enumerate(
-        zip(pose_models, registered_poses, (3, 15, 27, 39), strict=True)
-    ):
-        target = model.get("target")
-        core = model.get("change_core")
-        maximum_tip_displacement = model.get("maximum_tip_displacement_px")
-        if (
-            not isinstance(target, Image.Image)
-            or not isinstance(core, np.ndarray)
-            or not isinstance(maximum_tip_displacement, (float, int))
-        ):
-            raise TypeError("Invalid natural typing pose model")
-        changed = changed_pixel_count(loop_frames[peak_frame], neutral)
-        peak_changed_counts.append(changed)
-        model_metrics.append(
-            {
-                "name": str(model.get("name", index)),
-                "peak_frame_1_based": peak_frame + 1,
-                "registered_bbox_alpha8": list(visible_bbox(pose)),
-                "core_pixels": int(core.sum()),
-                "peak_changed_pixels": changed,
-                "peak_target_core_mismatch_pixels": changed_pixel_count(
-                    loop_frames[peak_frame],
-                    target,
-                    core,
-                ),
-                "peak_changed_pixels_outside_allowed_roi": changed_pixel_count(
-                    loop_frames[peak_frame],
-                    neutral,
-                    ~allowed_masks[index],
-                ),
-                "authored_tip_displacement_px": float(maximum_tip_displacement),
-            }
-        )
-
-    replacement_union = np.zeros((CANVAS_SIZE[1], CANVAS_SIZE[0]), dtype=bool)
-    for model in pose_models:
-        replacement = model.get("replacement_mask")
-        if not isinstance(replacement, np.ndarray):
-            raise TypeError("Invalid replacement mask")
-        replacement_union |= replacement > 0.01
-    keyboard_static_mask = rectangular_support((132, 384, 322, 456))
-    keyboard_static_mask &= ~replacement_union
-
-    def partial_alpha_pixels(frame: Image.Image, mask: np.ndarray) -> int:
-        alpha = pixel_array(frame)[..., 3]
-        return int(np.logical_and(mask, np.logical_and(alpha > 0, alpha < 255)).sum())
-
-    neutral_partial = partial_alpha_pixels(neutral, replacement_union)
-    maximum_partial_growth = max(
-        partial_alpha_pixels(frame, replacement_union) - neutral_partial
-        for frame in loop_frames
-    )
-
-    refresh_sampling: dict[str, dict[str, int]] = {}
-    loop_digests = [frame_digest(pixel_array(frame)) for frame in loop_frames]
-    serious_digests = [frame_digest(pixel_array(frame)) for frame in serious_loop_frames]
-    for refresh_rate in (59, 60, 120, 144):
-        refresh_sampling[str(refresh_rate)] = {}
-        for label, speed, digests in (
-            ("normal", 1.0, loop_digests),
-            ("serious_2x", 2.0, serious_digests),
-        ):
-            duration = LOOP_FRAME_COUNT / (60.0 * speed)
-            sample_count = max(1, math.ceil(duration * refresh_rate))
-            indices = [
-                int(math.floor(sample / refresh_rate * 60.0 * speed))
-                % LOOP_FRAME_COUNT
-                for sample in range(sample_count)
-            ]
-            refresh_sampling[str(refresh_rate)][label] = len(
-                {digests[index] for index in indices}
-            )
-
-    union_visible = np.logical_or(
-        pixel_array(idle)[..., 3] >= 8,
-        pixel_array(neutral)[..., 3] >= 8,
-    )
-    for frame_number in (23, 24):
-        cloud = pixel_array(draw_cloud(1.0, frame_number))
-        uncovered = int(np.logical_and(union_visible, cloud[..., 3] < 255).sum())
-        if uncovered:
-            raise AssertionError(
-                f"Peak cloud frame {frame_number + 1} leaves {uncovered} subject pixels uncovered"
-            )
-
-    seams = {
-        "enter_first_equals_idle": frame_digest(pixel_array(enter_frames[0]))
-        == frame_digest(pixel_array(idle)),
-        "enter_last_equals_loop_first": frame_digest(pixel_array(enter_frames[-1]))
-        == frame_digest(pixel_array(loop_frames[0])),
-        "tap_first_equals_loop_first": frame_digest(pixel_array(tap_frames[0]))
-        == frame_digest(pixel_array(loop_frames[0])),
-        "tap_last_equals_serious_loop_first": frame_digest(pixel_array(tap_frames[-1]))
-        == frame_digest(pixel_array(serious_loop_frames[0])),
-        "serious_exit_first_equals_serious_loop_first": frame_digest(
-            pixel_array(serious_exit_frames[0])
-        )
-        == frame_digest(pixel_array(serious_loop_frames[0])),
-        "serious_exit_last_equals_loop_first": frame_digest(
-            pixel_array(serious_exit_frames[-1])
-        )
-        == frame_digest(pixel_array(loop_frames[0])),
-    }
-
-    balance_ratio = max(peak_changed_counts) / max(1, min(peak_changed_counts))
-    normalized_peak_motion = [
-        metric["peak_changed_pixels"] / max(1, metric["core_pixels"])
-        for metric in model_metrics
-    ]
-    normalized_balance_ratio = max(normalized_peak_motion) / max(
-        1e-9,
-        min(normalized_peak_motion),
-    )
-    invariants = {
-        "registered_neutral_bbox_alpha8": list(visible_bbox(neutral)),
-        "pose_models": model_metrics,
-        "loop_face_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, face_mask
-        ),
-        "serious_loop_face_maximum_changed_pixels": maximum_changed_pixels(
-            serious_loop_frames, serious_neutral, face_mask
-        ),
-        "loop_head_lock_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, head_lock_mask
-        ),
-        "loop_computer_lock_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, computer_lock_mask
-        ),
-        "loop_keyboard_static_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, keyboard_static_mask
-        ),
-        "loop_shoulder_lock_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, shoulder_mask
-        ),
-        "loop_torso_lock_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, torso_mask
-        ),
-        "loop_hand_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, hand_mask
-        ),
-        "loop_wrist_maximum_changed_pixels": maximum_changed_pixels(
-            loop_frames, neutral, wrist_mask
-        ),
-        "peak_changed_pixel_balance_ratio": balance_ratio,
-        "peak_changed_per_core_balance_ratio": normalized_balance_ratio,
-        "maximum_partial_alpha_growth_in_motion_mask": maximum_partial_growth,
-        "refresh_sampling_unique_bitmaps": refresh_sampling,
-        "normal_loop_seconds": LOOP_FRAME_COUNT / 60.0,
-        "serious_loop_seconds_at_runtime_2x": LOOP_FRAME_COUNT / 120.0,
-        "normal_key_presses_per_second": 4 / (LOOP_FRAME_COUNT / 60.0),
-        "serious_key_presses_per_second": 4 / (LOOP_FRAME_COUNT / 120.0),
-        "expression_transition_maximum_brow_components_per_side": maximum_brow_components(
-            [*tap_frames[24:], *serious_exit_frames]
-        ),
-        "serious_expression_changed_pixels": int(
-            np.any(
-                pixel_array(serious_neutral) != pixel_array(neutral),
-                axis=2,
-            ).sum()
-        ),
-        "peak_cloud_uncovered_subject_pixels": 0,
-    }
-
-    failures: list[str] = []
-    for name, metrics, expected_count in (
-        ("enter", enter_metrics, ENTER_FRAME_COUNT),
-        ("loop", loop_metrics, LOOP_FRAME_COUNT),
-        ("tap", tap_metrics, TAP_FRAME_COUNT),
-        ("serious-loop", serious_loop_metrics, SERIOUS_LOOP_FRAME_COUNT),
-        ("serious-exit", serious_exit_metrics, SERIOUS_EXIT_FRAME_COUNT),
-    ):
-        if metrics["frame_count"] != expected_count:
-            failures.append(f"{name} frame count")
-        if name in ("loop", "serious-loop") and metrics["unique_frame_count"] < 44:
-            failures.append(f"{name} natural pose diversity")
-        if name not in ("loop", "serious-loop") and metrics["unique_frame_count"] != expected_count:
-            failures.append(f"{name} unique pose count")
-        if not metrics["all_rgba_450x550"]:
-            failures.append(f"{name} frame geometry")
-        if metrics["maximum_transparent_rgb_nonzero_pixels"] != 0:
-            failures.append(f"{name} transparent RGB")
-
-    for name, metrics in (
-        ("loop", loop_metrics),
-        ("serious-loop", serious_loop_metrics),
-        ("serious-exit", serious_exit_metrics),
-    ):
-        if metrics["minimum_alpha_iou"] < 0.96:
-            failures.append(f"{name} minimum alpha IoU")
-        if metrics["mean_alpha_iou"] < 0.98:
-            failures.append(f"{name} mean alpha IoU")
-        if metrics["maximum_centroid_step_px"] > 0.8:
-            failures.append(f"{name} centroid step")
-
-    for key in (
-        "loop_face_maximum_changed_pixels",
-        "serious_loop_face_maximum_changed_pixels",
-        "loop_head_lock_maximum_changed_pixels",
-        "loop_computer_lock_maximum_changed_pixels",
-        "loop_keyboard_static_maximum_changed_pixels",
-        "loop_shoulder_lock_maximum_changed_pixels",
-        "loop_torso_lock_maximum_changed_pixels",
-    ):
-        if invariants[key] != 0:
-            failures.append(key)
-    if not 250 <= invariants["loop_hand_maximum_changed_pixels"] <= 5500:
-        failures.append("finger motion range")
-    if invariants["loop_wrist_maximum_changed_pixels"] > 2200:
-        failures.append("wrist motion too large")
-    if normalized_balance_ratio > 1.6:
-        failures.append("left/right finger motion imbalance")
-    if maximum_partial_growth > 900:
-        failures.append("motion edge partial-alpha growth")
-    for model_metric in model_metrics:
-        if model_metric["registered_bbox_alpha8"] != invariants[
-            "registered_neutral_bbox_alpha8"
-        ]:
-            failures.append(f"{model_metric['name']} registration bbox")
-        if model_metric["core_pixels"] < 150:
-            failures.append(f"{model_metric['name']} contact core too small")
-        if model_metric["peak_target_core_mismatch_pixels"] != 0:
-            failures.append(f"{model_metric['name']} peak target mismatch")
-        if model_metric["peak_changed_pixels_outside_allowed_roi"] != 0:
-            failures.append(f"{model_metric['name']} escaped local hand ROI")
-        if not 1.5 <= model_metric["authored_tip_displacement_px"] <= 4.0:
-            failures.append(f"{model_metric['name']} finger articulation magnitude")
-    for refresh_rate, sampled in refresh_sampling.items():
-        if sampled["normal"] < 40:
-            failures.append(f"{refresh_rate}Hz normal visible diversity")
-        if sampled["serious_2x"] < 20:
-            failures.append(f"{refresh_rate}Hz serious visible diversity")
-    if invariants["expression_transition_maximum_brow_components_per_side"] > 1:
-        failures.append("expression transition contains double eyebrows")
-    if not 80 <= invariants["serious_expression_changed_pixels"] <= 4000:
-        failures.append("serious expression locality")
-    for name, passed in seams.items():
-        if not passed:
-            failures.append(name)
-
-    source_paths = (
-        WORK_ANCHOR_PATH,
-        LEFT_INDEX_DOWN_PATH,
-        RIGHT_INDEX_DOWN_PATH,
-        LEFT_MIDDLE_DOWN_PATH,
-        RIGHT_MIDDLE_DOWN_PATH,
-        TAP_HAND_PATH,
-        SERIOUS_REFERENCE_PATH,
-        IDLE_PATH,
-    )
-    return {
-        "version": 4,
-        "canvas": {"width": CANVAS_SIZE[0], "height": CANVAS_SIZE[1], "mode": "RGBA"},
-        "sources": {
-            str(path.relative_to(ROOT)).replace("\\", "/"): source_sha256(path)
-            for path in source_paths
-        },
-        "sequences": {
-            "work-enter": enter_metrics,
-            "work-loop": loop_metrics,
-            "work-tap": tap_metrics,
-            "work-serious-loop": serious_loop_metrics,
-            "work-serious-exit": serious_exit_metrics,
-        },
-        "contacts": {
-            "arm_motion": str(ARM_CONTACT_PATH.relative_to(ROOT)).replace("\\", "/"),
-            "face_transition": str(FACE_CONTACT_PATH.relative_to(ROOT)).replace("\\", "/"),
-        },
-        "seams": seams,
-        "invariants": invariants,
-        "failures": failures,
-        "passed": not failures,
-    }
-
-
 def build_qa_v5(
     idle: Image.Image,
     neutral: Image.Image,
@@ -2654,7 +1928,6 @@ def build_qa_v5(
     hand_models: tuple[dict[str, object], ...],
     enter_frames: list[Image.Image],
     loop_frames: list[Image.Image],
-    tap_frames: list[Image.Image],
     serious_loop_frames: list[Image.Image],
     serious_exit_frames: list[Image.Image],
 ) -> dict[str, object]:
@@ -2666,7 +1939,6 @@ def build_qa_v5(
     sequences = {
         "work-enter": sequence_metrics(enter_frames, wrap=False),
         "work-loop": sequence_metrics(loop_frames, wrap=True),
-        "work-tap": sequence_metrics(tap_frames, wrap=False),
         "work-serious-loop": sequence_metrics(serious_loop_frames, wrap=True),
         "work-serious-exit": sequence_metrics(serious_exit_frames, wrap=False),
     }
@@ -2718,12 +1990,6 @@ def build_qa_v5(
         ),
         "enter_last_equals_normal_neutral": frame_digest(
             pixel_array(enter_frames[-1])
-        ) == normal_digest,
-        "tap_first_equals_normal_neutral": frame_digest(
-            pixel_array(tap_frames[0])
-        ) == normal_digest,
-        "tap_last_equals_normal_neutral": frame_digest(
-            pixel_array(tap_frames[-1])
         ) == normal_digest,
         "serious_exit_first_equals_serious_neutral": frame_digest(
             pixel_array(serious_exit_frames[0])
@@ -2972,6 +2238,15 @@ def build_qa_v5(
         }
         for label, size in display_sizes.items()
     }
+    expression_patch_support = np.logical_or.reduce(
+        [rectangular_support(region) for region in EXPRESSION_PATCH_REGIONS]
+    )
+    serious_brow_support = np.logical_or.reduce(
+        [rectangular_support(region) for region in EXPRESSION_PATCH_REGIONS[:2]]
+    )
+    serious_eye_lock_support = np.logical_or.reduce(
+        [rectangular_support(region) for region in SERIOUS_EYE_LOCK_REGIONS]
+    )
 
     invariants = {
         "neutral_bbox_alpha8": list(visible_bbox(neutral)),
@@ -3013,13 +2288,32 @@ def build_qa_v5(
             normal_neutral,
             rectangular_support(FACE_REGION),
         ),
+        "serious_brow_changed_pixels": changed_pixel_count(
+            serious_work_neutral,
+            normal_neutral,
+            serious_brow_support,
+        ),
+        "serious_mouth_changed_pixels": changed_pixel_count(
+            serious_work_neutral,
+            normal_neutral,
+            rectangular_support(EXPRESSION_PATCH_REGIONS[2]),
+        ),
+        "serious_eye_lock_changed_pixels": changed_pixel_count(
+            serious_work_neutral,
+            normal_neutral,
+            serious_eye_lock_support,
+        ),
+        "serious_expression_outside_patch_changed_pixels": changed_pixel_count(
+            serious_work_neutral,
+            normal_neutral,
+            ~expression_patch_support,
+        ),
     }
 
     failures: list[str] = []
     expected_counts = {
         "work-enter": ENTER_FRAME_COUNT,
         "work-loop": LOOP_FRAME_COUNT,
-        "work-tap": TAP_FRAME_COUNT,
         "work-serious-loop": SERIOUS_LOOP_FRAME_COUNT,
         "work-serious-exit": SERIOUS_EXIT_FRAME_COUNT,
     }
@@ -3035,8 +2329,6 @@ def build_qa_v5(
         failures.append("normal loop pose diversity")
     if sequences["work-serious-loop"]["unique_frame_count"] < 56:
         failures.append("serious loop pose diversity")
-    if sequences["work-tap"]["unique_frame_count"] < 36:
-        failures.append("tap pose diversity")
     if sequences["work-serious-exit"]["unique_frame_count"] < 20:
         failures.append("serious exit pose diversity")
     for name, passed in seam_checks.items():
@@ -3096,6 +2388,14 @@ def build_qa_v5(
         failures.append("non-monotonic release")
     if not 80 <= invariants["serious_expression_changed_pixels"] <= 4000:
         failures.append("serious expression locality")
+    if invariants["serious_brow_changed_pixels"] < 120:
+        failures.append("serious brow expression too subtle")
+    if invariants["serious_mouth_changed_pixels"] < 40:
+        failures.append("serious mouth expression too subtle")
+    if invariants["serious_eye_lock_changed_pixels"] != 0:
+        failures.append("serious expression changed locked eyes")
+    if invariants["serious_expression_outside_patch_changed_pixels"] != 0:
+        failures.append("serious expression escaped local patches")
 
     source_paths = (
         WORK_ANCHOR_PATH,
@@ -3104,7 +2404,6 @@ def build_qa_v5(
         RIGHT_INDEX_DOWN_PATH,
         LEFT_MIDDLE_DOWN_PATH,
         RIGHT_MIDDLE_DOWN_PATH,
-        TAP_HAND_PATH,
         SERIOUS_REFERENCE_PATH,
         IDLE_PATH,
     )
@@ -3135,7 +2434,6 @@ def main() -> None:
         RIGHT_INDEX_DOWN_PATH,
         LEFT_MIDDLE_DOWN_PATH,
         RIGHT_MIDDLE_DOWN_PATH,
-        TAP_HAND_PATH,
         SERIOUS_REFERENCE_PATH,
         IDLE_PATH,
     ):
@@ -3155,7 +2453,7 @@ def main() -> None:
     left_middle_down = normalize_key_pose_to_neutral_bbox(LEFT_MIDDLE_DOWN_PATH, neutral)
     right_middle_down = normalize_key_pose_to_neutral_bbox(RIGHT_MIDDLE_DOWN_PATH, neutral)
     serious_reference = load_serious_reference()
-    clean_face = inpaint_neutral_brows(neutral)
+    clean_face = inpaint_neutral_expression(neutral)
     serious_neutral = build_serious_neutral(neutral, serious_reference)
     # Generated contact poses remain immutable anatomy references. Runtime v5
     # uses the approved home-row character plus a clean keyboard underlay and
@@ -3164,7 +2462,6 @@ def main() -> None:
         build_v5_hand_model(neutral, underlay, rig)
         for rig in V5_HAND_RIGS
     )
-    hand = load_tap_hand()
     save_png_atomically(neutral, NORMALIZED_WORK_PATH)
     save_png_atomically(underlay, NORMALIZED_UNDERLAY_PATH)
     for pose, destination in (
@@ -3191,19 +2488,6 @@ def main() -> None:
         protected_indices=V5_NEUTRAL_SEAM_INDICES,
     )
     enter_frames = build_work_enter(idle, loop_frames[0])
-    tap_frames = remove_isolated_temporal_shimmer(
-        build_work_tap_v5(
-            neutral,
-            underlay,
-            clean_face,
-            serious_reference,
-            serious_neutral,
-            hand_models,
-            hand,
-        ),
-        wrap=False,
-        protected_indices=(0, TAP_FRAME_COUNT - 1),
-    )
     serious_exit_frames = remove_isolated_temporal_shimmer(
         build_serious_exit_v5(
             neutral,
@@ -3226,7 +2510,6 @@ def main() -> None:
         hand_models,
         enter_frames,
         loop_frames,
-        tap_frames,
         serious_loop_frames,
         serious_exit_frames,
     )
@@ -3235,18 +2518,17 @@ def main() -> None:
         raise AssertionError("; ".join(qa["failures"]))
 
     write_arm_motion_contact(loop_frames, serious_loop_frames)
-    write_face_transition_contact(tap_frames, serious_exit_frames)
+    write_face_transition_contact(serious_exit_frames)
 
     paths = {
         "enter": write_sequence("enter", enter_frames),
         "loop": write_sequence("loop", loop_frames),
-        "tap": write_sequence("tap", tap_frames),
         "serious-loop": write_sequence("serious-loop", serious_loop_frames),
         "serious-exit": write_sequence("serious-exit", serious_exit_frames),
     }
 
     print("Built v5 semantic articulated work animation from immutable local sources.")
-    for name in ("enter", "loop", "tap", "serious-loop", "serious-exit"):
+    for name in ("enter", "loop", "serious-loop", "serious-exit"):
         metrics = qa["sequences"][f"work-{name}"]
         print(
             f"{name}: {len(paths[name])} frames, "

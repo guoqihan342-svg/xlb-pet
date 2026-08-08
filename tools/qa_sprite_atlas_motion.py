@@ -57,7 +57,6 @@ REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
 WORK_PHASE_FRAME_COUNTS = {
     "enter": 48,
     "loop": 96,
-    "tap": 48,
     "serious-loop": 96,
     "serious-exit": 24,
 }
@@ -68,15 +67,12 @@ WORK_TYPING_NEUTRAL_SEAM_INDICES = (0, 10, 21, 33, 44, 56, 69, 81, 93)
 WORK_TYPING_MAX_IDENTICAL_RUN_FRAMES = 5
 WORK_TRANSITION_MIN_UNIQUE_POSES = {
     "enter": 48,
-    # Tap deliberately has byte-identical normal-neutral endpoints.
-    "tap": 36,
     "serious-exit": 20,
 }
-# Enter uses an opaque cartoon cloud to cover a deliberate scene swap and tap
-# introduces an external hand from outside the canvas. Their transition-specific
-# invariants are enforced by build_work_animation.py; the generic whole-silhouette
-# motion gate remains applicable to the steady work loop.
-MOTION_ANALYSIS_EXCLUDED_SEQUENCES = frozenset(("work.enter", "work.tap"))
+# Enter uses an opaque cartoon cloud to cover a deliberate scene swap. Its
+# transition-specific invariants are enforced by build_work_animation.py; the
+# generic whole-silhouette motion gate remains applicable to the steady loops.
+MOTION_ANALYSIS_EXCLUDED_SEQUENCES = frozenset(("work.enter",))
 USER_SCALES = (0.75, 1.0, 1.4)
 DPI_SCALES = (1.0, 1.25, 1.5)
 MAX_USER_DPI_SCALE = max(USER_SCALES) * max(DPI_SCALES)
@@ -1090,17 +1086,12 @@ def validate_resource_contract(
     work_loop = manifest_sequences.get("work.loop", [])
     work_serious_loop = manifest_sequences.get("work.serious-loop", [])
     work_enter = manifest_sequences.get("work.enter", [])
-    work_tap = manifest_sequences.get("work.tap", [])
     work_serious_exit = manifest_sequences.get("work.serious-exit", [])
-    if all(
-        (work_loop, work_serious_loop, work_enter, work_tap, work_serious_exit)
-    ):
+    if all((work_loop, work_serious_loop, work_enter, work_serious_exit)):
         normal_neutral = reader.reconstruct(work_loop[0])
         serious_neutral = reader.reconstruct(work_serious_loop[0])
         work_boundaries = (
             ("enter_to_normal", reader.reconstruct(work_enter[-1]), normal_neutral),
-            ("tap_from_normal", reader.reconstruct(work_tap[0]), normal_neutral),
-            ("tap_to_normal", reader.reconstruct(work_tap[-1]), normal_neutral),
             (
                 "serious_exit_from_serious",
                 reader.reconstruct(work_serious_exit[0]),
@@ -1264,6 +1255,7 @@ def frame_geometry(frame: np.ndarray, surface: Surface) -> dict[str, Any]:
         "centroid_px": centroid,
         "head_center_px": brim_center,
         "head_width_px": float(brim_box[2] - brim_box[0]),
+        "head_height_px": float(brim_box[3] - brim_box[1]),
         "head_proxy_method": head_proxy_method,
         "torso_width_px": torso_width,
         "torso_height_px": torso_height,
@@ -1315,6 +1307,7 @@ def analyze_surface(
     loop: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     is_boarding_transition = sequence_name == ROAM_BOARDING_SEQUENCE
+    is_left_edge_reveal = sequence_name == "edge.left"
     geometry = [frame_geometry(frame, surface) for frame in frames]
     pair_indexes = [(index, index + 1) for index in range(len(frames) - 1)]
     if loop:
@@ -1411,14 +1404,30 @@ def analyze_surface(
             np.asarray(second_geometry["head_center_px"])
             - np.asarray(first_geometry["head_center_px"])
         )
-        head_step_dip = math.hypot(
-            float(head_delta[0]) * surface.x_to_dip,
-            float(head_delta[1]) * surface.y_to_dip,
-        )
-        head_scale = relative_step(
-            float(first_geometry["head_width_px"]),
-            float(second_geometry["head_width_px"]),
-        )
+        if is_left_edge_reveal:
+            # The left Windows boundary deliberately reveals more or less of
+            # the hat along X. Visible brim width and X center therefore
+            # measure clipping depth, not character scale or transverse
+            # jitter. Gate the un-clipped Y center and brim height instead;
+            # edge_contact/reveal metrics independently verify the X motion.
+            head_step_dip = (
+                abs(float(head_delta[1])) * surface.y_to_dip
+            )
+            head_scale = relative_step(
+                float(first_geometry["head_height_px"]),
+                float(second_geometry["head_height_px"]),
+            )
+            head_measurement_profile = "tangential-y-and-height"
+        else:
+            head_step_dip = math.hypot(
+                float(head_delta[0]) * surface.x_to_dip,
+                float(head_delta[1]) * surface.y_to_dip,
+            )
+            head_scale = relative_step(
+                float(first_geometry["head_width_px"]),
+                float(second_geometry["head_width_px"]),
+            )
+            head_measurement_profile = "center-distance-and-width"
         torso_width_scale = relative_step(
             float(first_geometry["torso_width_px"]),
             float(second_geometry["torso_width_px"]),
@@ -1469,7 +1478,23 @@ def analyze_surface(
             0.0
             if surface.physical_scale is None
             else 1.0 / max(
-                (float(first_geometry["head_width_px"]) + float(second_geometry["head_width_px"])) / 2.0,
+                (
+                    float(
+                        first_geometry[
+                            "head_height_px"
+                            if is_left_edge_reveal
+                            else "head_width_px"
+                        ]
+                    )
+                    + float(
+                        second_geometry[
+                            "head_height_px"
+                            if is_left_edge_reveal
+                            else "head_width_px"
+                        ]
+                    )
+                )
+                / 2.0,
                 1.0,
             )
         )
@@ -1497,6 +1522,7 @@ def analyze_surface(
             "head_center_step_dip": head_step_dip,
             "head_center_step_limit_dip": head_center_limit,
             "head_width_change_ratio": head_scale,
+            "head_measurement_profile": head_measurement_profile,
             "torso_width_change_ratio": torso_width_scale,
             "torso_height_change_ratio": torso_height_scale,
             "baseline_step_physical_px": baseline_physical,

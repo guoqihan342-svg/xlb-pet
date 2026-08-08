@@ -44,6 +44,11 @@ ADJACENT_CONTOUR_P95_DIP_LIMIT = 2.0
 EDGE_REVEAL_DEPTH_DIP_MIN = 8.0
 EDGE_REVEAL_BACKTRACK_DIP_MAX = 1.0
 EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX = 4
+EDGE_UPPER_CONTACT_MIN_AREA = 11000
+EDGE_LOWER_CONTACT_MIN_AREA = 15000
+EDGE_LOWER_CONTACT_MAX_MIN_X = 3
+EDGE_UPPER_CONTACT_MIN_MAX_X = 110
+EDGE_LOWER_CONTACT_MIN_MAX_X = 200
 
 # Deliberate pose transitions may be exempted only by naming the exact metric,
 # sequence, frame edge/center, and a human-readable reason.  Keep this empty by
@@ -130,12 +135,15 @@ def contour_p95(
     return float(np.percentile(values, 95)) if len(values) else 0.0
 
 
-def halo_count(frame: np.ndarray) -> int:
+def halo_count(frame: np.ndarray, *, ignored_left_columns: int = 0) -> int:
     alpha = frame[..., 3]
     core = alpha >= 160
     low = (alpha >= 16) & (alpha < 160)
     distance = cv2.distanceTransform((~core).astype(np.uint8), cv2.DIST_L2, 3)
-    return int((low & (distance > 2.0)).sum())
+    wide_trail = low & (distance > 2.0)
+    if ignored_left_columns > 0:
+        wide_trail[:, :ignored_left_columns] = False
+    return int(wide_trail.sum())
 
 
 def frame_geometry(
@@ -914,35 +922,55 @@ def analyze_static_pillow(path: Path) -> dict[str, object]:
     }
 
 
-def left_sleeve_boundary_gap(frame: np.ndarray) -> int:
-    """Measure the transparent wedge below the side-peek gripping hand."""
+def largest_left_contact_component(
+    frame: np.ndarray,
+    *,
+    roi: tuple[int, int, int, int],
+) -> dict[str, int]:
+    """Measure real connected anatomy touching the left contact band.
 
-    alpha = frame[..., 3]
-    ys, _ = np.nonzero(
-        alpha >= generator.installer.EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+    The retired scanline repair could satisfy a one-column alpha count with a
+    stretched colour stripe.  Requiring one substantial 8-connected component
+    from the 6px antialias/contact band into the hand or forearm ROI proves that
+    the boundary pixels still belong to the authored anatomy.
+    """
+
+    left, top, right, bottom = roi
+    mask = (frame[top:bottom, left:right, 3] >= 24).astype(np.uint8)
+    component_count, labels, statistics, _ = cv2.connectedComponentsWithStats(
+        mask,
+        connectivity=8,
     )
-    if not len(ys):
-        raise AssertionError("left edge-peek frame is empty")
-    bottom = int(ys.max() + 1)
-    start_y = max(
-        int(ys.min()),
-        bottom - generator.installer.EDGE_LEFT_SLEEVE_TAIL_ROWS,
-    )
-    end_y = max(
-        start_y,
-        bottom - generator.installer.EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS,
-    )
-    gaps = []
-    for y in range(start_y, end_y):
-        visible = np.flatnonzero(
-            alpha[y] >= generator.installer.EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
+    candidates: list[dict[str, int]] = []
+    for component in range(1, component_count):
+        x = int(statistics[component, cv2.CC_STAT_LEFT]) + left
+        if x >= left + 6:
+            continue
+        candidates.append(
+            {
+                "area": int(statistics[component, cv2.CC_STAT_AREA]),
+                "min_x": x,
+                "max_x": x
+                + int(statistics[component, cv2.CC_STAT_WIDTH])
+                - 1,
+            }
         )
-        if not len(visible):
-            raise AssertionError(
-                f"left edge-peek sleeve scanline {y} is unexpectedly empty"
-            )
-        gaps.append(int(visible[0]))
-    return max(gaps, default=0)
+    if not candidates:
+        return {"area": 0, "min_x": -1, "max_x": -1}
+    return max(candidates, key=lambda metrics: metrics["area"])
+
+
+def left_contact_component_metrics(frame: np.ndarray) -> dict[str, dict[str, int]]:
+    return {
+        "upper_grip": largest_left_contact_component(
+            frame,
+            roi=(0, 190, 120, 300),
+        ),
+        "lower_hand_and_forearm": largest_left_contact_component(
+            frame,
+            roi=(0, 320, 230, 460),
+        ),
+    }
 
 
 def sorted_sequence(prefix: str) -> list[Path]:
@@ -1168,15 +1196,41 @@ def main() -> None:
                 ),
             }
             if direction == "left":
-                sleeve_gap_widths = [
-                    left_sleeve_boundary_gap(load(path))
+                contact_components = [
+                    left_contact_component_metrics(load(path))
                     for path in outputs
                 ]
-                edge_result["lower_sleeve_boundary_continuity"] = {
+                upper_components = [
+                    metrics["upper_grip"] for metrics in contact_components
+                ]
+                lower_components = [
+                    metrics["lower_hand_and_forearm"]
+                    for metrics in contact_components
+                ]
+                edge_result["fixed_hand_and_forearm_contact"] = {
                     "applies_to_runtime_edges": ["left", "right-mirrored"],
-                    "gap_widths_source_px": sleeve_gap_widths,
-                    "max_gap_width_source_px": max(sleeve_gap_widths),
-                    "maximum_allowed_source_px": 0,
+                    "upper_grip": {
+                        "minimum_component_area_source_px": min(
+                            metrics["area"] for metrics in upper_components
+                        ),
+                        "maximum_min_x_source_px": max(
+                            metrics["min_x"] for metrics in upper_components
+                        ),
+                        "minimum_max_x_source_px": min(
+                            metrics["max_x"] for metrics in upper_components
+                        ),
+                    },
+                    "lower_hand_and_forearm": {
+                        "minimum_component_area_source_px": min(
+                            metrics["area"] for metrics in lower_components
+                        ),
+                        "maximum_min_x_source_px": max(
+                            metrics["min_x"] for metrics in lower_components
+                        ),
+                        "minimum_max_x_source_px": min(
+                            metrics["max_x"] for metrics in lower_components
+                        ),
+                    },
                 }
             fully_peeked_frame = quarter * 2
             resting_frame = quarter * 4
@@ -1339,7 +1393,7 @@ def main() -> None:
                 violating.append(value)
         return violating
 
-    for name, _, sequence in sequence_entries:
+    for name, paths, sequence in sequence_entries:
         if sequence["max_green_dominant_visible"]:
             failures.append(f"{name} green fringe")
         if sequence["max_alpha0_nonzero_rgb"]:
@@ -1350,7 +1404,23 @@ def main() -> None:
             frame_number
             for frame_number, frame in enumerate(sequence["frames"], start=1)
             if str(frame["pixel_sha256"]) not in authored_hashes_by_sequence[name]
-            and int(frame["halo"]) > 0
+            and (
+                halo_count(
+                    load(paths[frame_number - 1]),
+                    # The left Windows cut line intentionally clips the
+                    # antialiased grip contour.  Those first four source
+                    # columns are already excluded from contour-distance QA
+                    # and are independently covered by the fixed connected
+                    # hand/forearm checks above; they are not interpolation
+                    # trails in open image space.
+                    ignored_left_columns=(
+                        EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX
+                        if name == "edge.left"
+                        else 0
+                    ),
+                )
+                > 0
+            )
         ]
         sequence["interpolated_wide_trail_frames_1_based"] = (
             interpolated_trail_frames
@@ -1576,16 +1646,33 @@ def main() -> None:
             failures.append(
                 f"edge {direction} boundary contact moves by more than 1px"
             )
-        sleeve_contact = edge_result.get("lower_sleeve_boundary_continuity")
-        if (
-            sleeve_contact is not None
-            and sleeve_contact["max_gap_width_source_px"]
-            > sleeve_contact["maximum_allowed_source_px"]
-        ):
-            failures.append(
-                "edge left/right mirrored lower sleeve has a transparent "
-                f"boundary wedge of {sleeve_contact['max_gap_width_source_px']}px"
-            )
+        fixed_contact = edge_result.get("fixed_hand_and_forearm_contact")
+        if fixed_contact is not None:
+            upper_contact = fixed_contact["upper_grip"]
+            lower_contact = fixed_contact["lower_hand_and_forearm"]
+            if (
+                upper_contact["minimum_component_area_source_px"]
+                < EDGE_UPPER_CONTACT_MIN_AREA
+                or upper_contact["maximum_min_x_source_px"] != 0
+                or upper_contact["minimum_max_x_source_px"]
+                < EDGE_UPPER_CONTACT_MIN_MAX_X
+            ):
+                failures.append(
+                    "edge left/right mirrored upper gripping hand is not a "
+                    "complete boundary-connected anatomy component"
+                )
+            if (
+                lower_contact["minimum_component_area_source_px"]
+                < EDGE_LOWER_CONTACT_MIN_AREA
+                or lower_contact["maximum_min_x_source_px"]
+                > EDGE_LOWER_CONTACT_MAX_MIN_X
+                or lower_contact["minimum_max_x_source_px"]
+                < EDGE_LOWER_CONTACT_MIN_MAX_X
+            ):
+                failures.append(
+                    "edge left/right mirrored lower hand and forearm are not a "
+                    "complete boundary-connected anatomy component"
+                )
         reveal_depth = edge_result["reveal_depth"]["normal_axis_dip"]
         if reveal_depth < EDGE_REVEAL_DEPTH_DIP_MIN:
             failures.append(

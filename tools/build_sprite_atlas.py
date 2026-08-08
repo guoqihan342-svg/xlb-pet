@@ -28,14 +28,12 @@ REMINDER_PHASES = ("enter", "hold")
 WORK_PHASES = (
     "enter",
     "loop",
-    "tap",
     "serious-loop",
     "serious-exit",
 )
 WORK_MIN_FRAME_COUNTS = {
-    "enter": 24,
+    "enter": 48,
     "loop": 96,
-    "tap": 24,
     "serious-loop": 96,
     "serious-exit": 24,
 }
@@ -909,7 +907,8 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
                 raise RuntimeError(f"Duplicate sprite page name: {page_name}")
             pages[page_name] = partition_paths
     # Working mode is a separate state machine, not a click-action slot. Keep
-    # enter, steady typing, and head-tap feedback independently addressable.
+    # entry, normal typing, serious typing, and serious-expression recovery
+    # independently addressable. A single click has no authored atlas phase.
     for phase in WORK_PHASES:
         for page_name, partition_paths in partition_work_resource_paths(
             phase,

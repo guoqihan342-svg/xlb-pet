@@ -202,7 +202,7 @@
               HorizontalAlignment="Stretch"
               VerticalAlignment="Stretch"
               Cursor="Hand"
-              ToolTip="左键互动或拖动，右键打开待办；打工时单击敲头、双击加速"
+              ToolTip="左键互动或拖动，右键打开待办；打工时双击加速并进入认真状态"
               MouseLeftButtonDown="PetHost_MouseLeftButtonDown"
               MouseMove="PetHost_MouseMove"
               MouseLeftButtonUp="PetHost_MouseLeftButtonUp"
@@ -316,7 +316,6 @@
                         RenderTransformOrigin="0.5,0.5"
                         Tag="Idle"
                         ToolTip="待机时去打工；打工时点击去睡觉"
-                        PreviewMouseLeftButtonDown="WorkModeButton_PreviewMouseLeftButtonDown"
                         Click="WorkModeButton_Click">
                     <Button.RenderTransform>
                         <ScaleTransform x:Name="WorkModeFacingCompensation"

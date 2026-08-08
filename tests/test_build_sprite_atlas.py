@@ -48,15 +48,63 @@ def make_complete_path_fixture(root: Path) -> None:
 
     touch_sequence(assets, "luban-work-enter", 65)
     touch_sequence(assets, "luban-work-loop", 96)
-    touch_sequence(assets, "luban-work-tap", 33)
     touch_sequence(assets, "luban-work-serious-loop", 96)
     touch_sequence(assets, "luban-work-serious-exit", 24)
 
 
 class WorkSequenceTests(unittest.TestCase):
+    def test_work_generator_has_only_the_four_runtime_phases(self) -> None:
+        generator_source = (
+            WORKSPACE / "tools" / "build_work_animation.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("work-" + "tap", generator_source.lower())
+        self.assertNotIn("tap_frames", generator_source)
+        self.assertNotIn("TAP_HAND_PATH", generator_source)
+        self.assertNotIn('write_sequence("tap"', generator_source)
+        self.assertIn(
+            "SERIOUS_ENTER_SOURCE_FRAME_INDICES = "
+            "(23, 20, 16, 13, 10, 7, 3, 0)",
+            generator_source,
+        )
+        self.assertIn("write_face_transition_contact(serious_exit_frames)", generator_source)
+        for declaration in (
+            "ENTER_FRAME_COUNT = 48",
+            "LOOP_FRAME_COUNT = 96",
+            "SERIOUS_LOOP_FRAME_COUNT = 96",
+            "SERIOUS_EXIT_FRAME_COUNT = 24",
+        ):
+            self.assertIn(declaration, generator_source)
+        self.assertEqual(264, sum(atlas.WORK_MIN_FRAME_COUNTS.values()))
+
     def test_work_phases_are_not_click_actions(self) -> None:
         self.assertNotIn("work", atlas.ACTION_NAMES)
         self.assertTrue(set(atlas.WORK_PHASES).isdisjoint(atlas.ACTION_NAMES))
+        self.assertEqual(
+            ("enter", "loop", "serious-loop", "serious-exit"),
+            atlas.WORK_PHASES,
+        )
+        self.assertNotIn("tap", atlas.WORK_MIN_FRAME_COUNTS)
+
+    def test_legacy_work_tap_files_are_not_part_of_the_atlas_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            touch_sequence(root / "Assets", "luban-work-tap", 33)
+
+            with self.assertRaisesRegex(ValueError, "Unknown working-animation phase"):
+                atlas.work_resource_paths(root, "tap")
+            with self.assertRaisesRegex(ValueError, "Unknown working-animation phase"):
+                atlas.partition_work_resource_paths(
+                    "tap",
+                    ["Assets/luban-work-tap-001.png"],
+                )
+
+            source_paths = atlas.resource_paths(root)
+            pages = atlas.page_resource_paths(root)
+            self.assertFalse(
+                any(path.startswith("Assets/luban-work-tap-") for path in source_paths)
+            )
+            self.assertFalse(any(name.startswith("work-tap") for name in pages))
 
     def test_typing_loops_require_the_complete_96_frame_cycle(self) -> None:
         self.assertEqual(96, atlas.WORK_MIN_FRAME_COUNTS["loop"])
@@ -104,7 +152,6 @@ class WorkSequenceTests(unittest.TestCase):
         cases = {
             "enter": (65, [32, 32, 1]),
             "loop": (96, [32, 32, 32]),
-            "tap": (33, [32, 1]),
             "serious-loop": (96, [32, 32, 32]),
             "serious-exit": (24, [24]),
         }
@@ -157,7 +204,7 @@ class WorkSequenceTests(unittest.TestCase):
             self.assertEqual(set(page_paths), set(source_paths))
             self.assertEqual(len(page_paths), len(source_paths))
             self.assertEqual(len(page_paths), len(set(page_paths)))
-            self.assertEqual(len(work_paths), 65 + 96 + 33 + 96 + 24)
+            self.assertEqual(len(work_paths), 65 + 96 + 96 + 24)
             self.assertEqual(
                 [name for name in pages if name.startswith("work-")],
                 [
@@ -167,8 +214,6 @@ class WorkSequenceTests(unittest.TestCase):
                     "work-loop",
                     "work-loop-part-02",
                     "work-loop-part-03",
-                    "work-tap",
-                    "work-tap-part-02",
                     "work-serious-loop",
                     "work-serious-loop-part-02",
                     "work-serious-loop-part-03",

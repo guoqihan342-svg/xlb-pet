@@ -7,7 +7,6 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Runtime;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
@@ -112,12 +111,11 @@ public partial class MainWindow : Window
     private const int WorkLoopFrameCount = 96;
     private const int WorkSeriousLoopFrameCount = 96;
     private const int WorkSeriousExitFrameCount = 24;
-    private const int WorkTapFrameCount = 48;
     private const int WorkEnterPillowVisibleFrameCount = 24;
     private const double WorkNormalPoseFramesPerSecond = 60;
     private const double WorkFastPlaybackMultiplier = 2;
     // The 96-pose keyboard cycle comes closest to its authored home-row pose at
-    // these short neutral micro-seams. Tap/downshift transitions wait for the
+    // these short neutral micro-seams. Serious/downshift transitions wait for the
     // next one on the unchanged 1x/2x clock instead of racing to loop frame 001.
     private static readonly int[] WorkNeutralMicroSeamFrameIndices =
         [0, 10, 21, 33, 44, 56, 69, 81, 93];
@@ -146,8 +144,6 @@ public partial class MainWindow : Window
     private static readonly int[] WorkSeriousEnterSourceFrameIndices =
         [23, 20, 16, 13, 10, 7, 3, 0];
     private static readonly TimeSpan WorkFastDuration = TimeSpan.FromSeconds(4);
-    private static readonly TimeSpan WorkSingleClickDecisionPadding =
-        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
     private static readonly TimeSpan StableReactionEndpointHoldDuration =
         TimeSpan.FromMilliseconds(1875);
     private static readonly long VisualFrameDeadlineToleranceTicks =
@@ -241,7 +237,6 @@ public partial class MainWindow : Window
     private readonly SpriteFrame[] _workLoopFrames;
     private readonly SpriteFrame[] _workSeriousLoopFrames;
     private readonly SpriteFrame[] _workSeriousExitFrames;
-    private readonly SpriteFrame[] _workTapFrames;
     private readonly AnimationClip[] _reactionClips;
     private readonly AnimationClip _todoEnterClip;
     private readonly AnimationClip _todoExitClip;
@@ -253,7 +248,6 @@ public partial class MainWindow : Window
     private readonly AnimationClip _workSeriousLoopClip;
     private readonly AnimationClip _workSeriousEnterClip;
     private readonly AnimationClip _workSeriousExitClip;
-    private readonly AnimationClip _workTapClip;
     private readonly AnimationClip _workExitClip;
     private readonly AnimationClip?[] _automaticActivities;
     private readonly DispatcherTimer _automaticTimer;
@@ -264,7 +258,6 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _spritePageIdleTrimTimer;
     private readonly DispatcherTimer _spritePageCollectionTimer;
     private readonly DispatcherTimer _edgePeekHoldTimer;
-    private readonly DispatcherTimer _workSingleClickTimer;
     private readonly AnimationClock _snoreBubbleScaleClock;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
@@ -323,11 +316,7 @@ public partial class MainWindow : Window
     private int _nextClipIndex;
     private WorkState _workState;
     private int _workPointerClickCount;
-    private int _workClickGeneration;
-    private int _scheduledWorkSingleClickGeneration;
     private bool _workExitRequested;
-    private bool _workTapPhaseSyncRequested;
-    private bool _workTapAfterSeriousExitRequested;
     private bool _workSeriousEnterRequested;
     private bool _workSeriousExitRequested;
     private bool _workEnterAfterEdgePeekExitRequested;
@@ -335,7 +324,6 @@ public partial class MainWindow : Window
     private bool _todoOpenAfterWorkExitQueued;
     private double _workLoopAnchorFramePosition;
     private double _workLoopPlaybackRate = 1;
-    private double _workTapTargetFramePosition = double.PositiveInfinity;
     private double _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
     private double _workSeriousExitTargetFramePosition = double.PositiveInfinity;
     private double _workExitTargetFramePosition = double.PositiveInfinity;
@@ -513,9 +501,6 @@ public partial class MainWindow : Window
             Interval = EdgePeekFullyPeekedHold
         };
         _edgePeekHoldTimer.Tick += EdgePeekHoldTimer_Tick;
-        _workSingleClickTimer = new DispatcherTimer(
-            DispatcherPriority.Background);
-        _workSingleClickTimer.Tick += WorkSingleClickTimer_Tick;
         _lastObservedSpritePageCollectionGeneration =
             GC.CollectionCount(GC.MaxGeneration);
 
@@ -595,10 +580,6 @@ public partial class MainWindow : Window
             "work-serious-exit",
             "Assets/luban-work-serious-exit-",
             expectedFrameCount: WorkSeriousExitFrameCount);
-        _workTapFrames = LoadNumberedFrameSequence(
-            "work-tap",
-            "Assets/luban-work-tap-",
-            expectedFrameCount: WorkTapFrameCount);
         // Keep only the idle page and the first continuation page permanently
         // hot. Remaining wake pages use the same rolling look-ahead as every
         // other clip, avoiding a permanent 54 MiB wake allocation.
@@ -639,10 +620,6 @@ public partial class MainWindow : Window
         _workSeriousExitClip = CreateWorkClip(
             "work-serious-exit",
             _workSeriousExitFrames,
-            reverse: false);
-        _workTapClip = CreateWorkClip(
-            "work-tap",
-            _workTapFrames,
             reverse: false);
         _workExitClip = CreateWorkClip(
             "work-exit",
@@ -2199,18 +2176,12 @@ public partial class MainWindow : Window
             PersistLatestPetSizeForShutdownAt(Stopwatch.GetTimestamp());
         }
         _isClosing = true;
-        CancelPendingWorkSingleClick();
         CancelTodoOpenAfterWorkExit();
-        _workSingleClickTimer.Stop();
-        _workSingleClickTimer.Tick -= WorkSingleClickTimer_Tick;
         _workState = WorkState.Idle;
         _workExitRequested = false;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
         _workSeriousEnterRequested = false;
         _workSeriousExitRequested = false;
         _workEnterAfterEdgePeekExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitTargetFramePosition = double.PositiveInfinity;
         _workExitTargetFramePosition = double.PositiveInfinity;
@@ -2327,19 +2298,6 @@ public partial class MainWindow : Window
         ClearResidentSpritePages();
     }
 
-    private void WorkModeButton_PreviewMouseLeftButtonDown(
-        object sender,
-        MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton == MouseButton.Left &&
-            _workState != WorkState.Idle)
-        {
-            // Cancel before Button waits for MouseUp. Otherwise a pending
-            // single-click timer can fire while the user is pressing 去睡觉.
-            CancelPendingWorkSingleClick();
-        }
-    }
-
     private void PetHost_PreviewMouseRightButtonDown(
         object sender,
         MouseButtonEventArgs e)
@@ -2349,14 +2307,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        CancelPendingWorkSingleClick();
         _workEnterAfterEdgePeekExitRequested = false;
         RefreshWorkModeButton();
     }
 
     private void CancelPetPointerInteractionForInterruption()
     {
-        CancelPendingWorkSingleClick();
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
@@ -2396,10 +2352,6 @@ public partial class MainWindow : Window
         _workEnterAfterEdgePeekExitRequested = false;
         _dragPreservesWorkMode = false;
         _workPointerClickCount = e.ClickCount;
-        if (_workState == WorkState.Typing && e.ClickCount >= 2)
-        {
-            CancelPendingWorkSingleClick();
-        }
         if (_isReminderActive || _isTransientPetSizeOverride)
         {
             CancelTodoOpenAfterEdgeRoamStop();
@@ -2499,7 +2451,6 @@ public partial class MainWindow : Window
         Point currentPosition,
         Point currentScreenPosition)
     {
-        CancelPendingWorkSingleClick();
         _workPointerClickCount = 0;
         // A real drag owns window position only. Keep every work animation
         // state and its absolute clock intact so moving the working pet cannot
@@ -2894,7 +2845,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        CancelPendingWorkSingleClick();
         if (_workState != WorkState.Idle)
         {
             _openTodoAfterWorkExitRequested = true;
@@ -3094,7 +3044,6 @@ public partial class MainWindow : Window
         }
 
         var timestamp = Stopwatch.GetTimestamp();
-        CancelPendingWorkSingleClick();
         CancelTodoOpenAfterEdgeRoamStop();
         CancelTodoOpenAfterWorkExit();
         _edgeRoamPreloadRequested = false;
@@ -3104,9 +3053,6 @@ public partial class MainWindow : Window
         _automaticTimer.Stop();
         _workState = WorkState.Entering;
         _workExitRequested = false;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterRequested = false;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitRequested = false;
@@ -3155,9 +3101,6 @@ public partial class MainWindow : Window
         _workState = WorkState.Typing;
         _workLoopAnchorFramePosition = 0;
         _workLoopAnchorTimestamp = 0;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterRequested = false;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitRequested = false;
@@ -3227,9 +3170,6 @@ public partial class MainWindow : Window
         _workState = WorkState.Typing;
         _workLoopAnchorFramePosition = framePosition;
         _workLoopAnchorTimestamp = 0;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterRequested = false;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitRequested = false;
@@ -3245,7 +3185,6 @@ public partial class MainWindow : Window
 
     private void RequestWorkExit()
     {
-        CancelPendingWorkSingleClick();
         if (_workState is WorkState.Idle or WorkState.Exiting)
         {
             // A right-click can arrive after the authored exit has already
@@ -3352,12 +3291,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        CancelPendingWorkSingleClick();
         _workState = WorkState.Exiting;
         _workExitRequested = false;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterRequested = false;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitRequested = false;
@@ -3377,9 +3312,6 @@ public partial class MainWindow : Window
         _workEdgeDock = EdgeDock.None;
         _workState = WorkState.Idle;
         _workExitRequested = false;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterRequested = false;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitRequested = false;
@@ -3424,7 +3356,6 @@ public partial class MainWindow : Window
 
     private void StopWorkModeImmediately(bool restoreIdleFrame)
     {
-        CancelPendingWorkSingleClick();
         CancelTodoOpenAfterWorkExit();
         _workEdgeDock = EdgeDock.None;
         if (_workState == WorkState.Idle)
@@ -3443,9 +3374,6 @@ public partial class MainWindow : Window
 
         _workState = WorkState.Idle;
         _workExitRequested = false;
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
         _workSeriousEnterRequested = false;
         _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
         _workSeriousExitRequested = false;
@@ -3474,107 +3402,39 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (clickCount >= 2)
+        if (clickCount < 2)
         {
-            CancelPendingWorkSingleClick();
-            StartFastWorkTypingAt(Stopwatch.GetTimestamp());
+            // A single click is deliberately a visual no-op in work mode.
+            // It may be the first half of a double-click, so only warm the
+            // tiny expression-entry page while the ordinary loop is active;
+            // do not change the active clip, typing phase, speed, or
+            // serious-mode deadline.
+            if (ReferenceEquals(_activeClip, _workLoopClip))
+            {
+                PrefetchWorkSeriousEntryPage();
+            }
             return;
         }
 
-        if (_workTapPhaseSyncRequested || _workSeriousEnterRequested)
-        {
-            // The first click has already been confirmed and owns the nearest
-            // neutral seam. Extra single-click notifications must not restart
-            // arbitration and push the visible head tap farther into the future.
-            return;
-        }
-
-        ScheduleWorkSingleClick();
-    }
-
-    private void ScheduleWorkSingleClick()
-    {
-        CancelPendingWorkSingleClick();
-        _workClickGeneration++;
-        _scheduledWorkSingleClickGeneration = _workClickGeneration;
-        var decisionDelay = GetWorkSingleClickDecisionDelay();
-        _workSingleClickTimer.Interval = decisionDelay;
-
-        PrefetchWorkSeriousEntryPage();
-        PrefetchPendingWorkTransitionPages();
-        _workSingleClickTimer.Start();
+        StartFastWorkTypingAt(Stopwatch.GetTimestamp());
     }
 
     private void PrefetchWorkSeriousEntryPage()
     {
         // A ClickCount=1 event is also the first half of every double-click.
-        // Warm the short facial-entry page before the second event arrives.
-        // Once it is resident, the render-time look-ahead requests the exact
-        // target serious-loop page without cancelling this more urgent decode.
+        // Warm the short facial-entry page only when no normal-loop page is
+        // already decoding. This speculative request must never cancel or
+        // replace visible-loop work; the double-click path issues its own
+        // urgent request when the serious transition is actually selected.
+        if (_spritePagePrefetchTask is not null ||
+            _desiredSpritePageName is not null)
+        {
+            return;
+        }
+
         RequestSpritePagePrefetch(
             _workSeriousEnterClip.Frames[0].Image.PageName,
-            urgent: true);
-    }
-
-    private void CancelPendingWorkSingleClick()
-    {
-        _workTapPhaseSyncRequested = false;
-        _workTapAfterSeriousExitRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
-        _workSingleClickTimer.Stop();
-        _workClickGeneration++;
-        _scheduledWorkSingleClickGeneration = 0;
-    }
-
-    private void WorkSingleClickTimer_Tick(object? sender, EventArgs e)
-    {
-        _workSingleClickTimer.Stop();
-        var generation = _scheduledWorkSingleClickGeneration;
-        _scheduledWorkSingleClickGeneration = 0;
-        if (generation == 0 || generation != _workClickGeneration ||
-            _workState != WorkState.Typing || _workExitRequested ||
-            !IsWorkTypingLoopClip(_activeClip))
-        {
-            _workTapPhaseSyncRequested = false;
-            _workTapTargetFramePosition = double.PositiveInfinity;
-            return;
-        }
-
-        var timestamp = Stopwatch.GetTimestamp();
-        var framePosition = GetWorkLoopFramePositionAt(timestamp);
-        _workTapTargetFramePosition =
-            GetNextWorkNeutralMicroSeamFramePosition(framePosition);
-        _workTapPhaseSyncRequested = true;
-    }
-
-    private void StartWorkTapAtNeutralSeam(long timestamp)
-    {
-        if (!_workTapPhaseSyncRequested ||
-            !double.IsFinite(_workTapTargetFramePosition))
-        {
-            return;
-        }
-
-        _workLoopAnchorFramePosition = _workTapTargetFramePosition;
-        _workLoopAnchorTimestamp = timestamp;
-        _workTapPhaseSyncRequested = false;
-        _workTapTargetFramePosition = double.PositiveInfinity;
-        if (ReferenceEquals(_activeClip, _workSeriousLoopClip))
-        {
-            // A single click deliberately leaves serious typing, but the face
-            // must relax through its authored sequence before the ordinary
-            // head-tap pose appears. Both hand-offs occur on exact neutral
-            // bitmaps, so no normal-face frame is exposed early.
-            _workTapAfterSeriousExitRequested = true;
-            _workFastUntilTimestamp = 0;
-            StartWorkSeriousExitClip();
-            return;
-        }
-
-        _workTapAfterSeriousExitRequested = false;
-        _workLoopPlaybackRate = 1;
-        _workFastUntilTimestamp = 0;
-        StartWorkClip(_workTapClip);
+            urgent: false);
     }
 
     private void StartFastWorkTypingAt(long timestamp)
@@ -3637,9 +3497,6 @@ public partial class MainWindow : Window
         PrefetchPendingWorkTransitionPages();
         if (_workFastUntilTimestamp > 0 &&
             timestamp >= _workFastUntilTimestamp &&
-            _scheduledWorkSingleClickGeneration == 0 &&
-            !_workSingleClickTimer.IsEnabled &&
-            !_workTapPhaseSyncRequested &&
             !_workExitRequested &&
             ReferenceEquals(_activeClip, _workSeriousLoopClip))
         {
@@ -3681,13 +3538,6 @@ public partial class MainWindow : Window
             framePosition >= _workSeriousEnterTargetFramePosition)
         {
             StartWorkSeriousEnterClip(timestamp);
-            return;
-        }
-
-        if (_workTapPhaseSyncRequested &&
-            framePosition >= _workTapTargetFramePosition)
-        {
-            StartWorkTapAtNeutralSeam(timestamp);
             return;
         }
 
@@ -3775,19 +3625,6 @@ public partial class MainWindow : Window
 
     private void PrefetchPendingWorkTransitionPages()
     {
-        if ((_scheduledWorkSingleClickGeneration != 0 ||
-             _workSingleClickTimer.IsEnabled ||
-             _workTapPhaseSyncRequested ||
-             _workTapAfterSeriousExitRequested) &&
-            _workState == WorkState.Typing &&
-            !IsSpritePageImmediatelyAvailable(
-                _workTapClip.Frames[0].Image.PageName))
-        {
-            RequestSpritePagePrefetch(
-                _workTapClip.Frames[0].Image.PageName,
-                urgent: false);
-        }
-
         if (_workSeriousEnterRequested &&
             _workState == WorkState.Typing &&
             !IsSpritePageImmediatelyAvailable(
@@ -3820,16 +3657,6 @@ public partial class MainWindow : Window
             }
         }
 
-        if (ReferenceEquals(_activeClip, _workTapClip) &&
-            !_workExitRequested &&
-            !IsSpritePageImmediatelyAvailable(
-                _workLoopClip.Frames[0].Image.PageName))
-        {
-            RequestSpritePagePrefetch(
-                _workLoopClip.Frames[0].Image.PageName,
-                urgent: false);
-        }
-
         if (ReferenceEquals(_activeClip, _workSeriousLoopClip) &&
             (_workFastUntilTimestamp > 0 || _workSeriousExitRequested) &&
             !IsSpritePageImmediatelyAvailable(
@@ -3843,15 +3670,10 @@ public partial class MainWindow : Window
         if (ReferenceEquals(_activeClip, _workSeriousExitClip) &&
             !_workExitRequested &&
             !IsSpritePageImmediatelyAvailable(
-                (_workTapAfterSeriousExitRequested
-                    ? _workTapClip
-                    : _workLoopClip).Frames[0].Image.PageName))
+                _workLoopClip.Frames[0].Image.PageName))
         {
-            var continuationClip = _workTapAfterSeriousExitRequested
-                ? _workTapClip
-                : _workLoopClip;
             RequestSpritePagePrefetch(
-                continuationClip.Frames[0].Image.PageName,
+                _workLoopClip.Frames[0].Image.PageName,
                 urgent: false);
         }
 
@@ -3881,18 +3703,7 @@ public partial class MainWindow : Window
         ReferenceEquals(clip, _workSeriousLoopClip) ||
         ReferenceEquals(clip, _workSeriousEnterClip) ||
         ReferenceEquals(clip, _workSeriousExitClip) ||
-        ReferenceEquals(clip, _workTapClip) ||
         ReferenceEquals(clip, _workExitClip);
-
-    private static TimeSpan GetWorkSingleClickDecisionDelay()
-    {
-        var nativeMilliseconds = GetDoubleClickTime();
-        var milliseconds = nativeMilliseconds is >= 100 and <= 2000
-            ? nativeMilliseconds
-            : 500u;
-        return TimeSpan.FromMilliseconds(milliseconds) +
-               WorkSingleClickDecisionPadding;
-    }
 
     private void CancelTodoOpenAfterWorkExit()
     {
@@ -4423,7 +4234,14 @@ public partial class MainWindow : Window
 
         RequestIdleSpritePageTrim();
         _edgeDock = dock;
-        _edgePeekFrameIndex = restFrameIndex;
+        // Side-edge contact should start its first peek immediately. Frame 001
+        // advances after one motion interval; only a completed side loop may
+        // hold frame 048 for the long remainder of the 10-second cycle.
+        // Bottom docking keeps its established rest-first timing.
+        _edgePeekFrameIndex = dock is EdgeDock.Left or EdgeDock.Right
+            ? 0
+            : restFrameIndex;
+        var entryFrame = frames[_edgePeekFrameIndex];
         var targetFacingScaleX = dock == EdgeDock.Right ? -1 : 1;
         if (Math.Abs(PetFacingScale.ScaleX - targetFacingScaleX) > 0.001)
         {
@@ -4440,16 +4258,16 @@ public partial class MainWindow : Window
 
         PetFacingScale.ScaleY = 1;
         _nextFrameBlendDuration = EdgeFrameBlendDuration;
-        ShowStableFrame(restFrame);
+        ShowStableFrame(entryFrame);
         if (_currentSpriteFrame is SpriteFrame displayedFrame &&
-            displayedFrame == restFrame)
+            displayedFrame == entryFrame)
         {
             StartEdgePeekFrameClockAt(Stopwatch.GetTimestamp());
         }
         else
         {
             // A cold atlas page keeps the old stable pixels on screen. Do not
-            // let its logical pose clock run until this exact rest frame is
+            // let its logical pose clock run until this exact entry frame is
             // published by a composition pass.
             _edgePeekFrameDeadlineTimestamp = long.MaxValue;
         }
@@ -6637,16 +6455,6 @@ public partial class MainWindow : Window
                 RequestSpritePagePrefetch(loopPageName, urgent: true);
             }
         }
-        else if (ReferenceEquals(clip, _workTapClip))
-        {
-            var continuationPageName = _workExitRequested
-                ? _workExitClip.Frames[0].Image.PageName
-                : _workLoopFrames[0].PageName;
-            if (!IsSpritePageImmediatelyAvailable(continuationPageName))
-            {
-                RequestSpritePagePrefetch(continuationPageName, urgent: true);
-            }
-        }
         else if (ReferenceEquals(clip, _workSeriousEnterClip))
         {
             if (_workExitRequested)
@@ -6680,9 +6488,7 @@ public partial class MainWindow : Window
         {
             var continuationPageName = _workExitRequested
                 ? _workExitClip.Frames[0].Image.PageName
-                : _workTapAfterSeriousExitRequested
-                    ? _workTapClip.Frames[0].Image.PageName
-                    : _workLoopFrames[0].PageName;
+                : _workLoopFrames[0].PageName;
             if (!IsSpritePageImmediatelyAvailable(continuationPageName))
             {
                 RequestSpritePagePrefetch(continuationPageName, urgent: true);
@@ -6716,19 +6522,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (ReferenceEquals(clip, _workTapClip))
-        {
-            if (_workExitRequested)
-            {
-                StartWorkExitClip();
-            }
-            else
-            {
-                StartWorkLoopAt(timestamp);
-            }
-            return;
-        }
-
         if (ReferenceEquals(clip, _workSeriousEnterClip))
         {
             if (_workExitRequested)
@@ -6750,13 +6543,6 @@ public partial class MainWindow : Window
             if (_workExitRequested)
             {
                 StartWorkExitClip();
-            }
-            else if (_workTapAfterSeriousExitRequested)
-            {
-                _workTapAfterSeriousExitRequested = false;
-                _workLoopPlaybackRate = 1;
-                _workFastUntilTimestamp = 0;
-                StartWorkClip(_workTapClip);
             }
             else
             {
@@ -7024,9 +6810,6 @@ public partial class MainWindow : Window
         const string enterPrefix = "Assets/luban-work-enter-";
         if (frame.Name.StartsWith(
                 "Assets/luban-work-loop-",
-                StringComparison.Ordinal) ||
-            frame.Name.StartsWith(
-                "Assets/luban-work-tap-",
                 StringComparison.Ordinal) ||
             frame.Name.StartsWith(
                 "Assets/luban-work-serious-loop-",
@@ -8343,8 +8126,7 @@ public partial class MainWindow : Window
             (FrameSequenceUsesSpritePage(_workEnterFrames, pageName) ||
              FrameSequenceUsesSpritePage(_workLoopFrames, pageName) ||
              FrameSequenceUsesSpritePage(_workSeriousLoopFrames, pageName) ||
-             FrameSequenceUsesSpritePage(_workSeriousExitFrames, pageName) ||
-             FrameSequenceUsesSpritePage(_workTapFrames, pageName));
+             FrameSequenceUsesSpritePage(_workSeriousExitFrames, pageName));
         var failedRoamingPage =
             _isEdgeRoaming &&
             (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
@@ -12693,9 +12475,6 @@ public partial class MainWindow : Window
         Right,
         Bottom
     }
-
-    [DllImport("user32.dll")]
-    private static extern uint GetDoubleClickTime();
 
     private readonly record struct EdgeDockDragContext(
         EdgeDock OriginDock,
