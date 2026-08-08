@@ -233,7 +233,21 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## 10. v1.0.57 发布验证
+## 10. v1.0.58 发布验证
+
+以下结果于 `2026-08-08` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境完成。正式 EXE 已替换本地 v1.0.57 并启动，Release 附件也已在独立目录重新下载复核。
+
+| 项目 | 结果 |
+| --- | --- |
+| 源码版本 | `v1.0.58`；Release 源码提交 `9ce5faa6561f9cdb9e10c1bf48ad7045c28935f8` |
+| Release 构建 | 主项目与测试项目均通过，`0` 警告、`0` 错误；框架依赖 win-x64 单文件发布成功 |
+| 自动回归 | `TodoStoreChecks` 通过；Python 契约 `19/19`；打工生成 QA、源 PNG 连续性 QA 与最终图集 QA 均为失败数 `0`；恢复全部非 tap 动态覆盖后的完整 `UiStateChecks` 通过 |
+| 图集与交互 | 最终图集 `53` 页、`1648` 帧；打工 `9` 页、`264` 帧且无 `work-tap`；单击冷页不抢占，双击认真、frame 094 跨页、进入/退出/中断均通过；左右立即探头，下边缘保留原休息节奏 |
+| 待办行为 | 真实勾选事件链验证中间完成项只移动到末尾一次、其他项相对顺序不变并立即持久化；取消完成保留当前位置，手动拖拽顺序仍有效 |
+| EXE 与进程冒烟 | `128,479,878` 字节，文件版本 `1.0.58.0`，产品版本包含 `9ce5faa...`，SHA-256 `E54FF1CD78D197462D355F0635D4C9C25A6390CD2D12856FE0B771D8DA7DAD00`，`NotSigned`；启动后响应，二次启动自行退出且只有一个实例；替换前后待办、定时任务和设置文件 SHA-256 完全一致 |
+| GitHub Release | 已发布 [v1.0.58](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.58)，目标提交 `9ce5faa6561f9cdb9e10c1bf48ad7045c28935f8`；GitHub 记录与独立回下载均为 `128,479,878` 字节，SHA-256 完全一致 |
+
+## 11. v1.0.57 发布验证
 
 以下结果于 `2026-08-07` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境完成。正式 EXE 已替换本地旧版并启动，Release 附件也已在独立目录重新下载复核。
 
@@ -247,7 +261,7 @@ git status --short --ignored
 | EXE 与进程冒烟 | `128,914,054` 字节，文件版本 `1.0.57.0`，产品版本包含 `66fdbd2...`，SHA-256 `E4420504F3A0D3B47848717B1431630FD936E3062744A95AE5B62748F3A3CA19`，`NotSigned`；本地正式路径启动后响应，二次启动退出且仅保留一个实例 |
 | GitHub Release | 已发布 [v1.0.57](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.57)，目标提交 `66fdbd23758009f83fa55c9f3fd319a2e75c45fe`；附件与独立回下载均为 `128,914,054` 字节，SHA-256 完全一致 |
 
-## 11. v1.0.56 发布验证
+## 12. v1.0.56 发布验证
 
 以下结果于 `2026-08-07` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境完成。正式 EXE 已替换本地旧版并启动，Release 附件也已在独立目录重新下载复核。
 
@@ -260,7 +274,7 @@ git status --short --ignored
 | EXE 与进程冒烟 | `128,913,542` 字节，文件版本 `1.0.56.0`，产品版本包含 `41669694...`，SHA-256 `BEC0C51A1D98DA377AF08921F2814340356AF7C04A9979B032230B856CD119DE`；替换本地 v1.0.55 后启动并持续响应 |
 | GitHub Release | 已发布 [v1.0.56](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.56)，目标提交 `41669694ccae89944502b97d943d1c0ba768eb5c`；附件与独立回下载均为 `128,913,542` 字节，SHA-256 完全一致 |
 
-## 12. v1.0.55 发布验证
+## 13. v1.0.55 发布验证
 
 以下结果于 `2026-08-06` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境重新执行。Release 指向正式源码提交，附件已从 GitHub 独立回下载复核。
 
@@ -276,7 +290,7 @@ git status --short --ignored
 | EXE 与进程冒烟 | `128,913,030` 字节（`122.94 MiB`），文件版本 `1.0.55.0`，产品版本包含 `3b0ef48...`，SHA-256 `4BEA28D93DEBFA27CFD4273384EA82F233B3FFF39BFD0BB4D98E24ABC0FD5BBA`，`NotSigned`；30 秒持续响应，私有内存 `209.97–210.94 MiB`、工作集 `283.63–284.65 MiB`；二次启动自行退出且仅保留一个实例 |
 | GitHub Release | 已发布 [v1.0.55](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.55)，目标提交 `3b0ef48bca22c0bfa5afb96ec95753b0cee31fb7`；附件与独立回下载均为 `128,913,030` 字节，SHA-256 均为 `4BEA28D93DEBFA27CFD4273384EA82F233B3FFF39BFD0BB4D98E24ABC0FD5BBA` |
 
-## 13. v1.0.54 历史发布验证
+## 14. v1.0.54 历史发布验证
 
 以下结果于 `2026-08-05` 在 Windows 11 x64、.NET SDK 8、.NET Desktop Runtime `8.0.29` 环境完成。该版本的 v6 动画已经在 `v1.0.55` 按用户偏好回退，本节只保留历史发布事实。
 
@@ -293,7 +307,7 @@ git status --short --ignored
 | EXE 发布与实机冒烟 | `130,228,870` 字节（`124.20 MiB`），文件版本 `1.0.54.0`，产品版本包含 `11800af0...`，SHA-256 `FCD5E1B2729929692A85DF6605C3A679B34FC349536C8C149F6549CB4370742A`，`NotSigned`；持续响应，私有内存约 `212.02 MiB`、工作集约 `296.17 MiB`；二次启动退出且仅保留一个实例 |
 | GitHub Release | 已发布 [v1.0.54](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.54)，目标提交 `11800af0db9ef690c7a7987232aef6c090b2bfe3`；附件 `130,228,870` 字节，GitHub 摘要和独立回下载 SHA-256 均为 `FCD5E1B2729929692A85DF6605C3A679B34FC349536C8C149F6549CB4370742A` |
 
-## 14. v1.0.53 历史发布验证
+## 15. v1.0.53 历史发布验证
 
 以下结果只保留 `v1.0.53` 的历史证据，不能作为 `v1.0.55` 的通过结果。
 
