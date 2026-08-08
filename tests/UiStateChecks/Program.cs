@@ -245,6 +245,9 @@ internal static partial class Program
                         nameof(AssertWorkModeDragContinuationContract),
                         () => AssertWorkModeDragContinuationContract(window));
                     RunCheck(
+                        nameof(AssertWorkEdgeColdHandoffContract),
+                        () => AssertWorkEdgeColdHandoffContract(window));
+                    RunCheck(
                         nameof(AssertWorkModeRuntimeStateContract),
                         () => AssertWorkModeRuntimeStateContract(window));
                     RunCheck(
@@ -427,6 +430,9 @@ internal static partial class Program
                 RunCheck(
                     nameof(AssertWorkModeDragContinuationContract),
                     () => AssertWorkModeDragContinuationContract(window));
+                RunCheck(
+                    nameof(AssertWorkEdgeColdHandoffContract),
+                    () => AssertWorkEdgeColdHandoffContract(window));
                 RunCheck(
                     nameof(AssertWorkModeRuntimeStateContract),
                     () => AssertWorkModeRuntimeStateContract(window));
@@ -1576,7 +1582,7 @@ internal static partial class Program
                 "MainWindow 缺少 sprite 页像素复用池");
         Assert(GetProperty<long>(profiledPool, "AllocationCount") <= 40 &&
                GetProperty<long>(profiledPool, "ReuseCount") >= 12,
-            "七种动作连续轮播必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
+            "六种动作连续轮播必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
 
         SetField(window, "_edgeRoamPreloadRequested", true);
         var roamPageNames = new[]
@@ -4364,7 +4370,7 @@ internal static partial class Program
                 "roam-boarding",
                 "roam-flight"
             }
-            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" }
+            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "think" }
                 .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
             .Concat(new[]
             {
@@ -4389,7 +4395,7 @@ internal static partial class Program
                !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "还必须动态包含熊猫坐骑登乘与巡游连续分页、七个动作页、七个循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、六个动作页、六个循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -4468,7 +4474,7 @@ internal static partial class Program
                 "不得把巡游帧塞进点击动作、idle或手动edge分页");
         }
 
-        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
+        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "think" })
         {
             var pageName = $"action-{actionName}";
             var actionPageEntries = manifestPages.EnumerateObject()
@@ -5527,7 +5533,7 @@ internal static partial class Program
             paths.AddRange(workNames.Select(name => $"Assets/{name}"));
         }
 
-        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" })
+        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "think" })
         {
             var actionNames = Directory.EnumerateFiles(
                     assetsDirectory,
@@ -5878,8 +5884,8 @@ internal static partial class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 7, "删除跑步与旧捉迷藏后应保留 7 组点击动作");
-        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "wave", "think" };
+        Assert(clips.Length == 6, "删除跑步、旧捉迷藏与点击挥手后应保留 6 组点击动作");
+        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "think" };
         var actualActions = clips
             .Select(clip => GetProperty<string>(clip, "ActionName"))
             .ToArray();
@@ -6279,11 +6285,6 @@ internal static partial class Program
                 LoopCycleCount: 0,
                 EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
                 FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
-            "wave" => (
-                SmoothFrameCount: 40,
-                LoopCycleCount: 0,
-                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
-                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
             _ => (
                 SmoothFrameCount: null,
                 LoopCycleCount: 3,
@@ -6306,19 +6307,20 @@ internal static partial class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 7 && clips.All(clip =>
+        Assert(clips.Length == 6 && clips.All(clip =>
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "run", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(GetProperty<string>(clip, "ActionName"), "hide", StringComparison.OrdinalIgnoreCase)),
-            "运行时必须只保留七种原有点击动作，不得再出现 run 或旧 hide");
+                !string.Equals(GetProperty<string>(clip, "ActionName"), "hide", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(GetProperty<string>(clip, "ActionName"), "wave", StringComparison.OrdinalIgnoreCase)),
+            "运行时必须只保留六种点击动作，不得再出现 run、旧 hide 或点击 wave");
 
         var activities = GetField<Array>(window, "_automaticActivities")
             .Cast<object?>()
             .ToArray();
-        Assert(activities.Length == 8 && activities.Count(activity => activity is null) == 1,
-            "自动活动袋必须为 7 个角色动作加 1 个待机项");
+        Assert(activities.Length == 7 && activities.Count(activity => activity is null) == 1,
+            "自动活动袋必须为 6 个角色动作加 1 个待机项");
         Assert(activities.Where(activity => activity is not null)
                 .All(activity => clips.Any(clip => ReferenceEquals(clip, activity))),
-            "自动活动袋的非空项必须全部引用保留的 7 个点击动作");
+            "自动活动袋的非空项必须全部引用保留的 6 个点击动作");
 
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainWindowSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
@@ -7249,7 +7251,7 @@ internal static partial class Program
         AssertClose(
             StopwatchTicksToMilliseconds(effectiveReactionEndpointTicks),
             1500d,
-            "cute and wave endpoints must remain visible one second longer");
+            "the cute endpoint must remain visible one second longer");
         Assert(source.Contains("CompositionTarget.Rendering", StringComparison.Ordinal) &&
                source.Contains("Stopwatch.GetTimestamp", StringComparison.Ordinal),
             "动作、探头与淡化必须由 CompositionTarget.Rendering 和绝对 Stopwatch 时钟驱动");
@@ -7359,11 +7361,6 @@ internal static partial class Program
             clips.Single(clip =>
                 GetProperty<string>(clip, "ActionName") == "cute"),
             "reaction-cute");
-        AssertProductionDiscreteVsyncTimeline(
-            window,
-            clips.Single(clip =>
-                GetProperty<string>(clip, "ActionName") == "wave"),
-            "reaction-wave");
         AssertTodoTransitionTimelineContract(window, source);
     }
 
@@ -7415,7 +7412,13 @@ internal static partial class Program
             "Image");
         PrimeSpritePageForFrame(window, resumedSpriteFrame);
         Invoke(window, "ShowStableFrame", resumedSpriteFrame);
-        var thinkReactionClip = GetField<Array>(window, "_reactionClips").GetValue(6)!;
+        var thinkReactionClip = GetField<Array>(window, "_reactionClips")
+            .Cast<object>()
+            .Single(clip =>
+                string.Equals(
+                    GetProperty<string>(clip, "ActionName"),
+                    "think",
+                    StringComparison.Ordinal));
         var thinkReactionFrames = GetClipFrames(thinkReactionClip).Cast<object>().ToArray();
         var resumedReactionIndex = Array.FindIndex(
             thinkReactionFrames,
@@ -9681,7 +9684,7 @@ internal static partial class Program
                Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
                !todoWindow.IsVisible &&
                !GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption"),
-            "巡游中左键单击完成退场后必须稳定待机，不能追加七种点击动作或打开任务面板");
+            "巡游中左键单击完成退场后必须稳定待机，不能追加六种点击动作或打开任务面板");
 
         var secondSupportPoint = new Point(window.Left + 310, window.Top + 126);
         PrepareTravelState(
@@ -11136,7 +11139,7 @@ internal static partial class Program
     private static void AssertRandomActivityBag(MainWindow window)
     {
         var activityCount = GetField<Array>(window, "_automaticActivities").Length;
-        Assert(activityCount == 8, "自动活动袋应包含 7 个角色动作和 1 个待机动作");
+        Assert(activityCount == 7, "自动活动袋应包含 6 个角色动作和 1 个待机动作");
 
         var firstBag = DrainActivityBag(window, activityCount);
         var secondBag = DrainActivityBag(window, activityCount);
@@ -19804,217 +19807,542 @@ internal static partial class Program
 
     private static void AssertWorkModeDragContinuationContract(MainWindow window)
     {
-        PrepareWorkModeIdleState(window);
         var monitorType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.MonitorWorkArea",
             throwOnError: true)!;
         var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
-        var workArea = (Rect)InvokeStatic(
-            monitorType,
-            "GetForVisual",
-            window,
-            petSizeViewbox)!;
-        var visibleBounds = (Rect)Invoke(
-            window,
-            "GetPetViewboxBoundsInScreenDips")!;
-        var safeLeft = workArea.Left + Math.Max(
-            24,
-            (workArea.Width - visibleBounds.Width) / 2);
-        var safeTop = workArea.Top + Math.Max(
-            24,
-            (workArea.Height - visibleBounds.Height) / 2);
-        window.Left += safeLeft - visibleBounds.Left;
-        window.Top += safeTop - visibleBounds.Top;
-        window.UpdateLayout();
-
-        EnterWorkTypingForTest(window);
-        var loopClip = GetField<object>(window, "_workLoopClip");
-        var anchorTimestamp = Stopwatch.GetTimestamp();
-        const double anchorFramePosition = 17.25;
+        const double anchorFramePosition = 45.25;
         const double playbackRate = 1;
-        SetField(window, "_activeClip", loopClip);
-        SetField(window, "_activeFrameIndex", 17);
-        SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
-        SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
-        SetField(window, "_workLoopPlaybackRate", playbackRate);
-        SetField(window, "_workFastUntilTimestamp", 0L);
-        var clickClipBefore = GetRawField(window, "_activeClip");
-        var clickFrameBefore = GetField<int>(window, "_activeFrameIndex");
-        Invoke(window, "HandleWorkPetClick", 1);
-        Assert(ReferenceEquals(GetRawField(window, "_activeClip"), clickClipBefore) &&
-               GetField<int>(window, "_activeFrameIndex") == clickFrameBefore &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") == anchorTimestamp &&
-               Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
-                        anchorFramePosition) <= 0.000001 &&
-               Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
-                        playbackRate) <= 0.000001,
-            "Work-drag setup single click must be a strict visual no-op.");
-
-        var petHost = GetField<Grid>(window, "PetHost");
-        var grabPosition = petHost.TranslatePoint(
-            new Point(petHost.ActualWidth / 2, petHost.ActualHeight / 2),
-            window);
-        var grabScreenPosition = window.PointToScreen(grabPosition);
-        var movedScreenPosition = grabScreenPosition + new Vector(36, 22);
-        var movedPosition = window.PointFromScreen(movedScreenPosition);
-        SetField(window, "_pointerDownPosition", grabPosition);
-        SetField(window, "_pointerDownScreenPosition", grabScreenPosition);
-        SetField(window, "_latestDragScreenPosition", grabScreenPosition);
-        SetField(window, "_pointerDown", true);
-        SetField(window, "_dragStarted", false);
-        SetField(window, "_dragInteractionActive", true);
-        SetField(window, "_workPointerClickCount", 1);
-        Invoke(
-            window,
-            "BeginDirectPetDrag",
-            movedPosition,
-            movedScreenPosition);
-
-        Assert(GetField<bool>(window, "_dragStarted") &&
-               GetField<bool>(window, "_dragInteractionActive") &&
-               GetField<bool>(window, "_dragPreservesWorkMode") &&
-               !GetField<bool>(window, "_pointerDown") &&
-               GetField<int>(window, "_workPointerClickCount") == 0 &&
-               string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Typing",
-                   StringComparison.Ordinal) &&
-               ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   anchorTimestamp &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopAnchorFramePosition") -
-                   anchorFramePosition) <= 0.000001 &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopPlaybackRate") -
-                   playbackRate) <= 0.000001,
-            "Beginning a real work drag must clear click classification while " +
-            "preserving Typing, the active loop, and every absolute-clock anchor.");
-
-        visibleBounds = (Rect)Invoke(
-            window,
-            "GetPetViewboxBoundsInScreenDips")!;
-        var contactBounds = (Rect)Invoke(
-            window,
-            "GetPetContactBounds",
-            visibleBounds)!;
         const double preSnapGap = 6;
-        window.Left += workArea.Left + preSnapGap - contactBounds.Left;
-        window.UpdateLayout();
-        contactBounds = (Rect)Invoke(
-            window,
-            "GetPetContactBounds",
-            (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!)!;
-        Assert(Math.Abs(contactBounds.Left - workArea.Left - preSnapGap) <= 1.01,
-            "Work-drag release setup must place the visible pet inside the left snap threshold.");
 
-        var releaseTimestamp = Stopwatch.GetTimestamp();
-        // Work dragging must use the same external multi-monitor edge detector
-        // as idle dragging while keeping the live work clip intact.
-        Invoke(window, "CompleteDirectPetDrag", true);
-        var expectedReleasePhase = anchorFramePosition +
-            Math.Max(0, releaseTimestamp - anchorTimestamp) /
-            (double)Stopwatch.Frequency * 60 * playbackRate;
-        var actualReleasePhase = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            releaseTimestamp)!;
-        Assert(!GetField<bool>(window, "_dragStarted") &&
-               !GetField<bool>(window, "_dragInteractionActive") &&
-               !GetField<bool>(window, "_dragPreservesWorkMode") &&
-               string.Equals(
-                   GetRawField(window, "_edgeDock")?.ToString(),
-                   "None",
-                   StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRawField(window, "_workEdgeDock")?.ToString(),
-                   "Left",
-                   StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Typing",
-                   StringComparison.Ordinal) &&
-               ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-               GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                   anchorTimestamp &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopAnchorFramePosition") -
-                   anchorFramePosition) <= 0.000001 &&
-               Math.Abs(
-                   GetField<double>(window, "_workLoopPlaybackRate") -
-                   playbackRate) <= 0.000001 &&
-               Math.Abs(actualReleasePhase - expectedReleasePhase) <= 0.000001 &&
-               !GetField<bool>(window, "_workSeriousEnterRequested") &&
-               !GetField<bool>(window, "_workExitRequested"),
-            "Releasing a working pet on the left screen edge must snap without " +
-            "entering EdgePeek, keep the same absolute typing phase, and never " +
-            "count as a click.");
+        (object LoopClip, long AnchorTimestamp, Rect WorkArea) BeginWorkDrag()
+        {
+            PrepareWorkModeIdleState(window);
+            var workArea = (Rect)InvokeStatic(
+                monitorType,
+                "GetForVisual",
+                window,
+                petSizeViewbox)!;
+            var visibleBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            var safeLeft = workArea.Left + Math.Max(
+                24,
+                (workArea.Width - visibleBounds.Width) / 2);
+            var safeTop = workArea.Top + Math.Max(
+                24,
+                (workArea.Height - visibleBounds.Height) / 2);
+            window.Left += safeLeft - visibleBounds.Left;
+            window.Top += safeTop - visibleBounds.Top;
+            window.UpdateLayout();
 
-        visibleBounds = (Rect)Invoke(
-            window,
-            "GetPetViewboxBoundsInScreenDips")!;
-        Assert(Math.Abs(visibleBounds.Left - workArea.Left) <= 1.01,
-            "A working pet released inside the left threshold must use the same " +
-            "pixel-aligned window snap as ordinary edge docking.");
-        AssertWorkButtonContract(
-            window,
-            phase: "left-snapped work",
-            expectedState: "Typing",
-            expectedContent: "去睡觉",
-            expectedOpacity: 1,
-            expectedIsEnabled: true,
-            expectedIsHitTestVisible: true);
+            EnterWorkTypingForTest(window);
+            var loopClip = GetField<object>(window, "_workLoopClip");
+            var anchorTimestamp = Stopwatch.GetTimestamp();
+            SetField(window, "_activeClip", loopClip);
+            SetField(window, "_activeFrameIndex", (int)Math.Floor(anchorFramePosition));
+            SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
+            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
+            SetField(window, "_workLoopPlaybackRate", playbackRate);
+            SetField(window, "_workFastUntilTimestamp", 0L);
+            var clickClipBefore = GetRawField(window, "_activeClip");
+            var clickFrameBefore = GetField<int>(window, "_activeFrameIndex");
+            Invoke(window, "HandleWorkPetClick", 1);
+            Assert(ReferenceEquals(GetRawField(window, "_activeClip"), clickClipBefore) &&
+                   GetField<int>(window, "_activeFrameIndex") == clickFrameBefore &&
+                   GetField<long>(window, "_workLoopAnchorTimestamp") == anchorTimestamp &&
+                   Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
+                            anchorFramePosition) <= 0.000001 &&
+                   Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
+                            playbackRate) <= 0.000001,
+                "Work-drag setup single click must be a strict visual no-op.");
 
-        var continuationTimestamp = checked(
-            releaseTimestamp + Stopwatch.Frequency / 20);
-        var continuationPhase = (double)Invoke(
-            window,
-            "GetWorkLoopFramePositionAt",
-            continuationTimestamp)!;
-        Invoke(window, "AdvanceWorkLoop", continuationTimestamp);
-        var expectedFrameIndex = (int)Math.Floor(continuationPhase) % 96;
-        Assert(continuationPhase > actualReleasePhase &&
-               GetField<int>(window, "_activeFrameIndex") == expectedFrameIndex &&
-               ReferenceEquals(GetRawField(window, "_activeClip"), loopClip),
-            "After work-drag release, the absolute loop must keep advancing from " +
-            "its original phase instead of restarting or pausing.");
+            var petHost = GetField<Grid>(window, "PetHost");
+            var grabPosition = petHost.TranslatePoint(
+                new Point(petHost.ActualWidth / 2, petHost.ActualHeight / 2),
+                window);
+            var grabScreenPosition = window.PointToScreen(grabPosition);
+            var movedScreenPosition = grabScreenPosition + new Vector(36, 22);
+            var movedPosition = window.PointFromScreen(movedScreenPosition);
+            SetField(window, "_pointerDownPosition", grabPosition);
+            SetField(window, "_pointerDownScreenPosition", grabScreenPosition);
+            SetField(window, "_latestDragScreenPosition", grabScreenPosition);
+            SetField(window, "_pointerDown", true);
+            SetField(window, "_dragStarted", false);
+            SetField(window, "_dragInteractionActive", true);
+            SetField(window, "_workPointerClickCount", 1);
+            Invoke(
+                window,
+                "BeginDirectPetDrag",
+                movedPosition,
+                movedScreenPosition);
 
-        var edgeLeftFrames = GetField<Array>(window, "_edgeLeftFrames");
-        PrimeSpritePageForFrame(
-            window,
-            edgeLeftFrames.GetValue(edgeLeftFrames.Length - 1)!);
-        Invoke(window, "StartWorkExitClip");
-        var exitClip = GetField<object>(window, "_workExitClip");
-        Invoke(window, "CompleteActiveClipAt", exitClip, continuationTimestamp);
-        Assert(string.Equals(
-                   GetRawField(window, "_workState")?.ToString(),
-                   "Idle",
-                   StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRawField(window, "_workEdgeDock")?.ToString(),
-                   "None",
-                   StringComparison.Ordinal) &&
-               string.Equals(
-                   GetRawField(window, "_edgeDock")?.ToString(),
-                   "Left",
-                   StringComparison.Ordinal),
-            "Clicking 去睡觉 after a work snap must hand the same edge to the " +
-            "ordinary idle peek state only after the authored work exit finishes.");
-        AssertWorkButtonContract(
-            window,
-            phase: "idle after left-snapped work exit",
-            expectedState: "Idle",
-            expectedContent: "去打工",
-            expectedOpacity: 0,
-            expectedIsEnabled: false,
-            expectedIsHitTestVisible: false);
+            Assert(GetField<bool>(window, "_dragStarted") &&
+                   GetField<bool>(window, "_dragInteractionActive") &&
+                   GetField<bool>(window, "_dragPreservesWorkMode") &&
+                   !GetField<bool>(window, "_pointerDown") &&
+                   GetField<int>(window, "_workPointerClickCount") == 0 &&
+                   string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Typing",
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
+                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                       anchorTimestamp &&
+                   Math.Abs(
+                       GetField<double>(window, "_workLoopAnchorFramePosition") -
+                       anchorFramePosition) <= 0.000001 &&
+                   Math.Abs(
+                       GetField<double>(window, "_workLoopPlaybackRate") -
+                       playbackRate) <= 0.000001,
+                "Beginning a real work drag must clear click classification while " +
+                "preserving Typing, the active loop, and every absolute-clock anchor.");
+            return (loopClip, anchorTimestamp, workArea);
+        }
 
-        visibleBounds = (Rect)Invoke(
-            window,
-            "GetPetViewboxBoundsInScreenDips")!;
-        window.Left += safeLeft - visibleBounds.Left;
-        window.Top += safeTop - visibleBounds.Top;
-        window.UpdateLayout();
+        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
+        {
+            var setup = BeginWorkDrag();
+            var visibleBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            var contactBounds = (Rect)Invoke(
+                window,
+                "GetPetContactBounds",
+                visibleBounds)!;
+            switch (edgeName)
+            {
+                case "Left":
+                    window.Left += setup.WorkArea.Left + preSnapGap - contactBounds.Left;
+                    break;
+                case "Right":
+                    window.Left += setup.WorkArea.Right - preSnapGap - contactBounds.Right;
+                    break;
+                case "Bottom":
+                    window.Top += setup.WorkArea.Bottom - preSnapGap - contactBounds.Bottom;
+                    break;
+            }
+            window.UpdateLayout();
+
+            contactBounds = (Rect)Invoke(
+                window,
+                "GetPetContactBounds",
+                (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!)!;
+            var actualPreSnapGap = edgeName switch
+            {
+                "Left" => contactBounds.Left - setup.WorkArea.Left,
+                "Right" => setup.WorkArea.Right - contactBounds.Right,
+                "Bottom" => setup.WorkArea.Bottom - contactBounds.Bottom,
+                _ => double.NaN
+            };
+            Assert(Math.Abs(actualPreSnapGap - preSnapGap) <= 1.01,
+                $"{edgeName} work-drag setup must release inside the snap threshold.");
+
+            // Re-anchor immediately before release so the automatic exit request
+            // deterministically waits for the next authored neutral seam.
+            var anchorTimestamp = Stopwatch.GetTimestamp();
+            SetField(window, "_activeClip", setup.LoopClip);
+            SetField(window, "_activeFrameIndex", (int)Math.Floor(anchorFramePosition));
+            SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
+            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
+            SetField(window, "_workLoopPlaybackRate", playbackRate);
+            var releaseTimestamp = Stopwatch.GetTimestamp();
+            Invoke(window, "CompleteDirectPetDrag", true);
+            var expectedReleasePhase = anchorFramePosition +
+                Math.Max(0, releaseTimestamp - anchorTimestamp) /
+                (double)Stopwatch.Frequency * 60 * playbackRate;
+            var actualReleasePhase = (double)Invoke(
+                window,
+                "GetWorkLoopFramePositionAt",
+                releaseTimestamp)!;
+            Assert(!GetField<bool>(window, "_dragStarted") &&
+                   !GetField<bool>(window, "_dragInteractionActive") &&
+                   !GetField<bool>(window, "_dragPreservesWorkMode") &&
+                   string.Equals(
+                       GetRawField(window, "_edgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_workEdgeDock")?.ToString(),
+                       edgeName,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Typing",
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(GetRawField(window, "_activeClip"), setup.LoopClip) &&
+                   GetField<bool>(window, "_workExitRequested") &&
+                   GetField<double>(window, "_workExitTargetFramePosition") >
+                       actualReleasePhase &&
+                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                       anchorTimestamp &&
+                   Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
+                            anchorFramePosition) <= 0.000001 &&
+                   Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
+                            playbackRate) <= 0.000001 &&
+                   Math.Abs(actualReleasePhase - expectedReleasePhase) <= 0.000001 &&
+                   !GetField<bool>(window, "_workSeriousEnterRequested"),
+                $"Releasing work at {edgeName} must preserve the live typing clock, " +
+                "record that edge, and automatically request the authored exit.");
+
+            visibleBounds = (Rect)Invoke(
+                window,
+                "GetPetViewboxBoundsInScreenDips")!;
+            var snappedGap = edgeName switch
+            {
+                "Left" => visibleBounds.Left - setup.WorkArea.Left,
+                "Right" => setup.WorkArea.Right - visibleBounds.Right,
+                "Bottom" => setup.WorkArea.Bottom - visibleBounds.Bottom,
+                _ => double.NaN
+            };
+            Assert(Math.Abs(snappedGap) <= 1.01,
+                $"{edgeName} working dock must pixel-align the pet viewbox to the edge.");
+            AssertWorkButtonContract(
+                window,
+                phase: $"{edgeName} work exit requested after drag",
+                expectedState: "Typing",
+                expectedContent: "去睡觉",
+                expectedOpacity: 1,
+                expectedIsEnabled: false,
+                expectedIsHitTestVisible: false);
+
+            var exitTarget = GetField<double>(
+                window,
+                "_workExitTargetFramePosition");
+            var exitSeamTimestamp = checked(
+                anchorTimestamp +
+                (long)Math.Ceiling(
+                    (exitTarget - anchorFramePosition) /
+                    (60 * playbackRate) * Stopwatch.Frequency) +
+                2);
+            Invoke(window, "AdvanceWorkLoop", exitSeamTimestamp);
+            var exitClip = GetField<object>(window, "_workExitClip");
+            Assert(string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Exiting",
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(GetRawField(window, "_activeClip"), exitClip) &&
+                   string.Equals(
+                       GetRawField(window, "_workEdgeDock")?.ToString(),
+                       edgeName,
+                       StringComparison.Ordinal),
+                $"{edgeName} automatic work exit must start at the selected neutral seam.");
+
+            var edgeFrames = edgeName is "Left" or "Right"
+                ? GetField<Array>(window, "_edgeLeftFrames")
+                : GetField<Array>(window, "_edgeBottomFrames");
+            var edgeRestFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
+            PrimeSpritePageForFrame(window, edgeRestFrame);
+            Invoke(
+                window,
+                "CompleteActiveClipAt",
+                exitClip,
+                checked(exitSeamTimestamp + Stopwatch.Frequency / 2));
+            Assert(string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Idle",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_workEdgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_edgeDock")?.ToString(),
+                       edgeName,
+                       StringComparison.Ordinal) &&
+                   GetField<int>(window, "_edgePeekFrameIndex") ==
+                       edgeFrames.Length - 1 &&
+                   GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") > 0,
+                $"Completing work exit at {edgeName} must enter the real EdgePeek " +
+                "state at its authored rest pose.");
+            AssertWorkButtonContract(
+                window,
+                phase: $"idle EdgePeek after {edgeName} work exit",
+                expectedState: "Idle",
+                expectedContent: "去打工",
+                expectedOpacity: 0,
+                expectedIsEnabled: false,
+                expectedIsHitTestVisible: false);
+        }
+
+        foreach (var releaseKind in new[] { "Top", "Center" })
+        {
+            var setup = BeginWorkDrag();
+            if (releaseKind == "Top")
+            {
+                var visibleBounds = (Rect)Invoke(
+                    window,
+                    "GetPetViewboxBoundsInScreenDips")!;
+                var contactBounds = (Rect)Invoke(
+                    window,
+                    "GetPetContactBounds",
+                    visibleBounds)!;
+                window.Top += setup.WorkArea.Top + preSnapGap - contactBounds.Top;
+                window.UpdateLayout();
+            }
+
+            var anchorTimestamp = Stopwatch.GetTimestamp();
+            SetField(window, "_activeClip", setup.LoopClip);
+            SetField(window, "_activeFrameIndex", (int)Math.Floor(anchorFramePosition));
+            SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
+            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
+            SetField(window, "_workLoopPlaybackRate", playbackRate);
+            Invoke(window, "CompleteDirectPetDrag", true);
+            Assert(string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Typing",
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(GetRawField(window, "_activeClip"), setup.LoopClip) &&
+                   string.Equals(
+                       GetRawField(window, "_workEdgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_edgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   !GetField<bool>(window, "_workExitRequested") &&
+                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                       anchorTimestamp &&
+                   Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
+                            anchorFramePosition) <= 0.000001 &&
+                   Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
+                            playbackRate) <= 0.000001,
+                $"Releasing work at {releaseKind} must keep Typing unchanged; " +
+                "only Left, Right, and Bottom are supported work docks.");
+            AssertWorkButtonContract(
+                window,
+                phase: $"{releaseKind} work drag release",
+                expectedState: "Typing",
+                expectedContent: "去睡觉",
+                expectedOpacity: 1,
+                expectedIsEnabled: true,
+                expectedIsHitTestVisible: true);
+        }
+
+        PrepareWorkModeIdleState(window);
+    }
+
+    private static void AssertWorkEdgeColdHandoffContract(MainWindow window)
+    {
+        (
+            object ExitClip,
+            object FinalWorkFrame,
+            object IdleFrame,
+            Array EdgeFrames,
+            object EdgeRestFrame,
+            string EdgeRestPageName,
+            int FinalFrameIndex) ArrangeColdWorkExit(string edgeName)
+        {
+            PrepareWorkModeIdleState(window);
+            var exitClip = GetField<object>(window, "_workExitClip");
+            var exitFrames = GetClipFrames(exitClip);
+            var finalFrameIndex = exitFrames.Length - 1;
+            var finalWorkFrame = GetProperty<object>(
+                exitFrames.GetValue(finalFrameIndex)!,
+                "Image");
+            var idleFrame = GetField<object>(window, "_idleFrame");
+
+            // Only the work-exit frame is prepared synchronously. The target
+            // edge page must remain genuinely cold throughout arrangement.
+            PrimeSpritePageForFrame(window, finalWorkFrame);
+            SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
+            Invoke(window, "ShowStableFrame", finalWorkFrame);
+            var edgeFrames = edgeName is "Left" or "Right"
+                ? GetField<Array>(window, "_edgeLeftFrames")
+                : GetField<Array>(window, "_edgeBottomFrames");
+            var edgeRestFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
+            var edgeRestPageName = GetSpriteFrameInfo(edgeRestFrame).PageName;
+            EvictResidentSpritePageForTest(window, edgeRestPageName);
+
+            SetField(window, "_workState", GetNestedEnum("WorkState", "Exiting"));
+            SetField(window, "_activeClip", exitClip);
+            SetField(window, "_activeFrameIndex", finalFrameIndex);
+            SetField(window, "_activeClipStartedTimestamp", Stopwatch.GetTimestamp());
+            SetField(window, "_activeFrameDeadlineTimestamp", long.MaxValue);
+            SetField(window, "_workExitRequested", false);
+            SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+            SetField(window, "_workEdgeDock", GetNestedEnum("EdgeDock", edgeName));
+            SetField(window, "_failedSpritePageName", null);
+            SetField(window, "_pendingSpriteFrame", null);
+            SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+            SetField(window, "_desiredSpritePageName", null);
+            SetField(window, "_desiredSpritePageUrgent", false);
+            SetField(window, "_renderDeferredSpritePageName", null);
+            SetField(window, "_renderDeferredSpritePageUrgent", false);
+            Invoke(window, "ClearDeferredActiveClipClock");
+            Invoke(window, "RefreshWorkModeButton");
+
+            Assert(!GetField<IDictionary>(window, "_residentSpritePages")
+                       .Contains(edgeRestPageName) &&
+                   !string.Equals(
+                       GetRawField(window, "_loadedSpritePageName") as string,
+                       edgeRestPageName,
+                       StringComparison.Ordinal) &&
+                   Equals(GetRawField(window, "_currentSpriteFrame"), finalWorkFrame) &&
+                   !Equals(finalWorkFrame, idleFrame),
+                $"{edgeName} cold handoff setup must keep the target edge page " +
+                "non-resident while displaying the distinct final work descriptor.");
+            return (
+                exitClip,
+                finalWorkFrame,
+                idleFrame,
+                edgeFrames,
+                edgeRestFrame,
+                edgeRestPageName,
+                finalFrameIndex);
+        }
+
+        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
+        {
+            var setup = ArrangeColdWorkExit(edgeName);
+            Assert((bool)Invoke(
+                       window,
+                       "IsSpritePageProtected",
+                       setup.EdgeRestPageName,
+                       null)!,
+                $"{edgeName} pending work-edge rest page must be cache-protected.");
+
+            // Model the real Rendering path without allowing a background task
+            // to win the race before the cold-state assertions run.
+            SetField(window, "_isInsideVisualRenderingCallback", true);
+            try
+            {
+                Invoke(
+                    window,
+                    "PrefetchNextClipPage",
+                    setup.ExitClip,
+                    setup.FinalFrameIndex);
+                Assert(string.Equals(
+                           GetRawField(window, "_renderDeferredSpritePageName") as string,
+                           setup.EdgeRestPageName,
+                           StringComparison.Ordinal) &&
+                       GetField<bool>(window, "_renderDeferredSpritePageUrgent"),
+                    $"{edgeName} work-exit tail must request its cold rest page urgently.");
+
+                Invoke(
+                    window,
+                    "CompleteActiveClipAt",
+                    setup.ExitClip,
+                    Stopwatch.GetTimestamp());
+                Assert(string.Equals(
+                           GetRawField(window, "_workState")?.ToString(),
+                           "Exiting",
+                           StringComparison.Ordinal) &&
+                       ReferenceEquals(
+                           GetRawField(window, "_activeClip"),
+                           setup.ExitClip) &&
+                       string.Equals(
+                           GetRawField(window, "_workEdgeDock")?.ToString(),
+                           edgeName,
+                           StringComparison.Ordinal) &&
+                       string.Equals(
+                           GetRawField(window, "_edgeDock")?.ToString(),
+                           "None",
+                           StringComparison.Ordinal) &&
+                       Equals(
+                           GetRawField(window, "_currentSpriteFrame"),
+                           setup.FinalWorkFrame) &&
+                       !Equals(
+                           GetRawField(window, "_currentSpriteFrame"),
+                           setup.IdleFrame),
+                    $"{edgeName} cold completion must hold Exiting on the final " +
+                    "work descriptor instead of publishing idle.");
+            }
+            finally
+            {
+                SetField(window, "_isInsideVisualRenderingCallback", false);
+            }
+
+            Invoke(
+                window,
+                "SpritePagePrefetchDispatchTimer_Tick",
+                null,
+                EventArgs.Empty);
+            WaitForSpritePagePrefetchToSettleWithoutRendering(window);
+            Assert(GetField<IDictionary>(window, "_residentSpritePages")
+                       .Contains(setup.EdgeRestPageName) &&
+                   (bool)Invoke(
+                       window,
+                       "IsSpritePageProtected",
+                       setup.EdgeRestPageName,
+                       null)!,
+                $"{edgeName} requested rest page must load and remain protected " +
+                "before the work handoff completes.");
+
+            Invoke(
+                window,
+                "CompleteActiveClipAt",
+                setup.ExitClip,
+                Stopwatch.GetTimestamp());
+            Assert(string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Idle",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_workEdgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_edgeDock")?.ToString(),
+                       edgeName,
+                       StringComparison.Ordinal) &&
+                   GetField<int>(window, "_edgePeekFrameIndex") ==
+                       setup.EdgeFrames.Length - 1 &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       setup.EdgeRestFrame) &&
+                   GetRawField(window, "_pendingSpriteFrame") is null,
+                $"{edgeName} next completion after the rest page is resident " +
+                "must enter the real EdgePeek pose atomically.");
+        }
+
+        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
+        {
+            var setup = ArrangeColdWorkExit(edgeName);
+            SetField(window, "_failedSpritePageName", setup.EdgeRestPageName);
+            var handled = (bool)Invoke(
+                window,
+                "StopAnimatedStateForFailedSpritePage",
+                setup.EdgeRestPageName)!;
+            Assert(handled &&
+                   string.Equals(
+                       GetRawField(window, "_workEdgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Exiting",
+                       StringComparison.Ordinal) &&
+                   ReferenceEquals(
+                       GetRawField(window, "_activeClip"),
+                       setup.ExitClip) &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       setup.FinalWorkFrame),
+                $"{edgeName} rest-page failure must clear only the pending dock, " +
+                "without aborting or replacing the final work pose.");
+
+            Invoke(
+                window,
+                "CompleteActiveClipAt",
+                setup.ExitClip,
+                Stopwatch.GetTimestamp());
+            Assert(string.Equals(
+                       GetRawField(window, "_workState")?.ToString(),
+                       "Idle",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       GetRawField(window, "_edgeDock")?.ToString(),
+                       "None",
+                       StringComparison.Ordinal) &&
+                   GetRawField(window, "_activeClip") is null &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       setup.IdleFrame),
+                $"{edgeName} failed rest page must still allow a safe idle finish.");
+        }
+
         PrepareWorkModeIdleState(window);
     }
 

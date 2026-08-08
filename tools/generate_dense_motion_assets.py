@@ -45,7 +45,7 @@ MAX_DPI_SCALE = 1.5
 BBOX_SCALE_STEP_LIMIT = 0.025
 BASELINE_STEP_MAX_PHYSICAL_PX_LIMIT = 1.0
 BRIM_STEP_DIP_LIMIT = 2.0
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
 EDGE_DIRECTIONS = ("left", "top", "bottom")
 EDGE_PEEK_FRAME_COUNT = 48
 EDGE_PEEK_PHASE_FRAME_COUNT = EDGE_PEEK_FRAME_COUNT // 4
@@ -68,17 +68,6 @@ NEUTRAL_SPECS = {
         3,
         (("action-v11-like-03-04-neutral-alpha.png", "single", 0.5),),
     ),
-    # The sheet is drawn left-to-right as cell1/cell2/cell3, while the live
-    # arm-side switch runs in the opposite direction.  Use all three curated
-    # poses in the verified path frame12 -> cell3 -> cell2 -> cell1 -> frame13.
-    "wave": (
-        12,
-        (
-            ("action-v11-wave-side-switch-3-sheet-alpha.png", "cell-3", 0.25),
-            ("action-v11-wave-side-switch-3-sheet-alpha.png", "cell-2", 0.50),
-            ("action-v11-wave-side-switch-3-sheet-alpha.png", "cell-1", 0.75),
-        ),
-    ),
 }
 # First hard-QA pass mapped absolute contour jumps back to their authored key
 # edge.  These are targeted refinements only; expressive extrema elsewhere are
@@ -90,17 +79,6 @@ SUBSTEP_OVERRIDES: dict[str, dict[int, int]] = {
     "cute": {2: 4, 3: 8, 4: 8, 6: 4, 7: 8, 8: 8},
     "like": {0: 4, 5: 8, 6: 4, 8: 4, 9: 4},
     "eat": {0: 4, 1: 4, 7: 4, 10: 4},
-    "wave": {
-        0: 4,
-        1: 4,
-        2: 4,
-        3: 4,
-        4: 8,
-        11: 8,
-        12: 8,
-        14: 8,
-        15: 8,
-    },
 }
 BASELINE_STABILIZE_EDGES: dict[str, frozenset[int]] = {
     # RIFE's original half sample on wake15->16 lands the feet three final
@@ -2042,7 +2020,6 @@ def main() -> None:
     )
     parser.add_argument("--actions", action="store_true", help="Generate action smooth sets")
     parser.add_argument("--cute", action="store_true", help="Regenerate only cute smooth")
-    parser.add_argument("--wave", action="store_true", help="Regenerate only wave smooth")
     parser.add_argument(
         "--adaptive-actions",
         action="store_true",
@@ -2083,7 +2060,6 @@ def main() -> None:
         and not args.adaptive_wake
         and not args.actions
         and not args.cute
-        and not args.wave
         and not args.adaptive_actions
         and not args.loops
         and not args.edge_peek
@@ -2091,7 +2067,7 @@ def main() -> None:
         and not args.clean_existing
     ):
         parser.error(
-            "select --wake, --adaptive-wake, --actions, --cute, --wave, "
+            "select --wake, --adaptive-wake, --actions, --cute, "
             "--adaptive-actions, --loops, --edge-peek, --reminder, and/or "
             "--clean-existing"
         )
@@ -2135,20 +2111,6 @@ def main() -> None:
             require_all_unique=False,
         )
         print(f"QA: {WORK_ROOT / 'qa-action-cute.json'}", flush=True)
-    if args.wave:
-        wave_outputs = build_actions(("wave",))["wave"]
-        basic_qa(
-            wave_outputs,
-            WORK_ROOT / "qa-action-wave.json",
-            require_all_unique=False,
-        )
-        wave_outputs = build_adaptive_actions(("wave",))["wave"]
-        basic_qa(
-            wave_outputs,
-            WORK_ROOT / "qa-action-wave.json",
-            require_all_unique=False,
-        )
-        print(f"QA: {WORK_ROOT / 'qa-action-wave.json'}", flush=True)
     if args.adaptive_actions:
         adaptive_outputs = build_adaptive_actions()
         for action, outputs in adaptive_outputs.items():
@@ -2157,7 +2119,7 @@ def main() -> None:
                 WORK_ROOT / f"qa-action-{action}.json",
                 require_all_unique=False,
             )
-        print(f"QA: {WORK_ROOT / 'qa-action-{cry,cute,wave}.json'}", flush=True)
+        print(f"QA: {WORK_ROOT / 'qa-action-*.json'}", flush=True)
     if args.loops:
         loop_outputs = build_loops()
         for action, outputs in loop_outputs.items():
@@ -2195,7 +2157,6 @@ def main() -> None:
         or args.adaptive_wake
         or args.actions
         or args.cute
-        or args.wave
         or args.adaptive_actions
         or args.loops
         or args.edge_peek

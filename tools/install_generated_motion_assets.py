@@ -20,7 +20,7 @@ from split_sprite_sheet import (
 )
 
 
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
 RUNTIME_CANVAS_SIZE = (450, 550)
 V9_WAKE_CHARACTER_SOURCE_NAME = "wake-v9-character-24-sheet-alpha.png"
 V9_IDLE_PILLOW_SOURCE_NAME = "idle-pillow-v3-alpha.png"
@@ -41,7 +41,6 @@ V6_ACTION_SOURCE_NAMES = {
     "yawn": "yawn-v7-24-sheet-alpha.png",
     "cry": "cry-v7-24-sheet-alpha.png",
     "cute": "cute-v7-24-sheet-alpha.png",
-    "wave": "wave-v7-24-sheet-alpha.png",
 }
 V10_ACTION_ENTRY_SOURCE_NAMES = {
     "yawn": "action-v10-yawn-entry-rife-alpha.png",
@@ -49,7 +48,6 @@ V10_ACTION_ENTRY_SOURCE_NAMES = {
     "cute": "action-v10-cute-entry-rife-alpha.png",
     "like": "action-v10-like-entry-hybrid-alpha.png",
     "eat": "action-v10-eat-entry-hybrid-alpha.png",
-    "wave": "action-v10-wave-entry-rife-alpha.png",
     "think": "action-v10-think-entry-hybrid-alpha.png",
 }
 V10_ACTION_INTERNAL_SOURCE_NAMES = {
@@ -89,7 +87,6 @@ V6_ACTION_TARGET_BRIM_WIDTHS = {
     "cute": 180,
     "like": 181,
     "eat": 180,
-    "wave": 180,
     "think": 180,
 }
 V6_ACTION_HEAD_CENTER_X = RUNTIME_CANVAS_SIZE[0] // 2

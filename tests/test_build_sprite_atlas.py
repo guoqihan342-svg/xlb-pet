@@ -52,6 +52,98 @@ def make_complete_path_fixture(root: Path) -> None:
     touch_sequence(assets, "luban-work-serious-exit", 24)
 
 
+class ReactionWaveRemovalTests(unittest.TestCase):
+    def test_reaction_wave_is_not_a_click_action(self) -> None:
+        self.assertEqual(
+            ("yawn", "cry", "cute", "like", "eat", "think"),
+            atlas.ACTION_NAMES,
+        )
+        self.assertNotIn("wave", atlas.ACTION_NAMES)
+
+    def test_legacy_reaction_wave_assets_are_not_collected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            assets = root / "Assets"
+            touch_sequence(assets, "luban-wave-smooth", 98)
+            touch_sequence(
+                assets,
+                "luban-wave-loop",
+                atlas.ACTION_LOOP_FRAME_COUNT,
+            )
+
+            source_paths = atlas.resource_paths(root)
+            pages = atlas.page_resource_paths(root)
+
+            self.assertFalse(
+                any(path.startswith("Assets/luban-wave-") for path in source_paths)
+            )
+            self.assertFalse(
+                any(
+                    name == "action-wave"
+                    or name.startswith("action-wave-part-")
+                    or name == "loop-wave"
+                    for name in pages
+                )
+            )
+
+    def test_optional_roam_wave_contract_is_preserved(self) -> None:
+        self.assertIn("wave", atlas.OPTIONAL_ROAM_SEQUENCES)
+        self.assertIn("wave", atlas.ROAM_FLIGHT_SEQUENCES)
+        roam_generator_source = (
+            WORKSPACE / "tools" / "build_roam_flight_assets.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"--include-wave"', roam_generator_source)
+        self.assertIn("luban-roam-wave-001..064.png", roam_generator_source)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            touch_sequence(
+                root / "Assets",
+                "luban-roam-wave",
+                atlas.MIN_ROAM_FRAME_COUNT,
+            )
+
+            self.assertIn("wave", atlas.runtime_roam_sequences(root))
+            pages = atlas.page_resource_paths(root)
+            self.assertEqual(
+                [name for name in pages if name.startswith("roam-wave")],
+                ["roam-wave", "roam-wave-part-02"],
+            )
+
+    def test_reaction_wave_cli_and_generator_mappings_are_removed(self) -> None:
+        generator_source = (
+            WORKSPACE / "tools" / "generate_dense_motion_assets.py"
+        ).read_text(encoding="utf-8")
+        installer_source = (
+            WORKSPACE / "tools" / "install_generated_motion_assets.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("wave", generator_source.lower())
+        self.assertNotIn('"wave": "wave-v7-24-sheet-alpha.png"', installer_source)
+        self.assertNotIn('"wave": "action-v10-wave-entry-rife-alpha.png"', installer_source)
+        self.assertNotIn('"wave": 180', installer_source)
+        for tool_name in (
+            "install_generated_motion_assets.py",
+            "generate_dense_motion_assets.py",
+            "qa_dense_motion_assets.py",
+            "qa_sprite_atlas_motion.py",
+        ):
+            source = (WORKSPACE / "tools" / tool_name).read_text(encoding="utf-8")
+            action_declaration = next(
+                line for line in source.splitlines() if line.startswith("ACTIONS = ")
+            )
+            self.assertNotIn('"wave"', action_declaration, tool_name)
+
+    def test_repository_has_no_generated_reaction_wave_pngs(self) -> None:
+        assets = WORKSPACE / "Assets"
+        paths = sorted(
+            [*assets.glob("luban-wave*.png"), *assets.glob("luban-idle-to-wave*.png")]
+        )
+        self.assertEqual([], [path.name for path in paths])
+
+
 class WorkSequenceTests(unittest.TestCase):
     def test_work_generator_has_only_the_four_runtime_phases(self) -> None:
         generator_source = (

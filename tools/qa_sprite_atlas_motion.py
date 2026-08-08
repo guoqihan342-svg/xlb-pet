@@ -44,7 +44,7 @@ FRAME_DESCRIPTOR_KEYS = (
 )
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 ROAM_LOOP_SEQUENCES = ("flight", "wave")
 ROAM_NON_LOOP_SEQUENCES = ("boarding",)

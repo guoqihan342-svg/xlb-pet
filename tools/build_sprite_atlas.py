@@ -23,7 +23,7 @@ DISPLAY_HEIGHT = 509
 TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1540
 MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "wave", "think")
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "think")
 REMINDER_PHASES = ("enter", "hold")
 WORK_PHASES = (
     "enter",

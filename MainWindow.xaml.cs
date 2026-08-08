@@ -124,7 +124,6 @@ public partial class MainWindow : Window
     // eight-step interpolation around its one intentional crouch/recovery, and
     // reaches the complete raised-hands/open-smile pose at frame 56.
     private const int CuteCleanSmoothFrameCount = 56;
-    private const int WaveCleanSmoothFrameCount = 40;
     private const double PetSizeSpringAngularFrequency = 28;
     private const double MaximumPetSizeVelocity = 4;
     private static readonly TimeSpan MotionFrameInterval =
@@ -198,7 +197,7 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(5);
     private static readonly string[] ActionNames =
     [
-        "yawn", "cry", "cute", "like", "eat", "wave", "think"
+        "yawn", "cry", "cute", "like", "eat", "think"
     ];
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
@@ -593,7 +592,6 @@ public partial class MainWindow : Window
             CreateMotionClip("给你卖个萌 ♡", "cute"),
             CreateMotionClip("主人真棒！", "like"),
             CreateMotionClip("吃块饼干，补充能量！", "eat"),
-            CreateMotionClip("嗨～我在这里！", "wave"),
             CreateMotionClip("让我认真想一想……", "think")
         ];
         _todoExitClip = CreateTodoExitClip();
@@ -625,17 +623,7 @@ public partial class MainWindow : Window
             "work-exit",
             _workEnterFrames,
             reverse: true);
-        _automaticActivities =
-        [
-            _reactionClips[0],
-            null,
-            _reactionClips[1],
-            _reactionClips[2],
-            _reactionClips[3],
-            _reactionClips[4],
-            _reactionClips[5],
-            _reactionClips[6]
-        ];
+        _automaticActivities = [.. _reactionClips, null];
         if (!_spritePages.TryGetValue(_idleFrame.PageName, out var idlePage))
         {
             throw new InvalidOperationException(
@@ -988,11 +976,6 @@ public partial class MainWindow : Window
         {
             "cute" => new MotionClipProfile(
                 CuteCleanSmoothFrameCount,
-                LoopCycleCount: 0,
-                EndpointHoldDuration: StableReactionEndpointHoldDuration,
-                FrameInterval: MotionFrameInterval),
-            "wave" => new MotionClipProfile(
-                WaveCleanSmoothFrameCount,
                 LoopCycleCount: 0,
                 EndpointHoldDuration: StableReactionEndpointHoldDuration,
                 FrameInterval: MotionFrameInterval),
@@ -3967,13 +3950,14 @@ public partial class MainWindow : Window
 
         if (_dragPreservesWorkMode && _workState != WorkState.Idle)
         {
-            // Reuse the exact same multi-monitor edge detection and pixel-
-            // aligned position as idle docking, but do not enter EdgePeek:
-            // EnterEdgePeek owns a different sprite clock and would clear the
-            // live work clip. The work loop therefore stays on its original
-            // absolute phase while the window is snapped to the edge.
+            // Keep the authored work clip alive long enough to leave the desk
+            // without a one-frame cut. FinishWorkExit then hands this exact
+            // left/right/bottom edge to the ordinary docked peek state.
             _workEdgeDock = touchedEdge;
-            RefreshWorkModeButton();
+            RequestSpritePagePrefetch(
+                GetEdgeFrames(touchedEdge)[^1].PageName,
+                urgent: false);
+            RequestWorkExit();
             return;
         }
 
@@ -6536,6 +6520,20 @@ public partial class MainWindow : Window
                 RequestSpritePagePrefetch(continuationPageName, urgent: true);
             }
         }
+        else if (ReferenceEquals(clip, _workExitClip) &&
+                 _workEdgeDock != EdgeDock.None)
+        {
+            // The logical idle descriptor at the end of work-exit is pixel-
+            // identical to its final pose, but a cold edge page would leave
+            // that idle image visible while EdgePeek decodes. Warm the target
+            // rest pose during the authored exit so the handoff publishes both
+            // descriptors in one composition turn without an idle flash.
+            var edgeRestPageName = GetEdgeFrames(_workEdgeDock)[^1].PageName;
+            if (!IsSpritePageImmediatelyAvailable(edgeRestPageName))
+            {
+                RequestSpritePagePrefetch(edgeRestPageName, urgent: true);
+            }
+        }
     }
 
     private void CompleteActiveClip(AnimationClip clip)
@@ -6595,6 +6593,21 @@ public partial class MainWindow : Window
 
         if (ReferenceEquals(clip, _workExitClip))
         {
+            if (_workEdgeDock != EdgeDock.None)
+            {
+                var edgeRestPageName =
+                    GetEdgeFrames(_workEdgeDock)[^1].PageName;
+                if (!IsSpritePageImmediatelyAvailable(edgeRestPageName))
+                {
+                    // Hold the pixel-identical final work pose until the edge
+                    // rest page is resident. Publishing logical idle first
+                    // would otherwise expose the pillow for one cold-page
+                    // decode before EnterEdgePeek can show its target pose.
+                    RequestSpritePagePrefetch(edgeRestPageName, urgent: true);
+                    return;
+                }
+            }
+
             FinishWorkExit();
             return;
         }
@@ -8174,6 +8187,9 @@ public partial class MainWindow : Window
             (FrameSequenceUsesSpritePage(_roamBoardingFrames, pageName) ||
              FrameSequenceUsesSpritePage(_roamFlightFrames, pageName) ||
              FrameSequenceUsesSpritePage(_roamWaveFrames, pageName));
+        var failedPendingWorkEdge =
+            _workEdgeDock != EdgeDock.None &&
+            FrameSequenceUsesSpritePage(GetEdgeFrames(_workEdgeDock), pageName);
         if (_edgeDock != EdgeDock.None)
         {
             var edgeFrames = GetEdgeFrames(_edgeDock);
@@ -8185,9 +8201,19 @@ public partial class MainWindow : Window
                                     StringComparison.Ordinal);
         }
 
-        if (!failedCurrentEdge && !failedRoamingPage && !failedWorkPage)
+        if (!failedCurrentEdge && !failedRoamingPage && !failedWorkPage &&
+            !failedPendingWorkEdge)
         {
             return false;
+        }
+
+        if (failedPendingWorkEdge)
+        {
+            // The authored work exit can still finish safely. Drop only the
+            // requested edge handoff so a corrupt target page cannot leave the
+            // pet waiting forever on its final work pose.
+            _workEdgeDock = EdgeDock.None;
+            return true;
         }
 
         if (failedWorkPage)
@@ -8878,6 +8904,12 @@ public partial class MainWindow : Window
 
         if (_edgeDock != EdgeDock.None &&
             FrameSequenceUsesSpritePage(GetEdgeFrames(_edgeDock), pageName))
+        {
+            return true;
+        }
+
+        if (_workEdgeDock != EdgeDock.None &&
+            FrameSequenceUsesSpritePage(GetEdgeFrames(_workEdgeDock), pageName))
         {
             return true;
         }
