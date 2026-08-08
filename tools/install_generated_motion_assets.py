@@ -20,7 +20,9 @@ from split_sprite_sheet import (
 )
 
 
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+TODO_POSE_NAME = "think"
+SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
 RUNTIME_CANVAS_SIZE = (450, 550)
 V9_WAKE_CHARACTER_SOURCE_NAME = "wake-v9-character-24-sheet-alpha.png"
 V9_IDLE_PILLOW_SOURCE_NAME = "idle-pillow-v3-alpha.png"
@@ -36,7 +38,7 @@ REMINDER_BRIDGE_SOURCE_NAME = "reminder-megaphone-v2-8-bridge-sheet-alpha.png"
 SNORE_BUBBLE_CLEAN_REFERENCE_NAME = "luban-idle-no-snore-patch-source.png"
 SNORE_BUBBLE_PATCH_BOX = (143, 405, 179, 438)
 SNORE_REGISTRATION_BOX = (40, 210, 445, 490)
-V6_SCALE_REGISTERED_ACTIONS = ACTIONS
+V6_SCALE_REGISTERED_ACTIONS = SMOOTH_ACTION_NAMES
 V6_ACTION_SOURCE_NAMES = {
     "yawn": "yawn-v7-24-sheet-alpha.png",
     "cry": "cry-v7-24-sheet-alpha.png",
@@ -558,7 +560,7 @@ def resize_runtime_paths(paths: list[Path]) -> None:
 
 def resize_runtime_frames(assets_directory: Path) -> None:
     prefixes = ["luban-wake"]
-    prefixes.extend(f"luban-{action}-frame" for action in ACTIONS)
+    prefixes.extend(f"luban-{action}-frame" for action in SMOOTH_ACTION_NAMES)
     prefixes.extend((
         "luban-edge-left",
         "luban-edge-top",
@@ -596,7 +598,7 @@ def reanchor_edge_frames(assets_directory: Path, prefix: str, anchor: str) -> No
 
 
 def install(source_directory: Path, assets_directory: Path) -> None:
-    """Install legacy wake, seven action, and edge-peek sheets."""
+    """Install legacy wake, six smooth-pose, and edge-peek sheets."""
 
     loaded: list[tuple[list[Image.Image], int, Path, str]] = []
     wake_source = source_directory / "wake-12-sheet-alpha.png"
@@ -605,7 +607,7 @@ def install(source_directory: Path, assets_directory: Path) -> None:
         raise ValueError("Wake sheet must contain exactly 12 cells")
     loaded.append((wake_cells, wake_cell_width, assets_directory, "luban-wake"))
 
-    for action in ACTIONS:
+    for action in SMOOTH_ACTION_NAMES:
         source = source_directory / f"{action}-24-sheet-alpha.png"
         cells, cell_width = load_cells(source, columns=6, rows=4)
         if len(cells) != 24:
@@ -717,7 +719,7 @@ def place_wake_character(
     y = round(brim_center_y - current_brim_center_y)
 
     # The generated standing keys keep the requested cap size but have a
-    # slightly longer lower body than the seven action sheets. Compress only
+    # slightly longer lower body than the six smooth-pose sheets. Compress only
     # the torso/leg tail when needed; the cap, face, and ear pieces remain
     # byte-for-byte at the common 180 px cap scale.
     overflow = y + sprite.height - V6_RUNTIME_BOTTOM
@@ -1019,7 +1021,7 @@ def install_edge_peek(source_directory: Path, assets_directory: Path) -> None:
 
 
 def install_v6_motion(source_directory: Path, assets_directory: Path) -> None:
-    """Install the current wake, seven actions, and manual edge-peek assets."""
+    """Install the current wake, six smooth poses, and manual edge-peek assets."""
 
     assets_directory.mkdir(parents=True, exist_ok=True)
     install_v6_wake(source_directory, assets_directory)
@@ -1065,7 +1067,7 @@ def install_reminder(source_directory: Path, assets_directory: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Install generated wake, seven action, and manual edge-peek sheets "
+            "Install generated wake, six smooth-pose, and manual edge-peek sheets "
             "with shared registration on 450x550 runtime canvases."
         )
     )

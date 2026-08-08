@@ -20,7 +20,9 @@ RUNTIME_SIZE = (450, 550)
 ATLAS_DISPLAY_SIZE = (399, 509)
 ATLAS_X_TO_DIP = 190 / ATLAS_DISPLAY_SIZE[0]
 ATLAS_Y_TO_DIP = 242 / ATLAS_DISPLAY_SIZE[1]
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+TODO_POSE_NAME = "think"
+SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
 SOURCE_X_TO_DIP = 190 / 450
 SOURCE_Y_TO_DIP = (488 / 550) * (242 / 509)
 SOURCE_TO_DIP = math.sqrt(SOURCE_X_TO_DIP * SOURCE_Y_TO_DIP)
@@ -1084,9 +1086,8 @@ def main() -> None:
             hashlib.sha256(load(path).tobytes()).hexdigest() for path in wake_keys
         }
     }
-    for action in ACTIONS:
+    for action in SMOOTH_ACTION_NAMES:
         smooth = sorted_sequence(f"luban-{action}-smooth")
-        loop = sorted_sequence(f"luban-{action}-loop")
         expected_smooth = sum(
             generator.sequence_edge_substeps(action, pair_index, first, second)[0]
             for pair_index, (first, second) in enumerate(
@@ -1097,13 +1098,30 @@ def main() -> None:
             raise AssertionError(
                 f"{action} smooth count {len(smooth)} != {expected_smooth}"
             )
-        if len(loop) != 48:
-            raise AssertionError(f"{action} loop count {len(loop)} != 48")
         result["actions"][action] = {
             "smooth": analyze_sequence(smooth),
             "smooth_midpoints": qa_adaptive_sequence(
                 smooth, action_keys[action], action
             ),
+        }
+        sequence_entries.append(
+            (f"{action}.smooth", smooth, result["actions"][action]["smooth"])
+        )
+        action_key_hashes = {
+            hashlib.sha256(load(path).tobytes()).hexdigest()
+            for path in action_keys[action]
+        }
+        authored_hashes_by_sequence[f"{action}.smooth"] = action_key_hashes
+        if args.contacts:
+            save_contact(smooth, OUT / f"{action}-smooth-contact.png")
+
+        if action not in ACTION_NAMES:
+            continue
+
+        loop = sorted_sequence(f"luban-{action}-loop")
+        if len(loop) != 48:
+            raise AssertionError(f"{action} loop count {len(loop)} != 48")
+        result["actions"][action].update({
             "loop": analyze_sequence(loop),
             "loop_wrap": {
                 "alpha_iou": alpha_iou(load(loop[-1]), load(loop[0])),
@@ -1115,18 +1133,10 @@ def main() -> None:
                 ) * SOURCE_TO_DIP,
                 "pixel_equal": bool(np.array_equal(load(loop[-1]), load(loop[0]))),
             },
-        }
-        sequence_entries.extend(
-            (
-                (f"{action}.smooth", smooth, result["actions"][action]["smooth"]),
-                (f"{action}.loop", loop, result["actions"][action]["loop"]),
-            )
+        })
+        sequence_entries.append(
+            (f"{action}.loop", loop, result["actions"][action]["loop"])
         )
-        action_key_hashes = {
-            hashlib.sha256(load(path).tobytes()).hexdigest()
-            for path in action_keys[action]
-        }
-        authored_hashes_by_sequence[f"{action}.smooth"] = action_key_hashes
         authored_hashes_by_sequence[f"{action}.loop"] = action_key_hashes
         exact_loop_keys = {
             12: ASSETS / f"luban-{action}-frame-21.png",
@@ -1143,7 +1153,6 @@ def main() -> None:
             np.array_equal(load(smooth[-1]), load(loop[47]))
         )
         if args.contacts:
-            save_contact(smooth, OUT / f"{action}-smooth-contact.png")
             save_contact(loop, OUT / f"{action}-loop-contact.png")
 
     certified_postprocess_by_sequence: dict[str, dict[str, object]] = {}
@@ -1384,7 +1393,7 @@ def main() -> None:
     failures: list[str] = []
     applied_waivers: list[dict[str, object]] = []
     all_midpoint_metrics = [result["wake"]["midpoints"]]
-    for action in ACTIONS:
+    for action in SMOOTH_ACTION_NAMES:
         all_midpoint_metrics.append(result["actions"][action]["smooth_midpoints"])
 
     def pair_violations(
@@ -1670,7 +1679,7 @@ def main() -> None:
             )
     if result["wake"]["first_key_mismatch"]:
         failures.append("wake first key mismatch")
-    for action in ACTIONS:
+    for action in ACTION_NAMES:
         action_result = result["actions"][action]
         if action_result["loop_exact_key_mismatches"]:
             failures.append(

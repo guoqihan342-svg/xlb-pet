@@ -195,9 +195,14 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MissedReminderGracePeriod =
         TimeSpan.FromSeconds(5);
-    private static readonly string[] ActionNames =
+    private const string TodoPoseActionName = "think";
+    private static readonly string[] ReactionActionNames =
     [
-        "yawn", "cry", "cute", "like", "eat", "think"
+        "yawn", "cry", "cute", "like", "eat"
+    ];
+    private static readonly string[] SmoothActionNames =
+    [
+        "yawn", "cry", "cute", "like", "eat", TodoPoseActionName
     ];
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
@@ -517,21 +522,21 @@ public partial class MainWindow : Window
             "idle",
             "Assets/luban-wake-smooth-");
         _actionSmoothFrames = new ReadOnlyDictionary<string, SpriteFrame[]>(
-            ActionNames.ToDictionary(
+            SmoothActionNames.ToDictionary(
                 actionName => actionName,
                 actionName => LoadNumberedFrameSequence(
                     $"action-{actionName}",
                     $"Assets/luban-{actionName}-smooth-"),
                 StringComparer.Ordinal));
         _actionLoopFrames = new ReadOnlyDictionary<string, SpriteFrame[]>(
-            ActionNames.ToDictionary(
+            ReactionActionNames.ToDictionary(
                 actionName => actionName,
                 actionName => LoadNumberedFrameSequence(
                     $"loop-{actionName}",
                     $"Assets/luban-{actionName}-loop-",
                     ActionLoopFrameCount),
                 StringComparer.Ordinal));
-        _todoFrame = _actionSmoothFrames["think"][^1];
+        _todoFrame = _actionSmoothFrames[TodoPoseActionName][^1];
         _edgeLeftFrames = LoadEdgeFrameSequence(
             "edge-left",
             "Assets/luban-edge-left-smooth-");
@@ -591,8 +596,7 @@ public partial class MainWindow : Window
             CreateMotionClip("呜……主人要哄哄我", "cry"),
             CreateMotionClip("给你卖个萌 ♡", "cute"),
             CreateMotionClip("主人真棒！", "like"),
-            CreateMotionClip("吃块饼干，补充能量！", "eat"),
-            CreateMotionClip("让我认真想一想……", "think")
+            CreateMotionClip("吃块饼干，补充能量！", "eat")
         ];
         _todoExitClip = CreateTodoExitClip();
         _todoEnterClip = CreateTodoEnterClip();
@@ -1003,7 +1007,7 @@ public partial class MainWindow : Window
 
     private AnimationClip CreateTodoExitClip()
     {
-        var timeline = BuildActionTimeline("think");
+        var timeline = BuildActionTimeline(TodoPoseActionName);
         var frames = new List<AnimationFrame>(timeline.Frames.Length);
         for (var timelineIndex = timeline.Frames.Length - 1;
              timelineIndex >= 0;

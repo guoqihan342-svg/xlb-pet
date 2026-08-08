@@ -44,7 +44,9 @@ FRAME_DESCRIPTOR_KEYS = (
 )
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+TODO_POSE_NAME = "think"
+SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 ROAM_LOOP_SEQUENCES = ("flight", "wave")
 ROAM_NON_LOOP_SEQUENCES = ("boarding",)
@@ -135,13 +137,13 @@ SEQUENCE_EXPRESSIONS = {
         f"{action}.smooth": re.compile(
             rf"^Assets/luban-{re.escape(action)}-smooth-(\d{{3}})\.png$"
         )
-        for action in ACTIONS
+        for action in SMOOTH_ACTION_NAMES
     },
     **{
         f"{action}.loop": re.compile(
             rf"^Assets/luban-{re.escape(action)}-loop-(\d{{3}})\.png$"
         )
-        for action in ACTIONS
+        for action in ACTION_NAMES
     },
     **{
         f"reminder.{phase}": re.compile(

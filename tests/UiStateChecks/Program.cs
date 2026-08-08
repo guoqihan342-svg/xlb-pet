@@ -1582,7 +1582,7 @@ internal static partial class Program
                 "MainWindow 缺少 sprite 页像素复用池");
         Assert(GetProperty<long>(profiledPool, "AllocationCount") <= 40 &&
                GetProperty<long>(profiledPool, "ReuseCount") >= 12,
-            "六种动作连续轮播必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
+            "五种普通动作连续轮播必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
 
         SetField(window, "_edgeRoamPreloadRequested", true);
         var roamPageNames = new[]
@@ -4371,7 +4371,9 @@ internal static partial class Program
                 "roam-flight"
             }
             .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "think" }
-                .SelectMany(action => new[] { $"action-{action}", $"loop-{action}" }))
+                .Select(action => $"action-{action}"))
+            .Concat(new[] { "yawn", "cry", "cute", "like", "eat" }
+                .Select(action => $"loop-{action}"))
             .Concat(new[]
             {
                 "action-reminder-enter",
@@ -4392,10 +4394,11 @@ internal static partial class Program
                manifestPageFrameCount >= manifestSourceFrameCount &&
                orderedPageNames.Take(3).SequenceEqual(
                    new[] { "idle", "edge-left", "edge-bottom" }) &&
+               !manifestPages.TryGetProperty("loop-think", out _) &&
                !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "还必须动态包含熊猫坐骑登乘与巡游连续分页、六个动作页、六个循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、六套 smooth 页、五个普通循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -4498,7 +4501,10 @@ internal static partial class Program
                             $"Assets/luban-{actionName}-smooth-{frameNumber:000}.png")),
                 $"{pageName} 连续分页必须按32帧上限只包含编号连续的60fps动作帧，" +
                 "不得重复 idle、wake 或 edge");
+        }
 
+        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat" })
+        {
             var loopPageName = $"loop-{actionName}";
             var actualLoopFrames = manifestPages.GetProperty(loopPageName)
                 .GetProperty("frames")
@@ -4508,7 +4514,7 @@ internal static partial class Program
             Assert(actualLoopFrames.SequenceEqual(Enumerable.Range(1, 48)
                     .Select(frameNumber =>
                         $"Assets/luban-{actionName}-loop-{frameNumber:000}.png")),
-                $"{loopPageName} 必须包含连续的48帧60fps自然循环");
+                $"{loopPageName} 必须属于五种普通 reaction 并包含连续的48帧60fps自然循环");
         }
 
         foreach (var (phase, expectedFrameCount) in new[]
@@ -5550,8 +5556,11 @@ internal static partial class Program
             Assert(actionNames.Length >= 50 && actionNames.SequenceEqual(expectedActionNames),
                 $"{action} smooth源资源必须从001开始连续编号且至少50帧");
             paths.AddRange(actionNames.Select(name => $"Assets/{name}"));
-            paths.AddRange(Enumerable.Range(1, 48).Select(frameNumber =>
-                $"Assets/luban-{action}-loop-{frameNumber:000}.png"));
+            if (!string.Equals(action, "think", StringComparison.Ordinal))
+            {
+                paths.AddRange(Enumerable.Range(1, 48).Select(frameNumber =>
+                    $"Assets/luban-{action}-loop-{frameNumber:000}.png"));
+            }
         }
 
         var result = paths.ToArray();
@@ -5884,13 +5893,43 @@ internal static partial class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 6, "删除跑步、旧捉迷藏与点击挥手后应保留 6 组点击动作");
-        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat", "think" };
+        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat" };
+        var reactionActionNames = (string[])(typeof(MainWindow).GetField(
+                "ReactionActionNames",
+                StaticFlags)!.GetValue(null) ?? Array.Empty<string>());
+        var smoothActionNames = (string[])(typeof(MainWindow).GetField(
+                "SmoothActionNames",
+                StaticFlags)!.GetValue(null) ?? Array.Empty<string>());
+        Assert(reactionActionNames.SequenceEqual(expectedActions) &&
+               smoothActionNames.SequenceEqual(expectedActions.Append("think")),
+            "运行时名称契约必须把五种普通 reaction/loop 与 Todo 专用 think smooth 分开");
+        var smoothFrameKeys = GetProperty<IEnumerable<string>>(
+                GetField<object>(window, "_actionSmoothFrames"),
+                "Keys")
+            .ToHashSet(StringComparer.Ordinal);
+        var loopFrameKeys = GetProperty<IEnumerable<string>>(
+                GetField<object>(window, "_actionLoopFrames"),
+                "Keys")
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(smoothFrameKeys.SetEquals(expectedActions.Append("think")) &&
+               loopFrameKeys.SetEquals(expectedActions),
+            "smooth 必须保留 Todo think，运行时 loop 字典只能加载五种普通动作");
+        Assert(clips.Length == expectedActions.Length,
+            "普通点击必须严格保留五组动作，不得把 Todo think 当作 reaction");
         var actualActions = clips
             .Select(clip => GetProperty<string>(clip, "ActionName"))
             .ToArray();
         Assert(actualActions.SequenceEqual(expectedActions),
             $"点击动作应严格为 {string.Join(", ", expectedActions)}，实际 {string.Join(", ", actualActions)}");
+        Assert(clips.All(clip =>
+                   !string.Equals(
+                       GetProperty<string>(clip, "ActionName"),
+                       "think",
+                       StringComparison.OrdinalIgnoreCase) &&
+                   !GetProperty<string>(clip, "Message").Contains(
+                       "认真想一想",
+                       StringComparison.Ordinal)),
+            "普通点击 clip 不得保留 think ActionName 或“让我认真想一想”文案");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
         var wakeFrameCount = expectedWakeFrameNames.Length;
         Assert(GetField<Array>(window, "_wakeFrames").Length == wakeFrameCount,
@@ -5993,7 +6032,8 @@ internal static partial class Program
         var actualTodoEnterNames = todoEnterFrames
             .Select(frame => GetSpriteFrameInfo(GetProperty<object>(frame, "Image")))
             .ToArray();
-        Assert(actualTodoEnterNames.Length == expectedTodoNames.Length &&
+        Assert(expectedTodoNames.Length == 214 &&
+               actualTodoEnterNames.Length == 214 &&
                actualTodoEnterNames.Select(frame => frame.Name)
                    .SequenceEqual(expectedTodoNames) &&
                actualTodoEnterNames.Take(wakeFrameCount + 1)
@@ -6003,10 +6043,22 @@ internal static partial class Program
                actualTodoEnterNames.Skip(wakeFrameCount + 1)
                    .Select((frame, frameIndex) => (frame, frameIndex))
                    .All(entry => entry.frame.PageName ==
-                       (entry.frameIndex < 32
-                           ? "action-think"
+                        (entry.frameIndex < 32
+                            ? "action-think"
                            : $"action-think-part-{entry.frameIndex / 32 + 1:00}")),
-            $"Todo 入场必须按 idle→{wakeFrameCount}帧起身→think dense序列跨页播放");
+            $"Todo 入场必须保留214帧 idle→{wakeFrameCount}帧起身→think dense 专用序列");
+        var todoFrame = GetField<object>(window, "_todoFrame");
+        Assert(Equals(
+                   todoFrame,
+                   GetProperty<object>(todoEnterFrames[^1], "Image")) &&
+               GetSpriteFrameInfo(todoFrame).Name.EndsWith(
+                   "luban-think-smooth-056.png",
+                   StringComparison.Ordinal) &&
+               GetProperty<string>(GetField<object>(window, "_todoEnterClip"), "ActionName") ==
+                   "todo-open" &&
+               GetProperty<string>(GetField<object>(window, "_todoExitClip"), "ActionName") ==
+                   "todo-close",
+            "右键 Todo 必须独占 think-smooth 最终姿势及 todo-open/todo-close 片段");
         Assert(todoExitFrames
                 .Select(GetAnimationFrameName)
                 .SequenceEqual(todoEnterFrames
@@ -6304,23 +6356,41 @@ internal static partial class Program
 
     private static void AssertNoRunContract(MainWindow window)
     {
+        var expectedActionNames = new[] { "yawn", "cry", "cute", "like", "eat" };
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        Assert(clips.Length == 6 && clips.All(clip =>
+        Assert(clips.Length == expectedActionNames.Length &&
+               clips.Select(clip => GetProperty<string>(clip, "ActionName"))
+                   .SequenceEqual(expectedActionNames) &&
+               clips.All(clip =>
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "run", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "hide", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(GetProperty<string>(clip, "ActionName"), "wave", StringComparison.OrdinalIgnoreCase)),
-            "运行时必须只保留六种点击动作，不得再出现 run、旧 hide 或点击 wave");
+                !string.Equals(GetProperty<string>(clip, "ActionName"), "wave", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(GetProperty<string>(clip, "ActionName"), "think", StringComparison.OrdinalIgnoreCase) &&
+                !GetProperty<string>(clip, "Message").Contains(
+                    "认真想一想",
+                    StringComparison.Ordinal)),
+            "运行时必须只保留五种点击动作，不得再出现 run、旧 hide、点击 wave 或 Todo think");
 
         var activities = GetField<Array>(window, "_automaticActivities")
             .Cast<object?>()
             .ToArray();
-        Assert(activities.Length == 7 && activities.Count(activity => activity is null) == 1,
-            "自动活动袋必须为 6 个角色动作加 1 个待机项");
-        Assert(activities.Where(activity => activity is not null)
-                .All(activity => clips.Any(clip => ReferenceEquals(clip, activity))),
-            "自动活动袋的非空项必须全部引用保留的 6 个点击动作");
+        Assert(activities.Length == 6 && activities.Count(activity => activity is null) == 1,
+            "自动活动袋必须为 5 个角色动作加 1 个待机项");
+        var automaticActionNames = activities
+            .Where(activity => activity is not null)
+            .Select(activity => GetProperty<string>(activity!, "ActionName"))
+            .ToArray();
+        Assert(automaticActionNames.SequenceEqual(expectedActionNames) &&
+               activities.Where(activity => activity is not null)
+                .All(activity =>
+                    clips.Any(clip => ReferenceEquals(clip, activity)) &&
+                    !string.Equals(
+                        GetProperty<string>(activity!, "ActionName"),
+                        "think",
+                        StringComparison.OrdinalIgnoreCase)),
+            "自动活动袋的非空项必须全部引用保留的 5 个点击动作，不能混入 Todo think");
 
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainWindowSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
@@ -7410,26 +7480,16 @@ internal static partial class Program
         var resumedSpriteFrame = GetProperty<object>(
             enterFrames[resumedEnterIndex],
             "Image");
+        var resumedExitIndex = exitFrames.Length - 1 - resumedEnterIndex;
+        var resumedExitSpriteFrame = GetProperty<object>(
+            exitFrames[resumedExitIndex],
+            "Image");
+        Assert(Equals(resumedExitSpriteFrame, resumedSpriteFrame),
+            "Todo 入场/收起的 think-smooth 中间姿势必须按同一像素索引严格镜像");
         PrimeSpritePageForFrame(window, resumedSpriteFrame);
         Invoke(window, "ShowStableFrame", resumedSpriteFrame);
-        var thinkReactionClip = GetField<Array>(window, "_reactionClips")
-            .Cast<object>()
-            .Single(clip =>
-                string.Equals(
-                    GetProperty<string>(clip, "ActionName"),
-                    "think",
-                    StringComparison.Ordinal));
-        var thinkReactionFrames = GetClipFrames(thinkReactionClip).Cast<object>().ToArray();
-        var resumedReactionIndex = Array.FindIndex(
-            thinkReactionFrames,
-            frame => string.Equals(
-                GetAnimationFrameName(frame),
-                resumedFrameName,
-                StringComparison.Ordinal));
-        Assert(resumedReactionIndex >= 0,
-            "普通 think 动作必须实际播放同名dense姿势，Todo才能无缝续播");
-        SetField(window, "_activeClip", thinkReactionClip);
-        SetField(window, "_activeFrameIndex", resumedReactionIndex);
+        SetField(window, "_activeClip", exitClip);
+        SetField(window, "_activeFrameIndex", resumedExitIndex);
         SetField(window, "_activeClipStartedTimestamp", Stopwatch.GetTimestamp());
         SetField(window, "_activeFrameDeadlineTimestamp", long.MaxValue);
         SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
@@ -7446,7 +7506,7 @@ internal static partial class Program
                resumedAt > 0 &&
                resumedDeadline - resumedAt == resumedHoldTicks &&
                !GetField<bool>(window, "_isFrameBlending"),
-            "思考dense姿势中途右键必须保留同名像素，并从1.25倍运行截止点继续，不能重播或淡化闪回");
+            "Todo 收起到 think-smooth 中间姿势时重新右键，必须从同名像素反向续播，不能重播或淡化闪回");
         SetField(window, "_activeClip", null);
         SetField(window, "_activeFrameIndex", -1);
         SetField(window, "_activeClipStartedTimestamp", 0L);
@@ -9684,7 +9744,7 @@ internal static partial class Program
                Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
                !todoWindow.IsVisible &&
                !GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption"),
-            "巡游中左键单击完成退场后必须稳定待机，不能追加六种点击动作或打开任务面板");
+            "巡游中左键单击完成退场后必须稳定待机，不能追加五种点击动作或打开任务面板");
 
         var secondSupportPoint = new Point(window.Left + 310, window.Top + 126);
         PrepareTravelState(
@@ -11139,7 +11199,7 @@ internal static partial class Program
     private static void AssertRandomActivityBag(MainWindow window)
     {
         var activityCount = GetField<Array>(window, "_automaticActivities").Length;
-        Assert(activityCount == 7, "自动活动袋应包含 6 个角色动作和 1 个待机动作");
+        Assert(activityCount == 6, "自动活动袋应包含 5 个角色动作和 1 个待机动作");
 
         var firstBag = DrainActivityBag(window, activityCount);
         var secondBag = DrainActivityBag(window, activityCount);
@@ -11598,6 +11658,19 @@ internal static partial class Program
     {
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
+        var rightButtonUpSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseRightButtonUp");
+        var openTodoFromRightClickSource = ExtractPrivateMethodSource(
+            mainSource,
+            "OpenTodoFromPetRightClick");
+        Assert(rightButtonUpSource.Contains(
+                   "OpenTodoFromPetRightClick();",
+                   StringComparison.Ordinal) &&
+               openTodoFromRightClickSource.Contains(
+                   "SetBubbleMode(BubbleMode.Todo);",
+                   StringComparison.Ordinal),
+            "普通右键入口必须继续切换到 Todo 专用 think 状态，不能随 reaction think 一起删除");
         var setBubbleModeSource = ExtractPrivateMethodSource(
             mainSource,
             "SetBubbleMode");

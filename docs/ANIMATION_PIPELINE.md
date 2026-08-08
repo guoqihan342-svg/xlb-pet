@@ -37,7 +37,7 @@ build_sprite_atlas.py
 | `pic/小鲁班6.png` | 眨眼点赞 | `Assets/luban-like-frame-01.png` 起 |
 | `pic/小鲁班7.png` | 吃饼干 | `Assets/luban-eat-frame-01.png` 起 |
 | `pic/小鲁班8.png` | 作者原始挥手素材（仅保留） | `v1.0.60` 起不再生成、打包或播放 `Assets/luban-wave-*` |
-| `pic/小鲁班9.png` | 托腮思考 | `Assets/luban-think-frame-01.png` 起 |
+| `pic/小鲁班9.png` | 右键 Todo 专用托腮思考 | `Assets/luban-think-frame-01.png` 起；不进入普通点击或随机动作 |
 | 经甄选的透明打工锚点与四根手指触键姿势 | 坐在电脑前打工 | `luban-work-enter-*`、`luban-work-loop-*`、`luban-work-serious-loop-*`、`luban-work-serious-exit-*`；`pic/小鲁班9.png` 仅作上游角色参考 |
 | 高清边缘姿势 | 左/右/下探头 | `luban-edge-left-smooth-*`、`luban-edge-bottom-smooth-*`；右侧镜像左侧 |
 | 大头小鲁班与熊猫参考 | 熊猫坐骑巡游 | `luban-roam-boarding-*`、`luban-roam-flight-*`；`roam-wave` 可选 |
@@ -55,7 +55,7 @@ build_sprite_atlas.py
 
 ## 4. 当前图集快照与动态契约
 
-截至 `2026-08-09`，`v1.0.60` 的运行时打工契约为 `48 / 96 / 96 / 24`，共 264 个逻辑帧；48 帧 `work-tap` 已从图集和程序集移除。普通挥手的 5 页、146 帧也不再打包，目标 Brotli 图集为 48 页、1502 个逻辑帧；左右探头资源仍使用 `v1.0.57` 恢复结果。页数与帧数必须从最终清单动态校验，不能只由动作增减手算。
+截至 `2026-08-09`，`v1.0.61` 的运行时打工契约仍为 `48 / 96 / 96 / 24`，共 264 个逻辑帧；48 帧 `work-tap` 和普通挥手的 5 页、146 帧继续保持退役。普通点击与空闲随机动作只包含 `yawn / cry / cute / like / eat`；Todo 继续使用完整 `think` smooth 入场和稳定托腮姿势，但仅供普通思考动作使用的 48 帧 `loop-think` 及其 1 个分页不再打包。目标 Brotli 图集由 `v1.0.60` 的 48 页、1502 帧收敛为 47 页、1454 帧；左右探头资源仍使用 `v1.0.57` 恢复结果。页数与帧数必须从最终清单动态校验，不能只由动作增减手算。
 
 `v1.0.52` 的历史清单快照为：
 
@@ -69,7 +69,7 @@ build_sprite_atlas.py
 | 分页数 | `53` |
 | `maxDecodedPageBytes` | `25,165,824`（24 MiB） |
 
-这些数字只用于保留上一版历史，不是固定公共接口。boarding、flight、六种普通动作和可选 `roam-wave` 的实际帧数、逻辑帧数与分页数必须从磁盘资源和 `Assets/luban-sprite-pages.json` 动态读取。构建或测试不得依赖旧 README 中的固定总帧数。
+这些数字只用于保留上一版历史，不是固定公共接口。boarding、flight、五种普通动作、Todo 专用 `think` smooth 和可选 `roam-wave` 的实际帧数、逻辑帧数与分页数必须从磁盘资源和 `Assets/luban-sprite-pages.json` 动态读取。构建或测试不得依赖旧 README 中的固定总帧数。
 
 查询当前清单：
 
@@ -111,7 +111,7 @@ python .\tools\install_generated_motion_assets.py `
 
 ### 5.2 生成密集帧
 
-六种普通动作补帧需要外部 RIFE；已退役的普通挥手不得被 `--actions` 或单动作入口重新生成。提醒序列使用确定性刚体生成。
+五种普通动作与 Todo 专用 `think` smooth 补帧需要外部 RIFE；普通 `think` 循环和普通挥手均已退役，不得被 `--loops`、`--actions` 或单动作入口重新带回运行时。提醒序列使用确定性刚体生成。
 
 ```powershell
 $env:XLB_RIFE_ROOT = 'C:\path\to\rife-ncnn-vulkan-20221029-windows'
@@ -176,7 +176,7 @@ QA 至少覆盖：
 
 - PNG 尺寸和透明通道。
 - 帧编号连续且关键序列不存在重复帧。
-- 普通动作清单只包含 `yawn / cry / cute / like / eat / think`；代码、清单、程序集和最终图集均不得包含 `luban-wave-*` 运行时资源。
+- 普通点击与空闲随机动作清单只包含 `yawn / cry / cute / like / eat`；Todo 专用 `think` smooth 必须保留，但 `loop-think` 页面和 48 帧循环资源不得进入清单、程序集或最终图集；普通 `luban-wave-*` 运行时资源也必须保持为零。
 - 相邻轮廓、帽子中心、人物缩放和接触基线连续。
 - 熊猫、铃铛、竹筒保持同一完整轮廓。
 - 边缘探头接触点、单调探出、真实探出深度和支撑手臂遮罩 QA。

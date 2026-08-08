@@ -45,7 +45,9 @@ MAX_DPI_SCALE = 1.5
 BBOX_SCALE_STEP_LIMIT = 0.025
 BASELINE_STEP_MAX_PHYSICAL_PX_LIMIT = 1.0
 BRIM_STEP_DIP_LIMIT = 2.0
-ACTIONS = ("yawn", "cry", "cute", "like", "eat", "think")
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+TODO_POSE_NAME = "think"
+SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
 EDGE_DIRECTIONS = ("left", "top", "bottom")
 EDGE_PEEK_FRAME_COUNT = 48
 EDGE_PEEK_PHASE_FRAME_COUNT = EDGE_PEEK_FRAME_COUNT // 4
@@ -305,6 +307,8 @@ def clean_existing_motion_assets() -> dict[str, int]:
             for path in smooth
             if pixel_digest(path) not in key_hashes
         )
+
+    for action in ACTION_NAMES:
         loops = sorted(
             ASSETS.glob(f"luban-{action}-loop-*.png"), key=lambda path: path.name
         )
@@ -593,7 +597,7 @@ def register_neutral_pose(
 
 
 def build_action_key_sequences(
-    actions: tuple[str, ...] = ACTIONS,
+    actions: tuple[str, ...] = SMOOTH_ACTION_NAMES,
 ) -> tuple[dict[str, list[Path]], list[dict[str, object]]]:
     sequences: dict[str, list[Path]] = {}
     neutral_metrics: list[dict[str, object]] = []
@@ -633,14 +637,20 @@ def build_action_key_sequences(
     return sequences, neutral_metrics
 
 
-def build_actions(actions: tuple[str, ...] = ACTIONS) -> dict[str, list[Path]]:
+def build_actions(
+    actions: tuple[str, ...] = SMOOTH_ACTION_NAMES,
+) -> dict[str, list[Path]]:
     sequences, neutral_metrics = build_action_key_sequences(actions)
     packed: list[Path] = []
     starts: dict[str, int] = {}
     for action, keys in sequences.items():
         starts[action] = len(packed)
         packed.extend(keys)
-    label = "actions-packed" if actions == ACTIONS else f"actions-packed-{'-'.join(actions)}"
+    label = (
+        "actions-packed"
+        if actions == SMOOTH_ACTION_NAMES
+        else f"actions-packed-{'-'.join(actions)}"
+    )
     premul_outputs, alpha_outputs = run_rife_double(packed, label)
 
     all_outputs: dict[str, list[Path]] = {}
@@ -995,7 +1005,7 @@ def refine_edges_to_targets(
 
 
 def build_adaptive_actions(
-    actions: tuple[str, ...] = ACTIONS,
+    actions: tuple[str, ...] = SMOOTH_ACTION_NAMES,
 ) -> dict[str, list[Path]]:
     key_sequences, _ = build_action_key_sequences(actions)
     base_edges: dict[tuple[str, int], list[Path]] = {}
@@ -1443,7 +1453,7 @@ def build_loops() -> dict[str, list[Path]]:
             ASSETS / f"luban-{action}-frame-23.png",
             ASSETS / f"luban-{action}-frame-24.png",
         ]
-        for action in ACTIONS
+        for action in ACTION_NAMES
     }
     for round_number in range(1, 5):
         sequences = build_loop_round(sequences, round_number)

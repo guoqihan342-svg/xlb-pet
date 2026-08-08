@@ -23,7 +23,9 @@ DISPLAY_HEIGHT = 509
 TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1540
 MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat", "think")
+ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+TODO_POSE_NAME = "think"
+SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
 REMINDER_PHASES = ("enter", "hold")
 WORK_PHASES = (
     "enter",
@@ -695,9 +697,10 @@ def resource_paths(root: Path) -> list[str]:
         paths.extend(reminder_resource_paths(root, phase))
     for phase in WORK_PHASES:
         paths.extend(work_resource_paths(root, phase))
-    for action in ACTION_NAMES:
+    for action in SMOOTH_ACTION_NAMES:
         paths.extend(action_resource_paths(root, action))
-        paths.extend(action_loop_resource_paths(root, action))
+        if action in ACTION_NAMES:
+            paths.extend(action_loop_resource_paths(root, action))
     if len(set(paths)) != len(paths):
         raise RuntimeError(
             f"Sprite resource list contains duplicates: {len(paths)} paths"
@@ -917,7 +920,7 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
             if page_name in pages:
                 raise RuntimeError(f"Duplicate sprite page name: {page_name}")
             pages[page_name] = partition_paths
-    for action in ACTION_NAMES:
+    for action in SMOOTH_ACTION_NAMES:
         action_paths = action_resource_paths(root, action)
         for page_name, partition_paths in partition_action_resource_paths(
             action,
@@ -926,7 +929,8 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
             if page_name in pages:
                 raise RuntimeError(f"Duplicate sprite page name: {page_name}")
             pages[page_name] = partition_paths
-        pages[f"loop-{action}"] = action_loop_resource_paths(root, action)
+        if action in ACTION_NAMES:
+            pages[f"loop-{action}"] = action_loop_resource_paths(root, action)
     expected = set(resource_paths(root))
     actual = {path for paths in pages.values() for path in paths}
     if actual != expected:

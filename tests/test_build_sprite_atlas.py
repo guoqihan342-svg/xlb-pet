@@ -38,8 +38,9 @@ def make_complete_path_fixture(root: Path) -> None:
         )
     for phase in atlas.REMINDER_PHASES:
         touch_sequence(assets, f"luban-reminder-{phase}", 1)
-    for action in atlas.ACTION_NAMES:
+    for action in atlas.SMOOTH_ACTION_NAMES:
         touch_sequence(assets, f"luban-{action}-smooth", 8)
+    for action in atlas.ACTION_NAMES:
         touch_sequence(
             assets,
             f"luban-{action}-loop",
@@ -52,13 +53,63 @@ def make_complete_path_fixture(root: Path) -> None:
     touch_sequence(assets, "luban-work-serious-exit", 24)
 
 
-class ReactionWaveRemovalTests(unittest.TestCase):
-    def test_reaction_wave_is_not_a_click_action(self) -> None:
+class ReactionActionRemovalTests(unittest.TestCase):
+    def test_removed_reactions_are_not_click_actions(self) -> None:
         self.assertEqual(
-            ("yawn", "cry", "cute", "like", "eat", "think"),
+            ("yawn", "cry", "cute", "like", "eat"),
             atlas.ACTION_NAMES,
         )
+        self.assertEqual("think", atlas.TODO_POSE_NAME)
+        self.assertEqual(
+            (*atlas.ACTION_NAMES, atlas.TODO_POSE_NAME),
+            atlas.SMOOTH_ACTION_NAMES,
+        )
         self.assertNotIn("wave", atlas.ACTION_NAMES)
+        self.assertNotIn("think", atlas.ACTION_NAMES)
+
+    def test_todo_think_smooth_is_collected_without_a_click_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+
+            source_paths = atlas.resource_paths(root)
+            pages = atlas.page_resource_paths(root)
+
+            self.assertTrue(
+                any(
+                    path.startswith("Assets/luban-think-smooth-")
+                    for path in source_paths
+                )
+            )
+            self.assertFalse(
+                any(
+                    path.startswith("Assets/luban-think-loop-")
+                    for path in source_paths
+                )
+            )
+            self.assertIn("action-think", pages)
+            self.assertNotIn("loop-think", pages)
+
+    def test_legacy_reaction_think_loop_assets_are_not_collected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            touch_sequence(
+                root / "Assets",
+                "luban-think-loop",
+                atlas.ACTION_LOOP_FRAME_COUNT,
+            )
+
+            source_paths = atlas.resource_paths(root)
+            pages = atlas.page_resource_paths(root)
+
+            self.assertFalse(
+                any(
+                    path.startswith("Assets/luban-think-loop-")
+                    for path in source_paths
+                )
+            )
+            self.assertNotIn("loop-think", pages)
 
     def test_legacy_reaction_wave_assets_are_not_collected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -132,9 +183,18 @@ class ReactionWaveRemovalTests(unittest.TestCase):
         ):
             source = (WORKSPACE / "tools" / tool_name).read_text(encoding="utf-8")
             action_declaration = next(
-                line for line in source.splitlines() if line.startswith("ACTIONS = ")
+                line
+                for line in source.splitlines()
+                if line.startswith("ACTION_NAMES = ")
             )
             self.assertNotIn('"wave"', action_declaration, tool_name)
+            self.assertNotIn('"think"', action_declaration, tool_name)
+            smooth_declaration = next(
+                line
+                for line in source.splitlines()
+                if line.startswith("SMOOTH_ACTION_NAMES = ")
+            )
+            self.assertIn("TODO_POSE_NAME", smooth_declaration, tool_name)
 
     def test_repository_has_no_generated_reaction_wave_pngs(self) -> None:
         assets = WORKSPACE / "Assets"
