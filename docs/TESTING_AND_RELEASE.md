@@ -236,18 +236,22 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## v1.0.62 发布验证（待完成）
+## v1.0.62 发布验证
 
-本节只记录发布前目标，不冒充已经执行的结果。完成正式图集重建、Release 构建、实机冒烟和 GitHub Release 后，再回填命令输出、提交、EXE 字节数、SHA-256、签名状态和 Release 链接。
+以下结果于 `2026-08-09` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418`、.NET Desktop Runtime `8.0.24` 环境完成。正式 EXE 已替换到用户指定路径并保持运行，Release 附件也已在独立目录重新下载复核。
 
-| 项目 | 发布前目标 |
+| 项目 | 实际结果 |
 | --- | --- |
-| 源码与版本 | `DesktopPet.csproj`、文件版本和产品版本均为 `1.0.62` |
-| 五种普通动作 | `butterfly / cry / cute / like / eat`；yawn 文案、ActionName、运行资源和程序集命中均为 0 |
-| 蝴蝶与 Todo | 蝴蝶只新增一张 `96×96` 透明 Resource，并复用 56 张 `think` 人物帧；Todo 仍保持 214 帧完整入场、`think-smooth-056` 最终姿势和中途严格反向续播 |
-| 图集与清理 | 目标为 41 页、1240 个源帧/分页帧；正式值必须由本次 `luban-sprite-pages.json`、嵌入资源和源集指纹共同确认；`yawn`、`loop-cute` 与 `cute-smooth-057..090` 均为 0 |
-| 内存 | 只固定待机页，常规/巡游/稳定空闲预算为 `52/92/12 MiB`，LOH 淘汰债务阈值为 `8 MiB`；`--resident-cache-only` 与 `--memory-profile` 均需记录实际结果 |
-| 发布状态 | 尚未验证或发布；不得提前填写提交 SHA、EXE 哈希或 Release 链接 |
+| 源码与版本 | 正式功能提交 `756e3734e03bb446dad5e23ae4e6359c19d26847`；文件版本 `1.0.62.0`，产品版本 `1.0.62+756e3734e03bb446dad5e23ae4e6359c19d26847` |
+| 五种普通动作 | 运行时点击循环严格为 `butterfly / cry / cute / like / eat`，自动袋为这五种动作加一次待机；旧 yawn 文案、`ActionName`、图集页、RID 程序集和最终 EXE 命中均为 0 |
+| 蝴蝶与 Todo | 蝴蝶为一张 `96×96` 透明 Resource，人物复用 56 张 `think` 高清帧；实机生产预览完整循环确认蝴蝶从耳机外侧绕入、在鼻尖停留扇翅并独立从左下方飞出；Todo 仍保持 214 帧完整入场、`think-smooth-056` 最终姿势和中途严格反向续播 |
+| 图集与素材 QA | 最终清单为 41 页、1240 个源帧和 1240 个分页帧；稠密素材 QA 和图集 QA 零失败，Python 测试 31/31 通过；`yawn`、`loop-cute`、`cute-smooth-057..090` 和全身 butterfly 图集页均为 0 |
+| 内存 | 实测预算为常规 `49/52 MiB`、巡游 `89/92 MiB`；`--memory-profile` 的空闲收缩后为 1 页 / `11 MiB` resident、`16.06 MiB` managed、`139.05 MiB` private，活跃普通动作为 `46 MiB` resident，活跃巡游为 `82 MiB` resident；不降低人物分辨率或帧率 |
+| 自动化与实机 | Release 构建 0 警告、0 错误，完整 `UiStateChecks` 通过；绝对时钟覆盖 59/60/120/144 Hz 与 250 ms 阻塞。`F:\agent\pet\dist\LubanDesktopPet.exe` 启动后响应，二次启动自行退出且始终只有一个实例；3 个用户数据文件哈希不变 |
+| EXE | `93,412,486` 字节，SHA-256 `3114D92B8A9F86511056D421D721218D4673E93D303EEA6F6C01FDF542584E99`，`NotSigned` |
+| GitHub Release | 已发布 [v1.0.62](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.62)；标签 peeled 提交与 GitHub `main` 均为 `756e3734e03bb446dad5e23ae4e6359c19d26847`，GitHub digest、独立回下载、本地候选和用户路径 EXE 的大小及 SHA-256 完全一致 |
+
+本机只有一块 `2560×1440` 显示器，因此多屏、负坐标副屏和混合 DPI 结论来自自动化矩阵，不冒充本轮真实双屏硬件验收；实机冒烟覆盖最终用户路径启动、单实例、完整蝴蝶动画预览和用户数据不变。
 
 ## v1.0.61 发布验证
 
