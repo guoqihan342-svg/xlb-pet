@@ -12,6 +12,7 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WORKSPACE / "tools"))
 
 import build_sprite_atlas as atlas  # noqa: E402
+import fix_edge_side_arm_reveal as side_grip  # noqa: E402
 
 
 def touch_sequence(assets: Path, prefix: str, frame_count: int) -> None:
@@ -75,36 +76,14 @@ class ReactionActionRemovalTests(unittest.TestCase):
         self.assertNotIn("star-cuddle", atlas.ACTION_NAMES)
         self.assertNotIn("think", atlas.ACTION_NAMES)
 
-    def test_wish_star_is_a_clean_standalone_overlay(self) -> None:
+    def test_retired_wish_star_overlay_is_absent(self) -> None:
         path = WORKSPACE / "Assets" / "luban-wish-star.png"
-        with Image.open(path) as opened:
-            frame = opened.convert("RGBA")
-        self.assertEqual((96, 96), frame.size)
-        alpha_box = frame.getchannel("A").getbbox()
-        self.assertIsNotNone(alpha_box)
-        assert alpha_box is not None
-        left, top, right, bottom = alpha_box
-        self.assertGreaterEqual(min(left, top, 96 - right, 96 - bottom), 6)
-        self.assertEqual(
-            0,
-            sum(
-                1
-                for red, green, blue, alpha in frame.get_flattened_data()
-                if alpha == 0 and (red or green or blue)
-            ),
-        )
-        self.assertEqual(
-            0,
-            sum(
-                1
-                for red, green, blue, alpha in frame.get_flattened_data()
-                if (
-                    alpha > 0
-                    and green > red * 1.25
-                    and green > blue * 1.15
-                    and green > 80
-                )
-            ),
+        self.assertFalse(path.exists())
+        self.assertFalse(
+            any(
+                resource.endswith("luban-wish-star.png")
+                for resource in atlas.resource_paths(WORKSPACE)
+            )
         )
 
     def test_cute_is_a_formal_56_frame_non_loop_sequence(self) -> None:
@@ -364,6 +343,69 @@ class ReactionActionRemovalTests(unittest.TestCase):
             [*assets.glob("luban-wave*.png"), *assets.glob("luban-idle-to-wave*.png")]
         )
         self.assertEqual([], [path.name for path in paths])
+
+
+class CompactSideGripTests(unittest.TestCase):
+    def test_retired_seven_pixel_warp_cannot_run(self) -> None:
+        source = (
+            WORKSPACE / "tools" / "fix_edge_side_arm_reveal.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("def build_" + "displacement", source)
+        self.assertNotIn("MAX_" + "SHIFT", source)
+        self.assertNotIn("v1.0.57-side-arm-reveal", source)
+        self.assertIn(side_grip.CONTRACT_NAME, source)
+
+    def test_compact_curve_has_the_locked_pose_phases(self) -> None:
+        self.assertLess(
+            side_grip.side_grip_phase(1),
+            side_grip.side_grip_phase(12),
+        )
+        self.assertAlmostEqual(
+            side_grip.side_grip_phase(12),
+            side_grip.side_grip_phase(36),
+        )
+        self.assertEqual(1.0, side_grip.side_grip_phase(24))
+        self.assertLess(side_grip.side_grip_phase(48), 1e-12)
+        self.assertLessEqual(
+            max(
+                side_grip.maximum_quantized_horizontal_run(frame_number)
+                for frame_number in range(1, side_grip.FRAME_COUNT + 1)
+            ),
+            side_grip.MAX_HORIZONTAL_BOTTOM_RUN,
+        )
+
+    def test_formal_compact_sequence_passes_hard_continuity_qa(self) -> None:
+        frames = [
+            side_grip.load_pixels(
+                WORKSPACE
+                / "Assets"
+                / f"luban-edge-left-smooth-{frame_number:03d}.png"
+            )
+            for frame_number in range(1, side_grip.FRAME_COUNT + 1)
+        ]
+        metrics = side_grip.analyze_sequence(frames)
+        self.assertEqual([], metrics["failures"])
+        self.assertEqual(side_grip.FRAME_COUNT, metrics["uniqueFrames"])
+        self.assertEqual(
+            "horizontal-mirror-of-left",
+            metrics["rightEdgeRuntimeContract"],
+        )
+
+    def test_each_quarter_frame_is_the_exact_compact_key(self) -> None:
+        for key_number, frame_number in side_grip.KEY_PHASE_FRAMES.items():
+            with self.subTest(key=key_number, frame=frame_number):
+                key = side_grip.load_pixels(
+                    WORKSPACE / "Assets" / f"luban-edge-left-{key_number:02d}.png"
+                )
+                smooth = side_grip.load_pixels(
+                    WORKSPACE
+                    / "Assets"
+                    / f"luban-edge-left-smooth-{frame_number:03d}.png"
+                )
+                self.assertEqual(
+                    side_grip.pixel_sha256(key),
+                    side_grip.pixel_sha256(smooth),
+                )
 
 
 class WorkSequenceTests(unittest.TestCase):

@@ -23,7 +23,7 @@ build_sprite_atlas.py
        WPF 运行时按页解码与显示
 ```
 
-运行时不直接逐张读取 `pic/` 或全部人物 PNG。正式发布嵌入 Brotli 压缩的 Pbgra32 分页和清单，并按当前动作按需加载；`Assets/luban-pillow-layer.png` 和 `Assets/luban-wish-star.png` 是明确保留的轻量 WPF Resource。`star-wish` 的人物部分直接复用现有 `cute` 分页，星星由一张小型透明 Resource 显示，不创建全人物星星图集页。
+运行时不直接逐张读取 `pic/` 或全部人物 PNG。正式发布嵌入 Brotli 压缩的 Pbgra32 分页和清单，并按当前动作按需加载；`Assets/luban-pillow-layer.png` 是明确保留的轻量 WPF Resource。旧许愿星、蝴蝶及其 overlay 资源均已退役，不得重新嵌入。
 
 ## 2. 原图与动作映射
 
@@ -38,7 +38,6 @@ build_sprite_atlas.py
 | `pic/小鲁班7.png` | 吃饼干 | `Assets/luban-eat-frame-01.png` 起 |
 | `pic/小鲁班8.png` | 作者原始挥手素材（仅保留） | `v1.0.60` 起不再生成、打包或播放 `Assets/luban-wave-*` |
 | `pic/小鲁班9.png` | 右键 Todo 专用托腮思考 | `Assets/luban-think-frame-01.png` 起；Todo 状态所有权不进入普通点击或随机动作 |
-| `Assets/luban-wish-star.png` | 许愿星唯一正式图像源 | `96×96` 透明 WPF Resource；由常驻但默认透明的 `22 DIP` overlay 显示，人物复用现有 `cute` 56 帧，不进入人物图集 |
 | 经甄选的透明打工锚点与四根手指触键姿势 | 坐在电脑前打工 | `luban-work-enter-*`、`luban-work-loop-*`、`luban-work-serious-loop-*`、`luban-work-serious-exit-*`；`pic/小鲁班9.png` 仅作上游角色参考 |
 | 高清边缘姿势 | 左/右/下探头 | `luban-edge-left-smooth-*`、`luban-edge-bottom-smooth-*`；右侧镜像左侧 |
 | 大头小鲁班与熊猫参考 | 熊猫坐骑巡游 | `luban-roam-boarding-*`、`luban-roam-flight-*`；`roam-wave` 可选 |
@@ -48,16 +47,18 @@ build_sprite_atlas.py
 ## 3. 尺寸和画质契约
 
 - 图集显示帧为 `399×509` Pbgra32，对应 `190×242 DIP` 逻辑基准。
-- `star-wish` 不新增全人物帧；人物继续使用 `cute` 的 `399×509` Pbgra32 帧。唯一星星源 `Assets/luban-wish-star.png` 为 `96×96` RGBA，运行时以 `22 DIP` 高质量缩放显示。
+- 许愿星、蝴蝶和失败的全人物星星方案均不得新增或复用运行时动作入口；对应 PNG、overlay、ActionName、对白和图集页都应保持为零。
 - 桌宠在 150% DPI、140% 用户缩放下仍使用高密度源像素，不能退回低清放大图。
 - 所有姿势共用统一逻辑边界、帽子中心和接触基线，避免换帧时忽大忽小。
 - 相邻姿势直接显示清晰单帧；大变化使用专用桥接姿势，不使用整图交叉淡化制造双层轮廓或光纹。
-- 人物、双手、喇叭、声效线或熊猫坐骑等全尺寸内容必须作为完整预乘 Alpha 轮廓处理，不能用模糊整图交叉淡化制造双影。`star-wish` 是明确允许的轻量例外：只有一颗不可命中的小星星 overlay，人物仍来自原有清晰帧；overlay 必须常驻视觉树、默认完全透明，并在动作被抢占时立即恢复透明。
+- 人物、双手、喇叭、声效线或熊猫坐骑等全尺寸内容必须作为完整预乘 Alpha 轮廓处理，不能用模糊整图交叉淡化制造双影。
 - 边缘探头先保留完整头、肩和双手，再按 Windows 边界裁切；不要把已经截断的手交给补帧器。
 
 ## 4. 当前图集快照与动态契约
 
-截至 `2026-08-09`，`v1.0.63` 以轻量 `star-wish` 替换普通 `butterfly`，删除旧中文对白和蝴蝶 Resource。人物复用现有 `cute` 的 56 张 smooth 帧及自然反向退场，只增加 `Assets/luban-wish-star.png`；失败的 144 帧全人物 `star-cuddle`、候选关键帧与生成源均不打包。Brotli v4 人物图集保持 41 页、1240 个源帧和 1240 个分页帧，Todo 的 56 张 `think` smooth 和完整状态机不变。
+截至 `2026-08-10`，`v1.0.65` 删除 `star-wish` ActionName、对白、overlay 和 `Assets/luban-wish-star.png`。普通点击与空闲动作人物资源只包含 `cry / cute / like / eat`，Todo 继续独占完整 `think` smooth。许愿星本来不占人物分页，因此 Brotli v4 人物图集仍为 41 页、1240 个源帧和 1240 个分页帧；最终值仍须由同次重建清单复核。
+
+截至 `2026-08-09`，`v1.0.63` 曾以轻量 `star-wish` 替换普通 `butterfly`；该段仅保留历史。人物当时复用现有 `cute` 的 56 张 smooth 帧并增加一张独立星星 Resource，失败的 144 帧全人物 `star-cuddle` 不打包。
 
 截至 `2026-08-09`，`v1.0.62` 删除 `yawn` 的 84 张 smooth 与 48 张 loop、未播放的 48 张 `loop-cute`，以及不可达的 `cute-smooth-057..090`。蝴蝶普通动作复用 Todo 已验证的 56 张 `think` smooth 人物帧，独立 `96×96` 蝴蝶不进入图集；Todo 仍拥有原有完整入场、最终姿势和反向退场。目标 Brotli 图集为 41 页、1240 个逻辑帧，正式发布仍须以同次重建的清单、程序集嵌入资源和源集指纹动态复核。
 
@@ -75,7 +76,7 @@ build_sprite_atlas.py
 | 分页数 | `53` |
 | `maxDecodedPageBytes` | `25,165,824`（24 MiB） |
 
-这些数字只用于保留历史，不是固定公共接口。boarding、flight、四组独立普通人物动作、Todo 专用 `think` smooth 和可选 `roam-wave` 的实际帧数、逻辑帧数与分页数必须从磁盘资源和 `Assets/luban-sprite-pages.json` 动态读取；第五种普通动作 `star-wish` 必须确认只复用 `cute` 56 帧，且没有 `action-star-wish`、`star-cuddle` 或额外 loop 分页。构建或测试不得依赖旧 README 中的固定总帧数。
+这些数字只用于保留历史，不是固定公共接口。boarding、flight、四组独立普通人物动作、Todo 专用 `think` smooth 和可选 `roam-wave` 的实际帧数、逻辑帧数与分页数必须从磁盘资源和 `Assets/luban-sprite-pages.json` 动态读取；`star-wish`、`action-star-wish`、`star-cuddle` 和额外 loop 分页必须保持为零。构建或测试不得依赖旧 README 中的固定总帧数。
 
 查询当前清单：
 
@@ -115,21 +116,13 @@ python .\tools\install_generated_motion_assets.py `
   --assets-directory .\Assets
 ```
 
-### 5.2 制作许愿星
+### 5.2 退役物件动画边界
 
-`star-wish` 不重新生成人物。它以独立 ActionName 复用现有 `cute` 的前 56 张高清 smooth、既有 wake 桥和自然反向退场；正式图像源清单只有：
-
-```text
-Assets/luban-wish-star.png
-```
-
-该文件必须是 `96×96` RGBA 透明 PNG，透明区域保持干净，不包含文字、背景、第二颗星或人物。`DesktopPet.csproj` 将它作为 WPF Resource 嵌入；`MainWindow.xaml` 预先创建 `22×22 DIP`、`Opacity=0`、`IsHitTestVisible=False` 的 `WishStarOverlay`。动作开始后，一颗星从画面右侧的小手边沿帽檐外缘用约 0.5 秒升起，在头顶轻摇约 0.95 秒，再用约 0.7 秒向右上飞走并淡出。轨迹在运行时由绝对时间计算，不生成星星逐帧图，也不启动额外计时器。
-
-正式提交和发布包不得包含失败的 `luban-star-cuddle-*` 全人物帧、`star-cuddle` 生成源、`action-star-cuddle`/`action-star-wish` 图集页或旧 `luban-butterfly.png`。这条轻量路径不改变 `Assets/luban-sprite-pages.json` 的 41 页、1240 帧契约。
+`star-wish`、`butterfly` 与失败的全人物 `star-cuddle` 均已退役。正式提交和发布包不得包含对应 ActionName、中文对白、WPF overlay、`luban-wish-star.png`、`luban-butterfly.png`、`luban-star-cuddle-*` 人物帧、生成源或图集页。`cute` 的前 56 张高清 smooth 只服务保留的欢呼卖萌动作，不再被物件动画别名复用。
 
 ### 5.3 生成密集帧
 
-委屈、欢呼卖萌、点赞、吃饼干四种独立人物动作与 Todo 专用 `think` smooth 补帧需要外部 RIFE 或等价的连续补帧工具；`star-wish` 直接引用 `cute-smooth-001..056`，不参与稠密人物帧生成。`butterfly`、`star-cuddle`、`yawn`、普通 `think` 循环、未播放的 `cute` 循环和普通挥手均已退役，不得被 `--loops`、`--actions` 或单动作入口重新带回运行时；`cute-smooth` 只保留运行时可达的前 56 帧。提醒序列使用确定性刚体生成。
+委屈、欢呼卖萌、点赞、吃饼干四种独立人物动作与 Todo 专用 `think` smooth 补帧需要外部 RIFE 或等价的连续补帧工具。`star-wish`、`butterfly`、`star-cuddle`、`yawn`、普通 `think` 循环、未播放的 `cute` 循环和普通挥手均已退役，不得被 `--loops`、`--actions` 或单动作入口重新带回运行时；`cute-smooth` 只保留运行时可达的前 56 帧。提醒序列使用确定性刚体生成。
 
 ```powershell
 $env:XLB_RIFE_ROOT = 'C:\path\to\rife-ncnn-vulkan-20221029-windows'
@@ -145,15 +138,15 @@ python .\tools\build_roam_flight_assets.py
 
 boarding 与 flight 从 `001` 连续编号并保持姿势唯一；`roam-wave` 是可选补充，不能用固定秒数强行切断 flight 主循环。人物和帽子保持正立，运行资源不得重新混入 `run`、`crawl` 或 `wriggle` 旧动作。
 
-### 5.5 修复侧边支撑手臂
+### 5.5 生成侧边紧凑抓边手臂
 
-`v1.0.59` 按用户选择恢复 `v1.0.57` 的四张左侧关键姿势、48 张补间帧和生成链。重新安装或生成左侧探头帧后，在构建图集前运行：
+`v1.0.65` 废弃 `v1.0.57` 的逐扫描线补色和 7 像素局部拉伸。安装四张左侧关键姿势、生成 48 张补间帧时，管线会在源图 `450×550` 的下方袖口 ROI 内重建一条短小、上扬的 C 形前臂；头、脸、帽子、耳机和两只手的原始像素保持不变。构建图集前可再次运行同一幂等检查：
 
 ```powershell
-python .\tools\fix_edge_side_arm_reveal.py
+python .\tools\fix_edge_side_arm_reveal.py --smooth-only
 ```
 
-该脚本只在 48 帧 `luban-edge-left-smooth-*` 的下方支撑手臂遮罩内做最多 7 像素的平滑显露，遮罩外像素必须零改动。右侧运行时镜像复用左侧，不产生第二套源帧。脚本使用输入/输出 SHA-256 防止累积重写：已修复素材再次运行是幂等的，来源不明的素材会失败关闭。QA 报告写入 `tools/generated_sources/edge-side-arm-reveal-qa.json`，不得提交到正式运行资源；图集继续保留 `DestinationX=-2` 的透明 gutter。
+脚本会清除旧拉伸留下的 x=0 重复横纹、袖口下半环和断连低 Alpha 碎点，再用原有紫色袖子像素形成与手腕连通的圆润轮廓；不得重新绘制人物或加入整图淡化。48 帧必须全部唯一，循环相邻 ROI Alpha IoU 不低于 `0.94`、面积变化不超过 `4%`、腕心和轮廓端点步进不超过 `2` 个源像素、量化后的近水平下缘连续长度不超过 `6` 个源像素。右侧运行时严格水平镜像同一左侧序列，不产生第二套 PNG；Bottom 的文件名、字节和解码像素哈希必须保持不变。报告默认写入忽略的 `.codex_tmp/edge-compact-grip-qa.json`，不得提交；图集继续保留 `DestinationX=-2` 的透明 gutter。
 
 ### 5.6 生成打工素材
 
@@ -192,9 +185,9 @@ python .\tools\qa_dense_motion_assets.py --require-edge-peek --contacts
 
 QA 至少覆盖：
 
-- PNG 尺寸和透明通道；`Assets/luban-wish-star.png` 必须恰好为 `96×96` RGBA、透明区域干净且画面只有一颗星，运行时 overlay 必须为 `22 DIP`、默认完全透明并不可命中。
+- PNG 尺寸和透明通道；退役的 `Assets/luban-wish-star.png`、蝴蝶和全人物星星候选必须不存在，也不得被项目资源或程序集重新嵌入。
 - 帧编号连续且关键序列不存在重复帧。
-- 普通点击与空闲随机动作清单只包含 `star-wish / cry / cute / like / eat`；`star-wish` 必须逐帧复用 `cute` 的 56 张正播、既有 wake 桥和自然反播，不得拥有独立人物 smooth 或 loop。Todo 专用 56 帧 `think` smooth 必须保留；`butterfly`、`star-cuddle`、`yawn`、`loop-cute`、`cute-smooth-057..090`、`loop-think` 和普通 `luban-wave-*` 运行时资源都必须保持为零。
+- 普通点击与空闲随机动作的人物清单只包含 `cry / cute / like / eat`；点击随机选择必须排除上次成功动作，空闲洗牌袋必须独立。Todo 专用 56 帧 `think` smooth 必须保留；`star-wish`、`butterfly`、`star-cuddle`、`yawn`、`loop-cute`、`cute-smooth-057..090`、`loop-think` 和普通 `luban-wave-*` 运行时资源都必须保持为零。
 - 相邻轮廓、帽子中心、人物缩放和接触基线连续。
 - 熊猫、铃铛、竹筒保持同一完整轮廓。
 - 边缘探头接触点、单调探出、真实探出深度和支撑手臂遮罩 QA。
@@ -226,7 +219,7 @@ python .\tools\qa_sprite_atlas_motion.py --contacts
 
 ## 6. 时间轴不变量
 
-- 人物动作、`star-wish` 小星星、熊猫巡游和边缘探头使用同一个 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴。小星星只更新常驻 WPF overlay 的位移、旋转、缩放和透明度；59/60/120/144 Hz 在同一绝对时间必须得到同一视觉状态。不得启动第二个 `Rendering` 订阅、`DispatcherTimer` 或逐帧创建位图。呼噜泡泡由 WPF `DoubleAnimation/AnimationClock` 驱动，稳定待机时不为它单独保留托管 `Rendering` 回调。
+- 人物动作、熊猫巡游和边缘探头使用同一个 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴；59/60/120/144 Hz 在同一绝对时间必须得到同一视觉状态。不得启动第二个 `Rendering` 订阅、`DispatcherTimer` 或逐帧创建位图。呼噜泡泡由 WPF `DoubleAnimation/AnimationClock` 驱动，稳定待机时不为它单独保留托管 `Rendering` 回调。
 - 动作播放速度由 `MainWindow.xaml.cs` 中 `AnimationPlaybackSpeed` 代码常量配置，当前默认 `1.25`；不提供持久化速度滑块。
 - 打工普通循环的 96 个逻辑帧以 1 倍速播放，每圈 1.6 秒。单击严格保持当前 clip、相位、速度和认真期限；双击立即保持当前相位切到 2 倍速，到最近的 9 个精确中性接缝之一后播放约 133 ms 认真表情过渡，再进入 96 帧 `work-serious-loop` 并从此完整计时至少 4 秒。认真期限到达后仍等待最近精确接缝，再播放 24 帧认真退出，不能在任意手指相位硬切。
 - 窗口位置按显示器刷新率更新，姿势帧率和移动刷新率互相独立。

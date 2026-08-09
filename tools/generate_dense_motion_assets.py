@@ -96,6 +96,7 @@ BASELINE_STABILIZE_EDGES: dict[str, frozenset[int]] = {
 
 sys.path.insert(0, str(ROOT / "tools"))
 import install_generated_motion_assets as installer  # noqa: E402
+import fix_edge_side_arm_reveal as side_grip  # noqa: E402
 
 
 def load_rgba(path: Path) -> np.ndarray:
@@ -1429,6 +1430,11 @@ def registered_edge_sources() -> dict[str, list[Path]]:
                 direction,
                 installer.EDGE_PEEK_REVEAL_OFFSETS[direction][number - 1],
             )
+            if direction == "left":
+                reconstructed_runtime, _ = side_grip.reshape_side_grip_image(
+                    reconstructed_runtime,
+                    side_grip.KEY_PHASE_FRAMES[number],
+                )
             if not np.array_equal(
                 np.asarray(reconstructed_runtime, dtype=np.uint8),
                 np.asarray(original, dtype=np.uint8),
@@ -1790,6 +1796,11 @@ def build_edge_peek_sequences() -> dict[str, list[Path]]:
             # low-alpha light trail in WPF's transparent compositor.
             if sample % EDGE_PEEK_PHASE_FRAME_COUNT != 0:
                 sampled = suppress_motion_trails(sampled)
+            if direction == "left":
+                sampled, _ = side_grip.reshape_side_grip_image(
+                    sampled,
+                    sample,
+                )
             installer.save_png_atomically(sampled, destination)
             outputs.append(destination)
         remove_stale(prefix, len(outputs))

@@ -119,13 +119,6 @@ internal static partial class Program
             }
 
             if (args.Contains(
-                    "--star-wish-preview",
-                    StringComparer.OrdinalIgnoreCase))
-            {
-                return RunStarWishPreview(application);
-            }
-
-            if (args.Contains(
                     "--reminder-close-preview",
                     StringComparer.OrdinalIgnoreCase))
             {
@@ -169,19 +162,33 @@ internal static partial class Program
             }
 
             if (args.Contains(
-                    "--star-wish-only",
+                    "--reaction-random-only",
                     StringComparer.OrdinalIgnoreCase))
             {
-                var wishWindow = new MainWindow
+                var reactionWindow = new MainWindow
                 {
                     ShowActivated = false
                 };
+                Invoke(
+                    reactionWindow,
+                    "ApplyPetSizeScale",
+                    1d,
+                    false,
+                    false);
+                SetField(
+                    reactionWindow,
+                    "_automaticAnimationEnabled",
+                    true);
                 RunCheck(nameof(AssertMotionTimelineContract),
-                    () => AssertMotionTimelineContract(wishWindow));
-                RunCheck(nameof(AssertStarWishSequenceContract),
-                    () => AssertStarWishSequenceContract(wishWindow));
+                    () => AssertMotionTimelineContract(reactionWindow));
+                RunCheck(nameof(AssertRetiredStarWishContract),
+                    () => AssertRetiredStarWishContract(reactionWindow));
+                RunCheck(nameof(AssertClickReactionRandomContract),
+                    () => AssertClickReactionRandomContract(reactionWindow));
+                RunCheck(nameof(AssertRandomActivityBag),
+                    () => AssertRandomActivityBag(reactionWindow));
                 RunCheck(nameof(AssertAbsoluteTimelineMathContract),
-                    () => AssertAbsoluteTimelineMathContract(wishWindow));
+                    () => AssertAbsoluteTimelineMathContract(reactionWindow));
                 return 0;
             }
 
@@ -360,6 +367,8 @@ internal static partial class Program
                 {
                     RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                         () => AssertResidentSpritePageWarmupContract(window));
+                    RunCheck(nameof(AssertSpritePagePrefetchIdleTrimDeferralContract),
+                        () => AssertSpritePagePrefetchIdleTrimDeferralContract(window));
                     RunCheck(nameof(AssertIdleSpritePageTrimContract),
                         () => AssertIdleSpritePageTrimContract(window));
                     RunCheck(nameof(AssertIdleSpritePageCollectionGateContract),
@@ -395,8 +404,8 @@ internal static partial class Program
                         () => AssertColdSpritePageClipClockContract(window));
                     RunCheck(nameof(AssertMotionTimelineContract),
                         () => AssertMotionTimelineContract(window));
-                    RunCheck(nameof(AssertStarWishSequenceContract),
-                        () => AssertStarWishSequenceContract(window));
+                    RunCheck(nameof(AssertClickReactionRandomContract),
+                        () => AssertClickReactionRandomContract(window));
                     RunCheck(nameof(AssertAbsoluteTimelineMathContract),
                         () => AssertAbsoluteTimelineMathContract(window));
                     return 0;
@@ -435,6 +444,8 @@ internal static partial class Program
 
                 RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                     () => AssertResidentSpritePageWarmupContract(window));
+                RunCheck(nameof(AssertSpritePagePrefetchIdleTrimDeferralContract),
+                    () => AssertSpritePagePrefetchIdleTrimDeferralContract(window));
                 RunCheck(nameof(AssertIdleSpritePageTrimContract),
                     () => AssertIdleSpritePageTrimContract(window));
                 RunCheck(nameof(AssertIdleSpritePageCollectionGateContract),
@@ -456,8 +467,10 @@ internal static partial class Program
                     AssertSpritePagePayloadEncodingContract);
                 RunCheck(nameof(AssertHighDensityScalingAndDpiContract), () => AssertHighDensityScalingAndDpiContract(window));
                 RunCheck(nameof(AssertMotionTimelineContract), () => AssertMotionTimelineContract(window));
-                RunCheck(nameof(AssertStarWishSequenceContract),
-                    () => AssertStarWishSequenceContract(window));
+                RunCheck(nameof(AssertRetiredStarWishContract),
+                    () => AssertRetiredStarWishContract(window));
+                RunCheck(nameof(AssertClickReactionRandomContract),
+                    () => AssertClickReactionRandomContract(window));
                 RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
                 RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
@@ -1272,219 +1285,6 @@ internal static partial class Program
         }
     }
 
-    private static int RunStarWishPreview(Application application)
-    {
-        var tempDirectory = Path.Combine(
-            Path.GetTempPath(),
-            $"xlb-pet-star-wish-preview-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDirectory);
-        var preview = new MainWindow
-        {
-            ShowActivated = true,
-            ShowInTaskbar = true,
-            Topmost = true,
-            Title = "Star Wish Preview",
-            WindowStartupLocation = WindowStartupLocation.CenterScreen
-        };
-
-        SetField(
-            preview,
-            "_todoStore",
-            new TodoStore(Path.Combine(tempDirectory, "todos.json")));
-        SetField(
-            preview,
-            "_settingsStore",
-            new AppSettingsStore(Path.Combine(tempDirectory, "settings.json")));
-        SetField(
-            preview,
-            "_scheduledTaskStore",
-            new ScheduledTaskStore(
-                Path.Combine(tempDirectory, "scheduled-tasks.json")));
-        GetField<ObservableCollection<TodoItem>>(preview, "_todos").Clear();
-        GetField<ObservableCollection<ScheduledTaskItem>>(
-            preview,
-            "_scheduledTasks").Clear();
-        GetField<Queue<ScheduledTaskItem>>(
-            preview,
-            "_reminderQueue").Clear();
-        GetField<HashSet<Guid>>(
-            preview,
-            "_queuedReminderIds").Clear();
-        GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
-
-        var starWishClip = GetField<Array>(preview, "_reactionClips")
-            .Cast<object>()
-            .First();
-        Assert(GetProperty<string>(starWishClip, "ActionName") == "star-wish",
-            "Star Wish Preview要求第一条真实reaction为star-wish");
-
-        var replayTimer = new DispatcherTimer(DispatcherPriority.Background)
-        {
-            Interval = TimeSpan.FromMilliseconds(120)
-        };
-        var previewCenterLeft = double.NaN;
-        var previewCenterTop = double.NaN;
-        void KeepPreviewCentered()
-        {
-            if (!double.IsFinite(previewCenterLeft) ||
-                !double.IsFinite(previewCenterTop))
-            {
-                return;
-            }
-
-            preview.Left = previewCenterLeft;
-            preview.Top = previewCenterTop;
-            Invoke(
-                preview,
-                "MoveMainWindowTo",
-                previewCenterLeft,
-                previewCenterTop);
-        }
-
-        void TryStartStarWish()
-        {
-            if (!preview.IsLoaded ||
-                GetField<bool>(preview, "_isClosing") ||
-                GetRawField(preview, "_activeClip") is not null)
-            {
-                return;
-            }
-
-            GetField<DispatcherTimer>(preview, "_automaticTimer").Stop();
-            _ = Invoke(
-                preview,
-                "TryStartReaction",
-                    starWishClip,
-                false);
-        }
-
-        replayTimer.Tick += (_, _) =>
-        {
-            KeepPreviewCentered();
-            TryStartStarWish();
-        };
-        preview.PreviewKeyDown += (_, eventArgs) =>
-        {
-            if (eventArgs.Key != Key.Escape)
-            {
-                return;
-            }
-
-            eventArgs.Handled = true;
-            preview.Close();
-        };
-        preview.Loaded += (_, _) =>
-            preview.Dispatcher.BeginInvoke(
-                DispatcherPriority.ApplicationIdle,
-                new Action(() =>
-                {
-                    try
-                    {
-                        PauseSpritePageWarmupForClockSimulation(preview);
-                        SetField(preview, "_automaticAnimationEnabled", false);
-                        SetField(preview, "_edgeRoamingEnabled", false);
-                        SetField(preview, "_edgeRoamPreloadRequested", false);
-                        SetField(preview, "_nextEdgeRoamDueTimestamp", 0L);
-                        SetField(preview, "_nextAutomaticActivityDueTimestamp", 0L);
-                        SetField(preview, "_pillowBreathingDueTimestamp", 0L);
-                        SetField(preview, "_sessionInactive", false);
-                        SetField(preview, "_isReminderActive", false);
-                        SetField(preview, "_activeReminder", null);
-                        GetField<DispatcherTimer>(preview, "_automaticTimer").Stop();
-                        GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
-                        GetField<DispatcherTimer>(preview, "_edgePeekHoldTimer").Stop();
-                        GetField<DispatcherTimer>(preview, "_reminderSizeCommitTimer").Stop();
-                        Invoke(
-                            preview,
-                            "StopEdgeRoaming",
-                            false,
-                            true,
-                            true,
-                            true);
-                        Invoke(preview, "ExitEdgePeek", false, true);
-                        Invoke(preview, "StopWorkModeImmediately", true);
-                        SetField(preview, "_activeClip", null);
-                        SetField(preview, "_activeFrameIndex", -1);
-                        SetField(preview, "_activeClipStartedTimestamp", 0L);
-                        SetField(preview, "_activeFrameDeadlineTimestamp", 0L);
-                        Invoke(preview, "ClearDeferredActiveClipClock");
-                        Invoke(
-                            preview,
-                            "SetBubbleMode",
-                            GetNestedEnum("BubbleMode", "None"));
-                        Invoke(preview, "ResetPetVisualTransforms");
-                        Invoke(
-                            preview,
-                            "ApplyPetSizeScale",
-                            1d,
-                            false,
-                            false);
-
-                        var idleFrame = GetField<object>(preview, "_idleFrame");
-                        PrimeSpritePageForFrame(preview, idleFrame);
-                        Invoke(preview, "ShowStableFrame", idleFrame);
-                        preview.UpdateLayout();
-                        var workArea = SystemParameters.WorkArea;
-                        var previewWidth = preview.ActualWidth > 0
-                            ? preview.ActualWidth
-                            : preview.Width;
-                        var previewHeight = preview.ActualHeight > 0
-                            ? preview.ActualHeight
-                            : preview.Height;
-                        var centeredLeft =
-                            workArea.Left + (workArea.Width - previewWidth) / 2;
-                        var centeredTop =
-                            workArea.Top + (workArea.Height - previewHeight) / 2;
-                        // Keep WPF's logical window state and the native HWND
-                        // position in sync. Calling only the native helper lets
-                        // a later layout pass restore the previous user position.
-                        previewCenterLeft = centeredLeft;
-                        previewCenterTop = centeredTop;
-                        KeepPreviewCentered();
-                        preview.Title = "Star Wish Preview";
-                        replayTimer.Start();
-                        TryStartStarWish();
-                        var activePreviewClip = GetRawField(
-                            preview,
-                            "_activeClip");
-                        Assert(activePreviewClip is not null &&
-                               GetProperty<string>(
-                                   activePreviewClip,
-                                    "ActionName") == "star-wish",
-                            "Star Wish Preview启动时必须真实进入star-wish reaction");
-                        _ = preview.Activate();
-                        _ = preview.Focus();
-                        Console.WriteLine(
-                            "[PREVIEW] Production star-wish reaction is looping at " +
-                            "screen center: cute raise-hands -> one tiny star rises, " +
-                            "hovers, and flies away. Press Esc to close.");
-                    }
-                    catch (Exception exception)
-                    {
-                        Console.Error.WriteLine(exception);
-                        application.Shutdown(1);
-                    }
-                }));
-        preview.Closed += (_, _) => replayTimer.Stop();
-
-        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
-        try
-        {
-            return application.Run(preview);
-        }
-        finally
-        {
-            replayTimer.Stop();
-            try
-            {
-                Directory.Delete(tempDirectory, recursive: true);
-            }
-            catch
-            {
-                // Diagnostic-only preview cleanup must not hide its visual result.
-            }
-        }
-    }
 
     private static int RunWorkModePreview(Application application)
     {
@@ -2164,7 +1964,7 @@ internal static partial class Program
                 "MainWindow 缺少 sprite 页像素复用池");
         Assert(GetProperty<long>(profiledPool, "AllocationCount") <= 40 &&
                GetProperty<long>(profiledPool, "ReuseCount") >= 12,
-            "五种普通动作连续轮播必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
+            "四种普通动作依次覆盖时必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
 
         SetField(window, "_edgeRoamPreloadRequested", true);
         var roamPageNames = new[]
@@ -2748,11 +2548,14 @@ internal static partial class Program
                idleTrimTimer.IsEnabled,
             "热页淘汰obsolete deferred请求时只能停止分页dispatcher，不能提前消费idle宽限期");
 
+        idleTrimTimer.Stop();
+        idleTrimTimer.Interval = TimeSpan.FromSeconds(7);
+        idleTrimTimer.Start();
         Invoke(window, "RequestSpritePagePrefetch", hotPageName, true);
         Assert(idleTrimTimer.IsEnabled &&
-               idleTrimTimer.Interval == TimeSpan.FromSeconds(20) &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(7) &&
                GetRawField(window, "_spritePagePrefetchTask") is null,
-            "新的分页活动即使命中resident页，也必须重新计算20秒idle宽限且不得创建后台任务");
+            "resident命中不是新的分页活动，不得重启20秒idle宽限或创建后台任务");
         ResetSpritePageCollectionTestState(window);
 
         // A1 -> cold C1: keep A1 visible while C starts decoding in the
@@ -3213,6 +3016,147 @@ internal static partial class Program
         Assert(expectedPinnedPageNames.All(residentPages.Contains),
             "压力测试清理后固定热页仍必须常驻");
         AssertResidentSpriteCacheAccounting(window, "LRU压力测试清理");
+    }
+
+    private static void AssertSpritePagePrefetchIdleTrimDeferralContract(
+        MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        ResetSpritePageCollectionTestState(window);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
+        var prefetchDispatchTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePagePrefetchDispatchTimer");
+        var idleTrimGracePeriod = (TimeSpan)(typeof(MainWindow).GetField(
+                "SpritePageIdleTrimGracePeriod",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var sentinelInterval = TimeSpan.FromSeconds(7);
+
+        Assert(idleTrimGracePeriod == TimeSpan.FromSeconds(20),
+            "分页请求idle裁剪回归必须保留20秒正式宽限期");
+
+        var coldPageNames = GetDictionaryEntries(pageMap)
+            .Select(entry => (string)entry.Key)
+            .Where(pageName => !string.Equals(
+                                   pageName,
+                                   idlePageName,
+                                   StringComparison.Ordinal) &&
+                               !residentPages.Contains(pageName))
+            .OrderBy(pageName => GetSpritePageByteCount(pageMap, pageName))
+            .Take(2)
+            .ToArray();
+        Assert(coldPageNames.Length == 2,
+            "分页请求idle裁剪回归至少需要两个未驻留冷页");
+        var deferredPageName = coldPageNames[0];
+        var directPageName = coldPageNames[1];
+        var deferredFrame = GetFirstSpriteFrameOnPage(window, deferredPageName);
+
+        void ArmSentinel()
+        {
+            idleTrimTimer.Stop();
+            idleTrimTimer.Interval = sentinelInterval;
+            idleTrimTimer.Start();
+        }
+
+        bool SentinelIsUntouched() =>
+            idleTrimTimer.IsEnabled &&
+            idleTrimTimer.Interval == sentinelInterval;
+
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        SetField(window, "_renderDeferredSpritePageName", null);
+        SetField(window, "_renderDeferredSpritePageUrgent", false);
+        SetField(window, "_renderDeferredSpritePageCancellation", false);
+        prefetchDispatchTimer.Stop();
+
+        ArmSentinel();
+        Invoke(window, "RequestSpritePagePrefetch", idlePageName, true);
+        Assert(SentinelIsUntouched() &&
+               GetRawField(window, "_spritePagePrefetchTask") is null &&
+               GetRawField(window, "_desiredSpritePageName") is null,
+            "resident命中不得重启idle裁剪宽限，也不得创建分页请求");
+
+        SetField(window, "_pendingSpriteFrame", deferredFrame);
+        Invoke(window, "RequestSpritePagePrefetch", deferredPageName, false);
+        Assert(SentinelIsUntouched() &&
+               GetRawField(window, "_spritePagePrefetchTask") is null &&
+               GetRawField(window, "_desiredSpritePageName") is null,
+            "pending忙碌时拒绝的非紧急请求不得重启idle裁剪宽限");
+        SetField(window, "_pendingSpriteFrame", null);
+
+        SetField(window, "_desiredSpritePageName", deferredPageName);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        Invoke(window, "RequestSpritePagePrefetch", deferredPageName, true);
+        Assert(SentinelIsUntouched() &&
+               GetField<bool>(window, "_desiredSpritePageUrgent") &&
+               GetRawField(window, "_spritePagePrefetchTask") is null,
+            "重复desired只允许提升urgent，不得重启idle裁剪宽限或重复解码");
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
+        {
+            Invoke(window, "RequestSpritePagePrefetch", deferredPageName, true);
+        }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+
+        Assert(SentinelIsUntouched() &&
+               string.Equals(
+                   GetRawField(window, "_renderDeferredSpritePageName") as string,
+                   deferredPageName,
+                   StringComparison.Ordinal) &&
+               GetField<bool>(window, "_renderDeferredSpritePageUrgent") &&
+               prefetchDispatchTimer.IsEnabled &&
+               GetRawField(window, "_spritePagePrefetchTask") is null,
+            "Rendering冷页请求只能发布dispatcher信号，不能在composition内重启idle宽限");
+
+        Invoke(window, "SpritePagePrefetchDispatchTimer_Tick", null, EventArgs.Empty);
+        Assert(idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == idleTrimGracePeriod &&
+               GetRawField(window, "_renderDeferredSpritePageName") is null &&
+               !prefetchDispatchTimer.IsEnabled &&
+               GetRawField(window, "_spritePagePrefetchTask") is Task,
+            "dispatcher真正接管Rendering冷页请求时必须且只能此时重设20秒idle宽限");
+        WaitForSpritePagePrefetchToSettle(window);
+        Assert(residentPages.Contains(deferredPageName),
+            "dispatcher接管的冷页请求必须完成并进入resident缓存");
+
+        ArmSentinel();
+        Invoke(window, "RequestSpritePagePrefetch", directPageName, true);
+        Assert(idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == idleTrimGracePeriod &&
+               GetRawField(window, "_spritePagePrefetchTask") is Task,
+            "新的非Rendering冷页请求必须在真正接收时重设20秒idle宽限");
+        WaitForSpritePagePrefetchToSettle(window);
+        Assert(residentPages.Contains(directPageName),
+            "新的非Rendering冷页请求必须完成并进入resident缓存");
+
+        Invoke(window, "StopIdleSpritePageTrim");
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        SetField(window, "_renderDeferredSpritePageName", null);
+        SetField(window, "_renderDeferredSpritePageUrgent", false);
+        prefetchDispatchTimer.Stop();
+        ResetSpritePageCollectionTestState(window);
+        AssertResidentSpriteCacheAccounting(window, "分页请求idle宽限去重");
     }
 
     private static void AssertIdleSpritePageTrimContract(MainWindow window)
@@ -4914,8 +4858,7 @@ internal static partial class Program
         Assert(!expectedSourcePaths.Any(path =>
                    path.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) ||
                    path.Contains("star-wish", StringComparison.OrdinalIgnoreCase)),
-            "star-wish必须复用cute人物分页，小星星只能作为独立tiny overlay，" +
-            "不得新增star-cuddle/star-wish完整人物图集页");
+            "退役许愿动作不得在人物图集源路径中保留独立分页");
         var manifestSourceFrameCount = root.GetProperty("sourceFrameCount").GetInt32();
         var manifestPageFrameCount = root.GetProperty("pageFrameCount").GetInt32();
         Assert(manifestSourceFrameCount == expectedSourcePaths.Length,
@@ -4984,7 +4927,7 @@ internal static partial class Program
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
             "还必须动态包含熊猫坐骑登乘与巡游连续分页、" +
             "五套 smooth 页、三个普通循环页和两组专用提醒页；" +
-            "star-wish不得增加完整人物分页，" +
+            "退役许愿动作不得保留完整人物分页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -6238,14 +6181,13 @@ internal static partial class Program
             .Select(element => ((string?)element.Attribute("Include") ?? string.Empty)
                 .Replace('\\', '/'))
             .ToArray();
-        Assert(includes.Length == 4 &&
+        Assert(includes.Length == 3 &&
                includes.Contains("Assets/sprite-pages/*.pbgra.br", StringComparer.OrdinalIgnoreCase) &&
                includes.Contains("Assets/luban-sprite-pages.json", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains("Assets/luban-wish-star.png", StringComparer.OrdinalIgnoreCase),
+               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase),
             "csproj只能嵌入无损Brotli分页、v4 manifest和独立枕头层");
         var allowedStandalonePngResources = new HashSet<string>(
-            ["Assets/luban-pillow-layer.png", "Assets/luban-wish-star.png"],
+            ["Assets/luban-pillow-layer.png"],
             StringComparer.OrdinalIgnoreCase);
         Assert(!includes.Any(include =>
                 include.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
@@ -6274,17 +6216,15 @@ internal static partial class Program
             .Select(resource => resource.ToLowerInvariant())
             .Append("assets/luban-sprite-pages.json")
             .Append("assets/luban-pillow-layer.png")
-            .Append("assets/luban-wish-star.png")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         Assert(assetKeys.SetEquals(expectedAssets) &&
-               assetKeys.Count == expectedPageResources.Count + 3,
+               assetKeys.Count == expectedPageResources.Count + 2,
             $"主程序集Assets资源必须严格等于{expectedPageResources.Count}个Brotli分页、" +
             "一个v4 manifest和一个独立枕头PNG");
         Assert(!assetKeys.Any(key =>
                 key.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                  (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                   !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
-                   !key.Equals("assets/luban-wish-star.png", StringComparison.OrdinalIgnoreCase))),
+                   !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
             "主程序集不得包含分页预览PNG、旧单atlas或全身源PNG");
     }
 
@@ -6487,7 +6427,7 @@ internal static partial class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        var expectedActions = new[] { "star-wish", "cry", "cute", "like", "eat" };
+        var expectedActions = new[] { "cry", "cute", "like", "eat" };
         var expectedSmoothActions = new[]
             { "cry", "cute", "like", "eat", "think" };
         var expectedLoopActions = new[] { "cry", "like", "eat" };
@@ -6503,7 +6443,7 @@ internal static partial class Program
         Assert(reactionActionNames.SequenceEqual(expectedActions) &&
                smoothActionNames.SequenceEqual(expectedSmoothActions) &&
                loopActionNames.SequenceEqual(expectedLoopActions),
-            "运行时必须保留五种普通reaction；star-wish复用cute smooth，loop仅cry/like/eat");
+            "运行时必须只保留四种普通reaction；smooth保留原有动作与Todo，loop仅cry/like/eat");
         var smoothFrameKeys = GetProperty<IEnumerable<string>>(
                 GetField<object>(window, "_actionSmoothFrames"),
                 "Keys")
@@ -6516,7 +6456,7 @@ internal static partial class Program
                loopFrameKeys.SetEquals(expectedLoopActions),
             "smooth字典只能保留四种人物动作与Todo think，loop字典只能加载cry/like/eat");
         Assert(clips.Length == expectedActions.Length,
-            "普通点击必须严格保留五组动作，不得把 Todo think 当作 reaction");
+            "普通点击必须严格保留四组动作，不得把 Todo think 当作 reaction");
         var actualActions = clips
             .Select(clip => GetProperty<string>(clip, "ActionName"))
             .ToArray();
@@ -6534,11 +6474,6 @@ internal static partial class Program
                         "刚睡醒",
                         StringComparison.Ordinal)),
             "普通点击 clip 不得保留 think ActionName、旧think文案或yawn文案");
-        var starWishClip = clips.Single(clip =>
-            GetProperty<string>(clip, "ActionName") == "star-wish");
-        Assert(GetProperty<string>(starWishClip, "Message") ==
-               "许个小愿望，送你一颗亮晶晶～",
-            "star-wish必须使用新的许愿对白");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
         var wakeFrameCount = expectedWakeFrameNames.Length;
         Assert(GetField<Array>(window, "_wakeFrames").Length == wakeFrameCount,
@@ -6677,7 +6612,7 @@ internal static partial class Program
             "Todo 入场和收起必须严格互为反序，快速切换时才能映射到同一姿势");
     }
 
-    private static void AssertStarWishSequenceContract(MainWindow window)
+    private static void AssertRetiredStarWishContract(MainWindow window)
     {
         var workspace = Path.GetDirectoryName(
             FindWorkspaceFile("DesktopPet.csproj"))!;
@@ -6687,203 +6622,220 @@ internal static partial class Program
             Path.Combine(workspace, "MainWindow.xaml"));
         var projectSource = File.ReadAllText(
             Path.Combine(workspace, "DesktopPet.csproj"));
-        var createSource = ExtractPrivateMethodSource(
-            mainSource,
-            "CreateStarWishClip");
-        var updateSource = ExtractPrivateMethodSource(
-            mainSource,
-            "UpdateWishStarOverlay");
-        var resolveSource = ExtractPrivateMethodSource(
-            mainSource,
-            "ResolveWishStarVisualState");
-        var renderingSource = ExtractPrivateMethodSource(
-            mainSource,
-            "VisualClock_Rendering");
-
+        var retiredAssetPath = Path.Combine(
+            workspace,
+            "Assets",
+            "luban-wish-star.png");
         var productionAssemblyText = System.Text.Encoding.UTF8.GetString(
             File.ReadAllBytes(typeof(MainWindow).Assembly.Location));
-        var productionResourceNames = typeof(MainWindow).Assembly
-            .GetManifestResourceNames();
-        Assert(!mainSource.Contains("butterfly", StringComparison.OrdinalIgnoreCase) &&
-               !mainSource.Contains("小蝴蝶", StringComparison.Ordinal) &&
-               !xamlSource.Contains("butterfly", StringComparison.OrdinalIgnoreCase) &&
-               !projectSource.Contains("butterfly", StringComparison.OrdinalIgnoreCase) &&
-               !productionAssemblyText.Contains(
-                   "Butterfly",
-                   StringComparison.OrdinalIgnoreCase) &&
-               !productionAssemblyText.Contains("小蝴蝶", StringComparison.Ordinal) &&
-               productionResourceNames.All(name =>
-                   !name.Contains("butterfly", StringComparison.OrdinalIgnoreCase)),
-            "生产代码、程序集、XAML和资源必须彻底移除旧Butterfly overlay与对白");
-        Assert(!mainSource.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) &&
-               !xamlSource.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) &&
-               !projectSource.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) &&
-               createSource.Contains("CreateMotionClip", StringComparison.Ordinal) &&
-               createSource.Contains("StarWishActionName", StringComparison.Ordinal) &&
-               createSource.Contains("StarWishPoseActionName", StringComparison.Ordinal) &&
-               !createSource.Contains("DispatcherTimer", StringComparison.Ordinal),
-            "star-wish必须复用cute人物clip，不能保留star-cuddle人物页或额外timer");
-
-        var starClip = GetField<Array>(window, "_reactionClips")
-            .Cast<object>()
-            .Single(clip =>
-                GetProperty<string>(clip, "ActionName") == "star-wish");
-        var clipFrames = GetClipFrames(starClip).Cast<object>().ToArray();
-        var actualNames = clipFrames
-            .Select(GetAnimationFrameName)
-            .ToArray();
-        var expectedNames = BuildExpectedMotionFrameNames("star-wish");
-        var wakeFrameCount = GetExpectedWakeFrameNames().Length;
-        var expectedCuteForwardNames = Enumerable.Range(1, 56)
-            .Select(number => $"luban-cute-smooth-{number:000}.png")
-            .ToArray();
-        Assert(actualNames.SequenceEqual(expectedNames) &&
-               GetProperty<int>(starClip, "ActionFrameIndex") == wakeFrameCount &&
-               actualNames.Skip(wakeFrameCount).Take(56)
-                   .SequenceEqual(expectedCuteForwardNames) &&
-               actualNames.Count(name => name.Contains(
-                   "luban-cute-smooth-",
-                   StringComparison.Ordinal)) == 111 &&
-               actualNames.All(name =>
-                   !name.Contains("star-wish", StringComparison.OrdinalIgnoreCase) &&
-                   !name.Contains("-loop-", StringComparison.Ordinal)),
-            "star-wish必须以ActionName=star-wish复用cute 56帧正播、自然反播和既有wake桥，" +
-            "不得新增full-size人物资源或loop");
-
-        var wishStarOverlay = GetField<Image>(window, "WishStarOverlay");
-        var wishStarBitmap = wishStarOverlay.Source as BitmapSource;
-        var wishStarAsset = FindWorkspaceFile("Assets", "luban-wish-star.png");
-        Assert(wishStarOverlay.Width == 22 &&
-               wishStarOverlay.Height == 22 &&
-               Math.Abs(Canvas.GetLeft(wishStarOverlay) - 84) <= 0.001 &&
-               Math.Abs(Canvas.GetTop(wishStarOverlay) - 172) <= 0.001 &&
-               wishStarOverlay.Opacity == 0 &&
-               wishStarOverlay.IsHitTestVisible == false &&
-               wishStarBitmap is { PixelWidth: 96, PixelHeight: 96 } &&
-               new FileInfo(wishStarAsset).Length <= 64 * 1024 &&
-               xamlSource.Contains("x:Name=\"WishStarOverlay\"", StringComparison.Ordinal) &&
-               xamlSource.Contains("luban-wish-star.png", StringComparison.Ordinal) &&
-               projectSource.Contains(
-                   "<Resource Include=\"Assets\\luban-wish-star.png\" />",
-                   StringComparison.Ordinal),
-            "star-wish必须使用常驻、透明、18–22 DIP的小型96px星星资源，不能首次显示才布局");
-
-        var visualStateType = typeof(MainWindow).GetNestedType(
-            "WishStarVisualState",
-            BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("找不到 WishStarVisualState");
-        Assert(visualStateType.IsValueType &&
-               updateSource.Contains(
-                   "(timestamp - riseStartedTimestamp)",
-                   StringComparison.Ordinal) &&
-               renderingSource.Contains("UpdateWishStarOverlay(timestamp)", StringComparison.Ordinal) &&
-               resolveSource.Contains("inverse * inverse * 42", StringComparison.Ordinal) &&
-               resolveSource.Contains("2 * inverse * eased * 66", StringComparison.Ordinal) &&
-               resolveSource.Contains("2 * inverse * eased * -62", StringComparison.Ordinal) &&
-               resolveSource.Contains("eased * eased * -134", StringComparison.Ordinal) &&
-               !updateSource.Contains("new DispatcherTimer", StringComparison.Ordinal) &&
-               !updateSource.Contains("BeginAnimation", StringComparison.Ordinal) &&
-               !resolveSource.Contains("DispatcherTimer", StringComparison.Ordinal),
-            "星星必须由CompositionTarget.Rendering + Stopwatch绝对时间轴定位，" +
-            "每帧不得创建timer、动画对象或布局元素");
-
-        object Resolve(double seconds) => InvokeStatic(
-            typeof(MainWindow),
-            "ResolveWishStarVisualState",
-            seconds)!;
-        var hiddenBefore = Resolve(-0.001);
-        var riseStart = Resolve(0);
-        var rise = Resolve(0.25);
-        var riseEnd = Resolve(0.5 - 0.000001);
-        var hoverStart = Resolve(0.5);
-        var hover = Resolve(0.5 + 0.475);
-        var hoverEnd = Resolve(0.5 + 0.95 - 0.000001);
-        var flyStart = Resolve(0.5 + 0.95);
-        var fly = Resolve(0.5 + 0.95 + 0.35);
-        var hiddenAfter = Resolve(0.5 + 0.95 + 0.7);
-        Assert(!GetProperty<bool>(hiddenBefore, "IsVisible") &&
-               GetProperty<bool>(riseStart, "IsVisible") &&
-               Math.Abs(GetProperty<double>(riseStart, "TranslateX") - 42) <=
-                   0.000001 &&
-               Math.Abs(GetProperty<double>(riseStart, "TranslateY")) <= 0.000001 &&
-               GetProperty<bool>(rise, "IsVisible") &&
-               GetProperty<double>(rise, "Opacity") is > 0 and <= 1 &&
-               Math.Abs(GetProperty<double>(rise, "TranslateX") - 43.5) <=
-                   0.000001 &&
-               GetProperty<double>(rise, "TranslateY") is < 0 and > -134 &&
-               GetProperty<bool>(hover, "IsVisible") &&
-               Math.Abs(GetProperty<double>(hover, "TranslateY") + 134) <= 2.01 &&
-               GetProperty<bool>(fly, "IsVisible") &&
-               GetProperty<double>(fly, "TranslateX") > 0 &&
-               GetProperty<double>(fly, "TranslateY") < -134 &&
-               !GetProperty<bool>(hiddenAfter, "IsVisible"),
-            "单颗星星必须从画面右手边绕帽子外侧升起，在头顶轻微摆动/旋转/缩放，" +
-            "随后顺滑飞出并隐藏");
-        Assert(Math.Abs(GetProperty<double>(riseEnd, "TranslateX") -
-                        GetProperty<double>(hoverStart, "TranslateX")) <= 0.001 &&
-               Math.Abs(GetProperty<double>(riseEnd, "TranslateY") -
-                        GetProperty<double>(hoverStart, "TranslateY")) <= 0.001 &&
-               Math.Abs(GetProperty<double>(hoverEnd, "TranslateX") -
-                        GetProperty<double>(flyStart, "TranslateX")) <= 0.001 &&
-               Math.Abs(GetProperty<double>(hoverEnd, "TranslateY") -
-                        GetProperty<double>(flyStart, "TranslateY")) <= 0.001,
-            "右手侧贝塞尔入场、帽顶hover和右上飞出三个阶段必须位置连续，不能跳帧");
-
-        var referenceAtSameAbsoluteTime = Resolve(1.225);
-        foreach (var refreshRate in new[] { 59d, 60d, 120d, 144d })
+        var forbiddenProductionFragments = new[]
         {
-            var sameAbsoluteTime = Resolve(1.225);
-            Assert(GetProperty<bool>(sameAbsoluteTime, "IsVisible") ==
-                       GetProperty<bool>(referenceAtSameAbsoluteTime, "IsVisible") &&
-                   Math.Abs(GetProperty<double>(sameAbsoluteTime, "Opacity") -
-                            GetProperty<double>(referenceAtSameAbsoluteTime, "Opacity")) <=
-                       0.000000001 &&
-                   Math.Abs(GetProperty<double>(sameAbsoluteTime, "TranslateX") -
-                            GetProperty<double>(referenceAtSameAbsoluteTime, "TranslateX")) <=
-                       0.000000001 &&
-                   Math.Abs(GetProperty<double>(sameAbsoluteTime, "TranslateY") -
-                            GetProperty<double>(referenceAtSameAbsoluteTime, "TranslateY")) <=
-                       0.000000001,
-                $"star-wish在{refreshRate:F0}Hz的同一绝对时间必须得到同一透明度和位置");
+            "star-wish",
+            "StarWish",
+            "WishStar",
+            "luban-wish-star",
+            "许个小愿望，送你一颗亮晶晶～",
+            "Butterfly",
+            "小蝴蝶"
+        };
+
+        Assert(forbiddenProductionFragments.All(fragment =>
+                   !mainSource.Contains(fragment, StringComparison.OrdinalIgnoreCase) &&
+                   !xamlSource.Contains(fragment, StringComparison.OrdinalIgnoreCase) &&
+                   !projectSource.Contains(fragment, StringComparison.OrdinalIgnoreCase) &&
+                   !productionAssemblyText.Contains(
+                       fragment,
+                       StringComparison.OrdinalIgnoreCase)) &&
+               !File.Exists(retiredAssetPath) &&
+               typeof(MainWindow).GetField("WishStarOverlay", InstanceFlags) is null,
+            "生产运行时、XAML、程序集和项目资源必须彻底移除star-wish、旧对白、overlay及独立星星PNG");
+
+        var generatedResourceName = typeof(MainWindow).Assembly
+            .GetManifestResourceNames()
+            .Single(name => name.EndsWith(
+                ".g.resources",
+                StringComparison.OrdinalIgnoreCase));
+        using var stream = typeof(MainWindow).Assembly.GetManifestResourceStream(
+            generatedResourceName)
+            ?? throw new InvalidOperationException("找不到WPF生成资源流");
+        using var reader = new ResourceReader(stream);
+        var resourceEnumerator = reader.GetEnumerator();
+        while (resourceEnumerator.MoveNext())
+        {
+            if (resourceEnumerator.Key is not string resourceKey)
+            {
+                continue;
+            }
+
+            Assert(!resourceKey.Contains(
+                       "luban-wish-star",
+                       StringComparison.OrdinalIgnoreCase),
+                $"主程序集不得继续嵌入退役许愿星资源：{resourceKey}");
         }
 
-        var beforeStall = Resolve(0.8);
-        var afterStall = Resolve(1.05);
-        Assert(Math.Abs(GetProperty<double>(afterStall, "TranslateX") -
-                        GetProperty<double>(beforeStall, "TranslateX")) > 0.01 ||
-               Math.Abs(GetProperty<double>(afterStall, "TranslateY") -
-                        GetProperty<double>(beforeStall, "TranslateY")) > 0.01,
-            "250ms阻塞后必须直接解析新的绝对位置，不能从旧位置逐帧补播");
+        var clips = GetField<Array>(window, "_reactionClips")
+            .Cast<object>()
+            .ToArray();
+        var expectedActionNames = new[] { "cry", "cute", "like", "eat" };
+        Assert(clips.Length == expectedActionNames.Length &&
+               clips.Select(clip => GetProperty<string>(clip, "ActionName"))
+                   .SequenceEqual(expectedActionNames) &&
+               clips.All(clip => forbiddenProductionFragments.All(fragment =>
+                   !GetProperty<string>(clip, "ActionName").Contains(
+                       fragment,
+                       StringComparison.OrdinalIgnoreCase) &&
+                   !GetProperty<string>(clip, "Message").Contains(
+                       fragment,
+                       StringComparison.OrdinalIgnoreCase))),
+            "普通动作必须只保留cry/cute/like/eat，cute原动作不得被移除或别名替代");
+    }
 
-        var rightClickSource = ExtractPrivateMethodSource(
+    private static void AssertClickReactionRandomContract(MainWindow window)
+    {
+        var clips = GetField<Array>(window, "_reactionClips");
+        Assert(clips.Length == 4,
+            "点击随机选择器必须在四个保留动作之间选择");
+
+        var mainSource = File.ReadAllText(
+            FindWorkspaceFile("MainWindow.xaml.cs"));
+        var selectionSource = ExtractPrivateMethodSource(
             mainSource,
-            "PetHost_PreviewMouseRightButtonDown");
-        var dragSource = ExtractPrivateMethodSource(
+            "SelectRandomClickReactionIndex");
+        var clickSource = ExtractPrivateMethodSource(
             mainSource,
-            "PetHost_MouseLeftButtonDown");
-        var workSource = ExtractPrivateMethodSource(mainSource, "StartWorkClipAt");
-        var dockSource = ExtractPrivateMethodSource(mainSource, "EnterEdgePeekCore");
-        var bubbleSource = ExtractPrivateMethodSource(mainSource, "SetBubbleMode");
-        var completionSource = ExtractPrivateMethodSource(
+            "ShowCuteReaction");
+        var automaticSource = ExtractPrivateMethodSource(
             mainSource,
-            "CompleteActiveClipAt");
-        Assert(rightClickSource.Contains(
-                   "SuppressWishStarOverlayForActiveClip",
+            "GetNextAutomaticActivity");
+        var tryStartGuardIndex = clickSource.IndexOf(
+            "if (!TryStartReaction",
+            StringComparison.Ordinal);
+        var commitIndex = clickSource.IndexOf(
+            "_lastClickReactionIndex = selectedIndex",
+            StringComparison.Ordinal);
+        Assert(selectionSource.Contains(
+                   "_clickReactionRandom.Next(_reactionClips.Length)",
                    StringComparison.Ordinal) &&
-               dragSource.Contains(
-                   "SuppressWishStarOverlayForActiveClip",
+               selectionSource.Contains(
+                   "_clickReactionRandom.Next(_reactionClips.Length - 1)",
                    StringComparison.Ordinal) &&
-               workSource.Contains(
-                   "SuppressWishStarOverlayForActiveClip",
+               selectionSource.Contains(
+                   "candidate >= _lastClickReactionIndex",
                    StringComparison.Ordinal) &&
-               dockSource.Contains(
-                   "SuppressWishStarOverlayForActiveClip",
+               !selectionSource.Contains(
+                   "_automaticActivityBag",
                    StringComparison.Ordinal) &&
-               bubbleSource.Contains(
-                   "SuppressWishStarOverlayForActiveClip",
+               !selectionSource.Contains(
+                   "_lastAutomaticActivityIndex",
                    StringComparison.Ordinal) &&
-               completionSource.Contains("HideWishStarOverlay", StringComparison.Ordinal),
-            "右键、拖动、提醒、打工、吸附与clip结束必须在同一输入/渲染帧隐藏星星");
+               !clickSource.Contains("_nextClipIndex", StringComparison.Ordinal) &&
+               tryStartGuardIndex >= 0 &&
+               commitIndex > tryStartGuardIndex,
+            "用户点击必须使用独立真随机选择器，排除上次成功动作，且只能在动作成功启动后提交历史");
+
+        var originalLastIndex = GetField<int>(
+            window,
+            "_lastClickReactionIndex");
+        try
+        {
+            for (var previousIndex = -1;
+                 previousIndex < clips.Length;
+                 previousIndex++)
+            {
+                SetField(window, "_lastClickReactionIndex", previousIndex);
+                for (var sample = 0; sample < 64; sample++)
+                {
+                    var selectedIndex = (int)Invoke(
+                        window,
+                        "SelectRandomClickReactionIndex")!;
+                    Assert(selectedIndex >= 0 && selectedIndex < clips.Length,
+                        $"点击随机索引越界：previous={previousIndex}, selected={selectedIndex}");
+                    if (previousIndex >= 0 && clips.Length > 1)
+                    {
+                        Assert(selectedIndex != previousIndex,
+                            $"点击动作不得连续重复：index={selectedIndex}");
+                    }
+                }
+            }
+        }
+        finally
+        {
+            SetField(window, "_lastClickReactionIndex", originalLastIndex);
+        }
+
+        var originalReminderActive = GetField<bool>(window, "_isReminderActive");
+        var originalBehaviorLastIndex = GetField<int>(
+            window,
+            "_lastClickReactionIndex");
+        try
+        {
+            const int previousSuccessfulIndex = 0;
+            Assert(!originalReminderActive &&
+                   GetRawField(window, "_activeClip") is null,
+                "点击随机失败场景必须从无提醒、无活动动画的干净状态开始");
+            SetField(
+                window,
+                "_lastClickReactionIndex",
+                previousSuccessfulIndex);
+            SetField(window, "_isReminderActive", true);
+
+            var blockedStart = (bool)Invoke(
+                window,
+                "TryStartReaction",
+                clips.GetValue(1)!,
+                true)!;
+            Assert(!blockedStart,
+                "提醒活动时 TryStartReaction 必须真实返回失败");
+
+            Invoke(window, "ShowCuteReaction");
+            Assert(GetRawField(window, "_activeClip") is null &&
+                   GetField<int>(window, "_lastClickReactionIndex") ==
+                   previousSuccessfulIndex,
+                "点击动作启动失败后不得创建活动动画或提交新的随机历史");
+
+            SetField(window, "_isReminderActive", false);
+            Invoke(window, "ShowCuteReaction");
+            var successfulIndex = GetField<int>(
+                window,
+                "_lastClickReactionIndex");
+            var activeClip = GetRawField(window, "_activeClip");
+            Assert(activeClip is not null &&
+                   successfulIndex >= 0 &&
+                   successfulIndex < clips.Length &&
+                   successfulIndex != previousSuccessfulIndex &&
+                   ReferenceEquals(activeClip, clips.GetValue(successfulIndex)),
+                "解除阻塞后的下一次成功点击必须继续排除失败前的上次成功动作，并提交实际启动的动作");
+        }
+        finally
+        {
+            SetField(window, "_isReminderActive", false);
+            var activeClip = GetRawField(window, "_activeClip");
+            if (activeClip is not null)
+            {
+                Invoke(window, "CompleteActiveClip", activeClip);
+            }
+
+            SetField(
+                window,
+                "_lastClickReactionIndex",
+                originalBehaviorLastIndex);
+            SetField(window, "_isReminderActive", originalReminderActive);
+        }
+
+        Assert(automaticSource.Contains(
+                   "_automaticActivityBag",
+                   StringComparison.Ordinal) &&
+               automaticSource.Contains(
+                   "_lastAutomaticActivityIndex",
+                   StringComparison.Ordinal) &&
+               automaticSource.Contains("_random.Next", StringComparison.Ordinal) &&
+               !automaticSource.Contains(
+                   "_lastClickReactionIndex",
+                   StringComparison.Ordinal) &&
+               !automaticSource.Contains(
+                   "_clickReactionRandom",
+                   StringComparison.Ordinal),
+            "自动随机袋必须继续独立洗牌，不能复用或改写用户点击随机历史");
     }
 
     private static string[] BuildExpectedActionTimelineNames(
@@ -7009,8 +6961,12 @@ internal static partial class Program
             InvokeOverload(window, "CopyFramePixels", frame, sideFramePixels);
             var leftEdgeAlphaPixels = Enumerable.Range(0, RenderPixelHeight)
                 .Count(y => sideFramePixels[y * displayStride + 3] >= 24);
-            Assert(leftEdgeAlphaPixels >= 40,
-                $"{frameInfo.Name} 的下方支撑手臂必须连续接触左屏幕边缘；" +
+            // The compact v1.0.65 grip deliberately removes the old long
+            // purple sleeve. At the fully revealed pose only the two authored
+            // gripping hands touch the cut line, so require a small but real
+            // contact instead of re-introducing the retired 40px tube.
+            Assert(leftEdgeAlphaPixels >= 12,
+                $"{frameInfo.Name} 的抓边手掌/短袖口必须保持可见的左屏幕边缘接触；" +
                 $"当前有效边缘Alpha像素={leftEdgeAlphaPixels}");
 
             InvokeStatic(
@@ -7158,7 +7114,7 @@ internal static partial class Program
             string actionName) =>
         actionName switch
         {
-            "star-wish" or "cute" => (
+            "cute" => (
                 SmoothFrameCount: 56,
                 LoopCycleCount: 0,
                 EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
@@ -7171,9 +7127,7 @@ internal static partial class Program
         };
 
     private static string GetExpectedMotionPoseActionName(string actionName) =>
-        string.Equals(actionName, "star-wish", StringComparison.Ordinal)
-            ? "cute"
-            : actionName;
+        actionName;
 
     private static TimeSpan GetFrameDuration(object frame) =>
         GetProperty<TimeSpan>(frame, "HoldDuration");
@@ -7187,7 +7141,7 @@ internal static partial class Program
 
     private static void AssertNoRunContract(MainWindow window)
     {
-        var expectedActionNames = new[] { "star-wish", "cry", "cute", "like", "eat" };
+        var expectedActionNames = new[] { "cry", "cute", "like", "eat" };
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
@@ -7206,13 +7160,13 @@ internal static partial class Program
                 !GetProperty<string>(clip, "Message").Contains(
                     "刚睡醒，让我伸个懒腰",
                     StringComparison.Ordinal)),
-            "运行时必须只保留五种点击动作，不得再出现run、旧hide、wave、yawn或Todo think");
+            "运行时必须只保留四种点击动作，不得再出现run、旧hide、wave、yawn或Todo think");
 
         var activities = GetField<Array>(window, "_automaticActivities")
             .Cast<object?>()
             .ToArray();
-        Assert(activities.Length == 6 && activities.Count(activity => activity is null) == 1,
-            "自动活动袋必须为 5 个角色动作加 1 个待机项");
+        Assert(activities.Length == 5 && activities.Count(activity => activity is null) == 1,
+            "自动活动袋必须为 4 个角色动作加 1 个待机项");
         var automaticActionNames = activities
             .Where(activity => activity is not null)
             .Select(activity => GetProperty<string>(activity!, "ActionName"))
@@ -7225,7 +7179,7 @@ internal static partial class Program
                         GetProperty<string>(activity!, "ActionName"),
                         "think",
                         StringComparison.OrdinalIgnoreCase)),
-            "自动活动袋的非空项必须全部引用保留的 5 个点击动作，不能混入 Todo think");
+            "自动活动袋的非空项必须全部引用保留的 4 个点击动作，不能混入 Todo think");
 
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainWindowSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
@@ -8277,7 +8231,7 @@ internal static partial class Program
         AssertProductionDiscreteVsyncTimeline(
             window,
             clips[0],
-            "reaction-star-wish");
+            "reaction-cry");
         AssertProductionDiscreteVsyncTimeline(
             window,
             clips.Single(clip =>
@@ -10613,7 +10567,7 @@ internal static partial class Program
                Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
                !todoWindow.IsVisible &&
                !GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption"),
-            "巡游中左键单击完成退场后必须稳定待机，不能追加五种点击动作或打开任务面板");
+            "巡游中左键单击完成退场后必须稳定待机，不能追加四种点击动作或打开任务面板");
 
         var secondSupportPoint = new Point(window.Left + 310, window.Top + 126);
         PrepareTravelState(
@@ -12068,7 +12022,7 @@ internal static partial class Program
     private static void AssertRandomActivityBag(MainWindow window)
     {
         var activityCount = GetField<Array>(window, "_automaticActivities").Length;
-        Assert(activityCount == 6, "自动活动袋应包含 5 个角色动作和 1 个待机动作");
+        Assert(activityCount == 5, "自动活动袋应包含 4 个角色动作和 1 个待机动作");
 
         var firstBag = DrainActivityBag(window, activityCount);
         var secondBag = DrainActivityBag(window, activityCount);
@@ -12632,7 +12586,7 @@ internal static partial class Program
                 "GetTodoEnterStartIndex",
                 ordinaryActionFrame)!;
             Assert(expectedTodoEnterStartIndex == wakeFrameCount,
-                "star-wish被Todo抢占时必须从站立wake末帧继续，不能闪回趴枕头待机");
+                "普通动作被Todo抢占时必须从站立wake末帧继续，不能闪回趴枕头待机");
 
             var todoEnterClip = GetField<object>(window, "_todoEnterClip");
             var requestedTodoEntryFrame = GetProperty<object>(
@@ -12822,7 +12776,7 @@ internal static partial class Program
                    requestedTodoEntryFrameInfo.Name.EndsWith(
                          $"luban-wake-smooth-{wakeFrameCount:000}.png",
                          StringComparison.Ordinal),
-                "star-wish抢占后的Todo入场首帧必须使用站立wake末帧；" +
+                "普通动作抢占后的Todo入场首帧必须使用站立wake末帧；" +
                 $"index={ordinaryTodoStartIndex}, requested={requestedTodoEntryFrameInfo.Name}");
 
             var entryIndex = GetField<int>(window, "_activeFrameIndex");
@@ -17969,6 +17923,24 @@ internal static partial class Program
             ExtractPrivateMethodSource(mainSource, "CopyFramePixels"),
             ExtractPrivateMethodSource(mainSource, "WriteDisplayFrame")
         };
+        var residentPrefetchCheck = requestPagePrefetch.IndexOf(
+            "if (_residentSpritePages.ContainsKey(pageName))",
+            StringComparison.Ordinal);
+        var busyPrefetchCheck = requestPagePrefetch.IndexOf(
+            "if (!urgent &&",
+            StringComparison.Ordinal);
+        var duplicatePrefetchCheck = requestPagePrefetch.IndexOf(
+            "if (string.Equals(_desiredSpritePageName, pageName",
+            StringComparison.Ordinal);
+        var renderingPrefetchCheck = requestPagePrefetch.IndexOf(
+            "if (_isInsideVisualRenderingCallback)",
+            StringComparison.Ordinal);
+        var acceptedPrefetchDeferral = requestPagePrefetch.IndexOf(
+            "DeferIdleSpritePageTrim();",
+            StringComparison.Ordinal);
+        var acceptedPrefetchAssignment = requestPagePrefetch.IndexOf(
+            "_desiredSpritePageName = pageName;",
+            StringComparison.Ordinal);
 
         Assert(mainSource.Contains("_residentSpritePages", StringComparison.Ordinal) &&
                mainSource.Contains("Task.Run(", StringComparison.Ordinal) &&
@@ -17977,6 +17949,17 @@ internal static partial class Program
                mainSource.Contains("TryPromotePrefetchedSpritePage", StringComparison.Ordinal) &&
                mainSource.Contains("_spritePageWarmupOrder", StringComparison.Ordinal),
             "运行时分页必须使用解码页常驻缓存、按需后台预取、代际取消和UI线程引用切换");
+        Assert(residentPrefetchCheck >= 0 &&
+               busyPrefetchCheck > residentPrefetchCheck &&
+               duplicatePrefetchCheck > busyPrefetchCheck &&
+               renderingPrefetchCheck > duplicatePrefetchCheck &&
+               acceptedPrefetchDeferral > renderingPrefetchCheck &&
+               acceptedPrefetchAssignment > acceptedPrefetchDeferral &&
+               requestPagePrefetch.Split(
+                   "DeferIdleSpritePageTrim();",
+                   StringSplitOptions.None).Length == 2,
+            "分页预取只有在resident、busy、重复desired及Rendering-deferred全部早退之后，" +
+            "真正接收新的非Rendering请求时才能重启idle裁剪宽限");
         Assert(!rendering.Contains("LoadSpritePage", StringComparison.Ordinal) &&
                !rendering.Contains("DecodeBrotli", StringComparison.Ordinal) &&
                !rendering.Contains("GetResourceStream", StringComparison.Ordinal) &&

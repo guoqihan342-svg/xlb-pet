@@ -118,6 +118,15 @@ def contour_p95(
     for edge in source_edges:
         if ignored_contact_edge == "left":
             edge[:, :EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX] = False
+            # The compact lower grip has its own stricter ROI continuity QA.
+            # Exclude that authored boundary-clipped region only from the
+            # generic full-body contour source samples; the target contour
+            # remains complete, so real displacement elsewhere is still seen.
+            roi_left, roi_top, roi_right, roi_bottom = side_arm_fix.ROI
+            edge[
+                max(0, roi_top - 12) : min(edge.shape[0], roi_bottom + 4),
+                roi_left:roi_right,
+            ] = False
         elif ignored_contact_edge == "top":
             edge[:EDGE_CONTACT_CONTOUR_IGNORE_SOURCE_PX, :] = False
         elif ignored_contact_edge == "bottom":
@@ -234,6 +243,18 @@ def analyze_sequence(
 ) -> dict[str, object]:
     arrays = [load(path) for path in paths]
     records = [frame_geometry(frame, anchor_kind=anchor_kind) for frame in arrays]
+    scale_records = records
+    if anchor_kind == "edge-left":
+        roi_left, roi_top, roi_right, roi_bottom = side_arm_fix.ROI
+        stable_arrays = []
+        for frame in arrays:
+            stable = frame.copy()
+            stable[roi_top:roi_bottom, roi_left:roi_right] = 0
+            stable_arrays.append(stable)
+        scale_records = [
+            frame_geometry(frame, anchor_kind=anchor_kind)
+            for frame in stable_arrays
+        ]
     pairs = []
     for number, (first, second) in enumerate(zip(arrays, arrays[1:]), start=1):
         brim0 = records[number - 1]["brim"]
@@ -271,46 +292,46 @@ def analyze_sequence(
                 "hat_anchor_width_change_ratio": abs(hat1[2] - hat0[2])
                 / max((hat1[2] + hat0[2]) / 2.0, 1.0),
                 "baseline_step_source_px": abs(
-                    int(records[number]["baseline_alpha24"])
-                    - int(records[number - 1]["baseline_alpha24"])
+                    int(scale_records[number]["baseline_alpha24"])
+                    - int(scale_records[number - 1]["baseline_alpha24"])
                 ),
                 "baseline_step_atlas_px": abs(
-                    int(records[number]["atlas_baseline_alpha24"])
-                    - int(records[number - 1]["atlas_baseline_alpha24"])
+                    int(scale_records[number]["atlas_baseline_alpha24"])
+                    - int(scale_records[number - 1]["atlas_baseline_alpha24"])
                 ),
                 "baseline_step_final_dip": abs(
-                    int(records[number]["atlas_baseline_alpha24"])
-                    - int(records[number - 1]["atlas_baseline_alpha24"])
+                    int(scale_records[number]["atlas_baseline_alpha24"])
+                    - int(scale_records[number - 1]["atlas_baseline_alpha24"])
                 ) * ATLAS_Y_TO_DIP,
                 "baseline_step_max_physical_px": abs(
-                    int(records[number]["atlas_baseline_alpha24"])
-                    - int(records[number - 1]["atlas_baseline_alpha24"])
+                    int(scale_records[number]["atlas_baseline_alpha24"])
+                    - int(scale_records[number - 1]["atlas_baseline_alpha24"])
                 ) * ATLAS_Y_TO_MAX_PHYSICAL_PX,
                 "baseline_step_physical_px_matrix": {
                     f"size-{runtime_scale:g}_dpi-{dpi_scale:g}": abs(
-                        int(records[number]["atlas_baseline_alpha24"])
-                        - int(records[number - 1]["atlas_baseline_alpha24"])
+                        int(scale_records[number]["atlas_baseline_alpha24"])
+                        - int(scale_records[number - 1]["atlas_baseline_alpha24"])
                     ) * ATLAS_Y_TO_DIP * runtime_scale * dpi_scale
                     for runtime_scale in RUNTIME_SCALES
                     for dpi_scale in DPI_SCALES
                 },
                 "bbox_width_change_ratio": abs(
-                    int(records[number]["atlas_bbox_width_alpha24"])
-                    - int(records[number - 1]["atlas_bbox_width_alpha24"])
+                    int(scale_records[number]["atlas_bbox_width_alpha24"])
+                    - int(scale_records[number - 1]["atlas_bbox_width_alpha24"])
                 ) / max(
                     (
-                        int(records[number]["atlas_bbox_width_alpha24"])
-                        + int(records[number - 1]["atlas_bbox_width_alpha24"])
+                        int(scale_records[number]["atlas_bbox_width_alpha24"])
+                        + int(scale_records[number - 1]["atlas_bbox_width_alpha24"])
                     ) / 2.0,
                     1.0,
                 ),
                 "bbox_height_change_ratio": abs(
-                    int(records[number]["atlas_bbox_height_alpha24"])
-                    - int(records[number - 1]["atlas_bbox_height_alpha24"])
+                    int(scale_records[number]["atlas_bbox_height_alpha24"])
+                    - int(scale_records[number - 1]["atlas_bbox_height_alpha24"])
                 ) / max(
                     (
-                        int(records[number]["atlas_bbox_height_alpha24"])
-                        + int(records[number - 1]["atlas_bbox_height_alpha24"])
+                        int(scale_records[number]["atlas_bbox_height_alpha24"])
+                        + int(scale_records[number - 1]["atlas_bbox_height_alpha24"])
                     ) / 2.0,
                     1.0,
                 ),
@@ -928,116 +949,6 @@ def analyze_static_pillow(path: Path) -> dict[str, object]:
     }
 
 
-def left_sleeve_boundary_gap(frame: np.ndarray) -> int:
-    """Measure the transparent wedge below the side-peek gripping hand."""
-
-    alpha = frame[..., 3]
-    ys, _ = np.nonzero(
-        alpha >= generator.installer.EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
-    )
-    if not len(ys):
-        raise AssertionError("left edge-peek frame is empty")
-    bottom = int(ys.max() + 1)
-    start_y = max(
-        int(ys.min()),
-        bottom - generator.installer.EDGE_LEFT_SLEEVE_TAIL_ROWS,
-    )
-    end_y = max(
-        start_y,
-        bottom - generator.installer.EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS,
-    )
-    gaps = []
-    for y in range(start_y, end_y):
-        visible = np.flatnonzero(
-            alpha[y] >= generator.installer.EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
-        )
-        if not len(visible):
-            raise AssertionError(
-                f"left edge-peek sleeve scanline {y} is unexpectedly empty"
-            )
-        gaps.append(int(visible[0]))
-    return max(gaps, default=0)
-
-
-def certified_v1057_side_arm_reveal(
-    outputs: list[Path], expected_keys: dict[int, Path]
-) -> dict[str, object] | None:
-    """Recognize only the exact post-fix side loop committed in v1.0.57.
-
-    The historical 7px lower-arm reveal intentionally post-processes the 48
-    dense frames after interpolation.  Consequently its four quarter endpoints
-    no longer equal the untouched authored keys, and bilinear sampling can make
-    a few low-alpha/green-dominant pixels appear inside that same support mask.
-    A decoded-pixel sequence fingerprint prevents this exception from relaxing
-    QA for any newly generated or modified artwork.
-    """
-
-    frames = [load(path) for path in outputs]
-    sequence_hash = side_arm_fix.sequence_sha256(frames)
-    if sequence_hash != side_arm_fix.V1057_OUTPUT_SEQUENCE_SHA256:
-        return None
-
-    displacement = side_arm_fix.build_displacement(
-        RUNTIME_SIZE[1], RUNTIME_SIZE[0]
-    )
-    support = displacement > 1e-6
-    green_frames: list[int] = []
-    trail_frames: list[int] = []
-    green_pixels = 0
-    trail_pixels = 0
-    green_outside_support = 0
-    trail_outside_support = 0
-    for frame_number, frame in enumerate(frames, start=1):
-        green = green_fringe_mask(frame)
-        trail = halo_mask(frame)
-        if green.any():
-            green_frames.append(frame_number)
-            green_pixels += int(green.sum())
-            green_outside_support += int((green & ~support).sum())
-        if trail.any():
-            trail_frames.append(frame_number)
-            trail_pixels += int(trail.sum())
-            trail_outside_support += int((trail & ~support).sum())
-
-    key_mismatch_frames: list[int] = []
-    key_difference_pixels = 0
-    key_difference_outside_support = 0
-    for frame_number, expected_path in sorted(expected_keys.items()):
-        difference = np.any(
-            frames[frame_number - 1] != load(expected_path), axis=2
-        )
-        if not difference.any():
-            continue
-        key_mismatch_frames.append(frame_number)
-        key_difference_pixels += int(difference.sum())
-        key_difference_outside_support += int((difference & ~support).sum())
-
-    outside_support = {
-        "green_dominant_visible_pixels": green_outside_support,
-        "low_alpha_trail_pixels": trail_outside_support,
-        "key_difference_pixels": key_difference_outside_support,
-    }
-    if any(outside_support.values()):
-        raise AssertionError(
-            "v1.0.57 side-arm post-process artifact escaped its support mask: "
-            f"{outside_support}"
-        )
-    return {
-        "verified": True,
-        "contract": "v1.0.57-side-arm-reveal",
-        "decoded_sequence_sha256": sequence_hash,
-        "maximum_reveal_pixels": side_arm_fix.MAX_SHIFT,
-        "support_pixel_count": int(support.sum()),
-        "green_dominant_visible_frames_1_based": green_frames,
-        "green_dominant_visible_pixels": green_pixels,
-        "low_alpha_trail_frames_1_based": trail_frames,
-        "low_alpha_trail_pixels": trail_pixels,
-        "exact_key_mismatches_1_based": key_mismatch_frames,
-        "key_difference_pixels": key_difference_pixels,
-        "outside_support": outside_support,
-    }
-
-
 def sorted_sequence(prefix: str) -> list[Path]:
     return sorted(ASSETS.glob(f"{prefix}-*.png"), key=lambda path: path.name)
 
@@ -1168,7 +1079,6 @@ def main() -> None:
         if args.contacts:
             save_contact(loop, OUT / f"{action}-loop-contact.png")
 
-    certified_postprocess_by_sequence: dict[str, dict[str, object]] = {}
     edge_sequences = {
         direction: sorted_sequence(f"luban-edge-{direction}-smooth")
         for direction in generator.EDGE_DIRECTIONS
@@ -1219,11 +1129,6 @@ def main() -> None:
                 quarter * 3: runtime_edge_keys[direction][3],
                 quarter * 4: runtime_edge_keys[direction][0],
             }
-            certified_postprocess = (
-                certified_v1057_side_arm_reveal(outputs, expected_keys)
-                if direction == "left"
-                else None
-            )
             edge_result = {
                 "sequence": sequence,
                 "exact_key_mismatches": [
@@ -1260,9 +1165,10 @@ def main() -> None:
                     "pixel_equal": bool(np.array_equal(first, second)),
                 },
             }
-            if certified_postprocess is not None:
-                edge_result["certified_postprocess"] = certified_postprocess
-                certified_postprocess_by_sequence[name] = certified_postprocess
+            if direction == "left":
+                edge_result["compact_side_grip"] = side_arm_fix.analyze_sequence(
+                    [load(path) for path in outputs]
+                )
             contact_index = {"left": 0, "top": 1, "bottom": 3}[direction]
             contact_target = {"left": 0, "top": 0, "bottom": 509}[direction]
             contact_positions = [
@@ -1287,17 +1193,6 @@ def main() -> None:
                     )
                 ),
             }
-            if direction == "left":
-                sleeve_gap_widths = [
-                    left_sleeve_boundary_gap(load(path))
-                    for path in outputs
-                ]
-                edge_result["lower_sleeve_boundary_continuity"] = {
-                    "applies_to_runtime_edges": ["left", "right-mirrored"],
-                    "gap_widths_source_px": sleeve_gap_widths,
-                    "max_gap_width_source_px": max(sleeve_gap_widths),
-                    "maximum_allowed_source_px": 0,
-                }
             fully_peeked_frame = quarter * 2
             resting_frame = quarter * 4
             fully_peeked_box = sequence["frames"][
@@ -1460,40 +1355,8 @@ def main() -> None:
         return violating
 
     for name, _, sequence in sequence_entries:
-        certified_postprocess = certified_postprocess_by_sequence.get(name)
         if sequence["max_green_dominant_visible"]:
-            green_frames = [
-                frame_number
-                for frame_number, frame in enumerate(sequence["frames"], start=1)
-                if int(frame["green_dominant_visible"]) > 0
-            ]
-            green_pixels = sum(
-                int(frame["green_dominant_visible"])
-                for frame in sequence["frames"]
-            )
-            if (
-                certified_postprocess is not None
-                and green_frames
-                == certified_postprocess[
-                    "green_dominant_visible_frames_1_based"
-                ]
-                and green_pixels
-                == certified_postprocess["green_dominant_visible_pixels"]
-            ):
-                applied_waivers.append(
-                    {
-                        "sequence": name,
-                        "metric": "green_dominant_visible",
-                        "frames_1_based": green_frames,
-                        "pixel_count": green_pixels,
-                        "reason": (
-                            "Exact v1.0.57 side-arm post-process sequence; "
-                            "all pixels remain inside its certified 7px support mask."
-                        ),
-                    }
-                )
-            else:
-                failures.append(f"{name} green fringe")
+            failures.append(f"{name} green fringe")
         if sequence["max_alpha0_nonzero_rgb"]:
             failures.append(f"{name} dirty transparent RGB")
         if sequence["max_halo"] > 500:
@@ -1508,30 +1371,10 @@ def main() -> None:
             interpolated_trail_frames
         )
         if interpolated_trail_frames:
-            if (
-                certified_postprocess is not None
-                and interpolated_trail_frames
-                == certified_postprocess["low_alpha_trail_frames_1_based"]
-            ):
-                applied_waivers.append(
-                    {
-                        "sequence": name,
-                        "metric": "interpolated_low_alpha_trail",
-                        "frames_1_based": interpolated_trail_frames,
-                        "pixel_count": certified_postprocess[
-                            "low_alpha_trail_pixels"
-                        ],
-                        "reason": (
-                            "Exact v1.0.57 side-arm post-process sequence; "
-                            "all pixels remain inside its certified 7px support mask."
-                        ),
-                    }
-                )
-            else:
-                failures.append(
-                    f"{name} interpolated low-alpha trail at "
-                    f"{interpolated_trail_frames[:12]}"
-                )
+            failures.append(
+                f"{name} interpolated low-alpha trail at "
+                f"{interpolated_trail_frames[:12]}"
+            )
         if sequence["adjacent_duplicate_pairs_from_1_based"]:
             failures.append(f"{name} has adjacent duplicate frames")
         if sequence["adjacent_min_alpha_iou"] < 0.92:
@@ -1715,32 +1558,16 @@ def main() -> None:
             continue
         edge_result = result["edge_peek"][direction]
         if edge_result["exact_key_mismatches"]:
-            certified_postprocess = edge_result.get("certified_postprocess")
-            if (
-                certified_postprocess is not None
-                and edge_result["exact_key_mismatches"]
-                == certified_postprocess["exact_key_mismatches_1_based"]
-            ):
-                applied_waivers.append(
-                    {
-                        "sequence": f"edge.{direction}",
-                        "metric": "exact_key_mismatch",
-                        "frames_1_based": edge_result["exact_key_mismatches"],
-                        "pixel_count": certified_postprocess[
-                            "key_difference_pixels"
-                        ],
-                        "reason": (
-                            "Exact v1.0.57 side-arm post-process sequence; "
-                            "all endpoint differences remain inside its certified "
-                            "7px support mask."
-                        ),
-                    }
-                )
-            else:
-                failures.append(
-                    f"edge {direction} key mismatch: "
-                    f"{edge_result['exact_key_mismatches']}"
-                )
+            failures.append(
+                f"edge {direction} key mismatch: "
+                f"{edge_result['exact_key_mismatches']}"
+            )
+        compact_side_grip = edge_result.get("compact_side_grip")
+        if compact_side_grip is not None and compact_side_grip["failures"]:
+            failures.extend(
+                f"edge left/right compact grip: {failure}"
+                for failure in compact_side_grip["failures"]
+            )
         wrap = edge_result["loop_wrap"]
         if wrap["alpha_iou"] < 0.92:
             failures.append(
@@ -1769,16 +1596,6 @@ def main() -> None:
         if contact["max_adjacent_step_max_physical_px"] > 1.0:
             failures.append(
                 f"edge {direction} boundary contact moves by more than 1px"
-            )
-        sleeve_contact = edge_result.get("lower_sleeve_boundary_continuity")
-        if (
-            sleeve_contact is not None
-            and sleeve_contact["max_gap_width_source_px"]
-            > sleeve_contact["maximum_allowed_source_px"]
-        ):
-            failures.append(
-                "edge left/right mirrored lower sleeve has a transparent "
-                f"boundary wedge of {sleeve_contact['max_gap_width_source_px']}px"
             )
         reveal_depth = edge_result["reveal_depth"]["normal_axis_dip"]
         if reveal_depth < EDGE_REVEAL_DEPTH_DIP_MIN:

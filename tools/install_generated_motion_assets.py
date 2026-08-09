@@ -18,6 +18,7 @@ from split_sprite_sheet import (
     resize_rgba_premultiplied,
     save_registered_groups,
 )
+import fix_edge_side_arm_reveal as side_grip
 
 
 ACTION_NAMES = ("cry", "cute", "like", "eat")
@@ -69,15 +70,6 @@ EDGE_PEEK_REVEAL_OFFSETS = {
     "top": (18, 10, 0, 10),
     "bottom": (24, 12, 0, 12),
 }
-# The side-peek artwork ends with a short curved sleeve/body tail.  During the
-# deepest reveal that curve starts a few pixels inside the runtime canvas,
-# exposing a transparent wedge directly below the lower gripping hand.  The
-# opposite edge mirrors this same left-facing sequence, so repairing this one
-# contact strip fixes both sides without changing the authored source sheet.
-EDGE_LEFT_SLEEVE_TAIL_ROWS = 50
-EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS = 2
-EDGE_LEFT_SLEEVE_MAX_GAP = 24
-EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD = 24
 # The older action sheets use several different head/body proportions. A
 # single brim target either enlarges the head or makes the standing body pop
 # shorter. These per-group targets keep every action visually aligned.
@@ -438,63 +430,6 @@ def translate_rgba_without_wrap(
     )
     canvas.alpha_composite(visible, (destination_left, destination_top))
     return canvas
-
-
-def repair_left_edge_sleeve_continuation(frame: Image.Image) -> Image.Image:
-    """Continue the lower purple sleeve through the left screen boundary.
-
-    The added pixels are limited to the narrow transparent wedge beneath the
-    lower gripping hand.  They are copied from purple sleeve pixels on the same
-    scanline, so no character detail, scale, pose, or source artwork changes.
-    The last two antialiased rows remain untouched to preserve the curved lower
-    outline.
-    """
-
-    repaired = frame.convert("RGBA")
-    alpha = repaired.getchannel("A")
-    solid = alpha.point(
-        lambda value: 255
-        if value >= EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
-        else 0
-    )
-    bounds = solid.getbbox()
-    if bounds is None:
-        return repaired
-
-    pixels = repaired.load()
-    start_y = max(bounds[1], bounds[3] - EDGE_LEFT_SLEEVE_TAIL_ROWS)
-    end_y = max(start_y, bounds[3] - EDGE_LEFT_SLEEVE_BOTTOM_GUTTER_ROWS)
-    for y in range(start_y, end_y):
-        visible_x = [
-            x
-            for x in range(min(EDGE_LEFT_SLEEVE_MAX_GAP + 1, repaired.width))
-            if pixels[x, y][3] >= EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
-        ]
-        if not visible_x:
-            continue
-        gap_width = visible_x[0]
-        if gap_width <= 0 or gap_width > EDGE_LEFT_SLEEVE_MAX_GAP:
-            continue
-
-        # Pick only the existing purple clothing/body pixels as the extension
-        # source.  This keeps skin from being stretched underneath the hand.
-        purple_x = []
-        for x in range(gap_width, min(repaired.width, gap_width + 72)):
-            red, green, blue, pixel_alpha = pixels[x, y]
-            if (
-                pixel_alpha >= EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD
-                and blue * 100 >= red * 85
-                and blue * 100 >= green * 115
-                and red < 190
-            ):
-                purple_x.append(x)
-        if not purple_x:
-            continue
-
-        for x in range(gap_width):
-            source_index = min(gap_width - 1 - x, len(purple_x) - 1)
-            pixels[x, y] = pixels[purple_x[source_index], y]
-    return repaired
 
 
 def resize_sprite(
@@ -996,8 +931,6 @@ def translate_edge_peek_frame(
             else reveal_offset if edge_name == "bottom" else 0
         ),
     )
-    if edge_name == "left":
-        translated = repair_left_edge_sleeve_continuation(translated)
     return translated
 
 
@@ -1011,6 +944,11 @@ def install_edge_peek(source_directory: Path, assets_directory: Path) -> None:
             frame = translate_edge_peek_frame(
                 frame, edge_name, reveal_offset
             )
+            if edge_name == "left":
+                frame, _ = side_grip.reshape_side_grip_image(
+                    frame,
+                    side_grip.KEY_PHASE_FRAMES[frame_number],
+                )
             save_png_atomically(
                 frame,
                 assets_directory / f"luban-edge-{edge_name}-{frame_number:02d}.png",

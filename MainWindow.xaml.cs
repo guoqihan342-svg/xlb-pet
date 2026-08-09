@@ -193,15 +193,9 @@ public partial class MainWindow : Window
     private static readonly TimeSpan MissedReminderGracePeriod =
         TimeSpan.FromSeconds(5);
     private const string TodoPoseActionName = "think";
-    private const string StarWishActionName = "star-wish";
-    private const string StarWishPoseActionName = "cute";
-    private const int StarWishRiseSourceFrameNumber = 20;
-    private const double StarWishRiseDurationSeconds = 0.5;
-    private const double StarWishHoverDurationSeconds = 0.95;
-    private const double StarWishFlyDurationSeconds = 0.7;
     private static readonly string[] ReactionActionNames =
     [
-        StarWishActionName, "cry", "cute", "like", "eat"
+        "cry", "cute", "like", "eat"
     ];
     private static readonly string[] SmoothActionNames =
     [
@@ -272,6 +266,7 @@ public partial class MainWindow : Window
     private readonly AnimationClock _snoreBubbleScaleClock;
     private readonly Queue<int> _automaticActivityBag = new();
     private readonly Random _random = new();
+    private readonly Random _clickReactionRandom = new();
     private readonly ObservableCollection<TodoItem> _todos = new();
     private readonly TodoStore _todoStore = TodoStore.CreateDefault();
     private readonly ObservableCollection<ScheduledTaskItem> _scheduledTasks = new();
@@ -325,7 +320,7 @@ public partial class MainWindow : Window
     private SpriteFrame? _deferredActiveClipClockFrame;
     private int _deferredActiveClipClockFrameIndex = -1;
     private TimeSpan _deferredActiveClipClockHoldDuration;
-    private int _nextClipIndex;
+    private int _lastClickReactionIndex = -1;
     private WorkState _workState;
     private int _workPointerClickCount;
     private bool _workExitRequested;
@@ -448,8 +443,6 @@ public partial class MainWindow : Window
     private bool _automaticAnimationEnabled;
     private bool _isPillowBreathing;
     private bool _isSnoreBubbleAnimating;
-    private bool _isWishStarVisible;
-    private bool _isWishStarSuppressedForActiveClip;
     private bool _isClosing;
     private bool _suppressTodoWindowDeactivate;
     private bool _displaySettingsSubscribed;
@@ -629,7 +622,6 @@ public partial class MainWindow : Window
         _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
         _reactionClips =
         [
-            CreateStarWishClip("许个小愿望，送你一颗亮晶晶～"),
             CreateMotionClip("呜……主人要哄哄我", "cry"),
             CreateMotionClip("给你卖个萌 ♡", "cute"),
             CreateMotionClip("主人真棒！", "like"),
@@ -1006,12 +998,6 @@ public partial class MainWindow : Window
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
     }
 
-    private AnimationClip CreateStarWishClip(string message) =>
-        CreateMotionClip(
-            message,
-            StarWishActionName,
-            StarWishPoseActionName);
-
     private MotionClipProfile ResolveMotionClipProfile(
         string actionName,
         string poseActionName)
@@ -1019,7 +1005,7 @@ public partial class MainWindow : Window
         var availableSmoothFrameCount = _actionSmoothFrames[poseActionName].Length;
         var profile = actionName switch
         {
-            StarWishActionName or "cute" => new MotionClipProfile(
+            "cute" => new MotionClipProfile(
                 CuteCleanSmoothFrameCount,
                 LoopCycleCount: 0,
                 EndpointHoldDuration: StableReactionEndpointHoldDuration,
@@ -2281,7 +2267,6 @@ public partial class MainWindow : Window
         _petSizePreviewEnvelopePinnedForTodo = false;
         _petSizeEnvelopePrepared = false;
         _petSizeTargetUpdatePending = false;
-        HideWishStarOverlay();
         StopVisualClock();
         if (_mainHwndSource is { } mainHwndSource)
         {
@@ -2339,7 +2324,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        SuppressWishStarOverlayForActiveClip();
         _workEnterAfterEdgePeekExitRequested = false;
         RefreshWorkModeButton();
     }
@@ -2382,7 +2366,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        SuppressWishStarOverlayForActiveClip();
         DeferIdleSpritePageTrim();
         _workEnterAfterEdgePeekExitRequested = false;
         _dragPreservesWorkMode = false;
@@ -3126,7 +3109,6 @@ public partial class MainWindow : Window
             throw new ArgumentOutOfRangeException(nameof(startFrameIndex));
         }
 
-        SuppressWishStarOverlayForActiveClip();
         _activeClip = clip;
         _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
@@ -4857,7 +4839,6 @@ public partial class MainWindow : Window
             return false;
         }
 
-        SuppressWishStarOverlayForActiveClip();
         _edgePeekHoldTimer.Stop();
         _workEnterAfterEdgePeekExitRequested = false;
         StopEdgeRoaming(
@@ -5269,13 +5250,35 @@ public partial class MainWindow : Window
             return;
         }
 
-        var clip = _reactionClips[_nextClipIndex];
+        var selectedIndex = SelectRandomClickReactionIndex();
+        var clip = _reactionClips[selectedIndex];
         if (!TryStartReaction(clip, showCuteBubble: true))
         {
             return;
         }
 
-        _nextClipIndex = (_nextClipIndex + 1) % _reactionClips.Length;
+        _lastClickReactionIndex = selectedIndex;
+    }
+
+    private int SelectRandomClickReactionIndex()
+    {
+        if (_reactionClips.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "At least one click reaction is required.");
+        }
+
+        if (_reactionClips.Length == 1 ||
+            _lastClickReactionIndex < 0 ||
+            _lastClickReactionIndex >= _reactionClips.Length)
+        {
+            return _clickReactionRandom.Next(_reactionClips.Length);
+        }
+
+        var candidate = _clickReactionRandom.Next(_reactionClips.Length - 1);
+        return candidate >= _lastClickReactionIndex
+            ? candidate + 1
+            : candidate;
     }
 
     private bool TryStartReaction(AnimationClip clip, bool showCuteBubble)
@@ -5293,8 +5296,6 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
-        _isWishStarSuppressedForActiveClip = false;
-        HideWishStarOverlay();
         _activeClip = clip;
         _activeFrameIndex = -1;
         RequestSpritePagePrefetch(
@@ -6960,136 +6961,8 @@ public partial class MainWindow : Window
         UpdateVisualClockSubscription();
     }
 
-    private void UpdateWishStarOverlay(long timestamp)
-    {
-        var clip = _activeClip;
-        if (_isWishStarSuppressedForActiveClip ||
-            clip is null ||
-            !string.Equals(
-                clip.ActionName,
-                StarWishActionName,
-                StringComparison.Ordinal) ||
-            _activeClipStartedTimestamp <= 0)
-        {
-            HideWishStarOverlay();
-            return;
-        }
-
-        var riseFrameIndex = checked(
-            clip.ActionFrameIndex + StarWishRiseSourceFrameNumber - 1);
-        var riseStartedTimestamp = checked(
-            _activeClipStartedTimestamp +
-            riseFrameIndex * ToCharacterAnimationTicks(MotionFrameInterval));
-        var elapsedSeconds =
-            (timestamp - riseStartedTimestamp) / (double)Stopwatch.Frequency;
-        var state = ResolveWishStarVisualState(elapsedSeconds);
-        if (!state.IsVisible || state.Opacity <= 0)
-        {
-            HideWishStarOverlay();
-            return;
-        }
-
-        WishStarTranslate.X = state.TranslateX;
-        WishStarTranslate.Y = state.TranslateY;
-        WishStarRotate.Angle = state.RotationDegrees;
-        WishStarScale.ScaleX = state.Scale;
-        WishStarScale.ScaleY = state.Scale;
-        WishStarOverlay.Opacity = state.Opacity;
-        _isWishStarVisible = true;
-    }
-
-    private static WishStarVisualState ResolveWishStarVisualState(
-        double elapsedSeconds)
-    {
-        if (!double.IsFinite(elapsedSeconds) || elapsedSeconds < 0)
-        {
-            return default;
-        }
-
-        if (elapsedSeconds < StarWishRiseDurationSeconds)
-        {
-            var progress = Math.Clamp(
-                elapsedSeconds / StarWishRiseDurationSeconds,
-                0,
-                1);
-            var eased = SmoothStep(progress);
-            var inverse = 1 - eased;
-            return new WishStarVisualState(
-                IsVisible: true,
-                Opacity: SmoothStep(Math.Clamp(progress / 0.28, 0, 1)),
-                TranslateX:
-                    inverse * inverse * 42 +
-                    2 * inverse * eased * 66,
-                TranslateY:
-                    2 * inverse * eased * -62 +
-                    eased * eased * -134,
-                RotationDegrees: -16 * inverse,
-                Scale: 0.58 + 0.42 * eased);
-        }
-
-        elapsedSeconds -= StarWishRiseDurationSeconds;
-        if (elapsedSeconds < StarWishHoverDurationSeconds)
-        {
-            var progress = Math.Clamp(
-                elapsedSeconds / StarWishHoverDurationSeconds,
-                0,
-                1);
-            var primaryWave = Math.Sin(progress * Math.Tau);
-            var secondaryWave = Math.Sin(progress * Math.Tau * 2);
-            return new WishStarVisualState(
-                IsVisible: true,
-                Opacity: 1,
-                TranslateX: 4 * primaryWave,
-                TranslateY: -134 - 2 * secondaryWave,
-                RotationDegrees: 9 * primaryWave,
-                Scale: 1 + 0.06 * secondaryWave);
-        }
-
-        elapsedSeconds -= StarWishHoverDurationSeconds;
-        if (elapsedSeconds >= StarWishFlyDurationSeconds)
-        {
-            return default;
-        }
-
-        var flyProgress = Math.Clamp(
-            elapsedSeconds / StarWishFlyDurationSeconds,
-            0,
-            1);
-        var flyEased = SmoothStep(flyProgress);
-        var fadeProgress = Math.Clamp((flyProgress - 0.55) / 0.45, 0, 1);
-        return new WishStarVisualState(
-            IsVisible: true,
-            Opacity: 1 - SmoothStep(fadeProgress),
-            TranslateX: 56 * flyEased,
-            TranslateY: -134 - 105 * flyEased,
-            RotationDegrees: 220 * flyEased,
-            Scale: 1 - 0.18 * flyEased);
-    }
-
     private static double SmoothStep(double value) =>
         value * value * (3 - 2 * value);
-
-    private void SuppressWishStarOverlayForActiveClip()
-    {
-        _isWishStarSuppressedForActiveClip =
-            _activeClip is { } activeClip &&
-            string.Equals(
-                activeClip.ActionName,
-                StarWishActionName,
-                StringComparison.Ordinal);
-        HideWishStarOverlay();
-    }
-
-    private void HideWishStarOverlay()
-    {
-        if (!_isWishStarVisible && WishStarOverlay.Opacity == 0)
-        {
-            return;
-        }
-
-        WishStarOverlay.Opacity = 0;
-        _isWishStarVisible = false;
-    }
 
     private void AdvanceActiveClip(long timestamp)
     {
@@ -7309,15 +7182,6 @@ public partial class MainWindow : Window
 
     private void CompleteActiveClipAt(AnimationClip clip, long timestamp)
     {
-        if (string.Equals(
-                clip.ActionName,
-                StarWishActionName,
-                StringComparison.Ordinal))
-        {
-            HideWishStarOverlay();
-            _isWishStarSuppressedForActiveClip = false;
-        }
-
         ShowStableFrame(clip.Frames[^1].Image);
         if (!ReferenceEquals(_activeClip, clip))
         {
@@ -7954,7 +7818,6 @@ public partial class MainWindow : Window
             }
 
             AdvanceWorkModeIconTransition(timestamp);
-            UpdateWishStarOverlay(timestamp);
 
             if (_edgeDock != EdgeDock.None)
             {
@@ -8579,7 +8442,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        DeferIdleSpritePageTrim();
         if (_residentSpritePages.ContainsKey(pageName))
         {
             return;
@@ -8622,6 +8484,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Only an accepted decode request extends the idle-cache grace period.
+        // Rendering publishes a deferred signal above and returns; its dispatcher
+        // handoff comes back through this method outside composition and performs
+        // this deferral exactly once. Resident hits, duplicate demand and rejected
+        // non-urgent work therefore cannot keep the atlas high-water set alive.
+        DeferIdleSpritePageTrim();
         _desiredSpritePageName = pageName;
         _desiredSpritePageUrgent = urgent;
         _spritePagePrefetchGeneration++;
@@ -8921,15 +8789,6 @@ public partial class MainWindow : Window
             ClearDeferredActiveClipClock();
             if (failedClip is not null && ReferenceEquals(_activeClip, failedClip))
             {
-                if (string.Equals(
-                        failedClip.ActionName,
-                        StarWishActionName,
-                        StringComparison.Ordinal))
-                {
-                    HideWishStarOverlay();
-                    _isWishStarSuppressedForActiveClip = false;
-                }
-
                 _activeClip = null;
                 _activeFrameIndex = -1;
                 _activeClipStartedTimestamp = 0;
@@ -10265,11 +10124,6 @@ public partial class MainWindow : Window
 
     private void SetBubbleMode(BubbleMode mode)
     {
-        if (mode is BubbleMode.Todo or BubbleMode.Reminder)
-        {
-            SuppressWishStarOverlayForActiveClip();
-        }
-
         if (mode != BubbleMode.None)
         {
             CancelTodoOpenAfterEdgeRoamStop();
@@ -13388,14 +13242,6 @@ public partial class MainWindow : Window
         int LoopCycleCount,
         TimeSpan EndpointHoldDuration,
         TimeSpan FrameInterval);
-
-    private readonly record struct WishStarVisualState(
-        bool IsVisible,
-        double Opacity,
-        double TranslateX,
-        double TranslateY,
-        double RotationDegrees,
-        double Scale);
 
     private readonly record struct WorkModeIconVisualState(
         double SunOpacity,
