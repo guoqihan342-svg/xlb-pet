@@ -242,15 +242,19 @@ git status --short --ignored
 
 ## v1.0.65 发布验证
 
-以下结果必须在最终素材、清单、程序集和 EXE 来自同一提交后回填；发布前不得把计划项写成已通过：
+以下结果于 `2026-08-10` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418`、.NET Desktop Runtime `8.0.24` 环境完成。正式 EXE 已替换到用户指定路径，Release 附件也已在独立目录重新下载复核。
 
-| 项目 | 结果 |
+| 项目 | 实际结果 |
 | --- | --- |
-| 四种点击与退役资源 | 待回填：`--reaction-random-only`、`--clip-clock-only`、程序集/EXE 退役字符串与资源扫描 |
-| 左右紧凑支撑手臂 | 待回填：源帧/图集 QA、左右 100%/140% 逐帧预览、右侧镜像、bottom 哈希不变 |
-| 缓存与内存 | 待回填：`--resident-cache-only`、`--memory-profile`、空闲裁剪宽限 no-op 分支契约及实机回落采样 |
-| 其他回归 | 待回填：TodoStoreChecks、Todo/提醒/打工/边缘/巡游专项和完整 UiStateChecks |
-| EXE 与 GitHub Release | 待发布后回填版本、大小、SHA-256、提交、标签、Release 与回下载一致性 |
+| 源码、版本与图集 | 正式功能提交 `aead0d84a5cfa781819c426619d4f3f4b5115995`；文件版本 `1.0.65.0`，产品版本 `1.0.65+aead0d84a5cfa781819c426619d4f3f4b5115995`；正式清单为 41 页、1240 个源帧和 1240 个分页帧 |
+| 四种点击与退役资源 | `--reaction-random-only`、`--clip-clock-only` 均通过；真实失败路径确认忙碌时不提交点击历史，下一次成功仍排除上一个成功动作。生产源码、XAML、项目 Resource、清单及最终 EXE 对 `star-wish / StarWish / WishStar / luban-wish-star` 和原中文对白均为 0 命中 |
+| 左右紧凑支撑手臂 | 48/48 帧唯一，循环 ROI Alpha IoU 最低 `0.96237`、面积变化最高 `1.865%`、腕心步进最高 `1.868 px`、水平底边最长 `6 px`；Dense QA、Atlas QA 和左右浅/深背景 100%/140% 逐帧视觉检查全部通过。右侧为左侧精确镜像；Bottom 文件及解码像素哈希保持不变 |
+| 缓存与内存 | `--resident-cache-only` 与 `--memory-profile` 通过；缓存命中、重复、忙碌拒绝和仅 Rendering 延迟请求不会再重置空闲裁剪宽限，真正接管的新冷页请求才延长宽限。普通动作容量 `49/52 MiB`、绕屏容量 `89/92 MiB`；裁剪后 resident/pool 为 `11/11 MiB`，托管内存约 `16.05 MiB` |
+| 自动化与构建 | Python 素材/图集测试 36/36 通过，Dense Motion 与 Atlas Motion QA 通过；DesktopPet、UiStateChecks、TodoStoreChecks Release 构建均为 0 警告、0 错误。TodoStore/AppSettingsStore/ScheduledTaskStore、随机动作、时钟、缓存、Todo、提醒、打工、边缘、Alt+Tab、图集哈希专项及完整 UiStateChecks 全部通过 |
+| EXE 冒烟与用户数据 | `F:\agent\pet\dist\LubanDesktopPet.exe` 启动后响应；二次启动以退出码 0 自行退出且始终只有一个实例。`todos.json`、`settings.json`、`scheduled-tasks.json` 的 SHA-256 在备份、替换和启动后完全不变 |
+| EXE 与 GitHub Release | `93,249,158` 字节，SHA-256 `8A864958742C1C65F48E60F46E45A93491B7C8709FC9A458B33D1C9042404BE7`，`NotSigned`；已发布 [v1.0.65](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.65)，标签与 Release 目标均为功能提交 `aead0d84a5cfa781819c426619d4f3f4b5115995`，GitHub digest、独立回下载、本地候选和两个 `dist` EXE 的大小及 SHA-256 完全一致 |
+
+本机只有一块 `2560×1440` 显示器，因此多屏、负坐标副屏和混合 DPI 结论仍来自自动化矩阵，不冒充本轮真实双屏硬件验收；本轮实机覆盖最终用户路径启动、待机画面、单实例、用户数据不变，侧边人物素材则按左右浅/深背景 100%/140% 联系表及逐帧 GIF 验收。
 
 ## v1.0.64 发布验证
 
