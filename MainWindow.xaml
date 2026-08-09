@@ -267,8 +267,8 @@
                         </Rectangle.Fill>
                     </Rectangle>
                     <Image x:Name="ButterflyOverlay"
-                           Width="14"
-                           Height="14"
+                           Width="22"
+                           Height="22"
                            Canvas.Left="0"
                            Canvas.Top="0"
                            Panel.ZIndex="10"

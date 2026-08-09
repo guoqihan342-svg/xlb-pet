@@ -193,14 +193,22 @@ public partial class MainWindow : Window
         TimeSpan.FromSeconds(5);
     private const string TodoPoseActionName = "think";
     private const string ButterflyActionName = "butterfly";
-    private const double ButterflyVisualSize = 14;
-    private const double ButterflyStartCenterX = 165;
-    private const double ButterflyStartCenterY = 38;
-    private const double ButterflyControlCenterX = 135;
-    private const double ButterflyControlCenterY = 70;
-    private const double ButterflyNoseCenterX = 96;
-    private const double ButterflyNoseCenterY = 120;
-    private const double ButterflyFlapsPerSecond = 5;
+    private const double ButterflyVisualSize = 22;
+    // Fly in around the right side of the hat instead of crossing through it.
+    // The endpoint is anchored to the actual nose in the 399x509 think pose:
+    // the visible butterfly's lower edge meets the nose while its body remains
+    // readable at the final 190x242 display size.
+    private const double ButterflyStartCenterX = 205;
+    private const double ButterflyStartCenterY = 96;
+    private const double ButterflyControlCenterX = 205;
+    private const double ButterflyControlCenterY = 154;
+    private const double ButterflyNoseCenterX = 92;
+    private const double ButterflyNoseCenterY = 141;
+    private const double ButterflyExitControlCenterX = 52;
+    private const double ButterflyExitControlCenterY = 170;
+    private const double ButterflyExitCenterX = -16;
+    private const double ButterflyExitCenterY = 118;
+    private const double ButterflyFlapsPerSecond = 4.2;
     private static readonly string[] ReactionActionNames =
     [
         ButterflyActionName, "cry", "cute", "like", "eat"
@@ -602,7 +610,7 @@ public partial class MainWindow : Window
         _reactionClips =
         [
             CreateMotionClip(
-                "嘘～小蝴蝶停在我鼻尖啦！",
+                "咦～小蝴蝶来找我啦！",
                 ButterflyActionName,
                 TodoPoseActionName),
             CreateMotionClip("呜……主人要哄哄我", "cry"),
@@ -6488,25 +6496,43 @@ public partial class MainWindow : Window
         }
 
         pathProgress = Math.Clamp(pathProgress, 0, 1);
-        var inverseProgress = 1 - pathProgress;
-        var centerX =
-            inverseProgress * inverseProgress * ButterflyStartCenterX +
-            2 * inverseProgress * pathProgress * ButterflyControlCenterX +
-            pathProgress * pathProgress * ButterflyNoseCenterX;
-        var centerY =
-            inverseProgress * inverseProgress * ButterflyStartCenterY +
-            2 * inverseProgress * pathProgress * ButterflyControlCenterY +
-            pathProgress * pathProgress * ButterflyNoseCenterY;
+        var isLeaving = _activeFrameIndex > forwardLastFrameIndex;
+        var journeyProgress = isLeaving ? 1 - pathProgress : pathProgress;
+        var easedProgress = journeyProgress * journeyProgress *
+                            (3 - 2 * journeyProgress);
+        var inverseProgress = 1 - easedProgress;
+        var centerX = isLeaving
+            ? inverseProgress * inverseProgress * ButterflyNoseCenterX +
+              2 * inverseProgress * easedProgress *
+              ButterflyExitControlCenterX +
+              easedProgress * easedProgress * ButterflyExitCenterX
+            : inverseProgress * inverseProgress * ButterflyStartCenterX +
+              2 * inverseProgress * easedProgress * ButterflyControlCenterX +
+              easedProgress * easedProgress * ButterflyNoseCenterX;
+        var centerY = isLeaving
+            ? inverseProgress * inverseProgress * ButterflyNoseCenterY +
+              2 * inverseProgress * easedProgress *
+              ButterflyExitControlCenterY +
+              easedProgress * easedProgress * ButterflyExitCenterY
+            : inverseProgress * inverseProgress * ButterflyStartCenterY +
+              2 * inverseProgress * easedProgress * ButterflyControlCenterY +
+              easedProgress * easedProgress * ButterflyNoseCenterY;
         var flutter = Math.Sin(
             timestamp *
             (Math.Tau * ButterflyFlapsPerSecond / Stopwatch.Frequency));
-        var approachScale = 1 + 0.35 * inverseProgress;
+        // Perspective must grow toward the character.  The previous formula
+        // made the butterfly shrink as it approached and looked like a speck
+        // sliding across the hat.
+        var proximity = isLeaving ? 1 - easedProgress : easedProgress;
+        var approachScale = 0.72 + 0.28 * proximity;
 
         ButterflyTranslate.X = centerX - ButterflyVisualSize / 2;
         ButterflyTranslate.Y = centerY - ButterflyVisualSize / 2;
-        ButterflyScale.ScaleX = approachScale * (1 + 0.06 * flutter);
-        ButterflyScale.ScaleY = approachScale * (1 - 0.03 * flutter);
-        ButterflyRotate.Angle = 8 - 14 * pathProgress + 2.5 * flutter;
+        ButterflyScale.ScaleX = approachScale * (1 + 0.035 * flutter);
+        ButterflyScale.ScaleY = approachScale;
+        ButterflyRotate.Angle =
+            (isLeaving ? -6 + 12 * easedProgress : 8 - 14 * easedProgress) +
+            1.5 * flutter;
         ShowButterflyOverlay();
     }
 

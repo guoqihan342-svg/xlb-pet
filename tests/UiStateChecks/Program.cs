@@ -115,6 +115,13 @@ internal static partial class Program
             }
 
             if (args.Contains(
+                    "--butterfly-preview",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                return RunButterflyPreview(application);
+            }
+
+            if (args.Contains(
                     "--reminder-close-preview",
                     StringComparer.OrdinalIgnoreCase))
             {
@@ -1195,6 +1202,219 @@ internal static partial class Program
             {
                 // The preview is diagnostic-only; a locked temp log must not
                 // turn a successful visual review into a failed process.
+            }
+        }
+    }
+
+    private static int RunButterflyPreview(Application application)
+    {
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-butterfly-preview-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var preview = new MainWindow
+        {
+            ShowActivated = true,
+            ShowInTaskbar = true,
+            Topmost = true,
+            Title = "Butterfly Preview",
+            WindowStartupLocation = WindowStartupLocation.CenterScreen
+        };
+
+        SetField(
+            preview,
+            "_todoStore",
+            new TodoStore(Path.Combine(tempDirectory, "todos.json")));
+        SetField(
+            preview,
+            "_settingsStore",
+            new AppSettingsStore(Path.Combine(tempDirectory, "settings.json")));
+        SetField(
+            preview,
+            "_scheduledTaskStore",
+            new ScheduledTaskStore(
+                Path.Combine(tempDirectory, "scheduled-tasks.json")));
+        GetField<ObservableCollection<TodoItem>>(preview, "_todos").Clear();
+        GetField<ObservableCollection<ScheduledTaskItem>>(
+            preview,
+            "_scheduledTasks").Clear();
+        GetField<Queue<ScheduledTaskItem>>(
+            preview,
+            "_reminderQueue").Clear();
+        GetField<HashSet<Guid>>(
+            preview,
+            "_queuedReminderIds").Clear();
+        GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
+
+        var butterflyClip = GetField<Array>(preview, "_reactionClips")
+            .Cast<object>()
+            .First();
+        Assert(GetProperty<string>(butterflyClip, "ActionName") == "butterfly",
+            "Butterfly Preview要求第一条真实reaction为butterfly");
+
+        var replayTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(120)
+        };
+        var previewCenterLeft = double.NaN;
+        var previewCenterTop = double.NaN;
+        void KeepPreviewCentered()
+        {
+            if (!double.IsFinite(previewCenterLeft) ||
+                !double.IsFinite(previewCenterTop))
+            {
+                return;
+            }
+
+            preview.Left = previewCenterLeft;
+            preview.Top = previewCenterTop;
+            Invoke(
+                preview,
+                "MoveMainWindowTo",
+                previewCenterLeft,
+                previewCenterTop);
+        }
+
+        void TryStartButterfly()
+        {
+            if (!preview.IsLoaded ||
+                GetField<bool>(preview, "_isClosing") ||
+                GetRawField(preview, "_activeClip") is not null)
+            {
+                return;
+            }
+
+            GetField<DispatcherTimer>(preview, "_automaticTimer").Stop();
+            _ = Invoke(
+                preview,
+                "TryStartReaction",
+                butterflyClip,
+                false);
+        }
+
+        replayTimer.Tick += (_, _) =>
+        {
+            KeepPreviewCentered();
+            TryStartButterfly();
+        };
+        preview.PreviewKeyDown += (_, eventArgs) =>
+        {
+            if (eventArgs.Key != Key.Escape)
+            {
+                return;
+            }
+
+            eventArgs.Handled = true;
+            preview.Close();
+        };
+        preview.Loaded += (_, _) =>
+            preview.Dispatcher.BeginInvoke(
+                DispatcherPriority.ApplicationIdle,
+                new Action(() =>
+                {
+                    try
+                    {
+                        PauseSpritePageWarmupForClockSimulation(preview);
+                        SetField(preview, "_automaticAnimationEnabled", false);
+                        SetField(preview, "_edgeRoamingEnabled", false);
+                        SetField(preview, "_edgeRoamPreloadRequested", false);
+                        SetField(preview, "_nextEdgeRoamDueTimestamp", 0L);
+                        SetField(preview, "_nextAutomaticActivityDueTimestamp", 0L);
+                        SetField(preview, "_pillowBreathingDueTimestamp", 0L);
+                        SetField(preview, "_sessionInactive", false);
+                        SetField(preview, "_isReminderActive", false);
+                        SetField(preview, "_activeReminder", null);
+                        GetField<DispatcherTimer>(preview, "_automaticTimer").Stop();
+                        GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
+                        GetField<DispatcherTimer>(preview, "_edgePeekHoldTimer").Stop();
+                        GetField<DispatcherTimer>(preview, "_reminderSizeCommitTimer").Stop();
+                        Invoke(
+                            preview,
+                            "StopEdgeRoaming",
+                            false,
+                            true,
+                            true,
+                            true);
+                        Invoke(preview, "ExitEdgePeek", false, true);
+                        Invoke(preview, "StopWorkModeImmediately", true);
+                        SetField(preview, "_activeClip", null);
+                        SetField(preview, "_activeFrameIndex", -1);
+                        SetField(preview, "_activeClipStartedTimestamp", 0L);
+                        SetField(preview, "_activeFrameDeadlineTimestamp", 0L);
+                        Invoke(preview, "ClearDeferredActiveClipClock");
+                        Invoke(
+                            preview,
+                            "SetBubbleMode",
+                            GetNestedEnum("BubbleMode", "None"));
+                        Invoke(preview, "ResetPetVisualTransforms");
+                        Invoke(
+                            preview,
+                            "ApplyPetSizeScale",
+                            1d,
+                            false,
+                            false);
+
+                        var idleFrame = GetField<object>(preview, "_idleFrame");
+                        PrimeSpritePageForFrame(preview, idleFrame);
+                        Invoke(preview, "ShowStableFrame", idleFrame);
+                        preview.UpdateLayout();
+                        var workArea = SystemParameters.WorkArea;
+                        var previewWidth = preview.ActualWidth > 0
+                            ? preview.ActualWidth
+                            : preview.Width;
+                        var previewHeight = preview.ActualHeight > 0
+                            ? preview.ActualHeight
+                            : preview.Height;
+                        var centeredLeft =
+                            workArea.Left + (workArea.Width - previewWidth) / 2;
+                        var centeredTop =
+                            workArea.Top + (workArea.Height - previewHeight) / 2;
+                        // Keep WPF's logical window state and the native HWND
+                        // position in sync. Calling only the native helper lets
+                        // a later layout pass restore the previous user position.
+                        previewCenterLeft = centeredLeft;
+                        previewCenterTop = centeredTop;
+                        KeepPreviewCentered();
+                        preview.Title = "Butterfly Preview";
+                        replayTimer.Start();
+                        TryStartButterfly();
+                        var activePreviewClip = GetRawField(
+                            preview,
+                            "_activeClip");
+                        Assert(activePreviewClip is not null &&
+                               GetProperty<string>(
+                                   activePreviewClip,
+                                   "ActionName") == "butterfly",
+                            "Butterfly Preview启动时必须真实进入butterfly reaction");
+                        _ = preview.Activate();
+                        _ = preview.Focus();
+                        Console.WriteLine(
+                            "[PREVIEW] Production butterfly reaction is looping " +
+                            "at screen center. Press Esc to close.");
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine(exception);
+                        application.Shutdown(1);
+                    }
+                }));
+        preview.Closed += (_, _) => replayTimer.Stop();
+
+        application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        try
+        {
+            return application.Run(preview);
+        }
+        finally
+        {
+            replayTimer.Stop();
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // Diagnostic-only preview cleanup must not hide its visual result.
             }
         }
     }
@@ -5955,8 +6175,8 @@ internal static partial class Program
         var butterflyClip = clips.Single(clip =>
             GetProperty<string>(clip, "ActionName") == "butterfly");
         Assert(GetProperty<string>(butterflyClip, "Message") ==
-               "嘘～小蝴蝶停在我鼻尖啦！",
-            "butterfly必须使用锁定的鼻尖小蝴蝶文案");
+               "咦～小蝴蝶来找我啦！",
+            "butterfly必须使用动画全程都成立的简短小蝴蝶文案");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
         var wakeFrameCount = expectedWakeFrameNames.Length;
         Assert(GetField<Array>(window, "_wakeFrames").Length == wakeFrameCount,
@@ -6133,12 +6353,12 @@ internal static partial class Program
                !advanceSource.Contains("AppLogger", StringComparison.Ordinal),
             "butterfly每帧回调不得创建对象、构造集合或写磁盘日志");
         Assert(xamlSource.Contains("x:Name=\"ButterflyOverlay\"", StringComparison.Ordinal) &&
-               xamlSource.Contains("Width=\"14\"", StringComparison.Ordinal) &&
-               xamlSource.Contains("Height=\"14\"", StringComparison.Ordinal) &&
+               xamlSource.Contains("Width=\"22\"", StringComparison.Ordinal) &&
+               xamlSource.Contains("Height=\"22\"", StringComparison.Ordinal) &&
                xamlSource.Contains("luban-butterfly.png", StringComparison.Ordinal) &&
                xamlSource.Contains("Visibility=\"Visible\"", StringComparison.Ordinal) &&
                !hideSource.Contains("Visibility.Collapsed", StringComparison.Ordinal),
-            "14×14蝴蝶必须作为PetVisual常驻透明overlay，只切Opacity避免首次布局闪烁");
+            "22×22蝴蝶必须作为PetVisual常驻透明overlay，只切Opacity避免首次布局闪烁");
 
         foreach (var interruptionMethodName in new[]
                  {
@@ -6160,7 +6380,8 @@ internal static partial class Program
         var translate = GetField<TranslateTransform>(
             window,
             "ButterflyTranslate");
-        Assert(overlay.Width == 14 && overlay.Height == 14 &&
+        var scale = GetField<ScaleTransform>(window, "ButterflyScale");
+        Assert(overlay.Width == 22 && overlay.Height == 22 &&
                overlay.Visibility == Visibility.Visible &&
                overlay.Opacity == 0 &&
                overlay.IsHitTestVisible == false,
@@ -6216,24 +6437,25 @@ internal static partial class Program
         }
 
         PublishOverlayFrame(actionFrameIndex);
-        AssertClose(translate.X + 7, 165, "butterfly fly-in start center X");
-        AssertClose(translate.Y + 7, 38, "butterfly fly-in start center Y");
+        AssertClose(translate.X + 11, 205, "butterfly fly-in start center X");
+        AssertClose(translate.Y + 11, 96, "butterfly fly-in start center Y");
+        var approachStartScale = scale.ScaleX;
         Assert(overlay.Opacity == 1,
             "think首帧显示后butterfly必须从右上方开始飞入");
 
         PublishOverlayFrame(actionFrameIndex + thinkFrameCount - 1);
-        AssertClose(translate.X + 7, 96, "butterfly nose center X");
-        AssertClose(translate.Y + 7, 120, "butterfly nose center Y");
+        AssertClose(translate.X + 11, 92, "butterfly nose center X");
+        AssertClose(translate.Y + 11, 141, "butterfly nose center Y");
+        Assert(scale.ScaleX > approachStartScale,
+            "butterfly接近鼻尖时必须变大，不能用近大远小的反向透视");
 
-        const int matchedForwardPose = 27;
-        PublishOverlayFrame(actionFrameIndex + matchedForwardPose);
-        var forwardX = translate.X;
-        var forwardY = translate.Y;
         var reverseLastFrameIndex =
             actionFrameIndex + (thinkFrameCount - 1) * 2;
-        PublishOverlayFrame(reverseLastFrameIndex - matchedForwardPose);
-        AssertClose(translate.X, forwardX, "butterfly reverse path X");
-        AssertClose(translate.Y, forwardY, "butterfly reverse path Y");
+        PublishOverlayFrame(reverseLastFrameIndex);
+        AssertClose(translate.X + 11, -16, "butterfly fly-out end center X");
+        AssertClose(translate.Y + 11, 118, "butterfly fly-out end center Y");
+        Assert(scale.ScaleX < 0.8,
+            "butterfly飞出时必须恢复远处小尺寸，不能机械原路倒放");
 
         Invoke(window, "SuppressButterflyOverlay");
         Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 0,
