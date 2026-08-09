@@ -26,6 +26,8 @@ App
 
 `TodoWindow`、`ReminderWindow` 和编辑窗口都是主桌宠拥有的 WPF 窗口。它们的位置通过 `OwnedWindowPositioner` 以物理像素对齐，不能用单屏假设或只按主显示器坐标计算。
 
+六个正式 WPF `Window` 在 HWND 创建后统一设置 `WS_EX_TOOLWINDOW` 并清除 `WS_EX_APPWINDOW`，同时保留 `ShowInTaskbar=false`。因此透明主桌宠及其任务、提醒、确认和编辑窗口不进入 Shell 的 `Alt+Tab` 候选；实现不使用 `WS_EX_NOACTIVATE`，输入法、焦点、拖动、置顶和拥有关系仍按原状态机工作。日期、时间和全文提示属于 WPF `Popup`，继续使用框架原生工具窗口语义。
+
 `TrayIconService` 使用原生 `Shell_NotifyIcon` 承载图标，但菜单继续复用轻量 WPF `ContextMenu`。Explorer 回调只记录物理屏幕锚点，并在 `DispatcherPriority.Input` 合并同一次右键的重复消息；真正打开前调用 `SetForegroundWindow`，使 `StaysOpen=false` 能捕获窗口外点击。菜单关闭后用 `NIM_SETFOCUS` 和 `WM_NULL` 把焦点归还通知区，owner 失活也会兜底关闭菜单。光标与通知图标矩形都无法取得时，本次不打开，不能回退到透明桌宠中心。
 
 ## 3. 状态所有权与优先级
@@ -75,21 +77,21 @@ Idle → WorkEntering → NormalTyping
 NormalTyping + SingleClick → NormalTyping (strict visual no-op)
 NormalTyping + DoubleClick → 2x-to-exact-seam → SeriousExpressionTransition → SeriousTyping → SeriousExit → NormalTyping
 NormalTyping / SeriousTyping → WorkExiting → Idle
-NormalTyping / SeriousTyping + DragRelease(Left / Right / Bottom) → WorkExiting(pending edge) → EdgePeek(edge)
+NormalTyping / SeriousTyping + DragRelease(Left / Right / Bottom) → EdgeHandoff(current work frame) → EdgePeek(edge)
 ```
 
-- 同一个无文字 `Button` 语义控件在完全待机且 `EdgeDock.None` 时显示左上角萌太阳，进入非待机打工状态后通过 `Tag` 原子切换为萌月亮；两个图标均为 32 DIP 纯 XAML 矢量，外层命中区为 42 DIP。普通吸附隐藏太阳；打工拖动命中边缘后会直接请求收工，不创建保留月亮的“工作吸附”中间态。人物水平镜像时布局和图标自身反向补偿，最终仍固定在屏幕视觉左上角且按钮事件不能冒泡成普通人物点击。
+- 同一个无文字 `Button` 语义控件在完全待机且 `EdgeDock.None` 时显示左上角萌太阳，进入非待机打工状态后通过 `Tag` 原子切换为萌月亮；两个图标均为 32 DIP 纯 XAML 矢量，外层命中区为 42 DIP。普通吸附隐藏太阳；打工拖动命中边缘后会直接请求边缘交接，不创建保留月亮的“工作吸附”中间态。人物水平镜像时布局和图标自身反向补偿，最终仍固定在屏幕视觉左上角且按钮事件不能冒泡成普通人物点击。
 - 普通 `work-loop` 使用 96 个逻辑帧形成 1.6 秒完整循环；其中 65 张位图独特，一圈包含 9 个精确中性接缝，最长连续中性停顿只有 5 帧。8 次触键按不等间隔排列，左食指、右中指、左中指和右食指交错落键后再变化次序，避免机械式左右轮播。
 - v5 打字姿势把左右手和袖口拆成语义蒙版，以手腕、掌根、MCP/PIP 与指尖控制点做分层关节变形；四根目标手指实测位移为 `5.528–6.049 px`。专用眉形补丁之外的脸、头、躯干、电脑以及非目标键盘区域属于静态锁区，逐像素漂移必须为 `0`。
 - 简单单击是严格的视觉无操作：只允许预热很小的认真表情入口页，不改变活动 clip、绝对相位锚点、速度、普通/认真状态或认真期限，也不再加载 `work-tap`。
 - 若收到双击，则立即把当前普通循环连续切到 2 倍速；到最近的精确中性接缝后播放约 `133 ms` 的认真眉形与嘴形过渡，再进入 96 帧 `work-serious-loop`，从认真循环开始时完整计时至少 4 秒。已在认真循环时再双击会从当前时刻重新建立完整 4 秒期限，不重置手部相位。
 - 认真期限到期后等待最近的精确中性接缝，进入 24 帧 `work-serious-exit`，再以 1 倍速恢复普通打字；不得在任意触键相位硬切。
-- 打工期间禁止自动动作、呼噜和绕屏启动。真实拖动期间只取得窗口位置所有权，必须保留工作状态、活动 clip、绝对相位锚点、倍速和认真期限。松手时用同一套多屏、DPI、共享接缝和物理像素规则解析左、右、下边缘：若未命中则继续原工作循环；若命中，则锁定一个待交接边缘并进入 `WorkExiting`，收工结束后再由 `EnterEdgePeek` 一次性取得真实 `EdgeDock` 所有权。交接前不得播放待机中间帧，也不得让迟到的工作循环覆盖探头帧。顶部和双屏内部接缝不会创建待交接边缘。提醒、右键打开任务面板、会话锁定和退出仍按更高优先级接管并清理待交接边缘。
+- 打工期间禁止自动动作、呼噜和绕屏启动。真实拖动期间只取得窗口位置所有权，必须保留工作状态、活动 clip、绝对相位锚点、倍速和认真期限。松手时用同一套多屏、DPI、共享接缝和物理像素规则解析左、右、下边缘：若未命中则继续原工作循环；若命中，则锁定一个待交接边缘并完全跳过普通 `WorkExiting`、`work-exit` 人物退场、枕头和 idle。热页在同一 `Rendering` 回调从当前工作描述符原子发布目标 edge-rest 描述符；冷页冻结并保护当前工作描述符，待目标页 resident 后再交给 `EnterEdgePeek`，目标页失败才允许安全回到 idle。交接路径不得发布待机中间描述符，也不得让迟到的工作循环或退出帧覆盖探头帧。顶部和双屏内部接缝不会创建待交接边缘。提醒、右键打开任务面板、会话锁定和退出仍按更高优先级接管并清理待交接边缘。
 - 右键从打工状态打开任务面板时，先完成收工交接，再通过 Dispatcher 调用原有面板入口，不能在渲染回调中直接打开窗口。
 
 ## 4. 动画与渲染
 
-人物动作、边缘探头和熊猫巡游共享 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴。渲染回调只做内存中的帧选择、像素提交和变换更新：
+人物动作、`star-wish` 轻量星星、边缘探头和熊猫巡游共享 `CompositionTarget.Rendering + Stopwatch` 绝对时间轴。渲染回调只做内存中的帧选择、像素提交和变换更新：
 
 ```text
 Stopwatch 绝对时间
@@ -106,7 +108,7 @@ Left/Top 最后对齐物理像素
 - 掉帧后直接定位到当前绝对时间对应姿势，不补播积压帧。
 - 超过 `250 ms` 的休眠或 UI 阻塞不补移动距离，恢复后不得瞬移。
 - 相邻姿势直接切换；只有明确设计的状态桥接才允许过渡，不能用整图交叉淡化制造双影、光纹或忽大忽小。
-- 轻量蝴蝶是 `PetFrameViewport` 内独立的 `96×96` 透明位图层。人物继续读取 Todo 已验证的 56 张 `think` smooth 帧；蝴蝶只由同一个绝对渲染时钟更新平移、旋转和翼展缩放，不创建第二套人物位图、独立计时器或逐帧对象。中断或状态交接时先把该层归零，不能把蝴蝶带入 Todo、提醒、拖动、打工或边缘状态。
+- `star-wish` 不拥有独立全人物序列，而是以自己的 ActionName 复用现有 `cute` 的 56 张 smooth 人物帧、既有 wake 桥和自然反向退场。唯一新增位图是 `Assets/luban-wish-star.png`：`96×96` 透明 Resource 由视觉树中常驻、默认 `Opacity=0`、不可命中的 `22 DIP` overlay 显示。星星从画面右侧的小手边沿帽檐外缘升起，在头顶轻摇后向右上飞走；位置、旋转、缩放和透明度由同一绝对渲染时钟计算。它不复用 Todo `think`、不新增人物图集页、loop、第二个 `Rendering` 订阅、`DispatcherTimer` 或逐帧位图分配。拖动、右键、提醒、打工或边缘状态接管时会立即把 overlay 恢复透明。
 - `Rendering` 只在动画、移动或过渡活动时订阅；稳定待机不应维持空转回调。
 - 回调内禁止磁盘 I/O、页面解压和大对象逐帧分配。
 
@@ -116,6 +118,7 @@ Left/Top 最后对齐物理像素
 
 正式精灵位于嵌入式 Brotli Pbgra32 分页图集中。程序启动只同步解码待机所需页，其他页面按动作预取：
 
+- `v1.0.63` 删除普通 `butterfly`、对应中文对白和旧蝴蝶 Resource；失败的 144 帧 `star-cuddle` 人物素材及生成源不进入正式提交或包体。`star-wish` 复用 `cute` 的 56 张人物帧，仅增加一张轻量 `96×96` 透明星星 Resource，因此人物图集保持 41 页、1240 个源帧和 1240 个分页帧；Todo 专用 56 帧 `think` smooth 及其状态所有权保持不变。
 - `v1.0.62` 继续保留 264 个打工逻辑帧和 Todo 专用 56 帧 `think` smooth；普通蝴蝶动作复用这组人物帧，独立 `96×96` 蝴蝶作为 WPF Resource，不进入人物图集。`yawn` 的 132 帧/4 页、未播放的 48 帧 `loop-cute`/1 页和不可达 `cute-smooth-057..090`/1 页均移除，目标图集由 47 页、1454 帧收敛为 41 页、1240 帧；正式结果仍必须由同次构建清单动态校验。
 - `v1.0.61` 的当前打工资源契约仍为 264 个逻辑帧：`work-enter`、`work-loop`、`work-serious-loop`、`work-serious-exit` 分别为 48、96、96、24 帧；`work-tap` 已从运行时、程序集和图集移除，两种循环仍保留 9 个精确中性接缝和 65 张独特位图。普通挥手和仅供普通思考动作使用的 48 帧 `loop-think` 均已移除，Todo 专用 `think` smooth 入场继续保留；整套目标图集为 47 页、1454 个逻辑帧。最终页数、帧数和动作长度必须由同次构建的清单动态校验。
 - `v1.0.56` 的历史版本曾使用 312 个打工逻辑帧：`work-enter`、`work-loop`、`work-tap`、`work-serious-loop`、`work-serious-exit` 分别为 48、96、48、96、24 帧。
@@ -162,8 +165,8 @@ JSON 文件采用临时文件替换，避免正常保存过程中留下半写文
 | 顶部可拖达、左/右/下吸附、多屏接缝 | `--edge-dock-only`、`--pet-drag-preview` |
 | 巡游路线、方向和资源契约 | `--roam-source-only` |
 | 巡游左右键退出和拖动接管 | `--roam-interaction-only`、`--roam-preview` |
-| 打工进入/退出、单双击消歧、三边收工交接、抢占和绝对时钟 | `--work-mode-only`、`--work-preview` |
-| 五种普通动作、蝴蝶绝对时间轴、Todo 专用思考及退役动作资源边界 | `--clip-clock-only`、`--atlas-hash-only`、素材 QA |
+| 打工进入/退出、单双击消歧、三边原子交接、抢占和绝对时钟 | `--work-mode-only`、`--work-preview` |
+| 五种普通动作、`star-wish` 对 `cute` 56 帧的复用、22 DIP 星星绝对轨迹、Todo 专用思考及退役资源边界 | `--star-wish-only`、`--clip-clock-only`、`--atlas-hash-only` |
 | 定时任务编辑与免打扰 | `--scheduled-editor-only` |
 | 提醒分页、关闭语义和堆叠 | `--reminder-only` |
 | 缩放连续性与面板跟随 | `--pet-size-only` |

@@ -24,7 +24,6 @@ ACTION_NAMES = ("cry", "cute", "like", "eat")
 LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
-LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
 ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 SOURCE_X_TO_DIP = 190 / 450
 SOURCE_Y_TO_DIP = (488 / 550) * (242 / 509)

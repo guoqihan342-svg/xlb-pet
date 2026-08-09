@@ -23,6 +23,7 @@ public partial class TaskTextEditWindow : Window
         bool showAdvancedEdit)
     {
         InitializeComponent();
+        WindowChromeAppearance.ExcludeFromAltTab(this);
         _positionBesideOwnerAction = PositionBesideOwner;
         _positionCache = new OwnedWindowPositioner.PositionCache(this);
         EditorTitleText.Text = title;

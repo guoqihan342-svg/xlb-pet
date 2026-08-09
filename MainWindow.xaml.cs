@@ -192,26 +192,15 @@ public partial class MainWindow : Window
     private static readonly TimeSpan MissedReminderGracePeriod =
         TimeSpan.FromSeconds(5);
     private const string TodoPoseActionName = "think";
-    private const string ButterflyActionName = "butterfly";
-    private const double ButterflyVisualSize = 22;
-    // Fly in around the right side of the hat instead of crossing through it.
-    // The endpoint is anchored to the actual nose in the 399x509 think pose:
-    // the visible butterfly's lower edge meets the nose while its body remains
-    // readable at the final 190x242 display size.
-    private const double ButterflyStartCenterX = 205;
-    private const double ButterflyStartCenterY = 96;
-    private const double ButterflyControlCenterX = 205;
-    private const double ButterflyControlCenterY = 154;
-    private const double ButterflyNoseCenterX = 92;
-    private const double ButterflyNoseCenterY = 141;
-    private const double ButterflyExitControlCenterX = 52;
-    private const double ButterflyExitControlCenterY = 170;
-    private const double ButterflyExitCenterX = -16;
-    private const double ButterflyExitCenterY = 118;
-    private const double ButterflyFlapsPerSecond = 4.2;
+    private const string StarWishActionName = "star-wish";
+    private const string StarWishPoseActionName = "cute";
+    private const int StarWishRiseSourceFrameNumber = 20;
+    private const double StarWishRiseDurationSeconds = 0.5;
+    private const double StarWishHoverDurationSeconds = 0.95;
+    private const double StarWishFlyDurationSeconds = 0.7;
     private static readonly string[] ReactionActionNames =
     [
-        ButterflyActionName, "cry", "cute", "like", "eat"
+        StarWishActionName, "cry", "cute", "like", "eat"
     ];
     private static readonly string[] SmoothActionNames =
     [
@@ -325,13 +314,12 @@ public partial class MainWindow : Window
     private bool _dragInteractionActive;
     private bool _dragPreservesWorkMode;
     private EdgeDock _workEdgeDock;
+    private long _workEdgeHandoffFrozenTimestamp;
     private EdgeDockDragContext? _edgeDockDragContext;
     private AnimationClip? _activeClip;
     private int _activeFrameIndex = -1;
     private long _activeClipStartedTimestamp;
     private long _activeFrameDeadlineTimestamp;
-    private bool _butterflyOverlayVisible;
-    private bool _butterflyOverlaySuppressed;
     private AnimationClip? _deferredActiveClipClock;
     private SpriteFrame? _deferredActiveClipClockFrame;
     private int _deferredActiveClipClockFrameIndex = -1;
@@ -436,6 +424,8 @@ public partial class MainWindow : Window
     private bool _automaticAnimationEnabled;
     private bool _isPillowBreathing;
     private bool _isSnoreBubbleAnimating;
+    private bool _isWishStarVisible;
+    private bool _isWishStarSuppressedForActiveClip;
     private bool _isClosing;
     private bool _suppressTodoWindowDeactivate;
     private bool _displaySettingsSubscribed;
@@ -456,6 +446,11 @@ public partial class MainWindow : Window
     private long _totalReminderOccurrenceCount;
     private Func<DateTimeOffset> _nowProvider = static () => DateTimeOffset.Now;
     private SpriteFrame? _currentSpriteFrame;
+    // Null in production. UiStateChecks installs this observer briefly to
+    // verify descriptor-level handoffs that cannot be inferred from the final
+    // pixels when two authored endpoints happen to be pixel-identical.
+    private Action<string, string, int, int, int, int>?
+        _spriteFrameDescriptorPublishedForTesting = null;
     private Int32Rect? _directDisplayFrameBounds;
     private SpriteFrame? _pendingSpriteFrame;
     private TimeSpan _pendingSpriteFrameBlendDuration;
@@ -491,6 +486,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        WindowChromeAppearance.ExcludeFromAltTab(this);
         _snoreBubbleScaleClock = CreateSnoreBubbleScaleClock();
         SourceInitialized += MainWindow_SourceInitialized;
         _processOutsideTodoCloseAction = ProcessOutsideTodoClose;
@@ -609,10 +605,7 @@ public partial class MainWindow : Window
         _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
         _reactionClips =
         [
-            CreateMotionClip(
-                "咦～小蝴蝶来找我啦！",
-                ButterflyActionName,
-                TodoPoseActionName),
+            CreateStarWishClip("许个小愿望，送你一颗亮晶晶～"),
             CreateMotionClip("呜……主人要哄哄我", "cry"),
             CreateMotionClip("给你卖个萌 ♡", "cute"),
             CreateMotionClip("主人真棒！", "like"),
@@ -989,6 +982,12 @@ public partial class MainWindow : Window
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
     }
 
+    private AnimationClip CreateStarWishClip(string message) =>
+        CreateMotionClip(
+            message,
+            StarWishActionName,
+            StarWishPoseActionName);
+
     private MotionClipProfile ResolveMotionClipProfile(
         string actionName,
         string poseActionName)
@@ -996,12 +995,7 @@ public partial class MainWindow : Window
         var availableSmoothFrameCount = _actionSmoothFrames[poseActionName].Length;
         var profile = actionName switch
         {
-            ButterflyActionName => new MotionClipProfile(
-                availableSmoothFrameCount,
-                LoopCycleCount: 0,
-                EndpointHoldDuration: StableReactionEndpointHoldDuration,
-                FrameInterval: MotionFrameInterval),
-            "cute" => new MotionClipProfile(
+            StarWishActionName or "cute" => new MotionClipProfile(
                 CuteCleanSmoothFrameCount,
                 LoopCycleCount: 0,
                 EndpointHoldDuration: StableReactionEndpointHoldDuration,
@@ -1851,7 +1845,7 @@ public partial class MainWindow : Window
         // A monitor/DPI recovery may clamp the window away from the exact edge
         // that was recorded while working. Do not hand a stale edge to idle
         // when the user later chooses 去睡觉.
-        _workEdgeDock = EdgeDock.None;
+        CancelPendingWorkEdgeHandoff(resumeWork: true);
 
         _petSizeLogicalAnchor = null;
         _todoWindowPositionCache.InvalidateGeometry();
@@ -2182,7 +2176,6 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
-        SuppressButterflyOverlay();
         if (!_isTransientPetSizeOverride)
         {
             PersistLatestPetSizeForShutdownAt(Stopwatch.GetTimestamp());
@@ -2262,6 +2255,7 @@ public partial class MainWindow : Window
         _petSizePreviewEnvelopePinnedForTodo = false;
         _petSizeEnvelopePrepared = false;
         _petSizeTargetUpdatePending = false;
+        HideWishStarOverlay();
         StopVisualClock();
         if (_mainHwndSource is { } mainHwndSource)
         {
@@ -2319,19 +2313,19 @@ public partial class MainWindow : Window
             return;
         }
 
+        SuppressWishStarOverlayForActiveClip();
         _workEnterAfterEdgePeekExitRequested = false;
-        SuppressButterflyOverlay();
         RefreshWorkModeButton();
     }
 
     private void CancelPetPointerInteractionForInterruption()
     {
-        SuppressButterflyOverlay();
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
         _dragPreservesWorkMode = false;
         _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
         _pointerDownPosition = default;
         _pointerDownScreenPosition = default;
         _latestDragScreenPosition = default;
@@ -2362,7 +2356,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        SuppressButterflyOverlay();
+        SuppressWishStarOverlayForActiveClip();
         DeferIdleSpritePageTrim();
         _workEnterAfterEdgePeekExitRequested = false;
         _dragPreservesWorkMode = false;
@@ -2474,9 +2468,9 @@ public partial class MainWindow : Window
         if (_dragPreservesWorkMode)
         {
             // A work snap owns only the last release position. Clear that
-            // marker as soon as a new drag begins; the authored work pose and
-            // its absolute animation clock remain untouched.
-            _workEdgeDock = EdgeDock.None;
+            // marker as soon as a new drag begins; if its edge page was cold,
+            // resume from the frozen pose instead of catching the clock up.
+            CancelPendingWorkEdgeHandoff(resumeWork: true);
         }
         CancelTodoOpenAfterEdgeRoamStop();
         if (_isEdgeRoaming)
@@ -2862,6 +2856,7 @@ public partial class MainWindow : Window
 
         if (_workState != WorkState.Idle)
         {
+            CancelPendingWorkEdgeHandoff(resumeWork: true);
             _openTodoAfterWorkExitRequested = true;
             RequestWorkExit();
             e.Handled = true;
@@ -2969,7 +2964,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        SuppressButterflyOverlay();
         DeferIdleSpritePageTrim();
         if (_workState == WorkState.Idle)
         {
@@ -3065,7 +3059,6 @@ public partial class MainWindow : Window
             return false;
         }
 
-        SuppressButterflyOverlay();
         var timestamp = Stopwatch.GetTimestamp();
         CancelTodoOpenAfterEdgeRoamStop();
         CancelTodoOpenAfterWorkExit();
@@ -3084,6 +3077,7 @@ public partial class MainWindow : Window
         _workFastUntilTimestamp = 0;
         _workLoopPlaybackRate = 1;
         _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
         // The first work page may still be loading, so the current visible
         // descriptor can remain idle for a few render ticks. Hide the snore
         // bubble from the high-level state change itself instead of waiting
@@ -3106,6 +3100,7 @@ public partial class MainWindow : Window
             throw new ArgumentOutOfRangeException(nameof(startFrameIndex));
         }
 
+        SuppressWishStarOverlayForActiveClip();
         _activeClip = clip;
         _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
@@ -3214,7 +3209,9 @@ public partial class MainWindow : Window
             // started. Hide the work button in this input turn as soon as the
             // deferred Todo request is recorded, rather than exposing it until
             // the next composition callback.
+            PrefetchPendingWorkTransitionPages();
             RefreshWorkModeButton();
+            UpdateVisualClockSubscription();
             return;
         }
 
@@ -3331,8 +3328,8 @@ public partial class MainWindow : Window
     private void FinishWorkExit()
     {
         var openTodo = _openTodoAfterWorkExitRequested;
-        var workEdgeDock = _workEdgeDock;
         _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
         _workState = WorkState.Idle;
         _workExitRequested = false;
         _workSeriousEnterRequested = false;
@@ -3349,25 +3346,11 @@ public partial class MainWindow : Window
         _activeClipStartedTimestamp = 0;
         _activeFrameDeadlineTimestamp = 0;
         ClearDeferredActiveClipClock();
-        // work-enter frame 001 is authored pixel-identically to idle. Publish
-        // the logical idle descriptor before Todo decides where to enter its
-        // wake sequence; this changes no pixels and therefore cannot flash.
+        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
         _nextFrameBlendDuration = TimeSpan.Zero;
         ShowStableFrame(_idleFrame);
         RequestIdleSpritePageTrim();
-        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
-        if (!openTodo && workEdgeDock != EdgeDock.None)
-        {
-            // Work snapping intentionally does not enter the edge-peek state,
-            // because that state owns different frames. Once the authored work
-            // exit reaches idle, hand the same edge over to the normal docked
-            // idle animation without ever clearing a live work clip.
-            EnterEdgePeek(workEdgeDock);
-        }
-        else
-        {
-            RestartAutomaticCountdown();
-        }
+        RestartAutomaticCountdown();
         ScheduleUnpinnedPetSizePreviewCommit();
         RefreshWorkModeButton();
         UpdateVisualClockSubscription();
@@ -3377,10 +3360,155 @@ public partial class MainWindow : Window
         }
     }
 
+    private void StartWorkEdgeHandoff(EdgeDock dock)
+    {
+        if (_workState == WorkState.Idle ||
+            dock is not (EdgeDock.Left or EdgeDock.Right or EdgeDock.Bottom) ||
+            _isClosing || _isReminderActive)
+        {
+            return;
+        }
+
+        CancelTodoOpenAfterWorkExit();
+        _workEdgeDock = dock;
+        _workEdgeHandoffFrozenTimestamp = Stopwatch.GetTimestamp();
+        RequestSpritePagePrefetch(
+            GetEdgeFrames(dock)[^1].PageName,
+            urgent: true);
+        RefreshWorkModeButton();
+
+        // A resident edge page can replace the currently displayed work pose
+        // in this input turn. A cold page leaves every work descriptor and
+        // absolute clock value untouched until a later Rendering callback.
+        if (!TryCompletePendingWorkEdgeHandoff())
+        {
+            UpdateVisualClockSubscription();
+        }
+    }
+
+    private bool TryCompletePendingWorkEdgeHandoff()
+    {
+        if (_workEdgeDock == EdgeDock.None || _workState == WorkState.Idle)
+        {
+            return false;
+        }
+
+        var dock = _workEdgeDock;
+        var edgeRestFrame = GetEdgeFrames(dock)[^1];
+        if (string.Equals(
+                _failedSpritePageName,
+                edgeRestFrame.PageName,
+                StringComparison.Ordinal))
+        {
+            // A corrupt target cannot be displayed. This is the sole edge
+            // handoff path allowed to publish idle; terminating work is safer
+            // than leaving a frozen clip subscribed forever.
+            StopWorkModeImmediately(restoreIdleFrame: true);
+            ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
+            RestartAutomaticCountdown();
+            return true;
+        }
+
+        if (!IsSpritePageImmediatelyAvailable(edgeRestFrame.PageName))
+        {
+            RequestSpritePagePrefetch(edgeRestFrame.PageName, urgent: true);
+            return false;
+        }
+
+        CompleteWorkEdgeHandoff(dock, edgeRestFrame);
+        return true;
+    }
+
+    private void CompleteWorkEdgeHandoff(
+        EdgeDock dock,
+        SpriteFrame edgeRestFrame)
+    {
+        _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
+        _workState = WorkState.Idle;
+        _workExitRequested = false;
+        _workSeriousEnterRequested = false;
+        _workSeriousEnterTargetFramePosition = double.PositiveInfinity;
+        _workSeriousExitRequested = false;
+        _workSeriousExitTargetFramePosition = double.PositiveInfinity;
+        _workExitTargetFramePosition = double.PositiveInfinity;
+        _workLoopAnchorTimestamp = 0;
+        _workLoopAnchorFramePosition = 0;
+        _workLoopPlaybackRate = 1;
+        _workFastUntilTimestamp = 0;
+        _activeClip = null;
+        _activeFrameIndex = -1;
+        _activeClipStartedTimestamp = 0;
+        _activeFrameDeadlineTimestamp = 0;
+        ClearDeferredActiveClipClock();
+        ScheduleNextEdgeRoam(Stopwatch.GetTimestamp(), EdgeRoamInterval);
+
+        // State reset and the only new descriptor publication happen together.
+        // No work-exit, pillow-visible, or idle descriptor is emitted first.
+        var enteredEdge = EnterEdgePeekCore(dock, TimeSpan.Zero) &&
+                          _currentSpriteFrame is SpriteFrame displayedFrame &&
+                          displayedFrame == edgeRestFrame;
+        if (!enteredEdge)
+        {
+            _nextFrameBlendDuration = TimeSpan.Zero;
+            ShowStableFrame(_idleFrame);
+            RequestIdleSpritePageTrim();
+            RestartAutomaticCountdown();
+        }
+
+        ScheduleUnpinnedPetSizePreviewCommit();
+        RefreshWorkModeButton();
+        UpdateVisualClockSubscription();
+    }
+
+    private void CancelPendingWorkEdgeHandoff(bool resumeWork)
+    {
+        if (_workEdgeDock == EdgeDock.None)
+        {
+            _workEdgeHandoffFrozenTimestamp = 0;
+            return;
+        }
+
+        var frozenTimestamp = _workEdgeHandoffFrozenTimestamp;
+        _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
+        if (!resumeWork || frozenTimestamp <= 0 || _workState == WorkState.Idle)
+        {
+            return;
+        }
+
+        var pauseTicks = Math.Max(0, Stopwatch.GetTimestamp() - frozenTimestamp);
+        _activeClipStartedTimestamp = ShiftTimestampAfterPause(
+            _activeClipStartedTimestamp,
+            pauseTicks);
+        _activeFrameDeadlineTimestamp = ShiftTimestampAfterPause(
+            _activeFrameDeadlineTimestamp,
+            pauseTicks);
+        _workLoopAnchorTimestamp = ShiftTimestampAfterPause(
+            _workLoopAnchorTimestamp,
+            pauseTicks);
+        _workFastUntilTimestamp = ShiftTimestampAfterPause(
+            _workFastUntilTimestamp,
+            pauseTicks);
+    }
+
+    private static long ShiftTimestampAfterPause(long timestamp, long pauseTicks)
+    {
+        if (timestamp <= 0 || timestamp == long.MaxValue || pauseTicks <= 0)
+        {
+            return timestamp;
+        }
+
+        return timestamp > long.MaxValue - pauseTicks
+            ? long.MaxValue
+            : timestamp + pauseTicks;
+    }
+
     private void StopWorkModeImmediately(bool restoreIdleFrame)
     {
         CancelTodoOpenAfterWorkExit();
         _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
         if (_workState == WorkState.Idle)
         {
             return;
@@ -3420,6 +3548,7 @@ public partial class MainWindow : Window
     private void HandleWorkPetClick(int clickCount)
     {
         if (_workState != WorkState.Typing || _workExitRequested ||
+            _workEdgeDock != EdgeDock.None ||
             !IsWorkTypingLoopClip(_activeClip))
         {
             return;
@@ -3648,6 +3777,28 @@ public partial class MainWindow : Window
 
     private void PrefetchPendingWorkTransitionPages()
     {
+        if (_workEdgeDock != EdgeDock.None)
+        {
+            var edgeRestPageName = GetEdgeFrames(_workEdgeDock)[^1].PageName;
+            if (!IsSpritePageImmediatelyAvailable(edgeRestPageName) &&
+                !string.Equals(
+                    _failedSpritePageName,
+                    edgeRestPageName,
+                    StringComparison.Ordinal))
+            {
+                // A direct work-edge handoff freezes whichever authored phase
+                // is currently visible. Keep its one target rest page urgent
+                // until the atomic replacement can complete.
+                RequestSpritePagePrefetch(edgeRestPageName, urgent: true);
+            }
+
+            // The frozen handoff owns the one decode slot. In particular, a
+            // queued serious-expression seam is also urgent and would replace
+            // the edge request later in this method while Rendering is active.
+            // Do not let any superseded work transition starve the rest page.
+            return;
+        }
+
         if (_workSeriousEnterRequested &&
             _workState == WorkState.Typing &&
             !IsSpritePageImmediatelyAvailable(
@@ -3808,11 +3959,13 @@ public partial class MainWindow : Window
         var canEnter = !workActive && CanEnterWorkMode();
         var todoOpenPending = _openTodoAfterWorkExitRequested ||
                               _todoOpenAfterWorkExitQueued;
+        var workEdgeHandoffPending =
+            _workEdgeDock != EdgeDock.None && workActive;
         // Preserve the existing work-dock exit path: ordinary edge-peek hides
         // the idle sun, while a working pet keeps its moon available so the
         // user can still return to rest without dragging away first.
         var docked = _edgeDock != EdgeDock.None;
-        var shouldShow = !todoOpenPending &&
+        var shouldShow = !todoOpenPending && !workEdgeHandoffPending &&
                          !docked &&
                          (workActive || canEnter);
         var shouldEnable = shouldShow &&
@@ -3946,6 +4099,7 @@ public partial class MainWindow : Window
             if (_dragPreservesWorkMode)
             {
                 _workEdgeDock = EdgeDock.None;
+                _workEdgeHandoffFrozenTimestamp = 0;
             }
             RestartAutomaticCountdown();
             return;
@@ -3984,18 +4138,15 @@ public partial class MainWindow : Window
 
         if (_dragPreservesWorkMode && _workState != WorkState.Idle)
         {
-            // Keep the authored work clip alive long enough to leave the desk
-            // without a one-frame cut. FinishWorkExit then hands this exact
-            // left/right/bottom edge to the ordinary docked peek state.
-            _workEdgeDock = touchedEdge;
-            RequestSpritePagePrefetch(
-                GetEdgeFrames(touchedEdge)[^1].PageName,
-                urgent: false);
-            RequestWorkExit();
+            // Freeze the currently visible work pose. A hot edge page replaces
+            // it now; a cold page keeps this exact descriptor on screen until
+            // the next Rendering callback can publish edge rest atomically.
+            StartWorkEdgeHandoff(touchedEdge);
             return;
         }
 
         _workEdgeDock = EdgeDock.None;
+        _workEdgeHandoffFrozenTimestamp = 0;
         EnterEdgePeek(touchedEdge);
     }
 
@@ -4242,12 +4393,19 @@ public partial class MainWindow : Window
 
     private void EnterEdgePeek(EdgeDock dock)
     {
+        _ = EnterEdgePeekCore(dock, EdgeFrameBlendDuration);
+    }
+
+    private bool EnterEdgePeekCore(
+        EdgeDock dock,
+        TimeSpan entryBlendDuration)
+    {
         if (_isClosing || _isReminderActive || dock == EdgeDock.None)
         {
-            return;
+            return false;
         }
 
-        SuppressButterflyOverlay();
+        SuppressWishStarOverlayForActiveClip();
         _edgePeekHoldTimer.Stop();
         _workEnterAfterEdgePeekExitRequested = false;
         StopEdgeRoaming(
@@ -4267,7 +4425,7 @@ public partial class MainWindow : Window
             _edgePeekFrameDeadlineTimestamp = 0;
             RestartAutomaticCountdown();
             UpdateVisualClockSubscription();
-            return;
+            return false;
         }
 
         StopPillowBreathing();
@@ -4318,7 +4476,7 @@ public partial class MainWindow : Window
         }
 
         PetFacingScale.ScaleY = 1;
-        _nextFrameBlendDuration = EdgeFrameBlendDuration;
+        _nextFrameBlendDuration = entryBlendDuration;
         ShowStableFrame(restFrame);
         if (_currentSpriteFrame is SpriteFrame displayedFrame &&
             displayedFrame == restFrame)
@@ -4334,6 +4492,8 @@ public partial class MainWindow : Window
         }
 
         UpdateVisualClockSubscription();
+        return _currentSpriteFrame is SpriteFrame currentFrame &&
+               currentFrame == restFrame;
     }
 
     private void ExitEdgePeek(
@@ -4681,7 +4841,8 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
-        PrepareButterflyOverlayForClip(clip);
+        _isWishStarSuppressedForActiveClip = false;
+        HideWishStarOverlay();
         _activeClip = clip;
         _activeFrameIndex = -1;
         RequestSpritePagePrefetch(
@@ -6347,6 +6508,137 @@ public partial class MainWindow : Window
         UpdateVisualClockSubscription();
     }
 
+    private void UpdateWishStarOverlay(long timestamp)
+    {
+        var clip = _activeClip;
+        if (_isWishStarSuppressedForActiveClip ||
+            clip is null ||
+            !string.Equals(
+                clip.ActionName,
+                StarWishActionName,
+                StringComparison.Ordinal) ||
+            _activeClipStartedTimestamp <= 0)
+        {
+            HideWishStarOverlay();
+            return;
+        }
+
+        var riseFrameIndex = checked(
+            clip.ActionFrameIndex + StarWishRiseSourceFrameNumber - 1);
+        var riseStartedTimestamp = checked(
+            _activeClipStartedTimestamp +
+            riseFrameIndex * ToCharacterAnimationTicks(MotionFrameInterval));
+        var elapsedSeconds =
+            (timestamp - riseStartedTimestamp) / (double)Stopwatch.Frequency;
+        var state = ResolveWishStarVisualState(elapsedSeconds);
+        if (!state.IsVisible || state.Opacity <= 0)
+        {
+            HideWishStarOverlay();
+            return;
+        }
+
+        WishStarTranslate.X = state.TranslateX;
+        WishStarTranslate.Y = state.TranslateY;
+        WishStarRotate.Angle = state.RotationDegrees;
+        WishStarScale.ScaleX = state.Scale;
+        WishStarScale.ScaleY = state.Scale;
+        WishStarOverlay.Opacity = state.Opacity;
+        _isWishStarVisible = true;
+    }
+
+    private static WishStarVisualState ResolveWishStarVisualState(
+        double elapsedSeconds)
+    {
+        if (!double.IsFinite(elapsedSeconds) || elapsedSeconds < 0)
+        {
+            return default;
+        }
+
+        if (elapsedSeconds < StarWishRiseDurationSeconds)
+        {
+            var progress = Math.Clamp(
+                elapsedSeconds / StarWishRiseDurationSeconds,
+                0,
+                1);
+            var eased = SmoothStep(progress);
+            var inverse = 1 - eased;
+            return new WishStarVisualState(
+                IsVisible: true,
+                Opacity: SmoothStep(Math.Clamp(progress / 0.28, 0, 1)),
+                TranslateX:
+                    inverse * inverse * 42 +
+                    2 * inverse * eased * 66,
+                TranslateY:
+                    2 * inverse * eased * -62 +
+                    eased * eased * -134,
+                RotationDegrees: -16 * inverse,
+                Scale: 0.58 + 0.42 * eased);
+        }
+
+        elapsedSeconds -= StarWishRiseDurationSeconds;
+        if (elapsedSeconds < StarWishHoverDurationSeconds)
+        {
+            var progress = Math.Clamp(
+                elapsedSeconds / StarWishHoverDurationSeconds,
+                0,
+                1);
+            var primaryWave = Math.Sin(progress * Math.Tau);
+            var secondaryWave = Math.Sin(progress * Math.Tau * 2);
+            return new WishStarVisualState(
+                IsVisible: true,
+                Opacity: 1,
+                TranslateX: 4 * primaryWave,
+                TranslateY: -134 - 2 * secondaryWave,
+                RotationDegrees: 9 * primaryWave,
+                Scale: 1 + 0.06 * secondaryWave);
+        }
+
+        elapsedSeconds -= StarWishHoverDurationSeconds;
+        if (elapsedSeconds >= StarWishFlyDurationSeconds)
+        {
+            return default;
+        }
+
+        var flyProgress = Math.Clamp(
+            elapsedSeconds / StarWishFlyDurationSeconds,
+            0,
+            1);
+        var flyEased = SmoothStep(flyProgress);
+        var fadeProgress = Math.Clamp((flyProgress - 0.55) / 0.45, 0, 1);
+        return new WishStarVisualState(
+            IsVisible: true,
+            Opacity: 1 - SmoothStep(fadeProgress),
+            TranslateX: 56 * flyEased,
+            TranslateY: -134 - 105 * flyEased,
+            RotationDegrees: 220 * flyEased,
+            Scale: 1 - 0.18 * flyEased);
+    }
+
+    private static double SmoothStep(double value) =>
+        value * value * (3 - 2 * value);
+
+    private void SuppressWishStarOverlayForActiveClip()
+    {
+        _isWishStarSuppressedForActiveClip =
+            _activeClip is { } activeClip &&
+            string.Equals(
+                activeClip.ActionName,
+                StarWishActionName,
+                StringComparison.Ordinal);
+        HideWishStarOverlay();
+    }
+
+    private void HideWishStarOverlay()
+    {
+        if (!_isWishStarVisible && WishStarOverlay.Opacity == 0)
+        {
+            return;
+        }
+
+        WishStarOverlay.Opacity = 0;
+        _isWishStarVisible = false;
+    }
+
     private void AdvanceActiveClip(long timestamp)
     {
         if (_bubbleMode == BubbleMode.Todo &&
@@ -6442,159 +6734,6 @@ public partial class MainWindow : Window
             ShowStableFrame(clip.Frames[resolvedFrameIndex].Image);
             PrefetchNextClipPage(clip, resolvedFrameIndex);
         }
-    }
-
-    private void AdvanceButterflyOverlay(long timestamp)
-    {
-        var clip = _activeClip;
-        if (_butterflyOverlaySuppressed ||
-            clip is null || !IsButterflyClip(clip) ||
-            _isClosing || _sessionInactive || _isReminderActive ||
-            _isTransientPetSizeOverride ||
-            _workState != WorkState.Idle ||
-            _bubbleMode is BubbleMode.Todo or BubbleMode.Reminder ||
-            _dragInteractionActive || _pointerDown || _dragStarted ||
-            PetHost.IsMouseCaptured ||
-            _edgeDock != EdgeDock.None || _isEdgeRoaming ||
-            _activeFrameIndex < 0 ||
-            _activeFrameIndex >= clip.Frames.Length ||
-            _currentSpriteFrame is not SpriteFrame displayedFrame ||
-            displayedFrame != clip.Frames[_activeFrameIndex].Image)
-        {
-            HideButterflyOverlay();
-            return;
-        }
-
-        var smoothFrameCount = _actionSmoothFrames[TodoPoseActionName].Length;
-        var forwardFirstFrameIndex = clip.ActionFrameIndex;
-        var forwardLastFrameIndex =
-            forwardFirstFrameIndex + smoothFrameCount - 1;
-        var reverseFirstFrameIndex = forwardLastFrameIndex + 1;
-        var reverseLastFrameIndex =
-            reverseFirstFrameIndex + smoothFrameCount - 2;
-        if (_activeFrameIndex < forwardFirstFrameIndex ||
-            _activeFrameIndex > reverseLastFrameIndex)
-        {
-            HideButterflyOverlay();
-            return;
-        }
-
-        var frameProgress = GetActiveFrameProgress(clip, timestamp);
-        double pathProgress;
-        if (_activeFrameIndex <= forwardLastFrameIndex)
-        {
-            pathProgress = _activeFrameIndex == forwardLastFrameIndex
-                ? 1
-                : (_activeFrameIndex - forwardFirstFrameIndex + frameProgress) /
-                  (smoothFrameCount - 1d);
-        }
-        else
-        {
-            pathProgress =
-                (reverseLastFrameIndex - _activeFrameIndex - frameProgress) /
-                (smoothFrameCount - 1d);
-        }
-
-        pathProgress = Math.Clamp(pathProgress, 0, 1);
-        var isLeaving = _activeFrameIndex > forwardLastFrameIndex;
-        var journeyProgress = isLeaving ? 1 - pathProgress : pathProgress;
-        var easedProgress = journeyProgress * journeyProgress *
-                            (3 - 2 * journeyProgress);
-        var inverseProgress = 1 - easedProgress;
-        var centerX = isLeaving
-            ? inverseProgress * inverseProgress * ButterflyNoseCenterX +
-              2 * inverseProgress * easedProgress *
-              ButterflyExitControlCenterX +
-              easedProgress * easedProgress * ButterflyExitCenterX
-            : inverseProgress * inverseProgress * ButterflyStartCenterX +
-              2 * inverseProgress * easedProgress * ButterflyControlCenterX +
-              easedProgress * easedProgress * ButterflyNoseCenterX;
-        var centerY = isLeaving
-            ? inverseProgress * inverseProgress * ButterflyNoseCenterY +
-              2 * inverseProgress * easedProgress *
-              ButterflyExitControlCenterY +
-              easedProgress * easedProgress * ButterflyExitCenterY
-            : inverseProgress * inverseProgress * ButterflyStartCenterY +
-              2 * inverseProgress * easedProgress * ButterflyControlCenterY +
-              easedProgress * easedProgress * ButterflyNoseCenterY;
-        var flutter = Math.Sin(
-            timestamp *
-            (Math.Tau * ButterflyFlapsPerSecond / Stopwatch.Frequency));
-        // Perspective must grow toward the character.  The previous formula
-        // made the butterfly shrink as it approached and looked like a speck
-        // sliding across the hat.
-        var proximity = isLeaving ? 1 - easedProgress : easedProgress;
-        var approachScale = 0.72 + 0.28 * proximity;
-
-        ButterflyTranslate.X = centerX - ButterflyVisualSize / 2;
-        ButterflyTranslate.Y = centerY - ButterflyVisualSize / 2;
-        ButterflyScale.ScaleX = approachScale * (1 + 0.035 * flutter);
-        ButterflyScale.ScaleY = approachScale;
-        ButterflyRotate.Angle =
-            (isLeaving ? -6 + 12 * easedProgress : 8 - 14 * easedProgress) +
-            1.5 * flutter;
-        ShowButterflyOverlay();
-    }
-
-    private double GetActiveFrameProgress(AnimationClip clip, long timestamp)
-    {
-        if (_activeFrameIndex < 0 ||
-            _activeFrameIndex >= clip.Frames.Length ||
-            _activeFrameDeadlineTimestamp <= 0 ||
-            _activeFrameDeadlineTimestamp == long.MaxValue)
-        {
-            return 0;
-        }
-
-        var durationTicks = ToCharacterAnimationTicks(
-            clip.Frames[_activeFrameIndex].HoldDuration);
-        var frameStartedTimestamp =
-            _activeFrameDeadlineTimestamp - durationTicks;
-        return Math.Clamp(
-            (timestamp - frameStartedTimestamp) / (double)durationTicks,
-            0,
-            1);
-    }
-
-    private static bool IsButterflyClip(AnimationClip? clip) =>
-        clip is not null &&
-        string.Equals(
-            clip.ActionName,
-            ButterflyActionName,
-            StringComparison.Ordinal);
-
-    private void PrepareButterflyOverlayForClip(AnimationClip clip)
-    {
-        HideButterflyOverlay();
-        _butterflyOverlaySuppressed = !IsButterflyClip(clip);
-    }
-
-    private void SuppressButterflyOverlay()
-    {
-        _butterflyOverlaySuppressed = true;
-        HideButterflyOverlay();
-    }
-
-    private void ShowButterflyOverlay()
-    {
-        if (_butterflyOverlayVisible)
-        {
-            return;
-        }
-
-        ButterflyOverlay.Opacity = 1;
-        _butterflyOverlayVisible = true;
-    }
-
-    private void HideButterflyOverlay()
-    {
-        if (!_butterflyOverlayVisible)
-        {
-            return;
-        }
-
-        ButterflyOverlay.Opacity = 0;
-        _butterflyOverlayVisible = false;
     }
 
     private bool IsSpritePageImmediatelyAvailable(string pageName) =>
@@ -6709,20 +6848,6 @@ public partial class MainWindow : Window
                 RequestSpritePagePrefetch(continuationPageName, urgent: true);
             }
         }
-        else if (ReferenceEquals(clip, _workExitClip) &&
-                 _workEdgeDock != EdgeDock.None)
-        {
-            // The logical idle descriptor at the end of work-exit is pixel-
-            // identical to its final pose, but a cold edge page would leave
-            // that idle image visible while EdgePeek decodes. Warm the target
-            // rest pose during the authored exit so the handoff publishes both
-            // descriptors in one composition turn without an idle flash.
-            var edgeRestPageName = GetEdgeFrames(_workEdgeDock)[^1].PageName;
-            if (!IsSpritePageImmediatelyAvailable(edgeRestPageName))
-            {
-                RequestSpritePagePrefetch(edgeRestPageName, urgent: true);
-            }
-        }
     }
 
     private void CompleteActiveClip(AnimationClip clip)
@@ -6732,16 +6857,19 @@ public partial class MainWindow : Window
 
     private void CompleteActiveClipAt(AnimationClip clip, long timestamp)
     {
+        if (string.Equals(
+                clip.ActionName,
+                StarWishActionName,
+                StringComparison.Ordinal))
+        {
+            HideWishStarOverlay();
+            _isWishStarSuppressedForActiveClip = false;
+        }
+
         ShowStableFrame(clip.Frames[^1].Image);
         if (!ReferenceEquals(_activeClip, clip))
         {
             return;
-        }
-
-        if (IsButterflyClip(clip))
-        {
-            HideButterflyOverlay();
-            _butterflyOverlaySuppressed = false;
         }
 
         if (ReferenceEquals(clip, _workEnterClip))
@@ -6788,21 +6916,6 @@ public partial class MainWindow : Window
 
         if (ReferenceEquals(clip, _workExitClip))
         {
-            if (_workEdgeDock != EdgeDock.None)
-            {
-                var edgeRestPageName =
-                    GetEdgeFrames(_workEdgeDock)[^1].PageName;
-                if (!IsSpritePageImmediatelyAvailable(edgeRestPageName))
-                {
-                    // Hold the pixel-identical final work pose until the edge
-                    // rest page is resident. Publishing logical idle first
-                    // would otherwise expose the pillow for one cold-page
-                    // decode before EnterEdgePeek can show its target pose.
-                    RequestSpritePagePrefetch(edgeRestPageName, urgent: true);
-                    return;
-                }
-            }
-
             FinishWorkExit();
             return;
         }
@@ -7048,6 +7161,13 @@ public partial class MainWindow : Window
         }
 
         _currentSpriteFrame = frame;
+        _spriteFrameDescriptorPublishedForTesting?.Invoke(
+            frame.PageName,
+            frame.Name,
+            frame.Width,
+            frame.Height,
+            frame.DestinationX,
+            frame.DestinationY);
         RefreshSnoreBubbleAnimationState();
     }
 
@@ -7355,11 +7475,21 @@ public partial class MainWindow : Window
         try
         {
             var timestamp = Stopwatch.GetTimestamp();
-            TryShowPendingSpriteFrameAt(timestamp);
+            var workEdgeHandoffPending =
+                _workEdgeDock != EdgeDock.None &&
+                _workState != WorkState.Idle;
+            if (!workEdgeHandoffPending)
+            {
+                TryShowPendingSpriteFrameAt(timestamp);
+            }
             AdvancePetSizeCompositionFrame(timestamp);
             PrefetchPendingWorkTransitionPages();
 
-            if (_activeClip is not null)
+            if (workEdgeHandoffPending)
+            {
+                _ = TryCompletePendingWorkEdgeHandoff();
+            }
+            else if (_activeClip is not null)
             {
                 if (IsWorkTypingLoopClip(_activeClip))
                 {
@@ -7371,7 +7501,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            AdvanceButterflyOverlay(timestamp);
+            UpdateWishStarOverlay(timestamp);
 
             if (_edgeDock != EdgeDock.None)
             {
@@ -7409,17 +7539,14 @@ public partial class MainWindow : Window
 
     private void UpdateVisualClockSubscription()
     {
-        if (_butterflyOverlaySuppressed || !IsButterflyClip(_activeClip))
-        {
-            HideButterflyOverlay();
-        }
-
         RefreshWorkModeButton();
         var shouldRun = !_isClosing &&
                           (_isPetSizeAdjustmentActive ||
                            _petSizeTargetUpdatePending ||
                            _isPetSizeTransitioning ||
                            _activeClip is not null ||
+                           (_workEdgeDock != EdgeDock.None &&
+                            _workState != WorkState.Idle) ||
                            (_edgeDock != EdgeDock.None &&
                             !_edgePeekHoldTimer.IsEnabled) ||
                            _isEdgeRoaming ||
@@ -8340,7 +8467,15 @@ public partial class MainWindow : Window
             ClearDeferredActiveClipClock();
             if (failedClip is not null && ReferenceEquals(_activeClip, failedClip))
             {
-                SuppressButterflyOverlay();
+                if (string.Equals(
+                        failedClip.ActionName,
+                        StarWishActionName,
+                        StringComparison.Ordinal))
+                {
+                    HideWishStarOverlay();
+                    _isWishStarSuppressedForActiveClip = false;
+                }
+
                 _activeClip = null;
                 _activeFrameIndex = -1;
                 _activeClipStartedTimestamp = 0;
@@ -8412,10 +8547,15 @@ public partial class MainWindow : Window
 
         if (failedPendingWorkEdge)
         {
-            // The authored work exit can still finish safely. Drop only the
-            // requested edge handoff so a corrupt target page cannot leave the
-            // pet waiting forever on its final work pose.
-            _workEdgeDock = EdgeDock.None;
+            // The direct work-to-edge handoff deliberately freezes its current
+            // descriptor. A corrupt target must terminate that frozen state
+            // explicitly instead of resuming a stale absolute clock or waiting
+            // forever for a page that can never become resident.
+            StopWorkModeImmediately(restoreIdleFrame: true);
+            ScheduleNextEdgeRoam(
+                Stopwatch.GetTimestamp(),
+                EdgeRoamInterval);
+            RestartAutomaticCountdown();
             return true;
         }
 
@@ -9673,7 +9813,7 @@ public partial class MainWindow : Window
     {
         if (mode is BubbleMode.Todo or BubbleMode.Reminder)
         {
-            SuppressButterflyOverlay();
+            SuppressWishStarOverlayForActiveClip();
         }
 
         if (mode != BubbleMode.None)
@@ -12794,6 +12934,14 @@ public partial class MainWindow : Window
         int LoopCycleCount,
         TimeSpan EndpointHoldDuration,
         TimeSpan FrameInterval);
+
+    private readonly record struct WishStarVisualState(
+        bool IsVisible,
+        double Opacity,
+        double TranslateX,
+        double TranslateY,
+        double RotationDegrees,
+        double Scale);
 
     private sealed record AnimationClip(
         string Message,

@@ -49,9 +49,6 @@ ACTION_NAMES = ("cry", "cute", "like", "eat")
 LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
-# Butterfly reuses think.smooth and is composited from one independent 96x96
-# PNG.  It is intentionally not generated as a full-size dense/atlas sequence.
-LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
 ACTION_KEY_FRAME_COUNTS = {"cute": 11}
 ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 EDGE_DIRECTIONS = ("left", "top", "bottom")
@@ -1015,7 +1012,6 @@ def build_adaptive_actions(
     key_sequences, _ = build_action_key_sequences(actions)
     base_edges: dict[tuple[str, int], list[Path]] = {}
     targets: dict[tuple[str, int], int] = {}
-    refinement_inputs: dict[str, list[Path]] = {}
     target_by_segment: dict[str, int] = {}
     plan: list[dict[str, object]] = []
 
@@ -1030,9 +1026,27 @@ def build_adaptive_actions(
             )
         # If a final adaptive sequence already exists, the canonical base
         # midpoint cache below still preserves the prior 2x frame from the
-        # first run.  Otherwise snapshot the odd (midpoint) samples now.
+        # first run.  Bind that cache to the exact authored keys so replacing
+        # an ImageGen sheet can never silently reuse stale RIFE midpoints.
         base_directory = WORK_ROOT / "adaptive-base" / action
         base_directory.mkdir(parents=True, exist_ok=True)
+        key_fingerprint = hashlib.sha256(
+            "\n".join(pixel_digest(path) for path in keys).encode("ascii")
+        ).hexdigest()
+        fingerprint_path = base_directory / "key-fingerprint.txt"
+        cached_fingerprint = (
+            fingerprint_path.read_text(encoding="ascii").strip()
+            if fingerprint_path.exists()
+            else None
+        )
+        if cached_fingerprint != key_fingerprint:
+            if len(current_smooth) != expected:
+                raise ValueError(
+                    f"{action} authored keys changed; rebuild its {expected}-frame "
+                    "base sequence before adaptive refinement"
+                )
+            for stale_midpoint in base_directory.glob("edge-*-mid.png"):
+                stale_midpoint.unlink()
         for pair_index, (first, second) in enumerate(zip(keys, keys[1:])):
             midpoint_snapshot = base_directory / f"edge-{pair_index:03d}-mid.png"
             if not midpoint_snapshot.exists():
@@ -1066,7 +1080,6 @@ def build_adaptive_actions(
                 }
             )
             if substeps > 2:
-                refinement_inputs[segment] = edge
                 print(
                     f"adaptive {segment}: "
                     f"brim={requirements['brim_distance_dip']:.3f} DIP, "
@@ -1076,6 +1089,7 @@ def build_adaptive_actions(
                     f"-> {substeps} substeps",
                     flush=True,
                 )
+        fingerprint_path.write_text(key_fingerprint + "\n", encoding="ascii")
 
     refined = refine_edges_to_targets(
         {

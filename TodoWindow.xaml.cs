@@ -184,6 +184,7 @@ public partial class TodoWindow : Window
     public TodoWindow()
     {
         InitializeComponent();
+        WindowChromeAppearance.ExcludeFromAltTab(this);
         _resetImeCompositionAfterFocusLossAction =
             ResetImeCompositionAfterFocusLoss;
         _finishTodoEditAfterFocusLossAction =

@@ -43,6 +43,10 @@ internal static partial class Program
     private const long ExpectedSpritePageCollectionThresholdBytes = 8L * 1024L * 1024L;
     private const long ExpectedMaximumOrdinarySpriteWorkingSetBytes = 49L * 1024L * 1024L;
     private const long ExpectedMaximumRoamSpriteWorkingSetBytes = 89L * 1024L * 1024L;
+    private const int AltTabGwlExStyle = -20;
+    private const long AltTabWsExToolWindow = 0x00000080L;
+    private const long AltTabWsExAppWindow = 0x00040000L;
+    private const uint AltTabGwOwner = 4;
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
     private const BindingFlags StaticFlags =
@@ -115,10 +119,10 @@ internal static partial class Program
             }
 
             if (args.Contains(
-                    "--butterfly-preview",
+                    "--star-wish-preview",
                     StringComparer.OrdinalIgnoreCase))
             {
-                return RunButterflyPreview(application);
+                return RunStarWishPreview(application);
             }
 
             if (args.Contains(
@@ -128,7 +132,63 @@ internal static partial class Program
                 return RunReminderClosePreview(application);
             }
 
+            if (args.Contains(
+                    "--alt-tab-source-only",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(
+                    nameof(AssertAltTabWindowSourceContract),
+                    AssertAltTabWindowSourceContract);
+                return 0;
+            }
+
+            if (args.Contains(
+                    "--alt-tab-aux-only",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(
+                    nameof(AssertAltTabWindowSourceContract),
+                    AssertAltTabWindowSourceContract);
+                RunCheck(
+                    nameof(AssertAltTabAuxiliaryWindowRuntimeContract),
+                    AssertAltTabAuxiliaryWindowRuntimeContract);
+                return 0;
+            }
+
+            if (args.Contains(
+                    "--alt-tab-only",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                RunCheck(
+                    nameof(AssertAltTabWindowSourceContract),
+                    AssertAltTabWindowSourceContract);
+                RunCheck(
+                    nameof(AssertAltTabAllWindowRuntimeContract),
+                    AssertAltTabAllWindowRuntimeContract);
+                return 0;
+            }
+
+            if (args.Contains(
+                    "--star-wish-only",
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                var wishWindow = new MainWindow
+                {
+                    ShowActivated = false
+                };
+                RunCheck(nameof(AssertMotionTimelineContract),
+                    () => AssertMotionTimelineContract(wishWindow));
+                RunCheck(nameof(AssertStarWishSequenceContract),
+                    () => AssertStarWishSequenceContract(wishWindow));
+                RunCheck(nameof(AssertAbsoluteTimelineMathContract),
+                    () => AssertAbsoluteTimelineMathContract(wishWindow));
+                return 0;
+            }
+
             AssertLoggingContract();
+            RunCheck(
+                nameof(AssertAltTabWindowSourceContract),
+                AssertAltTabWindowSourceContract);
             RunCheck(nameof(AssertRuntimeJankSourceContract), AssertRuntimeJankSourceContract);
             RunCheck(
                 nameof(AssertSpritePageBufferPoolContract),
@@ -332,8 +392,8 @@ internal static partial class Program
                         () => AssertColdSpritePageClipClockContract(window));
                     RunCheck(nameof(AssertMotionTimelineContract),
                         () => AssertMotionTimelineContract(window));
-                    RunCheck(nameof(AssertButterflyOverlayContract),
-                        () => AssertButterflyOverlayContract(window));
+                    RunCheck(nameof(AssertStarWishSequenceContract),
+                        () => AssertStarWishSequenceContract(window));
                     RunCheck(nameof(AssertAbsoluteTimelineMathContract),
                         () => AssertAbsoluteTimelineMathContract(window));
                     return 0;
@@ -393,8 +453,8 @@ internal static partial class Program
                     AssertSpritePagePayloadEncodingContract);
                 RunCheck(nameof(AssertHighDensityScalingAndDpiContract), () => AssertHighDensityScalingAndDpiContract(window));
                 RunCheck(nameof(AssertMotionTimelineContract), () => AssertMotionTimelineContract(window));
-                RunCheck(nameof(AssertButterflyOverlayContract),
-                    () => AssertButterflyOverlayContract(window));
+                RunCheck(nameof(AssertStarWishSequenceContract),
+                    () => AssertStarWishSequenceContract(window));
                 RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
                 RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
@@ -1206,18 +1266,18 @@ internal static partial class Program
         }
     }
 
-    private static int RunButterflyPreview(Application application)
+    private static int RunStarWishPreview(Application application)
     {
         var tempDirectory = Path.Combine(
             Path.GetTempPath(),
-            $"xlb-pet-butterfly-preview-{Guid.NewGuid():N}");
+            $"xlb-pet-star-wish-preview-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDirectory);
         var preview = new MainWindow
         {
             ShowActivated = true,
             ShowInTaskbar = true,
             Topmost = true,
-            Title = "Butterfly Preview",
+            Title = "Star Wish Preview",
             WindowStartupLocation = WindowStartupLocation.CenterScreen
         };
 
@@ -1246,11 +1306,11 @@ internal static partial class Program
             "_queuedReminderIds").Clear();
         GetField<DispatcherTimer>(preview, "_scheduledTaskTimer").Stop();
 
-        var butterflyClip = GetField<Array>(preview, "_reactionClips")
+        var starWishClip = GetField<Array>(preview, "_reactionClips")
             .Cast<object>()
             .First();
-        Assert(GetProperty<string>(butterflyClip, "ActionName") == "butterfly",
-            "Butterfly Preview要求第一条真实reaction为butterfly");
+        Assert(GetProperty<string>(starWishClip, "ActionName") == "star-wish",
+            "Star Wish Preview要求第一条真实reaction为star-wish");
 
         var replayTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -1275,7 +1335,7 @@ internal static partial class Program
                 previewCenterTop);
         }
 
-        void TryStartButterfly()
+        void TryStartStarWish()
         {
             if (!preview.IsLoaded ||
                 GetField<bool>(preview, "_isClosing") ||
@@ -1288,14 +1348,14 @@ internal static partial class Program
             _ = Invoke(
                 preview,
                 "TryStartReaction",
-                butterflyClip,
+                    starWishClip,
                 false);
         }
 
         replayTimer.Tick += (_, _) =>
         {
             KeepPreviewCentered();
-            TryStartButterfly();
+            TryStartStarWish();
         };
         preview.PreviewKeyDown += (_, eventArgs) =>
         {
@@ -1375,22 +1435,23 @@ internal static partial class Program
                         previewCenterLeft = centeredLeft;
                         previewCenterTop = centeredTop;
                         KeepPreviewCentered();
-                        preview.Title = "Butterfly Preview";
+                        preview.Title = "Star Wish Preview";
                         replayTimer.Start();
-                        TryStartButterfly();
+                        TryStartStarWish();
                         var activePreviewClip = GetRawField(
                             preview,
                             "_activeClip");
                         Assert(activePreviewClip is not null &&
                                GetProperty<string>(
                                    activePreviewClip,
-                                   "ActionName") == "butterfly",
-                            "Butterfly Preview启动时必须真实进入butterfly reaction");
+                                    "ActionName") == "star-wish",
+                            "Star Wish Preview启动时必须真实进入star-wish reaction");
                         _ = preview.Activate();
                         _ = preview.Focus();
                         Console.WriteLine(
-                            "[PREVIEW] Production butterfly reaction is looping " +
-                            "at screen center. Press Esc to close.");
+                            "[PREVIEW] Production star-wish reaction is looping at " +
+                            "screen center: cute raise-hands -> one tiny star rises, " +
+                            "hovers, and flies away. Press Esc to close.");
                     }
                     catch (Exception exception)
                     {
@@ -1755,6 +1816,294 @@ internal static partial class Program
         Console.WriteLine($"[RUN] {name}");
         check();
         Console.WriteLine($"[PASS] {name}");
+    }
+
+    private static void AssertAltTabWindowSourceContract()
+    {
+        var chromeSource = File.ReadAllText(
+            FindWorkspaceFile("WindowChromeAppearance.cs"));
+        Assert(
+            chromeSource.Contains(
+                "window.ShowInTaskbar = false;",
+                StringComparison.Ordinal) &&
+            chromeSource.Contains(
+                "window.SourceInitialized += Window_SourceInitialized;",
+                StringComparison.Ordinal) &&
+            chromeSource.Contains(
+                "currentStyle | WsExToolWindow",
+                StringComparison.Ordinal) &&
+            chromeSource.Contains(
+                "& ~WsExAppWindow",
+                StringComparison.Ordinal) &&
+            chromeSource.Contains(
+                "SetWindowLongPtr(",
+                StringComparison.Ordinal) &&
+            chromeSource.Contains(
+                "SwpFrameChanged",
+                StringComparison.Ordinal),
+            "窗口基础代码必须在 SourceInitialized 后设置 WS_EX_TOOLWINDOW、" +
+            "清除 WS_EX_APPWINDOW，并保留 ShowInTaskbar=False");
+
+        foreach (var (sourceFile, xamlFile) in new[]
+                 {
+                     ("MainWindow.xaml.cs", "MainWindow.xaml"),
+                     ("TodoWindow.xaml.cs", "TodoWindow.xaml"),
+                     ("ReminderWindow.xaml.cs", "ReminderWindow.xaml"),
+                     ("CuteConfirmationWindow.xaml.cs", "CuteConfirmationWindow.xaml"),
+                     ("ScheduledTaskEditWindow.xaml.cs", "ScheduledTaskEditWindow.xaml"),
+                     ("TaskTextEditWindow.xaml.cs", "TaskTextEditWindow.xaml")
+                 })
+        {
+            var source = File.ReadAllText(FindWorkspaceFile(sourceFile));
+            var xaml = File.ReadAllText(FindWorkspaceFile(xamlFile));
+            Assert(
+                source.Contains(
+                    "WindowChromeAppearance.ExcludeFromAltTab(this);",
+                    StringComparison.Ordinal),
+                $"{sourceFile} 必须接入统一 Alt+Tab 排除样式");
+            Assert(
+                xaml.Contains(
+                    "ShowInTaskbar=\"False\"",
+                    StringComparison.Ordinal),
+                $"{xamlFile} 必须保留 ShowInTaskbar=False 的 WPF 契约");
+        }
+    }
+
+    private static void AssertAltTabAuxiliaryWindowRuntimeContract() =>
+        AssertAltTabWindowRuntimeContract(includeMainWindow: false);
+
+    private static void AssertAltTabAllWindowRuntimeContract() =>
+        AssertAltTabWindowRuntimeContract(includeMainWindow: true);
+
+    private static void AssertAltTabWindowRuntimeContract(bool includeMainWindow)
+    {
+        MainWindow? mainWindow = null;
+        TodoWindow? todoWindow = null;
+        ReminderWindow? reminderWindow = null;
+        CuteConfirmationWindow? confirmationWindow = null;
+        ScheduledTaskEditWindow? scheduledEditor = null;
+        TaskTextEditWindow? textEditor = null;
+
+        try
+        {
+            if (includeMainWindow)
+            {
+                mainWindow = new MainWindow
+                {
+                    Left = -32000,
+                    Top = -32000,
+                    Opacity = 0,
+                    ShowActivated = false
+                };
+                mainWindow.Show();
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                AssertWindowExcludedFromAltTab(mainWindow, nameof(MainWindow));
+            }
+
+            todoWindow = new TodoWindow
+            {
+                Left = -32000,
+                Top = -32000,
+                Opacity = 0,
+                ShowActivated = false,
+                Owner = mainWindow
+            };
+            todoWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertWindowExcludedFromAltTab(todoWindow, nameof(TodoWindow));
+
+            reminderWindow = new ReminderWindow
+            {
+                Left = -32000,
+                Top = -32000,
+                Opacity = 0,
+                ShowActivated = false,
+                Owner = (Window?)mainWindow ?? todoWindow
+            };
+            reminderWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertWindowExcludedFromAltTab(
+                reminderWindow,
+                nameof(ReminderWindow));
+
+            confirmationWindow = new CuteConfirmationWindow(
+                "Alt+Tab 回归",
+                "确认窗口不应进入 Alt+Tab",
+                showSessionSuppression: false)
+            {
+                Left = -32000,
+                Top = -32000,
+                Opacity = 0,
+                ShowActivated = false,
+                Owner = todoWindow
+            };
+            confirmationWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertWindowExcludedFromAltTab(
+                confirmationWindow,
+                nameof(CuteConfirmationWindow));
+
+            textEditor = new TaskTextEditWindow(
+                "Alt+Tab 回归",
+                "待办编辑窗口",
+                showAdvancedEdit: false)
+            {
+                Left = -32000,
+                Top = -32000,
+                Opacity = 0,
+                ShowActivated = false,
+                Owner = todoWindow
+            };
+            textEditor.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertWindowExcludedFromAltTab(
+                textEditor,
+                nameof(TaskTextEditWindow));
+
+            scheduledEditor = new ScheduledTaskEditWindow(
+                new ScheduledTaskItem
+                {
+                    Text = "定时任务编辑窗口",
+                    DueAt = DateTimeOffset.Now.AddHours(1)
+                })
+            {
+                Left = -32000,
+                Top = -32000,
+                Opacity = 0,
+                ShowActivated = false,
+                Owner = todoWindow
+            };
+            scheduledEditor.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            AssertWindowExcludedFromAltTab(
+                scheduledEditor,
+                nameof(ScheduledTaskEditWindow));
+
+            if (mainWindow is not null)
+            {
+                Assert(ReferenceEquals(todoWindow.Owner, mainWindow),
+                    "待办窗口必须保持主桌宠 Owner 关系");
+                Assert(ReferenceEquals(reminderWindow.Owner, mainWindow),
+                    "提醒窗口必须保持主桌宠 Owner 关系");
+            }
+            else
+            {
+                Assert(todoWindow.Owner is null,
+                    "独立辅助窗口专项的待办根窗口必须保持无测试壳 Owner");
+                Assert(ReferenceEquals(reminderWindow.Owner, todoWindow),
+                    "无图集专项中提醒窗口必须仍覆盖真实 Owner 关系");
+            }
+
+            Assert(ReferenceEquals(confirmationWindow.Owner, todoWindow) &&
+                   ReferenceEquals(textEditor.Owner, todoWindow) &&
+                   ReferenceEquals(scheduledEditor.Owner, todoWindow),
+                "确认、待办编辑和定时任务编辑窗口必须保持待办窗口 Owner 关系");
+        }
+        finally
+        {
+            CloseAltTabTestWindow(scheduledEditor);
+            CloseAltTabTestWindow(textEditor);
+            CloseAltTabTestWindow(confirmationWindow);
+            CloseAltTabTestWindow(reminderWindow);
+            CloseAltTabTestWindow(todoWindow);
+            CloseAltTabTestWindow(mainWindow);
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        }
+    }
+
+    private static void AssertWindowExcludedFromAltTab(
+        Window window,
+        string name)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        Assert(handle != IntPtr.Zero, $"{name} 必须已创建真实 HWND");
+        Assert(!window.ShowInTaskbar,
+            $"{name} 的 ShowInTaskbar 必须保持 false");
+
+        var extendedStyle = GetAltTabWindowLongPtr(
+            handle,
+            AltTabGwlExStyle).ToInt64();
+        Assert((extendedStyle & AltTabWsExToolWindow) != 0,
+            $"{name} 必须包含 WS_EX_TOOLWINDOW，实际 0x{extendedStyle:X}");
+        Assert((extendedStyle & AltTabWsExAppWindow) == 0,
+            $"{name} 必须清除 WS_EX_APPWINDOW，实际 0x{extendedStyle:X}");
+        Assert(IsWindowVisible(handle),
+            $"{name} 必须是已显示的真实窗口，不能用隐藏 HWND 规避 Alt+Tab");
+
+        var visibleWindows = new HashSet<IntPtr>();
+        var eligibleAltTabWindows = new HashSet<IntPtr>();
+        var enumerated = EnumWindows(
+            (candidate, _) =>
+            {
+                if (!IsWindowVisible(candidate))
+                {
+                    return true;
+                }
+
+                visibleWindows.Add(candidate);
+                if (IsEligibleAltTabWindow(candidate))
+                {
+                    eligibleAltTabWindows.Add(candidate);
+                }
+
+                return true;
+            },
+            IntPtr.Zero);
+        Assert(enumerated, $"EnumWindows 失败，Win32={Marshal.GetLastWin32Error()}");
+        Assert(visibleWindows.Contains(handle),
+            $"{name} 必须出现在 EnumWindows 的可见窗口集合");
+        Assert(!eligibleAltTabWindows.Contains(handle),
+            $"{name} 不得进入 eligible Alt+Tab 窗口集合");
+    }
+
+    private static bool IsEligibleAltTabWindow(IntPtr handle)
+    {
+        if (!IsWindowVisible(handle))
+        {
+            return false;
+        }
+
+        var extendedStyle = GetAltTabWindowLongPtr(
+            handle,
+            AltTabGwlExStyle).ToInt64();
+        if ((extendedStyle & AltTabWsExToolWindow) != 0)
+        {
+            return false;
+        }
+
+        if ((extendedStyle & AltTabWsExAppWindow) != 0)
+        {
+            return true;
+        }
+
+        return GetWindow(handle, AltTabGwOwner) == IntPtr.Zero;
+    }
+
+    private static void CloseAltTabTestWindow(Window? window)
+    {
+        if (window is null)
+        {
+            return;
+        }
+
+        switch (window)
+        {
+            case TodoWindow todoWindow:
+                todoWindow.CloseForApplication();
+                break;
+            case ReminderWindow reminderWindow:
+                reminderWindow.CloseForApplication();
+                break;
+            case ScheduledTaskEditWindow scheduledEditor:
+                scheduledEditor.CloseWithoutSaving();
+                break;
+            case TaskTextEditWindow textEditor:
+                textEditor.CloseWithoutSaving();
+                break;
+            default:
+                window.Close();
+                break;
+        }
     }
 
     private static void RunMemoryProfile(MainWindow window)
@@ -4557,8 +4906,10 @@ internal static partial class Program
         var expectedSourcePaths = BuildExpectedSourceResourcePaths(
             includeOptionalRoamWave);
         Assert(!expectedSourcePaths.Any(path =>
-                   path.Contains("butterfly", StringComparison.OrdinalIgnoreCase)),
-            "butterfly必须保持独立小overlay，不得进入全身精灵源帧清单");
+                   path.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) ||
+                   path.Contains("star-wish", StringComparison.OrdinalIgnoreCase)),
+            "star-wish必须复用cute人物分页，小星星只能作为独立tiny overlay，" +
+            "不得新增star-cuddle/star-wish完整人物图集页");
         var manifestSourceFrameCount = root.GetProperty("sourceFrameCount").GetInt32();
         var manifestPageFrameCount = root.GetProperty("pageFrameCount").GetInt32();
         Assert(manifestSourceFrameCount == expectedSourcePaths.Length,
@@ -4609,19 +4960,25 @@ internal static partial class Program
             .ToArray();
         var actualPageNames = orderedPageNames
             .ToHashSet(StringComparer.Ordinal);
+        var starPageNames = orderedPageNames
+            .Where(pageName =>
+                pageName.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) ||
+                pageName.Contains("star-wish", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
         Assert(requiredPageNames.IsSubsetOf(actualPageNames) &&
                manifestSourceFrameCount == expectedSourcePaths.Length &&
                manifestPageFrameCount >= manifestSourceFrameCount &&
                 orderedPageNames.Take(3).SequenceEqual(
                     new[] { "idle", "edge-left", "edge-bottom" }) &&
-                !manifestPages.TryGetProperty("action-butterfly", out _) &&
-                !manifestPages.TryGetProperty("loop-butterfly", out _) &&
+                 starPageNames.Length == 0 &&
                 !manifestPages.TryGetProperty("loop-cute", out _) &&
                 !manifestPages.TryGetProperty("loop-think", out _) &&
-               !manifestPages.TryGetProperty("edge-top", out _) &&
+                 !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "还必须动态包含熊猫坐骑登乘与巡游连续分页、五套 smooth 页、三个普通循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、" +
+            "五套 smooth 页、三个普通循环页和两组专用提醒页；" +
+            "star-wish不得增加完整人物分页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -5776,7 +6133,8 @@ internal static partial class Program
             var expectedActionNames = Enumerable.Range(1, actionNames.Length)
                 .Select(frameNumber => $"luban-{action}-smooth-{frameNumber:000}.png")
                 .ToArray();
-            Assert(actionNames.Length >= 50 && actionNames.SequenceEqual(expectedActionNames),
+            Assert(actionNames.Length >= 50 &&
+                   actionNames.SequenceEqual(expectedActionNames),
                 $"{action} smooth源资源必须从001开始连续编号且至少50帧");
             paths.AddRange(actionNames.Select(name => $"Assets/{name}"));
             if (action is "cry" or "like" or "eat")
@@ -5878,10 +6236,10 @@ internal static partial class Program
                includes.Contains("Assets/sprite-pages/*.pbgra.br", StringComparer.OrdinalIgnoreCase) &&
                includes.Contains("Assets/luban-sprite-pages.json", StringComparer.OrdinalIgnoreCase) &&
                includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains("Assets/luban-butterfly.png", StringComparer.OrdinalIgnoreCase),
-            "csproj只能嵌入无损Brotli分页、v4 manifest、枕头层和独立蝴蝶overlay");
+               includes.Contains("Assets/luban-wish-star.png", StringComparer.OrdinalIgnoreCase),
+            "csproj只能嵌入无损Brotli分页、v4 manifest和独立枕头层");
         var allowedStandalonePngResources = new HashSet<string>(
-            ["Assets/luban-pillow-layer.png", "Assets/luban-butterfly.png"],
+            ["Assets/luban-pillow-layer.png", "Assets/luban-wish-star.png"],
             StringComparer.OrdinalIgnoreCase);
         Assert(!includes.Any(include =>
                 include.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
@@ -5910,21 +6268,18 @@ internal static partial class Program
             .Select(resource => resource.ToLowerInvariant())
             .Append("assets/luban-sprite-pages.json")
             .Append("assets/luban-pillow-layer.png")
-            .Append("assets/luban-butterfly.png")
+            .Append("assets/luban-wish-star.png")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         Assert(assetKeys.SetEquals(expectedAssets) &&
                assetKeys.Count == expectedPageResources.Count + 3,
             $"主程序集Assets资源必须严格等于{expectedPageResources.Count}个Brotli分页、" +
-            "一个v4 manifest和两个独立PNG overlay");
+            "一个v4 manifest和一个独立枕头PNG");
         Assert(!assetKeys.Any(key =>
                 key.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
-                (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
-                 !key.Equals("assets/luban-butterfly.png", StringComparison.OrdinalIgnoreCase))),
+                 (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
+                   !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
+                   !key.Equals("assets/luban-wish-star.png", StringComparison.OrdinalIgnoreCase))),
             "主程序集不得包含分页预览PNG、旧单atlas或全身源PNG");
-        Assert(!expectedPageResources.Any(resource =>
-                   resource.Contains("butterfly", StringComparison.OrdinalIgnoreCase)),
-            "独立butterfly overlay不得写入全身精灵分页清单");
     }
 
     private static void AssertRuntimeDoesNotUseWpfBitmapDecoders()
@@ -6119,15 +6474,16 @@ internal static partial class Program
                todoMotionFrameInterval == sixtyFpsInterval &&
                actionLoopFrameInterval == sixtyFpsInterval &&
                actionLoopCycleCount == 3,
-            "普通动作与Todo使用精确60fps素材，微循环固定3轮");
+            "普通动作与Todo使用60fps素材，微循环固定3轮");
         Assert(actionTransitionDuration == TimeSpan.Zero,
             "普通动作相邻姿势必须直接切换，ActionTransitionDuration 必须为 zero");
 
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        var expectedActions = new[] { "butterfly", "cry", "cute", "like", "eat" };
-        var expectedSmoothActions = new[] { "cry", "cute", "like", "eat", "think" };
+        var expectedActions = new[] { "star-wish", "cry", "cute", "like", "eat" };
+        var expectedSmoothActions = new[]
+            { "cry", "cute", "like", "eat", "think" };
         var expectedLoopActions = new[] { "cry", "like", "eat" };
         var reactionActionNames = (string[])(typeof(MainWindow).GetField(
                 "ReactionActionNames",
@@ -6141,7 +6497,7 @@ internal static partial class Program
         Assert(reactionActionNames.SequenceEqual(expectedActions) &&
                smoothActionNames.SequenceEqual(expectedSmoothActions) &&
                loopActionNames.SequenceEqual(expectedLoopActions),
-            "运行时必须保留五种普通reaction；butterfly复用think，loop仅cry/like/eat");
+            "运行时必须保留五种普通reaction；star-wish复用cute smooth，loop仅cry/like/eat");
         var smoothFrameKeys = GetProperty<IEnumerable<string>>(
                 GetField<object>(window, "_actionSmoothFrames"),
                 "Keys")
@@ -6152,7 +6508,7 @@ internal static partial class Program
             .ToHashSet(StringComparer.Ordinal);
         Assert(smoothFrameKeys.SetEquals(expectedSmoothActions) &&
                loopFrameKeys.SetEquals(expectedLoopActions),
-            "smooth 必须保留 Todo think 且不新增butterfly全身帧，loop字典只能加载cry/like/eat");
+            "smooth字典只能保留四种人物动作与Todo think，loop字典只能加载cry/like/eat");
         Assert(clips.Length == expectedActions.Length,
             "普通点击必须严格保留五组动作，不得把 Todo think 当作 reaction");
         var actualActions = clips
@@ -6172,11 +6528,11 @@ internal static partial class Program
                         "刚睡醒",
                         StringComparison.Ordinal)),
             "普通点击 clip 不得保留 think ActionName、旧think文案或yawn文案");
-        var butterflyClip = clips.Single(clip =>
-            GetProperty<string>(clip, "ActionName") == "butterfly");
-        Assert(GetProperty<string>(butterflyClip, "Message") ==
-               "咦～小蝴蝶来找我啦！",
-            "butterfly必须使用动画全程都成立的简短小蝴蝶文案");
+        var starWishClip = clips.Single(clip =>
+            GetProperty<string>(clip, "ActionName") == "star-wish");
+        Assert(GetProperty<string>(starWishClip, "Message") ==
+               "许个小愿望，送你一颗亮晶晶～",
+            "star-wish必须使用新的许愿对白");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
         var wakeFrameCount = expectedWakeFrameNames.Length;
         Assert(GetField<Array>(window, "_wakeFrames").Length == wakeFrameCount,
@@ -6315,7 +6671,7 @@ internal static partial class Program
             "Todo 入场和收起必须严格互为反序，快速切换时才能映射到同一姿势");
     }
 
-    private static void AssertButterflyOverlayContract(MainWindow window)
+    private static void AssertStarWishSequenceContract(MainWindow window)
     {
         var workspace = Path.GetDirectoryName(
             FindWorkspaceFile("DesktopPet.csproj"))!;
@@ -6323,155 +6679,205 @@ internal static partial class Program
             Path.Combine(workspace, "MainWindow.xaml.cs"));
         var xamlSource = File.ReadAllText(
             Path.Combine(workspace, "MainWindow.xaml"));
+        var projectSource = File.ReadAllText(
+            Path.Combine(workspace, "DesktopPet.csproj"));
+        var createSource = ExtractPrivateMethodSource(
+            mainSource,
+            "CreateStarWishClip");
+        var updateSource = ExtractPrivateMethodSource(
+            mainSource,
+            "UpdateWishStarOverlay");
+        var resolveSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ResolveWishStarVisualState");
         var renderingSource = ExtractPrivateMethodSource(
             mainSource,
             "VisualClock_Rendering");
-        var advanceSource = ExtractPrivateMethodSource(
-            mainSource,
-            "AdvanceButterflyOverlay");
-        var frameProgressSource = ExtractPrivateMethodSource(
-            mainSource,
-            "GetActiveFrameProgress");
-        var hideSource = ExtractPrivateMethodSource(
-            mainSource,
-            "HideButterflyOverlay");
 
-        Assert(renderingSource.Contains(
-                   "AdvanceButterflyOverlay(timestamp)",
-                   StringComparison.Ordinal) &&
-               advanceSource.Contains("Stopwatch.Frequency", StringComparison.Ordinal) &&
-               frameProgressSource.Contains(
-                   "_activeFrameDeadlineTimestamp",
-                   StringComparison.Ordinal) &&
-               advanceSource.Contains("ButterflyTranslate.X", StringComparison.Ordinal) &&
-               advanceSource.Contains("ButterflyScale.ScaleX", StringComparison.Ordinal) &&
-               advanceSource.Contains("ButterflyRotate.Angle", StringComparison.Ordinal),
-            "butterfly overlay必须由统一Rendering回调与Stopwatch绝对时间轴驱动位移、扇翅和旋转");
-        Assert(!advanceSource.Contains("new ", StringComparison.Ordinal) &&
-               !advanceSource.Contains("ToArray(", StringComparison.Ordinal) &&
-               !advanceSource.Contains("Select(", StringComparison.Ordinal) &&
-               !advanceSource.Contains("AppLogger", StringComparison.Ordinal),
-            "butterfly每帧回调不得创建对象、构造集合或写磁盘日志");
-        Assert(xamlSource.Contains("x:Name=\"ButterflyOverlay\"", StringComparison.Ordinal) &&
-               xamlSource.Contains("Width=\"22\"", StringComparison.Ordinal) &&
-               xamlSource.Contains("Height=\"22\"", StringComparison.Ordinal) &&
-               xamlSource.Contains("luban-butterfly.png", StringComparison.Ordinal) &&
-               xamlSource.Contains("Visibility=\"Visible\"", StringComparison.Ordinal) &&
-               !hideSource.Contains("Visibility.Collapsed", StringComparison.Ordinal),
-            "22×22蝴蝶必须作为PetVisual常驻透明overlay，只切Opacity避免首次布局闪烁");
+        var productionAssemblyText = System.Text.Encoding.UTF8.GetString(
+            File.ReadAllBytes(typeof(MainWindow).Assembly.Location));
+        var productionResourceNames = typeof(MainWindow).Assembly
+            .GetManifestResourceNames();
+        Assert(!mainSource.Contains("butterfly", StringComparison.OrdinalIgnoreCase) &&
+               !mainSource.Contains("小蝴蝶", StringComparison.Ordinal) &&
+               !xamlSource.Contains("butterfly", StringComparison.OrdinalIgnoreCase) &&
+               !projectSource.Contains("butterfly", StringComparison.OrdinalIgnoreCase) &&
+               !productionAssemblyText.Contains(
+                   "Butterfly",
+                   StringComparison.OrdinalIgnoreCase) &&
+               !productionAssemblyText.Contains("小蝴蝶", StringComparison.Ordinal) &&
+               productionResourceNames.All(name =>
+                   !name.Contains("butterfly", StringComparison.OrdinalIgnoreCase)),
+            "生产代码、程序集、XAML和资源必须彻底移除旧Butterfly overlay与对白");
+        Assert(!mainSource.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) &&
+               !xamlSource.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) &&
+               !projectSource.Contains("star-cuddle", StringComparison.OrdinalIgnoreCase) &&
+               createSource.Contains("CreateMotionClip", StringComparison.Ordinal) &&
+               createSource.Contains("StarWishActionName", StringComparison.Ordinal) &&
+               createSource.Contains("StarWishPoseActionName", StringComparison.Ordinal) &&
+               !createSource.Contains("DispatcherTimer", StringComparison.Ordinal),
+            "star-wish必须复用cute人物clip，不能保留star-cuddle人物页或额外timer");
 
-        foreach (var interruptionMethodName in new[]
-                 {
-                     "Window_Closing",
-                     "PetHost_PreviewMouseRightButtonDown",
-                     "PetHost_MouseLeftButtonDown",
-                     "CancelPetPointerInteractionForInterruption",
-                     "TryEnterWorkMode",
-                     "EnterEdgePeek",
-                     "SetBubbleMode"
-                 })
-        {
-            Assert(ExtractPrivateMethodSource(mainSource, interruptionMethodName)
-                    .Contains("SuppressButterflyOverlay()", StringComparison.Ordinal),
-                $"{interruptionMethodName}必须先隐藏并抑制butterfly overlay");
-        }
-
-        var overlay = GetField<Image>(window, "ButterflyOverlay");
-        var translate = GetField<TranslateTransform>(
-            window,
-            "ButterflyTranslate");
-        var scale = GetField<ScaleTransform>(window, "ButterflyScale");
-        Assert(overlay.Width == 22 && overlay.Height == 22 &&
-               overlay.Visibility == Visibility.Visible &&
-               overlay.Opacity == 0 &&
-               overlay.IsHitTestVisible == false,
-            "butterfly overlay初始必须常驻布局、完全透明且不接管鼠标");
-
-        var butterflyClip = GetField<Array>(window, "_reactionClips")
+        var starClip = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .Single(clip =>
-                GetProperty<string>(clip, "ActionName") == "butterfly");
-        var frames = GetClipFrames(butterflyClip).Cast<object>().ToArray();
-        var actionFrameIndex = GetProperty<int>(
-            butterflyClip,
-            "ActionFrameIndex");
-        const int thinkFrameCount = 56;
-        Assert(frames.Skip(actionFrameIndex)
-                   .Take(thinkFrameCount)
-                   .Select(GetAnimationFrameName)
-                   .SequenceEqual(Enumerable.Range(1, thinkFrameCount)
-                       .Select(number => $"luban-think-smooth-{number:000}.png")) &&
-               frames.All(frame =>
-                   !GetAnimationFrameName(frame).Contains(
-                       "butterfly",
-                       StringComparison.OrdinalIgnoreCase)) &&
-               frames.All(frame =>
-                   !GetAnimationFrameName(frame).Contains(
-                       "-loop-",
-                       StringComparison.Ordinal)),
-            "butterfly角色姿势必须复用完整56帧think且0 loop，不能新增全身butterfly帧");
+                GetProperty<string>(clip, "ActionName") == "star-wish");
+        var clipFrames = GetClipFrames(starClip).Cast<object>().ToArray();
+        var actualNames = clipFrames
+            .Select(GetAnimationFrameName)
+            .ToArray();
+        var expectedNames = BuildExpectedMotionFrameNames("star-wish");
+        var wakeFrameCount = GetExpectedWakeFrameNames().Length;
+        var expectedCuteForwardNames = Enumerable.Range(1, 56)
+            .Select(number => $"luban-cute-smooth-{number:000}.png")
+            .ToArray();
+        Assert(actualNames.SequenceEqual(expectedNames) &&
+               GetProperty<int>(starClip, "ActionFrameIndex") == wakeFrameCount &&
+               actualNames.Skip(wakeFrameCount).Take(56)
+                   .SequenceEqual(expectedCuteForwardNames) &&
+               actualNames.Count(name => name.Contains(
+                   "luban-cute-smooth-",
+                   StringComparison.Ordinal)) == 111 &&
+               actualNames.All(name =>
+                   !name.Contains("star-wish", StringComparison.OrdinalIgnoreCase) &&
+                   !name.Contains("-loop-", StringComparison.Ordinal)),
+            "star-wish必须以ActionName=star-wish复用cute 56帧正播、自然反播和既有wake桥，" +
+            "不得新增full-size人物资源或loop");
 
-        PrepareIdleSpriteCollectionBaseline(window);
-        SetField(window, "_sessionInactive", false);
-        SetField(window, "_dragStarted", false);
-        SetField(window, "_isTransientPetSizeOverride", false);
-        SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
-        SetField(window, "_butterflyOverlaySuppressed", false);
-        SetField(window, "_activeClip", butterflyClip);
-        var timestamp = Stopwatch.GetTimestamp();
+        var wishStarOverlay = GetField<Image>(window, "WishStarOverlay");
+        var wishStarBitmap = wishStarOverlay.Source as BitmapSource;
+        var wishStarAsset = FindWorkspaceFile("Assets", "luban-wish-star.png");
+        Assert(wishStarOverlay.Width == 22 &&
+               wishStarOverlay.Height == 22 &&
+               Math.Abs(Canvas.GetLeft(wishStarOverlay) - 84) <= 0.001 &&
+               Math.Abs(Canvas.GetTop(wishStarOverlay) - 172) <= 0.001 &&
+               wishStarOverlay.Opacity == 0 &&
+               wishStarOverlay.IsHitTestVisible == false &&
+               wishStarBitmap is { PixelWidth: 96, PixelHeight: 96 } &&
+               new FileInfo(wishStarAsset).Length <= 64 * 1024 &&
+               xamlSource.Contains("x:Name=\"WishStarOverlay\"", StringComparison.Ordinal) &&
+               xamlSource.Contains("luban-wish-star.png", StringComparison.Ordinal) &&
+               projectSource.Contains(
+                   "<Resource Include=\"Assets\\luban-wish-star.png\" />",
+                   StringComparison.Ordinal),
+            "star-wish必须使用常驻、透明、18–22 DIP的小型96px星星资源，不能首次显示才布局");
 
-        void PublishOverlayFrame(int frameIndex)
+        var visualStateType = typeof(MainWindow).GetNestedType(
+            "WishStarVisualState",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到 WishStarVisualState");
+        Assert(visualStateType.IsValueType &&
+               updateSource.Contains(
+                   "(timestamp - riseStartedTimestamp)",
+                   StringComparison.Ordinal) &&
+               renderingSource.Contains("UpdateWishStarOverlay(timestamp)", StringComparison.Ordinal) &&
+               resolveSource.Contains("inverse * inverse * 42", StringComparison.Ordinal) &&
+               resolveSource.Contains("2 * inverse * eased * 66", StringComparison.Ordinal) &&
+               resolveSource.Contains("2 * inverse * eased * -62", StringComparison.Ordinal) &&
+               resolveSource.Contains("eased * eased * -134", StringComparison.Ordinal) &&
+               !updateSource.Contains("new DispatcherTimer", StringComparison.Ordinal) &&
+               !updateSource.Contains("BeginAnimation", StringComparison.Ordinal) &&
+               !resolveSource.Contains("DispatcherTimer", StringComparison.Ordinal),
+            "星星必须由CompositionTarget.Rendering + Stopwatch绝对时间轴定位，" +
+            "每帧不得创建timer、动画对象或布局元素");
+
+        object Resolve(double seconds) => InvokeStatic(
+            typeof(MainWindow),
+            "ResolveWishStarVisualState",
+            seconds)!;
+        var hiddenBefore = Resolve(-0.001);
+        var riseStart = Resolve(0);
+        var rise = Resolve(0.25);
+        var riseEnd = Resolve(0.5 - 0.000001);
+        var hoverStart = Resolve(0.5);
+        var hover = Resolve(0.5 + 0.475);
+        var hoverEnd = Resolve(0.5 + 0.95 - 0.000001);
+        var flyStart = Resolve(0.5 + 0.95);
+        var fly = Resolve(0.5 + 0.95 + 0.35);
+        var hiddenAfter = Resolve(0.5 + 0.95 + 0.7);
+        Assert(!GetProperty<bool>(hiddenBefore, "IsVisible") &&
+               GetProperty<bool>(riseStart, "IsVisible") &&
+               Math.Abs(GetProperty<double>(riseStart, "TranslateX") - 42) <=
+                   0.000001 &&
+               Math.Abs(GetProperty<double>(riseStart, "TranslateY")) <= 0.000001 &&
+               GetProperty<bool>(rise, "IsVisible") &&
+               GetProperty<double>(rise, "Opacity") is > 0 and <= 1 &&
+               Math.Abs(GetProperty<double>(rise, "TranslateX") - 43.5) <=
+                   0.000001 &&
+               GetProperty<double>(rise, "TranslateY") is < 0 and > -134 &&
+               GetProperty<bool>(hover, "IsVisible") &&
+               Math.Abs(GetProperty<double>(hover, "TranslateY") + 134) <= 2.01 &&
+               GetProperty<bool>(fly, "IsVisible") &&
+               GetProperty<double>(fly, "TranslateX") > 0 &&
+               GetProperty<double>(fly, "TranslateY") < -134 &&
+               !GetProperty<bool>(hiddenAfter, "IsVisible"),
+            "单颗星星必须从画面右手边绕帽子外侧升起，在头顶轻微摆动/旋转/缩放，" +
+            "随后顺滑飞出并隐藏");
+        Assert(Math.Abs(GetProperty<double>(riseEnd, "TranslateX") -
+                        GetProperty<double>(hoverStart, "TranslateX")) <= 0.001 &&
+               Math.Abs(GetProperty<double>(riseEnd, "TranslateY") -
+                        GetProperty<double>(hoverStart, "TranslateY")) <= 0.001 &&
+               Math.Abs(GetProperty<double>(hoverEnd, "TranslateX") -
+                        GetProperty<double>(flyStart, "TranslateX")) <= 0.001 &&
+               Math.Abs(GetProperty<double>(hoverEnd, "TranslateY") -
+                        GetProperty<double>(flyStart, "TranslateY")) <= 0.001,
+            "右手侧贝塞尔入场、帽顶hover和右上飞出三个阶段必须位置连续，不能跳帧");
+
+        var referenceAtSameAbsoluteTime = Resolve(1.225);
+        foreach (var refreshRate in new[] { 59d, 60d, 120d, 144d })
         {
-            var animationFrame = frames[frameIndex];
-            SetField(window, "_activeFrameIndex", frameIndex);
-            SetField(
-                window,
-                "_currentSpriteFrame",
-                GetProperty<object>(animationFrame, "Image"));
-            SetField(
-                window,
-                "_activeFrameDeadlineTimestamp",
-                checked(timestamp + ToProductionCharacterAnimationTicks(
-                    GetFrameDuration(animationFrame))));
-            Invoke(window, "AdvanceButterflyOverlay", timestamp);
+            var sameAbsoluteTime = Resolve(1.225);
+            Assert(GetProperty<bool>(sameAbsoluteTime, "IsVisible") ==
+                       GetProperty<bool>(referenceAtSameAbsoluteTime, "IsVisible") &&
+                   Math.Abs(GetProperty<double>(sameAbsoluteTime, "Opacity") -
+                            GetProperty<double>(referenceAtSameAbsoluteTime, "Opacity")) <=
+                       0.000000001 &&
+                   Math.Abs(GetProperty<double>(sameAbsoluteTime, "TranslateX") -
+                            GetProperty<double>(referenceAtSameAbsoluteTime, "TranslateX")) <=
+                       0.000000001 &&
+                   Math.Abs(GetProperty<double>(sameAbsoluteTime, "TranslateY") -
+                            GetProperty<double>(referenceAtSameAbsoluteTime, "TranslateY")) <=
+                       0.000000001,
+                $"star-wish在{refreshRate:F0}Hz的同一绝对时间必须得到同一透明度和位置");
         }
 
-        PublishOverlayFrame(actionFrameIndex);
-        AssertClose(translate.X + 11, 205, "butterfly fly-in start center X");
-        AssertClose(translate.Y + 11, 96, "butterfly fly-in start center Y");
-        var approachStartScale = scale.ScaleX;
-        Assert(overlay.Opacity == 1,
-            "think首帧显示后butterfly必须从右上方开始飞入");
+        var beforeStall = Resolve(0.8);
+        var afterStall = Resolve(1.05);
+        Assert(Math.Abs(GetProperty<double>(afterStall, "TranslateX") -
+                        GetProperty<double>(beforeStall, "TranslateX")) > 0.01 ||
+               Math.Abs(GetProperty<double>(afterStall, "TranslateY") -
+                        GetProperty<double>(beforeStall, "TranslateY")) > 0.01,
+            "250ms阻塞后必须直接解析新的绝对位置，不能从旧位置逐帧补播");
 
-        PublishOverlayFrame(actionFrameIndex + thinkFrameCount - 1);
-        AssertClose(translate.X + 11, 92, "butterfly nose center X");
-        AssertClose(translate.Y + 11, 141, "butterfly nose center Y");
-        Assert(scale.ScaleX > approachStartScale,
-            "butterfly接近鼻尖时必须变大，不能用近大远小的反向透视");
-
-        var reverseLastFrameIndex =
-            actionFrameIndex + (thinkFrameCount - 1) * 2;
-        PublishOverlayFrame(reverseLastFrameIndex);
-        AssertClose(translate.X + 11, -16, "butterfly fly-out end center X");
-        AssertClose(translate.Y + 11, 118, "butterfly fly-out end center Y");
-        Assert(scale.ScaleX < 0.8,
-            "butterfly飞出时必须恢复远处小尺寸，不能机械原路倒放");
-
-        Invoke(window, "SuppressButterflyOverlay");
-        Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 0,
-            "交互中断必须立即隐藏overlay但不触发布局切换");
-        Invoke(window, "AdvanceButterflyOverlay", timestamp);
-        Assert(overlay.Opacity == 0,
-            "中断后的同一butterfly clip不得在下一渲染帧重新出现");
-
-        SetField(window, "_activeClip", null);
-        SetField(window, "_activeFrameIndex", -1);
-        SetField(window, "_activeClipStartedTimestamp", 0L);
-        SetField(window, "_activeFrameDeadlineTimestamp", 0L);
-        SetField(window, "_butterflyOverlaySuppressed", false);
-        var idleFrame = GetField<object>(window, "_idleFrame");
-        PrimeSpritePageForFrame(window, idleFrame);
-        Invoke(window, "ShowStableFrame", idleFrame);
+        var rightClickSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_PreviewMouseRightButtonDown");
+        var dragSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseLeftButtonDown");
+        var workSource = ExtractPrivateMethodSource(mainSource, "StartWorkClipAt");
+        var dockSource = ExtractPrivateMethodSource(mainSource, "EnterEdgePeekCore");
+        var bubbleSource = ExtractPrivateMethodSource(mainSource, "SetBubbleMode");
+        var completionSource = ExtractPrivateMethodSource(
+            mainSource,
+            "CompleteActiveClipAt");
+        Assert(rightClickSource.Contains(
+                   "SuppressWishStarOverlayForActiveClip",
+                   StringComparison.Ordinal) &&
+               dragSource.Contains(
+                   "SuppressWishStarOverlayForActiveClip",
+                   StringComparison.Ordinal) &&
+               workSource.Contains(
+                   "SuppressWishStarOverlayForActiveClip",
+                   StringComparison.Ordinal) &&
+               dockSource.Contains(
+                   "SuppressWishStarOverlayForActiveClip",
+                   StringComparison.Ordinal) &&
+               bubbleSource.Contains(
+                   "SuppressWishStarOverlayForActiveClip",
+                   StringComparison.Ordinal) &&
+               completionSource.Contains("HideWishStarOverlay", StringComparison.Ordinal),
+            "右键、拖动、提醒、打工、吸附与clip结束必须在同一输入/渲染帧隐藏星星");
     }
 
     private static string[] BuildExpectedActionTimelineNames(
@@ -6715,7 +7121,10 @@ internal static partial class Program
         var profile = GetExpectedMotionClipProfile(actionName);
         var poseActionName = GetExpectedMotionPoseActionName(actionName);
         var names = BuildExpectedMotionFrameNames(actionName);
-        var durations = Enumerable.Repeat(profile.FrameInterval, names.Length).ToArray();
+        var durations = Enumerable.Repeat(
+            profile.FrameInterval,
+            names.Length).ToArray();
+
         if (profile.EndpointHoldDuration <= TimeSpan.Zero)
         {
             return durations;
@@ -6743,12 +7152,7 @@ internal static partial class Program
             string actionName) =>
         actionName switch
         {
-            "butterfly" => (
-                SmoothFrameCount: 56,
-                LoopCycleCount: 0,
-                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
-                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
-            "cute" => (
+            "star-wish" or "cute" => (
                 SmoothFrameCount: 56,
                 LoopCycleCount: 0,
                 EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
@@ -6761,8 +7165,8 @@ internal static partial class Program
         };
 
     private static string GetExpectedMotionPoseActionName(string actionName) =>
-        string.Equals(actionName, "butterfly", StringComparison.Ordinal)
-            ? "think"
+        string.Equals(actionName, "star-wish", StringComparison.Ordinal)
+            ? "cute"
             : actionName;
 
     private static TimeSpan GetFrameDuration(object frame) =>
@@ -6777,7 +7181,7 @@ internal static partial class Program
 
     private static void AssertNoRunContract(MainWindow window)
     {
-        var expectedActionNames = new[] { "butterfly", "cry", "cute", "like", "eat" };
+        var expectedActionNames = new[] { "star-wish", "cry", "cute", "like", "eat" };
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
@@ -6994,7 +7398,9 @@ internal static partial class Program
         var armAutomaticWakeTimer = ExtractPrivateMethodSource(
             mainSource,
             "ArmAutomaticWakeTimer");
-        var enterEdgePeek = ExtractPrivateMethodSource(mainSource, "EnterEdgePeek");
+        var enterEdgePeek = ExtractPrivateMethodSource(
+            mainSource,
+            "EnterEdgePeekCore");
         var setBubbleMode = ExtractPrivateMethodSource(mainSource, "SetBubbleMode");
         var enterTodo = ExtractPrivateMethodSource(mainSource, "EnterTodoVisualState");
         var beginReminder = ExtractPrivateMethodSource(
@@ -7221,10 +7627,10 @@ internal static partial class Program
                     "if not is_boarding_transition and head_scale > head_scale_limit:",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
-                    "if not is_boarding_transition and torso_width_scale > torso_width_limit:",
+                    "and torso_width_scale > torso_width_limit",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
-                    "if not is_boarding_transition and torso_height_scale > torso_height_limit:",
+                    "and torso_height_scale > torso_height_limit",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
                     "if not is_boarding_transition and mean_iou < MIN_MEAN_ALPHA_IOU:",
@@ -7865,7 +8271,7 @@ internal static partial class Program
         AssertProductionDiscreteVsyncTimeline(
             window,
             clips[0],
-            "reaction-butterfly");
+            "reaction-star-wish");
         AssertProductionDiscreteVsyncTimeline(
             window,
             clips.Single(clip =>
@@ -8686,6 +9092,7 @@ internal static partial class Program
                 GetFrameDuration(frame)))
             .ToArray();
         var totalHoldTicks = holdTicks.Aggregate(0L, checked((total, ticks) => total + ticks));
+        var preStallElapsedTicks = StopwatchTicksFromMilliseconds(140);
         var deadlineToleranceTicks = (long)(typeof(MainWindow).GetField(
                 "VisualFrameDeadlineToleranceTicks",
                 StaticFlags)!.GetValue(null) ?? 0L);
@@ -8723,7 +9130,7 @@ internal static partial class Program
                     current.ElapsedStopwatchTicks,
                     deadlineToleranceTicks);
                 Assert(current.DisplayedFrameIndex == expectedIndex,
-                    $"{label}在{refreshRate:F0}Hz必须按1.25倍生产绝对deadline定位，不得累计漂移；" +
+                    $"{label}在{refreshRate:F0}Hz必须按生产绝对deadline定位，不得累计漂移；" +
                     $"vsync={current.VsyncOrdinal}, expected={expectedIndex}, " +
                     $"actual={current.DisplayedFrameIndex}");
             }
@@ -8758,19 +9165,19 @@ internal static partial class Program
                 Stopwatch.Frequency / refreshRate);
             Assert(firstRun.CompletionElapsedTicks + deadlineToleranceTicks >= totalHoldTicks &&
                    firstRun.CompletionElapsedTicks - totalHoldTicks <= refreshIntervalTicks,
-                $"{label}在{refreshRate:F0}Hz的1.25倍绝对时间轴完成误差不得超过一个vsync");
+                $"{label}在{refreshRate:F0}Hz的生产绝对时间轴完成误差不得超过一个vsync");
 
             var stallRun = RunProductionVsyncStall(
                 window,
                 clip,
                 refreshRate,
                 holdTicks,
-                deadlineToleranceTicks);
+                deadlineToleranceTicks,
+                preStallElapsedTicks);
             Assert(stallRun.StalledFrameIndex > stallRun.BeforeFrameIndex &&
                    stallRun.NextFrameIndex >= stallRun.StalledFrameIndex,
                 $"{label}在{refreshRate:F2}Hz遇到250ms阻塞时，单次回调必须跳到最终姿势，" +
                     "下一vsync不得快速补播积压帧");
-
             Console.WriteLine(
                 $"[METRIC] {label} vsync={refreshRate:F2}Hz: " +
                 $"callbacks={firstRun.Samples.Length - 1}, " +
@@ -8837,14 +9244,18 @@ internal static partial class Program
         object clip,
         double refreshRate,
         IReadOnlyList<long> holdTicks,
-        long deadlineToleranceTicks)
+        long deadlineToleranceTicks,
+        long preStallElapsedTicks)
     {
         var frames = GetClipFrames(clip);
         var startedAt = StopwatchTicksFromSeconds(30);
         PrepareProductionClipClockSimulation(window, clip, frames, startedAt, holdTicks[0]);
         var previousRenderingTime = TimeSpan.Zero;
         var previousElapsedStopwatchTicks = 0L;
-        var preStallVsyncCount = Math.Max(1, (int)Math.Floor(0.140 * refreshRate));
+        var preStallVsyncCount = Math.Max(
+            1,
+            (int)Math.Floor(
+                preStallElapsedTicks / (double)Stopwatch.Frequency * refreshRate));
         for (var vsyncOrdinal = 1; vsyncOrdinal <= preStallVsyncCount; vsyncOrdinal++)
         {
             previousElapsedStopwatchTicks = (long)Math.Round(
@@ -12214,8 +12625,8 @@ internal static partial class Program
                 window,
                 "GetTodoEnterStartIndex",
                 ordinaryActionFrame)!;
-            Assert(expectedTodoEnterStartIndex == wakeFrameCount + 1,
-                "butterfly复用think-001；打开待办必须从同名Todo姿势无缝续播，不能闪回起身或趴枕头待机");
+            Assert(expectedTodoEnterStartIndex == wakeFrameCount,
+                "star-wish被Todo抢占时必须从站立wake末帧继续，不能闪回趴枕头待机");
 
             var todoEnterClip = GetField<object>(window, "_todoEnterClip");
             var requestedTodoEntryFrame = GetProperty<object>(
@@ -12403,9 +12814,9 @@ internal static partial class Program
                 $"pending={GetRawField(window, "_pendingSpriteFrame") is not null}");
             Assert(ordinaryTodoStartIndex == expectedTodoEnterStartIndex &&
                    requestedTodoEntryFrameInfo.Name.EndsWith(
-                        "luban-think-smooth-001.png",
-                        StringComparison.Ordinal),
-                "butterfly抢占后的Todo入场首帧必须无缝复用think-smooth-001；" +
+                         $"luban-wake-smooth-{wakeFrameCount:000}.png",
+                         StringComparison.Ordinal),
+                "star-wish抢占后的Todo入场首帧必须使用站立wake末帧；" +
                 $"index={ordinaryTodoStartIndex}, requested={requestedTodoEntryFrameInfo.Name}");
 
             var entryIndex = GetField<int>(window, "_activeFrameIndex");
@@ -17428,7 +17839,7 @@ internal static partial class Program
             "LoadEdgeFrameSequence");
         var enterEdgePeek = ExtractPrivateMethodSource(
             mainSource,
-            "EnterEdgePeek");
+            "EnterEdgePeekCore");
         var exitEdgePeek = ExtractPrivateMethodSource(
             mainSource,
             "ExitEdgePeek");
@@ -19751,14 +20162,17 @@ internal static partial class Program
                    "_dragPreservesWorkMode && _workState != WorkState.Idle",
                    StringComparison.Ordinal) &&
                updateEdgeDockAfterDrag.Contains(
-                   "_workEdgeDock = touchedEdge",
+                   "StartWorkEdgeHandoff(touchedEdge)",
+                   StringComparison.Ordinal) &&
+               !updateEdgeDockAfterDrag.Contains(
+                   "RequestWorkExit()",
                    StringComparison.Ordinal) &&
                updateEdgeDockAfterDrag.Contains(
                    "EnterEdgePeek(touchedEdge)",
                    StringComparison.Ordinal),
             "Sub-threshold pointer motion must preserve click classification; a real " +
-            "work drag must clear the click count while preserving work and still run " +
-            "the shared edge-snap calculation on normal release and lost capture.");
+            "work drag must clear the click count, preserve work, and start a direct " +
+            "edge handoff without routing through the ordinary work-exit clip.");
         Assert(rightClick.IndexOf(
                    "_openTodoAfterWorkExitRequested = true",
                    StringComparison.Ordinal) >= 0 &&
@@ -20336,17 +20750,164 @@ internal static partial class Program
 
     private static void AssertWorkModeDragContinuationContract(MainWindow window)
     {
+        var source = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var updateAfterDrag = ExtractPrivateMethodSource(
+            source,
+            "UpdateEdgeDockAfterDrag");
+        var startHandoff = ExtractPrivateMethodSource(
+            source,
+            "StartWorkEdgeHandoff");
+        var rendering = ExtractPrivateMethodSource(
+            source,
+            "VisualClock_Rendering");
+        Assert(updateAfterDrag.Contains(
+                   "StartWorkEdgeHandoff(touchedEdge)",
+                   StringComparison.Ordinal) &&
+               !updateAfterDrag.Contains(
+                   "RequestWorkExit()",
+                   StringComparison.Ordinal) &&
+               !startHandoff.Contains(
+                   "RequestWorkExit()",
+                   StringComparison.Ordinal) &&
+               !startHandoff.Contains(
+                   "_workExitClip",
+                   StringComparison.Ordinal) &&
+               rendering.Contains(
+                   "workEdgeHandoffPending",
+                   StringComparison.Ordinal) &&
+               rendering.Contains(
+                   "TryCompletePendingWorkEdgeHandoff()",
+                   StringComparison.Ordinal),
+            "A work drag must use the frozen direct edge handoff and must never " +
+            "route through the ordinary pillow-return work-exit clip.");
+
+        var phaseNames = new[]
+        {
+            "Entering",
+            "Typing",
+            "SeriousEnter",
+            "SeriousLoop",
+            "SeriousExit",
+            "Exiting"
+        };
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idleDigest = GetRuntimeDecodedWorkFramePixelDigest(window, idleFrame);
+
+        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
+        {
+            foreach (var phaseName in phaseNames)
+            {
+                var fixture = ArrangeDirectWorkEdgePhase(window, phaseName);
+                var workDigest = GetRuntimeDecodedWorkFramePixelDigest(
+                    window,
+                    fixture.DisplayedFrame);
+                Assert(!string.Equals(workDigest, idleDigest, StringComparison.Ordinal) &&
+                       !IsPillowVisibleWorkEnterFrame(
+                           GetSpriteFrameInfo(fixture.DisplayedFrame).Name),
+                    $"{phaseName}/{edgeName} must start from a real work pose, " +
+                    "not idle or one of work-enter 001-024 pillow poses.");
+
+                var edgeFrames = GetEdgeFramesForTest(window, edgeName);
+                var edgeRestFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
+                var edgeRestInfo = GetSpriteFrameInfo(edgeRestFrame);
+                // Load the target page without changing the displayed work
+                // descriptor. StartWorkEdgeHandoff must therefore take its hot
+                // path synchronously.
+                PrimeSpritePageForFrame(window, edgeRestFrame);
+                Assert(Equals(
+                           GetRawField(window, "_currentSpriteFrame"),
+                           fixture.DisplayedFrame),
+                    $"{phaseName}/{edgeName} hot-page preparation must keep " +
+                    "the displayed work frame.");
+
+                var boundsBefore = (Rect)Invoke(
+                    window,
+                    "GetPetViewboxBoundsInScreenDips")!;
+                var leftBefore = window.Left;
+                var topBefore = window.Top;
+                var published = new List<(string PageName, string Name)>();
+                Action<string, string, int, int, int, int> observe =
+                    (pageName, name, _, _, _, _) =>
+                        published.Add((pageName, name));
+                SetField(
+                    window,
+                    "_spriteFrameDescriptorPublishedForTesting",
+                    observe);
+                try
+                {
+                    Invoke(
+                        window,
+                        "StartWorkEdgeHandoff",
+                        GetNestedEnum("EdgeDock", edgeName));
+                }
+                finally
+                {
+                    SetField(
+                        window,
+                        "_spriteFrameDescriptorPublishedForTesting",
+                        null);
+                }
+
+                Assert(string.Equals(
+                           GetRawField(window, "_workState")?.ToString(),
+                           "Idle",
+                           StringComparison.Ordinal) &&
+                       string.Equals(
+                           GetRawField(window, "_edgeDock")?.ToString(),
+                           edgeName,
+                           StringComparison.Ordinal) &&
+                       string.Equals(
+                           GetRawField(window, "_workEdgeDock")?.ToString(),
+                           "None",
+                           StringComparison.Ordinal) &&
+                       GetField<long>(
+                           window,
+                           "_workEdgeHandoffFrozenTimestamp") == 0 &&
+                       GetRawField(window, "_activeClip") is null &&
+                       Equals(
+                           GetRawField(window, "_currentSpriteFrame"),
+                           edgeRestFrame),
+                    $"{phaseName}/{edgeName} hot handoff must atomically enter " +
+                    "edge rest and fully clear the work clock.");
+                Assert(published.Count == 1 &&
+                       string.Equals(
+                           published[0].PageName,
+                           edgeRestInfo.PageName,
+                           StringComparison.Ordinal) &&
+                       string.Equals(
+                           published[0].Name,
+                           edgeRestInfo.Name,
+                           StringComparison.Ordinal) &&
+                       published.All(descriptor =>
+                           !string.Equals(
+                               descriptor.Name,
+                               GetSpriteFrameInfo(idleFrame).Name,
+                               StringComparison.Ordinal) &&
+                           !IsPillowVisibleWorkEnterFrame(descriptor.Name)),
+                    $"{phaseName}/{edgeName} hot handoff may publish only the " +
+                    "edge-rest descriptor—never idle or a pillow-return pose.");
+                AssertRectClose(
+                    (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!,
+                    boundsBefore,
+                    $"{phaseName}/{edgeName} hot handoff must preserve viewbox bounds");
+                AssertClose(
+                    window.Left,
+                    leftBefore,
+                    $"{phaseName}/{edgeName} hot handoff must preserve Left");
+                AssertClose(
+                    window.Top,
+                    topBefore,
+                    $"{phaseName}/{edgeName} hot handoff must preserve Top");
+            }
+        }
+
         var monitorType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.MonitorWorkArea",
             throwOnError: true)!;
         var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
-        const double anchorFramePosition = 45.25;
-        const double playbackRate = 1;
-        const double preSnapGap = 6;
-
-        (object LoopClip, long AnchorTimestamp, Rect WorkArea) BeginWorkDrag()
+        foreach (var releaseKind in new[] { "Top", "Center" })
         {
-            PrepareWorkModeIdleState(window);
+            var fixture = ArrangeDirectWorkEdgePhase(window, "Typing");
             var workArea = (Rect)InvokeStatic(
                 monitorType,
                 "GetForVisual",
@@ -20355,273 +20916,43 @@ internal static partial class Program
             var visibleBounds = (Rect)Invoke(
                 window,
                 "GetPetViewboxBoundsInScreenDips")!;
-            var safeLeft = workArea.Left + Math.Max(
-                24,
-                (workArea.Width - visibleBounds.Width) / 2);
-            var safeTop = workArea.Top + Math.Max(
-                24,
-                (workArea.Height - visibleBounds.Height) / 2);
-            window.Left += safeLeft - visibleBounds.Left;
-            window.Top += safeTop - visibleBounds.Top;
-            window.UpdateLayout();
-
-            EnterWorkTypingForTest(window);
-            var loopClip = GetField<object>(window, "_workLoopClip");
-            var anchorTimestamp = Stopwatch.GetTimestamp();
-            SetField(window, "_activeClip", loopClip);
-            SetField(window, "_activeFrameIndex", (int)Math.Floor(anchorFramePosition));
-            SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
-            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
-            SetField(window, "_workLoopPlaybackRate", playbackRate);
-            SetField(window, "_workFastUntilTimestamp", 0L);
-            var clickClipBefore = GetRawField(window, "_activeClip");
-            var clickFrameBefore = GetField<int>(window, "_activeFrameIndex");
-            Invoke(window, "HandleWorkPetClick", 1);
-            Assert(ReferenceEquals(GetRawField(window, "_activeClip"), clickClipBefore) &&
-                   GetField<int>(window, "_activeFrameIndex") == clickFrameBefore &&
-                   GetField<long>(window, "_workLoopAnchorTimestamp") == anchorTimestamp &&
-                   Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
-                            anchorFramePosition) <= 0.000001 &&
-                   Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
-                            playbackRate) <= 0.000001,
-                "Work-drag setup single click must be a strict visual no-op.");
-
-            var petHost = GetField<Grid>(window, "PetHost");
-            var grabPosition = petHost.TranslatePoint(
-                new Point(petHost.ActualWidth / 2, petHost.ActualHeight / 2),
-                window);
-            var grabScreenPosition = window.PointToScreen(grabPosition);
-            var movedScreenPosition = grabScreenPosition + new Vector(36, 22);
-            var movedPosition = window.PointFromScreen(movedScreenPosition);
-            SetField(window, "_pointerDownPosition", grabPosition);
-            SetField(window, "_pointerDownScreenPosition", grabScreenPosition);
-            SetField(window, "_latestDragScreenPosition", grabScreenPosition);
-            SetField(window, "_pointerDown", true);
-            SetField(window, "_dragStarted", false);
-            SetField(window, "_dragInteractionActive", true);
-            SetField(window, "_workPointerClickCount", 1);
-            Invoke(
-                window,
-                "BeginDirectPetDrag",
-                movedPosition,
-                movedScreenPosition);
-
-            Assert(GetField<bool>(window, "_dragStarted") &&
-                   GetField<bool>(window, "_dragInteractionActive") &&
-                   GetField<bool>(window, "_dragPreservesWorkMode") &&
-                   !GetField<bool>(window, "_pointerDown") &&
-                   GetField<int>(window, "_workPointerClickCount") == 0 &&
-                   string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Typing",
-                       StringComparison.Ordinal) &&
-                   ReferenceEquals(GetRawField(window, "_activeClip"), loopClip) &&
-                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                       anchorTimestamp &&
-                   Math.Abs(
-                       GetField<double>(window, "_workLoopAnchorFramePosition") -
-                       anchorFramePosition) <= 0.000001 &&
-                   Math.Abs(
-                       GetField<double>(window, "_workLoopPlaybackRate") -
-                       playbackRate) <= 0.000001,
-                "Beginning a real work drag must clear click classification while " +
-                "preserving Typing, the active loop, and every absolute-clock anchor.");
-            return (loopClip, anchorTimestamp, workArea);
-        }
-
-        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
-        {
-            var setup = BeginWorkDrag();
-            var visibleBounds = (Rect)Invoke(
-                window,
-                "GetPetViewboxBoundsInScreenDips")!;
             var contactBounds = (Rect)Invoke(
                 window,
                 "GetPetContactBounds",
                 visibleBounds)!;
-            switch (edgeName)
-            {
-                case "Left":
-                    window.Left += setup.WorkArea.Left + preSnapGap - contactBounds.Left;
-                    break;
-                case "Right":
-                    window.Left += setup.WorkArea.Right - preSnapGap - contactBounds.Right;
-                    break;
-                case "Bottom":
-                    window.Top += setup.WorkArea.Bottom - preSnapGap - contactBounds.Bottom;
-                    break;
-            }
+            var centerLeft = workArea.Left +
+                             Math.Max(24, (workArea.Width - visibleBounds.Width) / 2);
+            var centerTop = workArea.Top +
+                            Math.Max(24, (workArea.Height - visibleBounds.Height) / 2);
+            window.Left += centerLeft - visibleBounds.Left;
+            window.Top += centerTop - visibleBounds.Top;
             window.UpdateLayout();
-
-            contactBounds = (Rect)Invoke(
-                window,
-                "GetPetContactBounds",
-                (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!)!;
-            var actualPreSnapGap = edgeName switch
-            {
-                "Left" => contactBounds.Left - setup.WorkArea.Left,
-                "Right" => setup.WorkArea.Right - contactBounds.Right,
-                "Bottom" => setup.WorkArea.Bottom - contactBounds.Bottom,
-                _ => double.NaN
-            };
-            Assert(Math.Abs(actualPreSnapGap - preSnapGap) <= 1.01,
-                $"{edgeName} work-drag setup must release inside the snap threshold.");
-
-            // Re-anchor immediately before release so the automatic exit request
-            // deterministically waits for the next authored neutral seam.
-            var anchorTimestamp = Stopwatch.GetTimestamp();
-            SetField(window, "_activeClip", setup.LoopClip);
-            SetField(window, "_activeFrameIndex", (int)Math.Floor(anchorFramePosition));
-            SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
-            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
-            SetField(window, "_workLoopPlaybackRate", playbackRate);
-            var releaseTimestamp = Stopwatch.GetTimestamp();
-            Invoke(window, "CompleteDirectPetDrag", true);
-            var expectedReleasePhase = anchorFramePosition +
-                Math.Max(0, releaseTimestamp - anchorTimestamp) /
-                (double)Stopwatch.Frequency * 60 * playbackRate;
-            var actualReleasePhase = (double)Invoke(
-                window,
-                "GetWorkLoopFramePositionAt",
-                releaseTimestamp)!;
-            Assert(!GetField<bool>(window, "_dragStarted") &&
-                   !GetField<bool>(window, "_dragInteractionActive") &&
-                   !GetField<bool>(window, "_dragPreservesWorkMode") &&
-                   string.Equals(
-                       GetRawField(window, "_edgeDock")?.ToString(),
-                       "None",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_workEdgeDock")?.ToString(),
-                       edgeName,
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Typing",
-                       StringComparison.Ordinal) &&
-                   ReferenceEquals(GetRawField(window, "_activeClip"), setup.LoopClip) &&
-                   GetField<bool>(window, "_workExitRequested") &&
-                   GetField<double>(window, "_workExitTargetFramePosition") >
-                       actualReleasePhase &&
-                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                       anchorTimestamp &&
-                   Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
-                            anchorFramePosition) <= 0.000001 &&
-                   Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
-                            playbackRate) <= 0.000001 &&
-                   Math.Abs(actualReleasePhase - expectedReleasePhase) <= 0.000001 &&
-                   !GetField<bool>(window, "_workSeriousEnterRequested"),
-                $"Releasing work at {edgeName} must preserve the live typing clock, " +
-                "record that edge, and automatically request the authored exit.");
-
-            visibleBounds = (Rect)Invoke(
-                window,
-                "GetPetViewboxBoundsInScreenDips")!;
-            var snappedGap = edgeName switch
-            {
-                "Left" => visibleBounds.Left - setup.WorkArea.Left,
-                "Right" => setup.WorkArea.Right - visibleBounds.Right,
-                "Bottom" => setup.WorkArea.Bottom - visibleBounds.Bottom,
-                _ => double.NaN
-            };
-            Assert(Math.Abs(snappedGap) <= 1.01,
-                $"{edgeName} working dock must pixel-align the pet viewbox to the edge.");
-            AssertWorkButtonContract(
-                window,
-                phase: $"{edgeName} work exit requested after drag",
-                expectedState: "Typing",
-                expectedContent: "去睡觉",
-                expectedOpacity: 1,
-                expectedIsEnabled: false,
-                expectedIsHitTestVisible: false);
-
-            var exitTarget = GetField<double>(
-                window,
-                "_workExitTargetFramePosition");
-            var exitSeamTimestamp = checked(
-                anchorTimestamp +
-                (long)Math.Ceiling(
-                    (exitTarget - anchorFramePosition) /
-                    (60 * playbackRate) * Stopwatch.Frequency) +
-                2);
-            Invoke(window, "AdvanceWorkLoop", exitSeamTimestamp);
-            var exitClip = GetField<object>(window, "_workExitClip");
-            Assert(string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Exiting",
-                       StringComparison.Ordinal) &&
-                   ReferenceEquals(GetRawField(window, "_activeClip"), exitClip) &&
-                   string.Equals(
-                       GetRawField(window, "_workEdgeDock")?.ToString(),
-                       edgeName,
-                       StringComparison.Ordinal),
-                $"{edgeName} automatic work exit must start at the selected neutral seam.");
-
-            var edgeFrames = edgeName is "Left" or "Right"
-                ? GetField<Array>(window, "_edgeLeftFrames")
-                : GetField<Array>(window, "_edgeBottomFrames");
-            var edgeRestFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
-            PrimeSpritePageForFrame(window, edgeRestFrame);
-            Invoke(
-                window,
-                "CompleteActiveClipAt",
-                exitClip,
-                checked(exitSeamTimestamp + Stopwatch.Frequency / 2));
-            Assert(string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Idle",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_workEdgeDock")?.ToString(),
-                       "None",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_edgeDock")?.ToString(),
-                       edgeName,
-                       StringComparison.Ordinal) &&
-                   GetField<int>(window, "_edgePeekFrameIndex") ==
-                       edgeFrames.Length - 1 &&
-                   GetField<long>(window, "_edgePeekFrameDeadlineTimestamp") > 0,
-                $"Completing work exit at {edgeName} must enter the real EdgePeek " +
-                "state at its authored rest pose.");
-            AssertWorkButtonContract(
-                window,
-                phase: $"idle EdgePeek after {edgeName} work exit",
-                expectedState: "Idle",
-                expectedContent: "去打工",
-                expectedOpacity: 0,
-                expectedIsEnabled: false,
-                expectedIsHitTestVisible: false);
-        }
-
-        foreach (var releaseKind in new[] { "Top", "Center" })
-        {
-            var setup = BeginWorkDrag();
             if (releaseKind == "Top")
             {
-                var visibleBounds = (Rect)Invoke(
+                visibleBounds = (Rect)Invoke(
                     window,
                     "GetPetViewboxBoundsInScreenDips")!;
-                var contactBounds = (Rect)Invoke(
+                contactBounds = (Rect)Invoke(
                     window,
                     "GetPetContactBounds",
                     visibleBounds)!;
-                window.Top += setup.WorkArea.Top + preSnapGap - contactBounds.Top;
+                window.Top += workArea.Top - contactBounds.Top;
                 window.UpdateLayout();
             }
 
-            var anchorTimestamp = Stopwatch.GetTimestamp();
-            SetField(window, "_activeClip", setup.LoopClip);
-            SetField(window, "_activeFrameIndex", (int)Math.Floor(anchorFramePosition));
-            SetField(window, "_workLoopAnchorFramePosition", anchorFramePosition);
-            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
-            SetField(window, "_workLoopPlaybackRate", playbackRate);
-            Invoke(window, "CompleteDirectPetDrag", true);
+            SetField(window, "_dragPreservesWorkMode", true);
+            SetField(window, "_edgeDockDragContext", null);
+            Invoke(window, "UpdateEdgeDockAfterDrag");
             Assert(string.Equals(
                        GetRawField(window, "_workState")?.ToString(),
                        "Typing",
                        StringComparison.Ordinal) &&
-                   ReferenceEquals(GetRawField(window, "_activeClip"), setup.LoopClip) &&
+                   ReferenceEquals(
+                       GetRawField(window, "_activeClip"),
+                       fixture.Clip) &&
+                   Equals(
+                       GetRawField(window, "_currentSpriteFrame"),
+                       fixture.DisplayedFrame) &&
                    string.Equals(
                        GetRawField(window, "_workEdgeDock")?.ToString(),
                        "None",
@@ -20629,24 +20960,10 @@ internal static partial class Program
                    string.Equals(
                        GetRawField(window, "_edgeDock")?.ToString(),
                        "None",
-                       StringComparison.Ordinal) &&
-                   !GetField<bool>(window, "_workExitRequested") &&
-                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
-                       anchorTimestamp &&
-                   Math.Abs(GetField<double>(window, "_workLoopAnchorFramePosition") -
-                            anchorFramePosition) <= 0.000001 &&
-                   Math.Abs(GetField<double>(window, "_workLoopPlaybackRate") -
-                            playbackRate) <= 0.000001,
-                $"Releasing work at {releaseKind} must keep Typing unchanged; " +
-                "only Left, Right, and Bottom are supported work docks.");
-            AssertWorkButtonContract(
-                window,
-                phase: $"{releaseKind} work drag release",
-                expectedState: "Typing",
-                expectedContent: "去睡觉",
-                expectedOpacity: 1,
-                expectedIsEnabled: true,
-                expectedIsHitTestVisible: true);
+                       StringComparison.Ordinal),
+                $"{releaseKind} release must keep the existing work pose and " +
+                "must not start an unsupported edge handoff.");
+            SetField(window, "_dragPreservesWorkMode", false);
         }
 
         PrepareWorkModeIdleState(window);
@@ -20654,225 +20971,431 @@ internal static partial class Program
 
     private static void AssertWorkEdgeColdHandoffContract(MainWindow window)
     {
-        (
-            object ExitClip,
-            object FinalWorkFrame,
-            object IdleFrame,
-            Array EdgeFrames,
-            object EdgeRestFrame,
-            string EdgeRestPageName,
-            int FinalFrameIndex) ArrangeColdWorkExit(string edgeName)
-        {
-            PrepareWorkModeIdleState(window);
-            var exitClip = GetField<object>(window, "_workExitClip");
-            var exitFrames = GetClipFrames(exitClip);
-            var finalFrameIndex = exitFrames.Length - 1;
-            var finalWorkFrame = GetProperty<object>(
-                exitFrames.GetValue(finalFrameIndex)!,
-                "Image");
-            var idleFrame = GetField<object>(window, "_idleFrame");
+        var idleSourceBytes = File.ReadAllBytes(
+            FindWorkspaceFile("Assets", "luban-idle.png"));
+        var workEnter001Bytes = File.ReadAllBytes(
+            FindWorkspaceFile("Assets", "luban-work-enter-001.png"));
+        var idleSourceDigest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(idleSourceBytes));
+        var workEnter001Digest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(workEnter001Bytes));
+        Assert(idleSourceBytes.AsSpan().SequenceEqual(workEnter001Bytes) &&
+               string.Equals(
+                   idleSourceDigest,
+                   workEnter001Digest,
+                   StringComparison.Ordinal),
+            "The regression fixture must prove why descriptor-only checks are " +
+            "insufficient: work-enter-001 is byte-for-byte the idle PNG.");
 
-            // Only the work-exit frame is prepared synchronously. The target
-            // edge page must remain genuinely cold throughout arrangement.
-            PrimeSpritePageForFrame(window, finalWorkFrame);
-            SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
-            Invoke(window, "ShowStableFrame", finalWorkFrame);
-            var edgeFrames = edgeName is "Left" or "Right"
-                ? GetField<Array>(window, "_edgeLeftFrames")
-                : GetField<Array>(window, "_edgeBottomFrames");
+        var phaseNames = new[]
+        {
+            "Entering",
+            "Typing",
+            "SeriousEnter",
+            "SeriousLoop",
+            "SeriousExit",
+            "Exiting"
+        };
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idleRuntimeDigest =
+            GetRuntimeDecodedWorkFramePixelDigest(window, idleFrame);
+
+        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
+        {
+            foreach (var phaseName in phaseNames)
+            {
+                var fixture = ArrangeDirectWorkEdgePhase(window, phaseName);
+                var releaseDigest = GetCurrentDisplayPixelDigest(window);
+                Assert(!string.Equals(
+                           releaseDigest,
+                           idleRuntimeDigest,
+                           StringComparison.Ordinal) &&
+                       !IsPillowVisibleWorkEnterFrame(
+                           GetSpriteFrameInfo(fixture.DisplayedFrame).Name),
+                    $"{phaseName}/{edgeName} cold fixture must release from a " +
+                    "real work frame rather than idle/pillow pixels.");
+
+                var edgeFrames = GetEdgeFramesForTest(window, edgeName);
+                var edgeRestFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
+                var edgeRestInfo = GetSpriteFrameInfo(edgeRestFrame);
+                EvictResidentSpritePageForTest(
+                    window,
+                    edgeRestInfo.PageName);
+                Assert(!GetField<IDictionary>(window, "_residentSpritePages")
+                           .Contains(edgeRestInfo.PageName),
+                    $"{phaseName}/{edgeName} target page must be genuinely cold.");
+
+                var activeClipBefore = GetRawField(window, "_activeClip");
+                var activeFrameIndexBefore =
+                    GetField<int>(window, "_activeFrameIndex");
+                var activeClipStartedBefore =
+                    GetField<long>(window, "_activeClipStartedTimestamp");
+                var activeFrameDeadlineBefore =
+                    GetField<long>(window, "_activeFrameDeadlineTimestamp");
+                var loopAnchorBefore =
+                    GetField<long>(window, "_workLoopAnchorTimestamp");
+                var loopPositionBefore =
+                    GetField<double>(window, "_workLoopAnchorFramePosition");
+                var playbackRateBefore =
+                    GetField<double>(window, "_workLoopPlaybackRate");
+                var boundsBefore = (Rect)Invoke(
+                    window,
+                    "GetPetViewboxBoundsInScreenDips")!;
+                var leftBefore = window.Left;
+                var topBefore = window.Top;
+                var published = new List<(string PageName, string Name)>();
+                Action<string, string, int, int, int, int> observe =
+                    (pageName, name, _, _, _, _) =>
+                        published.Add((pageName, name));
+                SetField(
+                    window,
+                    "_spriteFrameDescriptorPublishedForTesting",
+                    observe);
+                try
+                {
+                    // Defer the request exactly as production Rendering does so
+                    // no background decode can win the cold-state assertions.
+                    SetField(window, "_isInsideVisualRenderingCallback", true);
+                    try
+                    {
+                        Invoke(
+                            window,
+                            "StartWorkEdgeHandoff",
+                            GetNestedEnum("EdgeDock", edgeName));
+                    }
+                    finally
+                    {
+                        SetField(
+                            window,
+                            "_isInsideVisualRenderingCallback",
+                            false);
+                        GetField<DispatcherTimer>(
+                            window,
+                            "_spritePagePrefetchDispatchTimer").Stop();
+                    }
+
+                    Assert(string.Equals(
+                               GetRawField(window, "_workEdgeDock")?.ToString(),
+                               edgeName,
+                               StringComparison.Ordinal) &&
+                           GetField<long>(
+                               window,
+                               "_workEdgeHandoffFrozenTimestamp") > 0 &&
+                           string.Equals(
+                               GetRawField(window, "_edgeDock")?.ToString(),
+                               "None",
+                               StringComparison.Ordinal) &&
+                           ReferenceEquals(
+                               GetRawField(window, "_activeClip"),
+                               activeClipBefore) &&
+                           GetField<int>(window, "_activeFrameIndex") ==
+                               activeFrameIndexBefore &&
+                           Equals(
+                               GetRawField(window, "_currentSpriteFrame"),
+                               fixture.DisplayedFrame) &&
+                           published.Count == 0,
+                        $"{phaseName}/{edgeName} cold release must freeze the " +
+                        "current work descriptor and publish nothing.");
+
+                    Invoke(window, "VisualClock_Rendering", null, EventArgs.Empty);
+                    GetField<DispatcherTimer>(
+                        window,
+                        "_spritePagePrefetchDispatchTimer").Stop();
+                    Assert(ReferenceEquals(
+                               GetRawField(window, "_activeClip"),
+                               activeClipBefore) &&
+                           GetField<int>(window, "_activeFrameIndex") ==
+                               activeFrameIndexBefore &&
+                           GetField<long>(
+                               window,
+                               "_activeClipStartedTimestamp") ==
+                               activeClipStartedBefore &&
+                           GetField<long>(
+                               window,
+                               "_activeFrameDeadlineTimestamp") ==
+                               activeFrameDeadlineBefore &&
+                           GetField<long>(
+                               window,
+                               "_workLoopAnchorTimestamp") ==
+                               loopAnchorBefore &&
+                           Math.Abs(
+                               GetField<double>(
+                                   window,
+                                   "_workLoopAnchorFramePosition") -
+                               loopPositionBefore) <= 0.000001 &&
+                           Math.Abs(
+                               GetField<double>(
+                                   window,
+                                   "_workLoopPlaybackRate") -
+                               playbackRateBefore) <= 0.000001 &&
+                           Equals(
+                               GetRawField(window, "_currentSpriteFrame"),
+                               fixture.DisplayedFrame) &&
+                           string.Equals(
+                               GetCurrentDisplayPixelDigest(window),
+                               releaseDigest,
+                               StringComparison.Ordinal) &&
+                           published.Count == 0 &&
+                           GetField<bool>(window, "_isVisualClockSubscribed"),
+                        $"{phaseName}/{edgeName} cold Rendering must keep both " +
+                        "the visible work pixels and every absolute-clock anchor frozen.");
+
+                    SetField(window, "_renderDeferredSpritePageName", null);
+                    SetField(window, "_renderDeferredSpritePageUrgent", false);
+                    PrimeSpritePageForFrame(window, edgeRestFrame);
+                    Assert((bool)Invoke(
+                               window,
+                               "TryCompletePendingWorkEdgeHandoff")!,
+                        $"{phaseName}/{edgeName} must complete once its page is resident.");
+                    Assert(string.Equals(
+                               GetRawField(window, "_workState")?.ToString(),
+                               "Idle",
+                               StringComparison.Ordinal) &&
+                           string.Equals(
+                               GetRawField(window, "_edgeDock")?.ToString(),
+                               edgeName,
+                               StringComparison.Ordinal) &&
+                           string.Equals(
+                               GetRawField(window, "_workEdgeDock")?.ToString(),
+                               "None",
+                               StringComparison.Ordinal) &&
+                           GetRawField(window, "_activeClip") is null &&
+                           Equals(
+                               GetRawField(window, "_currentSpriteFrame"),
+                               edgeRestFrame),
+                        $"{phaseName}/{edgeName} resident retry must atomically " +
+                        "finish in the real edge-rest state.");
+                    Assert(published.Count == 1 &&
+                           string.Equals(
+                               published[0].PageName,
+                               edgeRestInfo.PageName,
+                               StringComparison.Ordinal) &&
+                           string.Equals(
+                               published[0].Name,
+                               edgeRestInfo.Name,
+                               StringComparison.Ordinal) &&
+                           published.All(descriptor =>
+                               !string.Equals(
+                                   descriptor.Name,
+                                   GetSpriteFrameInfo(idleFrame).Name,
+                                   StringComparison.Ordinal) &&
+                               !IsPillowVisibleWorkEnterFrame(descriptor.Name)),
+                        $"{phaseName}/{edgeName} cold handoff may publish only " +
+                        "edge rest after the page becomes resident.");
+                    AssertRectClose(
+                        (Rect)Invoke(window, "GetPetViewboxBoundsInScreenDips")!,
+                        boundsBefore,
+                        $"{phaseName}/{edgeName} cold handoff must preserve viewbox bounds");
+                    AssertClose(
+                        window.Left,
+                        leftBefore,
+                        $"{phaseName}/{edgeName} cold handoff must preserve Left");
+                    AssertClose(
+                        window.Top,
+                        topBefore,
+                        $"{phaseName}/{edgeName} cold handoff must preserve Top");
+                }
+                finally
+                {
+                    SetField(
+                        window,
+                        "_spriteFrameDescriptorPublishedForTesting",
+                        null);
+                    SetField(window, "_renderDeferredSpritePageName", null);
+                    SetField(window, "_renderDeferredSpritePageUrgent", false);
+                    GetField<DispatcherTimer>(
+                        window,
+                        "_spritePagePrefetchDispatchTimer").Stop();
+                }
+            }
+        }
+
+        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
+        {
+            var fixture = ArrangeDirectWorkEdgePhase(window, "Typing");
+            var edgeFrames = GetEdgeFramesForTest(window, edgeName);
             var edgeRestFrame = edgeFrames.GetValue(edgeFrames.Length - 1)!;
             var edgeRestPageName = GetSpriteFrameInfo(edgeRestFrame).PageName;
             EvictResidentSpritePageForTest(window, edgeRestPageName);
-
-            SetField(window, "_workState", GetNestedEnum("WorkState", "Exiting"));
-            SetField(window, "_activeClip", exitClip);
-            SetField(window, "_activeFrameIndex", finalFrameIndex);
-            SetField(window, "_activeClipStartedTimestamp", Stopwatch.GetTimestamp());
-            SetField(window, "_activeFrameDeadlineTimestamp", long.MaxValue);
-            SetField(window, "_workExitRequested", false);
-            SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
-            SetField(window, "_workEdgeDock", GetNestedEnum("EdgeDock", edgeName));
-            SetField(window, "_failedSpritePageName", null);
-            SetField(window, "_pendingSpriteFrame", null);
-            SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
-            SetField(window, "_desiredSpritePageName", null);
-            SetField(window, "_desiredSpritePageUrgent", false);
-            SetField(window, "_renderDeferredSpritePageName", null);
-            SetField(window, "_renderDeferredSpritePageUrgent", false);
-            Invoke(window, "ClearDeferredActiveClipClock");
-            Invoke(window, "RefreshWorkModeButton");
-
-            Assert(!GetField<IDictionary>(window, "_residentSpritePages")
-                       .Contains(edgeRestPageName) &&
-                   !string.Equals(
-                       GetRawField(window, "_loadedSpritePageName") as string,
-                       edgeRestPageName,
-                       StringComparison.Ordinal) &&
-                   Equals(GetRawField(window, "_currentSpriteFrame"), finalWorkFrame) &&
-                   !Equals(finalWorkFrame, idleFrame),
-                $"{edgeName} cold handoff setup must keep the target edge page " +
-                "non-resident while displaying the distinct final work descriptor.");
-            return (
-                exitClip,
-                finalWorkFrame,
-                idleFrame,
-                edgeFrames,
-                edgeRestFrame,
-                edgeRestPageName,
-                finalFrameIndex);
-        }
-
-        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
-        {
-            var setup = ArrangeColdWorkExit(edgeName);
-            Assert((bool)Invoke(
-                       window,
-                       "IsSpritePageProtected",
-                       setup.EdgeRestPageName,
-                       null)!,
-                $"{edgeName} pending work-edge rest page must be cache-protected.");
-
-            // Model the real Rendering path without allowing a background task
-            // to win the race before the cold-state assertions run.
-            SetField(window, "_isInsideVisualRenderingCallback", true);
+            SetField(window, "_failedSpritePageName", edgeRestPageName);
+            var published = new List<(string PageName, string Name)>();
+            Action<string, string, int, int, int, int> observe =
+                (pageName, name, _, _, _, _) =>
+                    published.Add((pageName, name));
+            SetField(
+                window,
+                "_spriteFrameDescriptorPublishedForTesting",
+                observe);
             try
             {
-                Invoke(
-                    window,
-                    "PrefetchNextClipPage",
-                    setup.ExitClip,
-                    setup.FinalFrameIndex);
-                Assert(string.Equals(
-                           GetRawField(window, "_renderDeferredSpritePageName") as string,
-                           setup.EdgeRestPageName,
-                           StringComparison.Ordinal) &&
-                       GetField<bool>(window, "_renderDeferredSpritePageUrgent"),
-                    $"{edgeName} work-exit tail must request its cold rest page urgently.");
+                SetField(window, "_isInsideVisualRenderingCallback", true);
+                try
+                {
+                    Invoke(
+                        window,
+                        "StartWorkEdgeHandoff",
+                        GetNestedEnum("EdgeDock", edgeName));
+                }
+                finally
+                {
+                    SetField(
+                        window,
+                        "_isInsideVisualRenderingCallback",
+                        false);
+                }
 
-                Invoke(
-                    window,
-                    "CompleteActiveClipAt",
-                    setup.ExitClip,
-                    Stopwatch.GetTimestamp());
                 Assert(string.Equals(
                            GetRawField(window, "_workState")?.ToString(),
-                           "Exiting",
+                           "Idle",
                            StringComparison.Ordinal) &&
-                       ReferenceEquals(
-                           GetRawField(window, "_activeClip"),
-                           setup.ExitClip) &&
                        string.Equals(
                            GetRawField(window, "_workEdgeDock")?.ToString(),
-                           edgeName,
-                           StringComparison.Ordinal) &&
-                       string.Equals(
-                           GetRawField(window, "_edgeDock")?.ToString(),
                            "None",
                            StringComparison.Ordinal) &&
+                       GetField<long>(
+                           window,
+                           "_workEdgeHandoffFrozenTimestamp") == 0 &&
+                       GetRawField(window, "_activeClip") is null &&
                        Equals(
                            GetRawField(window, "_currentSpriteFrame"),
-                           setup.FinalWorkFrame) &&
-                       !Equals(
-                           GetRawField(window, "_currentSpriteFrame"),
-                           setup.IdleFrame),
-                    $"{edgeName} cold completion must hold Exiting on the final " +
-                    "work descriptor instead of publishing idle.");
+                           idleFrame) &&
+                       string.Equals(
+                           GetCurrentDisplayPixelDigest(window),
+                           idleRuntimeDigest,
+                           StringComparison.Ordinal),
+                    $"{edgeName} corrupt edge page must fail closed to idle " +
+                    "instead of freezing work or losing Rendering forever.");
+                Assert(published.Count == 1 &&
+                       string.Equals(
+                           published[0].Name,
+                           GetSpriteFrameInfo(idleFrame).Name,
+                           StringComparison.Ordinal),
+                    $"{edgeName} failure is the only path allowed to publish " +
+                    "one safe idle descriptor.");
             }
             finally
             {
-                SetField(window, "_isInsideVisualRenderingCallback", false);
+                SetField(
+                    window,
+                    "_spriteFrameDescriptorPublishedForTesting",
+                    null);
+                SetField(window, "_failedSpritePageName", null);
+                SetField(window, "_renderDeferredSpritePageName", null);
+                SetField(window, "_renderDeferredSpritePageUrgent", false);
+                GetField<DispatcherTimer>(
+                    window,
+                    "_spritePagePrefetchDispatchTimer").Stop();
             }
-
-            Invoke(
-                window,
-                "SpritePagePrefetchDispatchTimer_Tick",
-                null,
-                EventArgs.Empty);
-            WaitForSpritePagePrefetchToSettleWithoutRendering(window);
-            Assert(GetField<IDictionary>(window, "_residentSpritePages")
-                       .Contains(setup.EdgeRestPageName) &&
-                   (bool)Invoke(
-                       window,
-                       "IsSpritePageProtected",
-                       setup.EdgeRestPageName,
-                       null)!,
-                $"{edgeName} requested rest page must load and remain protected " +
-                "before the work handoff completes.");
-
-            Invoke(
-                window,
-                "CompleteActiveClipAt",
-                setup.ExitClip,
-                Stopwatch.GetTimestamp());
-            Assert(string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Idle",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_workEdgeDock")?.ToString(),
-                       "None",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_edgeDock")?.ToString(),
-                       edgeName,
-                       StringComparison.Ordinal) &&
-                   GetField<int>(window, "_edgePeekFrameIndex") ==
-                       setup.EdgeFrames.Length - 1 &&
-                   Equals(
-                       GetRawField(window, "_currentSpriteFrame"),
-                       setup.EdgeRestFrame) &&
-                   GetRawField(window, "_pendingSpriteFrame") is null,
-                $"{edgeName} next completion after the rest page is resident " +
-                "must enter the real EdgePeek pose atomically.");
-        }
-
-        foreach (var edgeName in new[] { "Left", "Right", "Bottom" })
-        {
-            var setup = ArrangeColdWorkExit(edgeName);
-            SetField(window, "_failedSpritePageName", setup.EdgeRestPageName);
-            var handled = (bool)Invoke(
-                window,
-                "StopAnimatedStateForFailedSpritePage",
-                setup.EdgeRestPageName)!;
-            Assert(handled &&
-                   string.Equals(
-                       GetRawField(window, "_workEdgeDock")?.ToString(),
-                       "None",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Exiting",
-                       StringComparison.Ordinal) &&
-                   ReferenceEquals(
-                       GetRawField(window, "_activeClip"),
-                       setup.ExitClip) &&
-                   Equals(
-                       GetRawField(window, "_currentSpriteFrame"),
-                       setup.FinalWorkFrame),
-                $"{edgeName} rest-page failure must clear only the pending dock, " +
-                "without aborting or replacing the final work pose.");
-
-            Invoke(
-                window,
-                "CompleteActiveClipAt",
-                setup.ExitClip,
-                Stopwatch.GetTimestamp());
-            Assert(string.Equals(
-                       GetRawField(window, "_workState")?.ToString(),
-                       "Idle",
-                       StringComparison.Ordinal) &&
-                   string.Equals(
-                       GetRawField(window, "_edgeDock")?.ToString(),
-                       "None",
-                       StringComparison.Ordinal) &&
-                   GetRawField(window, "_activeClip") is null &&
-                   Equals(
-                       GetRawField(window, "_currentSpriteFrame"),
-                       setup.IdleFrame),
-                $"{edgeName} failed rest page must still allow a safe idle finish.");
         }
 
         PrepareWorkModeIdleState(window);
+    }
+
+    private static (object Clip, object DisplayedFrame)
+        ArrangeDirectWorkEdgePhase(MainWindow window, string phaseName)
+    {
+        PrepareWorkModeIdleState(window);
+        var (clipField, stateName) = phaseName switch
+        {
+            "Entering" => ("_workEnterClip", "Entering"),
+            "Typing" => ("_workLoopClip", "Typing"),
+            "SeriousEnter" => ("_workSeriousEnterClip", "Typing"),
+            "SeriousLoop" => ("_workSeriousLoopClip", "Typing"),
+            "SeriousExit" => ("_workSeriousExitClip", "Typing"),
+            "Exiting" => ("_workExitClip", "Exiting"),
+            _ => throw new ArgumentOutOfRangeException(nameof(phaseName))
+        };
+        var clip = GetField<object>(window, clipField);
+        var frames = GetClipFrames(clip);
+        var frameIndex = phaseName switch
+        {
+            "Entering" => frames.Length - 1,
+            "Typing" => Math.Min(10, frames.Length - 1),
+            "SeriousEnter" => frames.Length / 2,
+            "SeriousLoop" => Math.Min(10, frames.Length - 1),
+            "SeriousExit" => frames.Length / 2,
+            "Exiting" => 0,
+            _ => 0
+        };
+        var displayedFrame = GetProperty<object>(
+            frames.GetValue(frameIndex)!,
+            "Image");
+        PrimeSpritePageForFrame(window, displayedFrame);
+
+        var timestamp = Math.Max(1L, Stopwatch.GetTimestamp());
+        SetField(window, "_workState", GetNestedEnum("WorkState", stateName));
+        SetField(window, "_activeClip", clip);
+        SetField(window, "_activeFrameIndex", frameIndex);
+        SetField(window, "_activeClipStartedTimestamp", timestamp);
+        SetField(
+            window,
+            "_activeFrameDeadlineTimestamp",
+            phaseName is "Typing" or "SeriousLoop"
+                ? long.MaxValue
+                : checked(timestamp + Stopwatch.Frequency));
+        SetField(window, "_workExitRequested", false);
+        SetField(window, "_workSeriousEnterRequested", false);
+        SetField(window, "_workSeriousExitRequested", false);
+        SetField(window, "_workExitTargetFramePosition", double.PositiveInfinity);
+        SetField(
+            window,
+            "_workSeriousEnterTargetFramePosition",
+            double.PositiveInfinity);
+        SetField(
+            window,
+            "_workSeriousExitTargetFramePosition",
+            double.PositiveInfinity);
+        SetField(window, "_workLoopAnchorTimestamp", timestamp);
+        SetField(window, "_workLoopAnchorFramePosition", (double)frameIndex);
+        SetField(window, "_workLoopPlaybackRate", 1d);
+        SetField(window, "_workFastUntilTimestamp", 0L);
+        SetField(window, "_workEdgeDock", GetNestedEnum("EdgeDock", "None"));
+        SetField(window, "_workEdgeHandoffFrozenTimestamp", 0L);
+        Invoke(window, "ClearDeferredActiveClipClock");
+        SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "ShowStableFrame", displayedFrame);
+        Invoke(window, "RefreshWorkModeButton");
+        Assert(Equals(
+                   GetRawField(window, "_currentSpriteFrame"),
+                   displayedFrame),
+            $"{phaseName} fixture must visibly publish its selected work pose.");
+        return (clip, displayedFrame);
+    }
+
+    private static Array GetEdgeFramesForTest(
+        MainWindow window,
+        string edgeName) =>
+        edgeName is "Left" or "Right"
+            ? GetField<Array>(window, "_edgeLeftFrames")
+            : edgeName == "Bottom"
+                ? GetField<Array>(window, "_edgeBottomFrames")
+                : throw new ArgumentOutOfRangeException(nameof(edgeName));
+
+    private static bool IsPillowVisibleWorkEnterFrame(string frameName)
+    {
+        const string prefix = "Assets/luban-work-enter-";
+        if (!frameName.StartsWith(prefix, StringComparison.Ordinal) ||
+            frameName.Length < prefix.Length + 3)
+        {
+            return false;
+        }
+
+        return int.TryParse(
+                   frameName.AsSpan(prefix.Length, 3),
+                   NumberStyles.None,
+                   CultureInfo.InvariantCulture,
+                   out var frameNumber) &&
+               frameNumber is >= 1 and <= 24;
+    }
+
+    private static string GetCurrentDisplayPixelDigest(MainWindow window)
+    {
+        var bitmap = GetField<WriteableBitmap>(window, "_displayFrameBuffer");
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, offset: 0);
+        return Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(pixels));
     }
 
     private static void AssertCompletedTodoMovesToEndContract(MainWindow window)
@@ -21665,11 +22188,13 @@ internal static partial class Program
         SetField(window, "_dragStarted", false);
         SetField(window, "_dragPreservesWorkMode", false);
         SetField(window, "_workEdgeDock", GetNestedEnum("EdgeDock", "None"));
+        SetField(window, "_workEdgeHandoffFrozenTimestamp", 0L);
         SetField(window, "_isPetSizeTransitioning", false);
         SetField(window, "_isPetSizePreviewSessionActive", false);
         SetField(window, "_isPetSizeAdjustmentActive", false);
         SetField(window, "_petSizeTargetUpdatePending", false);
         SetField(window, "_isFrameBlending", false);
+        SetField(window, "_spriteFrameDescriptorPublishedForTesting", null);
         SetField(window, "_pendingSpriteFrame", null);
         SetField(window, "_desiredSpritePageName", null);
         SetField(window, "_renderDeferredSpritePageName", null);
@@ -22204,6 +22729,48 @@ internal static partial class Program
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseClipboard();
+
+    private static IntPtr GetAltTabWindowLongPtr(
+        IntPtr windowHandle,
+        int index) =>
+        IntPtr.Size == 8
+            ? GetAltTabWindowLongPtr64(windowHandle, index)
+            : new IntPtr(GetAltTabWindowLong32(windowHandle, index));
+
+    private delegate bool EnumWindowsCallback(
+        IntPtr windowHandle,
+        IntPtr parameter);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(
+        EnumWindowsCallback callback,
+        IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(
+        IntPtr windowHandle,
+        uint command);
+
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "GetWindowLongW",
+        SetLastError = true)]
+    private static extern int GetAltTabWindowLong32(
+        IntPtr windowHandle,
+        int index);
+
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "GetWindowLongPtrW",
+        SetLastError = true)]
+    private static extern IntPtr GetAltTabWindowLongPtr64(
+        IntPtr windowHandle,
+        int index);
 
     private static double NormalizeCanvasCoordinate(double value) =>
         double.IsNaN(value) ? 0 : value;

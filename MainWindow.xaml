@@ -266,28 +266,27 @@
                                         AlignmentY="Top" />
                         </Rectangle.Fill>
                     </Rectangle>
-                    <Image x:Name="ButterflyOverlay"
+                    <Image x:Name="WishStarOverlay"
                            Width="22"
                            Height="22"
-                           Canvas.Left="0"
-                           Canvas.Top="0"
+                           Canvas.Left="84"
+                           Canvas.Top="172"
                            Panel.ZIndex="10"
-                           Source="/LubanDesktopPet;component/Assets/luban-butterfly.png"
-                           Stretch="Uniform"
-                           Visibility="Visible"
-                           Opacity="0"
                            IsHitTestVisible="False"
-                           SnapsToDevicePixels="False"
+                           Opacity="0"
                            RenderTransformOrigin="0.5,0.5"
-                           RenderOptions.BitmapScalingMode="HighQuality">
+                           SnapsToDevicePixels="False"
+                           Source="/LubanDesktopPet;component/Assets/luban-wish-star.png"
+                           Stretch="Uniform"
+                           RenderOptions.BitmapScalingMode="Fant">
                         <Image.RenderTransform>
                             <TransformGroup>
-                                <ScaleTransform x:Name="ButterflyScale"
+                                <ScaleTransform x:Name="WishStarScale"
                                                 ScaleX="1"
                                                 ScaleY="1" />
-                                <RotateTransform x:Name="ButterflyRotate"
+                                <RotateTransform x:Name="WishStarRotate"
                                                  Angle="0" />
-                                <TranslateTransform x:Name="ButterflyTranslate"
+                                <TranslateTransform x:Name="WishStarTranslate"
                                                     X="0"
                                                     Y="0" />
                             </TransformGroup>

@@ -72,7 +72,40 @@ class ReactionActionRemovalTests(unittest.TestCase):
             atlas.SMOOTH_ACTION_NAMES,
         )
         self.assertNotIn("wave", atlas.ACTION_NAMES)
+        self.assertNotIn("star-cuddle", atlas.ACTION_NAMES)
         self.assertNotIn("think", atlas.ACTION_NAMES)
+
+    def test_wish_star_is_a_clean_standalone_overlay(self) -> None:
+        path = WORKSPACE / "Assets" / "luban-wish-star.png"
+        with Image.open(path) as opened:
+            frame = opened.convert("RGBA")
+        self.assertEqual((96, 96), frame.size)
+        alpha_box = frame.getchannel("A").getbbox()
+        self.assertIsNotNone(alpha_box)
+        assert alpha_box is not None
+        left, top, right, bottom = alpha_box
+        self.assertGreaterEqual(min(left, top, 96 - right, 96 - bottom), 6)
+        self.assertEqual(
+            0,
+            sum(
+                1
+                for red, green, blue, alpha in frame.get_flattened_data()
+                if alpha == 0 and (red or green or blue)
+            ),
+        )
+        self.assertEqual(
+            0,
+            sum(
+                1
+                for red, green, blue, alpha in frame.get_flattened_data()
+                if (
+                    alpha > 0
+                    and green > red * 1.25
+                    and green > blue * 1.15
+                    and green > 80
+                )
+            ),
+        )
 
     def test_cute_is_a_formal_56_frame_non_loop_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -133,11 +166,14 @@ class ReactionActionRemovalTests(unittest.TestCase):
                 "luban-yawn-loop",
                 atlas.ACTION_LOOP_FRAME_COUNT,
             )
+            touch_sequence(assets, "luban-star-cuddle-smooth", 144)
 
             source_paths = atlas.resource_paths(root)
             pages = atlas.page_resource_paths(root)
             self.assertFalse(any("yawn" in path for path in source_paths))
             self.assertFalse(any("yawn" in name for name in pages))
+            self.assertFalse(any("star-cuddle" in path for path in source_paths))
+            self.assertFalse(any("star-cuddle" in name for name in pages))
 
     def test_todo_think_smooth_is_collected_without_a_click_loop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -256,6 +292,7 @@ class ReactionActionRemovalTests(unittest.TestCase):
         ):
             source = (WORKSPACE / "tools" / tool_name).read_text(encoding="utf-8")
             self.assertNotIn("yawn", source.lower(), tool_name)
+            self.assertNotIn("butterfly", source.lower(), tool_name)
             action_declaration = next(
                 line
                 for line in source.splitlines()
@@ -301,41 +338,14 @@ class ReactionActionRemovalTests(unittest.TestCase):
                 if int(path.stem.rsplit("-", 1)[-1]) > 56
             ],
         )
-    def test_butterfly_is_a_clean_small_overlay_outside_the_atlas(self) -> None:
+    def test_retired_butterfly_is_absent_and_never_collected(self) -> None:
         path = WORKSPACE / "Assets" / "luban-butterfly.png"
-        with Image.open(path) as opened:
-            self.assertEqual("RGBA", opened.mode)
-            self.assertEqual((96, 96), opened.size)
-            image = opened.copy()
-
-        alpha = image.getchannel("A")
-        alpha_bbox = alpha.getbbox()
-        self.assertIsNotNone(alpha_bbox)
-        assert alpha_bbox is not None
-        left, top, right, bottom = alpha_bbox
-        self.assertGreaterEqual(min(left, top, 96 - right, 96 - bottom), 6)
-        pixels = list(image.get_flattened_data())
-        self.assertFalse(
-            any(
-                alpha_value == 0 and (red or green or blue)
-                for red, green, blue, alpha_value in pixels
-            )
-        )
-        self.assertFalse(
-            any(
-                alpha_value > 0
-                and green >= 80
-                and green > red * 1.2
-                and green > blue * 1.2
-                for red, green, blue, alpha_value in pixels
-            )
-        )
-
+        self.assertFalse(path.exists())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             make_complete_path_fixture(root)
             overlay = root / "Assets" / "luban-butterfly.png"
-            overlay.write_bytes(path.read_bytes())
+            overlay.touch()
             self.assertNotIn(
                 "Assets/luban-butterfly.png",
                 atlas.resource_paths(root),

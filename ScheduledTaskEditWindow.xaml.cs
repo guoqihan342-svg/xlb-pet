@@ -61,6 +61,7 @@ public partial class ScheduledTaskEditWindow : Window
     {
         ArgumentNullException.ThrowIfNull(item);
         InitializeComponent();
+        WindowChromeAppearance.ExcludeFromAltTab(this);
         _item = item;
         _originalDueAt = item.DueAt;
         _originalRepeatInterval = item.RepeatInterval;

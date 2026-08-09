@@ -27,10 +27,6 @@ ACTION_NAMES = ("cry", "cute", "like", "eat")
 LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
-# Butterfly is a small independent overlay composited over the existing think
-# sequence.  Keeping it out of the 399x509 full-size atlas avoids turning one
-# 96x96 decoration into another resident sprite page.
-LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
 ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 REMINDER_PHASES = ("enter", "hold")
 WORK_PHASES = (

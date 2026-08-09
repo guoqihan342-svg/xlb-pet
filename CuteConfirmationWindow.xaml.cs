@@ -25,6 +25,7 @@ public partial class CuteConfirmationWindow : Window
             CuteConfirmationTheme.ScheduledWarm)
     {
         InitializeComponent();
+        WindowChromeAppearance.ExcludeFromAltTab(this);
         Theme = theme;
         ApplyTheme(theme);
         Title = title;

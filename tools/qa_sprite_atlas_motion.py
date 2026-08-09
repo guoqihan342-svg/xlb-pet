@@ -48,9 +48,6 @@ ACTION_NAMES = ("cry", "cute", "like", "eat")
 LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
-# This independent 96x96 overlay is composited over think.smooth at runtime;
-# it must never be promoted to a 399x509 full-size atlas sequence.
-LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
 ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 ROAM_LOOP_SEQUENCES = ("flight", "wave")
@@ -1293,12 +1290,15 @@ def pair_gate_score(sequence_name: str, pair: dict[str, Any]) -> float:
             pair["centroid_step_dip"] / MAX_BOARDING_CENTROID_STEP_DIP,
             pair["head_center_step_dip"] / MAX_BOARDING_HEAD_CENTER_STEP_DIP,
         )
+    prop_scale_scores = (
+        pair["torso_width_change_ratio"] / MAX_TORSO_SCALE_STEP,
+        pair["torso_height_change_ratio"] / MAX_TORSO_SCALE_STEP,
+    )
     return max(
         max(0.0, (MIN_ALPHA_IOU - pair["alpha_iou"]) / 0.03),
         pair["head_center_step_dip"] / MAX_HEAD_CENTER_STEP_DIP,
         pair["head_width_change_ratio"] / MAX_HAT_SCALE_STEP,
-        pair["torso_width_change_ratio"] / MAX_TORSO_SCALE_STEP,
-        pair["torso_height_change_ratio"] / MAX_TORSO_SCALE_STEP,
+        *prop_scale_scores,
         (
             pair["baseline_step_physical_px"]
             / MAX_BASELINE_STEP_PHYSICAL_PX
@@ -1547,12 +1547,18 @@ def analyze_surface(
             )
         if not is_boarding_transition and head_scale > head_scale_limit:
             violate("head_width_change_ratio", first_number, second_number, head_scale, head_scale_limit)
-        if not is_boarding_transition and torso_width_scale > torso_width_limit:
+        if (
+            not is_boarding_transition
+            and torso_width_scale > torso_width_limit
+        ):
             violate(
                 "torso_width_change_ratio", first_number, second_number,
                 torso_width_scale, torso_width_limit,
             )
-        if not is_boarding_transition and torso_height_scale > torso_height_limit:
+        if (
+            not is_boarding_transition
+            and torso_height_scale > torso_height_limit
+        ):
             violate(
                 "torso_height_change_ratio", first_number, second_number,
                 torso_height_scale, torso_height_limit,

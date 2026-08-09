@@ -31,6 +31,7 @@ public partial class ReminderWindow : Window
     public ReminderWindow()
     {
         InitializeComponent();
+        WindowChromeAppearance.ExcludeFromAltTab(this);
         _positionCache = new OwnedWindowPositioner.PositionCache(this);
         _repositionAction = RepositionNow;
     }

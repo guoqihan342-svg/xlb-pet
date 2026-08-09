@@ -24,9 +24,6 @@ ACTION_NAMES = ("cry", "cute", "like", "eat")
 LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
-# Butterfly is installed as one independent 96x96 overlay by the runtime asset
-# pipeline; it deliberately has no full-size action sheet or atlas sequence.
-LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
 RUNTIME_CANVAS_SIZE = (450, 550)
 V9_WAKE_CHARACTER_SOURCE_NAME = "wake-v9-character-24-sheet-alpha.png"
 V9_IDLE_PILLOW_SOURCE_NAME = "idle-pillow-v3-alpha.png"
@@ -42,7 +39,7 @@ REMINDER_BRIDGE_SOURCE_NAME = "reminder-megaphone-v2-8-bridge-sheet-alpha.png"
 SNORE_BUBBLE_CLEAN_REFERENCE_NAME = "luban-idle-no-snore-patch-source.png"
 SNORE_BUBBLE_PATCH_BOX = (143, 405, 179, 438)
 SNORE_REGISTRATION_BOX = (40, 210, 445, 490)
-V6_SCALE_REGISTERED_ACTIONS = SMOOTH_ACTION_NAMES
+V6_SCALE_REGISTERED_ACTIONS = ("cry", "cute", "like", "eat", TODO_POSE_NAME)
 V6_ACTION_SOURCE_NAMES = {
     "cry": "cry-v7-24-sheet-alpha.png",
     "cute": "cute-v7-24-sheet-alpha.png",
@@ -943,6 +940,8 @@ def install_v6_actions(
                 assets_directory /
                 f"luban-{action}-bridge-{after_frame:02d}-{after_frame + 1:02d}.png",
             )
+
+
 def build_edge_peek_unshifted_frames(
     source_directory: Path,
 ) -> dict[str, list[Image.Image]]:
