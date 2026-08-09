@@ -266,6 +266,33 @@
                                         AlignmentY="Top" />
                         </Rectangle.Fill>
                     </Rectangle>
+                    <Image x:Name="ButterflyOverlay"
+                           Width="14"
+                           Height="14"
+                           Canvas.Left="0"
+                           Canvas.Top="0"
+                           Panel.ZIndex="10"
+                           Source="/LubanDesktopPet;component/Assets/luban-butterfly.png"
+                           Stretch="Uniform"
+                           Visibility="Visible"
+                           Opacity="0"
+                           IsHitTestVisible="False"
+                           SnapsToDevicePixels="False"
+                           RenderTransformOrigin="0.5,0.5"
+                           RenderOptions.BitmapScalingMode="HighQuality">
+                        <Image.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="ButterflyScale"
+                                                ScaleX="1"
+                                                ScaleY="1" />
+                                <RotateTransform x:Name="ButterflyRotate"
+                                                 Angle="0" />
+                                <TranslateTransform x:Name="ButterflyTranslate"
+                                                    X="0"
+                                                    Y="0" />
+                            </TransformGroup>
+                        </Image.RenderTransform>
+                    </Image>
                     <Grid x:Name="SnoreBubbleHost"
                           Width="17"
                           Height="16"

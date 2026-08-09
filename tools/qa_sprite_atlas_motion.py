@@ -44,9 +44,14 @@ FRAME_DESCRIPTOR_KEYS = (
 )
 PET_WIDTH_DIP = 190.0
 PET_HEIGHT_DIP = 242.0
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+ACTION_NAMES = ("cry", "cute", "like", "eat")
+LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
+# This independent 96x96 overlay is composited over think.smooth at runtime;
+# it must never be promoted to a 399x509 full-size atlas sequence.
+LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
+ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 ROAM_LOOP_SEQUENCES = ("flight", "wave")
 ROAM_NON_LOOP_SEQUENCES = ("boarding",)
@@ -143,7 +148,7 @@ SEQUENCE_EXPRESSIONS = {
         f"{action}.loop": re.compile(
             rf"^Assets/luban-{re.escape(action)}-loop-(\d{{3}})\.png$"
         )
-        for action in ACTION_NAMES
+        for action in LOOP_ACTION_NAMES
     },
     **{
         f"reminder.{phase}": re.compile(
@@ -922,6 +927,17 @@ def validate_resource_contract(
                 "dense frame numbers must be contiguous from 001",
                 sequence=name,
                 numbers=numbers,
+            )
+        action_name = name.removesuffix(".smooth")
+        expected_action_count = ACTION_SMOOTH_FRAME_COUNTS.get(action_name)
+        if expected_action_count is not None and len(resources) != expected_action_count:
+            add_failure(
+                failures,
+                "sequence.smooth_count",
+                "smooth sequence must match its formal runtime frame count",
+                sequence=name,
+                expected=expected_action_count,
+                actual=len(resources),
             )
         if resources != disk_sequences[name]:
             add_failure(

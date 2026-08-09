@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LubanDesktopPet</RootNamespace>
     <AssemblyName>LubanDesktopPet</AssemblyName>
-    <Version>1.0.61</Version>
+    <Version>1.0.62</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\luban-tray.ico</ApplicationIcon>
   </PropertyGroup>
@@ -16,6 +16,7 @@
     <Resource Include="Assets\sprite-pages\*.pbgra.br" />
     <Resource Include="Assets\luban-sprite-pages.json" />
     <Resource Include="Assets\luban-pillow-layer.png" />
+    <Resource Include="Assets\luban-butterfly.png" />
     <EmbeddedResource Include="Assets\luban-tray.ico"
                       LogicalName="LubanDesktopPet.Assets.luban-tray.ico" />
     <Compile Remove="tests\**\*.cs" />

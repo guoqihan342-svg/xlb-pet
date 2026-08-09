@@ -37,9 +37,12 @@ internal static partial class Program
     private const int MinimumRoamSequenceFrameCount = 48;
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
-    private const long ExpectedResidentSpritePageBudgetBytes = 64L * 1024L * 1024L;
-    private const long ExpectedRoamSpritePageBudgetBytes = 104L * 1024L * 1024L;
-    private const long ExpectedIdleSpritePageTargetBytes = 24L * 1024L * 1024L;
+    private const long ExpectedResidentSpritePageBudgetBytes = 52L * 1024L * 1024L;
+    private const long ExpectedRoamSpritePageBudgetBytes = 92L * 1024L * 1024L;
+    private const long ExpectedIdleSpritePageTargetBytes = 12L * 1024L * 1024L;
+    private const long ExpectedSpritePageCollectionThresholdBytes = 8L * 1024L * 1024L;
+    private const long ExpectedMaximumOrdinarySpriteWorkingSetBytes = 49L * 1024L * 1024L;
+    private const long ExpectedMaximumRoamSpriteWorkingSetBytes = 89L * 1024L * 1024L;
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
     private const BindingFlags StaticFlags =
@@ -322,6 +325,8 @@ internal static partial class Program
                         () => AssertColdSpritePageClipClockContract(window));
                     RunCheck(nameof(AssertMotionTimelineContract),
                         () => AssertMotionTimelineContract(window));
+                    RunCheck(nameof(AssertButterflyOverlayContract),
+                        () => AssertButterflyOverlayContract(window));
                     RunCheck(nameof(AssertAbsoluteTimelineMathContract),
                         () => AssertAbsoluteTimelineMathContract(window));
                     return 0;
@@ -381,6 +386,8 @@ internal static partial class Program
                     AssertSpritePagePayloadEncodingContract);
                 RunCheck(nameof(AssertHighDensityScalingAndDpiContract), () => AssertHighDensityScalingAndDpiContract(window));
                 RunCheck(nameof(AssertMotionTimelineContract), () => AssertMotionTimelineContract(window));
+                RunCheck(nameof(AssertButterflyOverlayContract),
+                    () => AssertButterflyOverlayContract(window));
                 RunCheck(nameof(AssertNoRunContract), () => AssertNoRunContract(window));
                 RunCheck(nameof(AssertAbsoluteTimelineMathContract), () => AssertAbsoluteTimelineMathContract(window));
                 RunCheck(nameof(AssertExactEdgeContactContract), AssertExactEdgeContactContract);
@@ -2365,11 +2372,13 @@ internal static partial class Program
             (long)roamPageNames.Count * capacityBucketBytes);
 
         Assert(capacityBucketBytes == 1 * 1024 * 1024 &&
+               maximumOrdinaryBytes == ExpectedMaximumOrdinarySpriteWorkingSetBytes &&
                maximumOrdinaryBytes <= ordinaryBudgetBytes,
-            $"普通分页预算必须容纳固定idle页、当前页、下一页以及相邻桶复用余量：" +
+            $"普通分页预算必须精确覆盖单页idle、当前页、下一页及相邻桶复用余量：" +
             $"需要 {maximumOrdinaryBytes / 1048576d:F2}MiB，" +
             $"预算 {ordinaryBudgetBytes / 1048576d:F2}MiB");
-        Assert(maximumRoamBytes <= roamBudgetBytes &&
+        Assert(maximumRoamBytes == ExpectedMaximumRoamSpriteWorkingSetBytes &&
+               maximumRoamBytes <= roamBudgetBytes &&
                GetProperty<long>(pool, "HardBudgetBytes") == roamBudgetBytes,
             $"绕屏分页预算与池硬预算必须容纳全部boarding/flight/wave页以及" +
             $"相邻桶复用余量：需要 {maximumRoamBytes / 1048576d:F2}MiB，" +
@@ -2408,7 +2417,7 @@ internal static partial class Program
             "_residentSpritePageLru");
 
         Assert(residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes,
-            $"普通解码分页常驻预算必须固定为64MiB，实际 " +
+            $"普通解码分页常驻预算必须固定为52MiB，实际 " +
             $"{residentBudgetBytes / 1024d / 1024d:F2}MiB");
         Assert(residentPages.Count == 1 &&
                residentPages.Contains(idlePageName) &&
@@ -2419,7 +2428,7 @@ internal static partial class Program
                residentLru.SequenceEqual([idlePageName]),
             "首屏前只能同步常驻当前idle页，且字节账与LRU必须同时登记该页");
         Assert(pinnedPageNames.SetEquals(expectedPinnedPageNames),
-            "永久pinned集合必须只包含idle与第一段wake续页");
+            "永久pinned集合必须且只能包含单个idle页");
         Assert(warmupOrder.Length == 0 && expectedWarmupOrder.Length == 0,
             "启动warmup顺序必须为空，构造阶段只同步加载idle页");
         AssertResidentSpriteCacheAccounting(window, "首屏缓存");
@@ -2564,7 +2573,7 @@ internal static partial class Program
         }
 
         Assert(observedLruEviction,
-            "64MiB普通活动压力必须实际触发一次可观察的LRU驱逐");
+            "52MiB普通活动压力必须实际触发一次可观察的LRU驱逐");
 
         // A complete click clip is intentionally larger than the ordinary
         // rolling budget. Only the currently displayed, pending and next
@@ -2655,7 +2664,7 @@ internal static partial class Program
                residentBudgetBytes == ExpectedResidentSpritePageBudgetBytes &&
                idleTrimGracePeriod == TimeSpan.FromSeconds(20) &&
                idleTrimRetryDelay == TimeSpan.FromSeconds(5),
-            "动作结束后的idle热集目标必须是24MiB，普通活动软预算必须保持64MiB，" +
+            "动作结束后的idle热集目标必须是12MiB，普通活动软预算必须保持52MiB，" +
             "idle裁剪必须等待20秒且忙碌时5秒后重试");
 
         var idleFrame = GetField<object>(window, "_idleFrame");
@@ -2675,11 +2684,7 @@ internal static partial class Program
             .Select(entry => (string)entry.Key)
             .Where(pageName => !pinnedPageNames.Contains(pageName))
             .OrderBy(pageName => GetSpritePageByteCount(pageMap, pageName))
-            .First(pageName => pinnedPageNames
-                .Append(pageName)
-                .Distinct(StringComparer.Ordinal)
-                .Sum(name => GetSpritePageByteCount(pageMap, name)) <=
-                idleTargetBytes);
+            .First();
         var protectedFrame = GetFirstSpriteFrameOnPage(
             window,
             protectedPageName);
@@ -2738,17 +2743,16 @@ internal static partial class Program
         Assert(poolHardBudget == ExpectedRoamSpritePageBudgetBytes &&
                poolAllocatedBefore >= residentBytesBefore &&
                poolAllocatedBefore > idleTargetBytes,
-            "the bucketed pool hard budget must preserve the 104 MiB roaming " +
+            "the bucketed pool hard budget must preserve the 92 MiB roaming " +
             "ceiling, and this test must establish total storage above idle.");
         Assert(residentBytesBefore > idleTargetBytes,
-            "idle回收测试必须先建立超过24MiB的真实解码页缓存压力");
+            "idle回收测试必须先建立超过12MiB的真实解码页缓存压力");
         var protectedPageNames = pinnedPageNames
             .Append(idlePageName)
             .Append(protectedPageName)
             .ToHashSet(StringComparer.Ordinal);
-        Assert(protectedPageNames.Sum(pageName =>
-                   GetSpritePageByteCount(pageMap, pageName)) <= idleTargetBytes,
-            "永久idle页、当前idle页和pending保护页必须可共同容纳在24MiB目标内");
+        Assert(protectedPageNames.All(pageMap.Contains),
+            "idle与pending测试页必须都来自当前图集");
 
         Invoke(window, "TrimResidentSpritePagesToIdleTarget");
         var residentBytesAfter = GetField<long>(
@@ -2767,13 +2771,14 @@ internal static partial class Program
             residentBytesBefore - residentBytesAfter;
         var discardedPoolBytes =
             poolAllocatedBefore - poolAllocatedAfter;
-        Assert(residentBytesAfter <= idleTargetBytes &&
+        Assert(residentBytesAfter <= residentBytesBefore &&
                protectedPageNames.All(residentPages.Contains),
-            "idle回收必须把缓存裁到24MiB以内，且不得丢失永久、当前或pending保护页");
-        Assert(poolAllocatedAfter <= idleTargetBytes &&
-               poolAllocatedAfter == poolRentedAfter + poolFreeAfter,
-            "idle trim must converge resident plus reusable bucketed " +
-            "buffers to the same 24 MiB target.");
+            "12MiB裁剪不得丢失永久、当前或pending保护页；若保护页较小可以继续收敛到目标内");
+        Assert(poolAllocatedAfter == poolRentedAfter + poolFreeAfter &&
+               poolAllocatedAfter >= residentBytesAfter &&
+               poolAllocatedAfter <= Math.Max(idleTargetBytes, residentBytesAfter),
+            "idle trim遇到受保护pending页时只能保留目标内可复用桶；" +
+            "若受保护租出页本身超标则不得再保留free桶。");
         Assert(poolRentedBefore - poolRentedAfter ==
                    returnedResidentBytes &&
                poolFreeAfter - poolFreeBefore ==
@@ -2784,10 +2789,15 @@ internal static partial class Program
                    "_spritePageEvictedBytesSinceCollection") ==
                    collectionDebtBefore + discardedPoolBytes,
             "idle淘汰必须把resident像素桶归还复用池；只有池为收敛预算真正丢弃的数组才累计Gen2债");
-        AssertResidentSpriteCacheAccounting(window, "24MiB idle回收与保护");
+        AssertResidentSpriteCacheAccounting(window, "12MiB idle回收与pending保护");
 
         SetField(window, "_pendingSpriteFrame", null);
         SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        Assert(GetField<long>(window, "_residentSpritePageBytes") <= idleTargetBytes &&
+               GetProperty<long>(spritePageBufferPool, "AllocatedBytes") <= idleTargetBytes &&
+               pinnedPageNames.All(residentPages.Contains),
+            "pending保护释放后必须立即收敛到12MiB目标并保留唯一pinned idle页");
         foreach (var pageName in GetDictionaryEntries(pageMap)
                      .Select(entry => (string)entry.Key)
                      .Where(pageName => !pinnedPageNames.Contains(pageName))
@@ -2815,7 +2825,7 @@ internal static partial class Program
             window,
             "_spritePageIdleTrimTimer");
         Assert(timerResidentBytesBefore > idleTargetBytes,
-            "idle timer测试必须重新建立超过24MiB的resident压力");
+            "idle timer测试必须重新建立超过12MiB的resident压力");
 
         Invoke(window, "RequestIdleSpritePageTrim");
         Assert(idleTrimTimer.IsEnabled &&
@@ -2852,8 +2862,8 @@ internal static partial class Program
                timerResidentBytesAfter <= idleTargetBytes &&
                timerPoolAllocatedAfter <= idleTargetBytes &&
                pinnedPageNames.All(residentPages.Contains),
-            "pending保护释放且分页活动结束后，idle timer tick必须裁到24MiB目标，" +
-            "恢复20秒宽限并保留永久idle页");
+            "pending保护释放且分页活动结束后，idle timer tick必须裁到12MiB目标，" +
+            "恢复20秒宽限并只保留永久idle页");
         Console.WriteLine(
             $"[METRIC] idle sprite cache: resident " +
             $"{timerResidentBytesBefore / (1024d * 1024d):F2}->" +
@@ -2986,11 +2996,11 @@ internal static partial class Program
         var collectionTimer = GetField<DispatcherTimer>(
             window,
             "_spritePageCollectionTimer");
-        Assert(thresholdBytes == 16L * 1024L * 1024L &&
+        Assert(thresholdBytes == ExpectedSpritePageCollectionThresholdBytes &&
                collectionDelay == TimeSpan.FromSeconds(1) &&
                retryDelay == TimeSpan.FromSeconds(5) &&
                minimumInterval == TimeSpan.FromSeconds(30),
-            "idle Gen2门禁必须保持16MiB阈值、1秒延迟、5秒忙重试与30秒最短间隔");
+            "idle Gen2门禁必须保持8MiB阈值、1秒延迟、5秒忙重试与30秒最短间隔");
 
         var naturalGeneration = GC.CollectionCount(GC.MaxGeneration);
         SetField(window, "_spritePageEvictedBytesSinceCollection", thresholdBytes);
@@ -3019,13 +3029,13 @@ internal static partial class Program
             thresholdBytes - 1);
         Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
         Assert(!collectionTimer.IsEnabled,
-            "累计淘汰不足16MiB时不得启动Gen2 timer");
+            "累计淘汰不足8MiB时不得启动Gen2 timer");
 
         SetField(window, "_spritePageEvictedBytesSinceCollection", thresholdBytes);
         SetField(window, "_lastSpritePageCollectionTimestamp", 0L);
         Invoke(window, "ScheduleSpritePageCollectionIfNeeded");
         Assert(collectionTimer.IsEnabled && collectionTimer.Interval == collectionDelay,
-            "累计淘汰达到16MiB且完全空闲时必须先延迟1秒再评估Gen2");
+            "累计淘汰达到8MiB且完全空闲时必须先延迟1秒再评估Gen2");
         collectionTimer.Stop();
 
         SetField(
@@ -3061,7 +3071,7 @@ internal static partial class Program
         Assert(!collectionTimer.IsEnabled &&
                !GetField<bool>(window, "_spritePageCollectionInProgress") &&
                GetField<long>(window, "_lastSpritePageCollectionTimestamp") == 0,
-            "timer到点时债务低于16MiB必须直接退出，不能发起GC");
+            "timer到点时债务低于8MiB必须直接退出，不能发起GC");
 
         ResetSpritePageCollectionTestState(window);
     }
@@ -3121,22 +3131,9 @@ internal static partial class Program
     {
         var idlePageName = GetSpriteFrameInfo(
             GetField<object>(window, "_idleFrame")).PageName;
-        var expected = new HashSet<string>(
+        return new HashSet<string>(
             [idlePageName],
             StringComparer.Ordinal);
-        var continuationPageName = GetField<Array>(window, "_wakeFrames")
-            .Cast<object>()
-            .Select(frame => GetSpriteFrameInfo(frame).PageName)
-            .FirstOrDefault(pageName => !string.Equals(
-                pageName,
-                idlePageName,
-                StringComparison.Ordinal));
-        if (continuationPageName is not null)
-        {
-            expected.Add(continuationPageName);
-        }
-
-        return expected;
     }
 
     private static string[] BuildExpectedSpritePageWarmupOrder(MainWindow window)
@@ -3447,7 +3444,7 @@ internal static partial class Program
                idleTrimTimer.Interval == TimeSpan.FromSeconds(20) &&
                GetField<long>(window, "_residentSpritePageBytes") <=
                idleTargetBytes,
-            "idle宽限timer到点且无分页活动时必须执行24MiB热集裁剪并恢复20秒间隔");
+            "idle宽限timer到点且无分页活动时必须执行12MiB热集裁剪并恢复20秒间隔");
 
         SetField(window, "_failedSpritePageName", null);
         AssertResidentSpriteCacheAccounting(window, "Rendering延迟缓存变更");
@@ -4339,6 +4336,9 @@ internal static partial class Program
                 page.Name.StartsWith("roam-wave-part-", StringComparison.Ordinal));
         var expectedSourcePaths = BuildExpectedSourceResourcePaths(
             includeOptionalRoamWave);
+        Assert(!expectedSourcePaths.Any(path =>
+                   path.Contains("butterfly", StringComparison.OrdinalIgnoreCase)),
+            "butterfly必须保持独立小overlay，不得进入全身精灵源帧清单");
         var manifestSourceFrameCount = root.GetProperty("sourceFrameCount").GetInt32();
         var manifestPageFrameCount = root.GetProperty("pageFrameCount").GetInt32();
         Assert(manifestSourceFrameCount == expectedSourcePaths.Length,
@@ -4370,9 +4370,9 @@ internal static partial class Program
                 "roam-boarding",
                 "roam-flight"
             }
-            .Concat(new[] { "yawn", "cry", "cute", "like", "eat", "think" }
+            .Concat(new[] { "cry", "cute", "like", "eat", "think" }
                 .Select(action => $"action-{action}"))
-            .Concat(new[] { "yawn", "cry", "cute", "like", "eat" }
+            .Concat(new[] { "cry", "like", "eat" }
                 .Select(action => $"loop-{action}"))
             .Concat(new[]
             {
@@ -4392,13 +4392,16 @@ internal static partial class Program
         Assert(requiredPageNames.IsSubsetOf(actualPageNames) &&
                manifestSourceFrameCount == expectedSourcePaths.Length &&
                manifestPageFrameCount >= manifestSourceFrameCount &&
-               orderedPageNames.Take(3).SequenceEqual(
-                   new[] { "idle", "edge-left", "edge-bottom" }) &&
-               !manifestPages.TryGetProperty("loop-think", out _) &&
+                orderedPageNames.Take(3).SequenceEqual(
+                    new[] { "idle", "edge-left", "edge-bottom" }) &&
+                !manifestPages.TryGetProperty("action-butterfly", out _) &&
+                !manifestPages.TryGetProperty("loop-butterfly", out _) &&
+                !manifestPages.TryGetProperty("loop-cute", out _) &&
+                !manifestPages.TryGetProperty("loop-think", out _) &&
                !manifestPages.TryGetProperty("edge-top", out _) &&
                !manifestPages.TryGetProperty("edge", out _),
             $"清单必须先包含idle与左/下两组独立边缘页，且不得携带顶部边缘页；" +
-            "还必须动态包含熊猫坐骑登乘与巡游连续分页、六套 smooth 页、五个普通循环页和两组专用提醒页，" +
+            "还必须动态包含熊猫坐骑登乘与巡游连续分页、五套 smooth 页、三个普通循环页和两组专用提醒页，" +
             "且页内帧不得少于逻辑源帧；" +
             $"source={manifestSourceFrameCount}, page-local={manifestPageFrameCount}, pages={manifestPageCount}");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
@@ -4477,7 +4480,7 @@ internal static partial class Program
                 "不得把巡游帧塞进点击动作、idle或手动edge分页");
         }
 
-        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat", "think" })
+        foreach (var actionName in new[] { "cry", "cute", "like", "eat", "think" })
         {
             var pageName = $"action-{actionName}";
             var actionPageEntries = manifestPages.EnumerateObject()
@@ -4503,7 +4506,7 @@ internal static partial class Program
                 "不得重复 idle、wake 或 edge");
         }
 
-        foreach (var actionName in new[] { "yawn", "cry", "cute", "like", "eat" })
+        foreach (var actionName in new[] { "cry", "like", "eat" })
         {
             var loopPageName = $"loop-{actionName}";
             var actualLoopFrames = manifestPages.GetProperty(loopPageName)
@@ -4514,7 +4517,7 @@ internal static partial class Program
             Assert(actualLoopFrames.SequenceEqual(Enumerable.Range(1, 48)
                     .Select(frameNumber =>
                         $"Assets/luban-{actionName}-loop-{frameNumber:000}.png")),
-                $"{loopPageName} 必须属于五种普通 reaction 并包含连续的48帧60fps自然循环");
+                $"{loopPageName} 必须属于三种循环 reaction 并包含连续的48帧60fps自然循环");
         }
 
         foreach (var (phase, expectedFrameCount) in new[]
@@ -5539,7 +5542,7 @@ internal static partial class Program
             paths.AddRange(workNames.Select(name => $"Assets/{name}"));
         }
 
-        foreach (var action in new[] { "yawn", "cry", "cute", "like", "eat", "think" })
+        foreach (var action in new[] { "cry", "cute", "like", "eat", "think" })
         {
             var actionNames = Directory.EnumerateFiles(
                     assetsDirectory,
@@ -5556,7 +5559,7 @@ internal static partial class Program
             Assert(actionNames.Length >= 50 && actionNames.SequenceEqual(expectedActionNames),
                 $"{action} smooth源资源必须从001开始连续编号且至少50帧");
             paths.AddRange(actionNames.Select(name => $"Assets/{name}"));
-            if (!string.Equals(action, "think", StringComparison.Ordinal))
+            if (action is "cry" or "like" or "eat")
             {
                 paths.AddRange(Enumerable.Range(1, 48).Select(frameNumber =>
                     $"Assets/luban-{action}-loop-{frameNumber:000}.png"));
@@ -5651,16 +5654,20 @@ internal static partial class Program
             .Select(element => ((string?)element.Attribute("Include") ?? string.Empty)
                 .Replace('\\', '/'))
             .ToArray();
-        Assert(includes.Length == 3 &&
+        Assert(includes.Length == 4 &&
                includes.Contains("Assets/sprite-pages/*.pbgra.br", StringComparer.OrdinalIgnoreCase) &&
                includes.Contains("Assets/luban-sprite-pages.json", StringComparer.OrdinalIgnoreCase) &&
-               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase),
-            "csproj只能嵌入无损Brotli分页通配符和v4 manifest");
+               includes.Contains("Assets/luban-pillow-layer.png", StringComparer.OrdinalIgnoreCase) &&
+               includes.Contains("Assets/luban-butterfly.png", StringComparer.OrdinalIgnoreCase),
+            "csproj只能嵌入无损Brotli分页、v4 manifest、枕头层和独立蝴蝶overlay");
+        var allowedStandalonePngResources = new HashSet<string>(
+            ["Assets/luban-pillow-layer.png", "Assets/luban-butterfly.png"],
+            StringComparer.OrdinalIgnoreCase);
         Assert(!includes.Any(include =>
                 include.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (include.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !include.Equals("Assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
-            "csproj不得嵌入分页预览PNG、源PNG或旧单atlas");
+                 !allowedStandalonePngResources.Contains(include))),
+            "csproj不得嵌入分页预览PNG、全身源PNG或旧单atlas");
 
         var assembly = typeof(MainWindow).Assembly;
         var generatedResourceName = assembly.GetManifestResourceNames()
@@ -5683,15 +5690,21 @@ internal static partial class Program
             .Select(resource => resource.ToLowerInvariant())
             .Append("assets/luban-sprite-pages.json")
             .Append("assets/luban-pillow-layer.png")
+            .Append("assets/luban-butterfly.png")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         Assert(assetKeys.SetEquals(expectedAssets) &&
-               assetKeys.Count == expectedPageResources.Count + 2,
-            $"主程序集Assets资源必须严格等于{expectedPageResources.Count}个Brotli分页和一个v4 manifest");
+               assetKeys.Count == expectedPageResources.Count + 3,
+            $"主程序集Assets资源必须严格等于{expectedPageResources.Count}个Brotli分页、" +
+            "一个v4 manifest和两个独立PNG overlay");
         Assert(!assetKeys.Any(key =>
                 key.Contains("luban-sprite-atlas", StringComparison.OrdinalIgnoreCase) ||
                 (key.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase))),
-            "主程序集不得包含分页预览PNG、旧单atlas或源PNG");
+                 !key.Equals("assets/luban-pillow-layer.png", StringComparison.OrdinalIgnoreCase) &&
+                 !key.Equals("assets/luban-butterfly.png", StringComparison.OrdinalIgnoreCase))),
+            "主程序集不得包含分页预览PNG、旧单atlas或全身源PNG");
+        Assert(!expectedPageResources.Any(resource =>
+                   resource.Contains("butterfly", StringComparison.OrdinalIgnoreCase)),
+            "独立butterfly overlay不得写入全身精灵分页清单");
     }
 
     private static void AssertRuntimeDoesNotUseWpfBitmapDecoders()
@@ -5893,16 +5906,22 @@ internal static partial class Program
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
-        var expectedActions = new[] { "yawn", "cry", "cute", "like", "eat" };
+        var expectedActions = new[] { "butterfly", "cry", "cute", "like", "eat" };
+        var expectedSmoothActions = new[] { "cry", "cute", "like", "eat", "think" };
+        var expectedLoopActions = new[] { "cry", "like", "eat" };
         var reactionActionNames = (string[])(typeof(MainWindow).GetField(
                 "ReactionActionNames",
                 StaticFlags)!.GetValue(null) ?? Array.Empty<string>());
         var smoothActionNames = (string[])(typeof(MainWindow).GetField(
                 "SmoothActionNames",
                 StaticFlags)!.GetValue(null) ?? Array.Empty<string>());
+        var loopActionNames = (string[])(typeof(MainWindow).GetField(
+                "LoopActionNames",
+                StaticFlags)!.GetValue(null) ?? Array.Empty<string>());
         Assert(reactionActionNames.SequenceEqual(expectedActions) &&
-               smoothActionNames.SequenceEqual(expectedActions.Append("think")),
-            "运行时名称契约必须把五种普通 reaction/loop 与 Todo 专用 think smooth 分开");
+               smoothActionNames.SequenceEqual(expectedSmoothActions) &&
+               loopActionNames.SequenceEqual(expectedLoopActions),
+            "运行时必须保留五种普通reaction；butterfly复用think，loop仅cry/like/eat");
         var smoothFrameKeys = GetProperty<IEnumerable<string>>(
                 GetField<object>(window, "_actionSmoothFrames"),
                 "Keys")
@@ -5911,9 +5930,9 @@ internal static partial class Program
                 GetField<object>(window, "_actionLoopFrames"),
                 "Keys")
             .ToHashSet(StringComparer.Ordinal);
-        Assert(smoothFrameKeys.SetEquals(expectedActions.Append("think")) &&
-               loopFrameKeys.SetEquals(expectedActions),
-            "smooth 必须保留 Todo think，运行时 loop 字典只能加载五种普通动作");
+        Assert(smoothFrameKeys.SetEquals(expectedSmoothActions) &&
+               loopFrameKeys.SetEquals(expectedLoopActions),
+            "smooth 必须保留 Todo think 且不新增butterfly全身帧，loop字典只能加载cry/like/eat");
         Assert(clips.Length == expectedActions.Length,
             "普通点击必须严格保留五组动作，不得把 Todo think 当作 reaction");
         var actualActions = clips
@@ -5926,10 +5945,18 @@ internal static partial class Program
                        GetProperty<string>(clip, "ActionName"),
                        "think",
                        StringComparison.OrdinalIgnoreCase) &&
-                   !GetProperty<string>(clip, "Message").Contains(
-                       "认真想一想",
-                       StringComparison.Ordinal)),
-            "普通点击 clip 不得保留 think ActionName 或“让我认真想一想”文案");
+                    !GetProperty<string>(clip, "Message").Contains(
+                        "认真想一想",
+                        StringComparison.Ordinal) &&
+                    !GetProperty<string>(clip, "Message").Contains(
+                        "刚睡醒",
+                        StringComparison.Ordinal)),
+            "普通点击 clip 不得保留 think ActionName、旧think文案或yawn文案");
+        var butterflyClip = clips.Single(clip =>
+            GetProperty<string>(clip, "ActionName") == "butterfly");
+        Assert(GetProperty<string>(butterflyClip, "Message") ==
+               "嘘～小蝴蝶停在我鼻尖啦！",
+            "butterfly必须使用锁定的鼻尖小蝴蝶文案");
         var expectedWakeFrameNames = GetExpectedWakeFrameNames();
         var wakeFrameCount = expectedWakeFrameNames.Length;
         Assert(GetField<Array>(window, "_wakeFrames").Length == wakeFrameCount,
@@ -5940,6 +5967,7 @@ internal static partial class Program
         foreach (var clip in clips)
         {
             var actionName = GetProperty<string>(clip, "ActionName");
+            var poseActionName = GetExpectedMotionPoseActionName(actionName);
             var profile = GetExpectedMotionClipProfile(actionName);
             var expectedMotionNames = BuildExpectedMotionFrameNames(actionName);
             var expectedDurations = BuildExpectedMotionFrameDurations(actionName);
@@ -5953,7 +5981,7 @@ internal static partial class Program
                 .Cast<object>()
                 .Select(frame => GetSpriteFrameInfo(GetProperty<object>(frame, "Image")))
                 .ToArray();
-            var expectedPageName = $"action-{actionName}";
+            var expectedPageName = $"action-{poseActionName}";
             Assert(spriteFrames.All(frame =>
                     frame.Name.Contains("luban-idle", StringComparison.Ordinal) ||
                     frame.Name.Contains("luban-wake-smooth-", StringComparison.Ordinal)
@@ -5983,16 +6011,16 @@ internal static partial class Program
             if (profile.EndpointHoldDuration > TimeSpan.Zero)
             {
                 var endpointName =
-                    $"luban-{actionName}-smooth-{profile.SmoothFrameCount!.Value:000}.png";
+                    $"luban-{poseActionName}-smooth-{profile.SmoothFrameCount!.Value:000}.png";
                 var endpointIndices = actualMotionNames
                     .Select((name, index) => (name, index))
                     .Where(candidate =>
                         string.Equals(candidate.name, endpointName, StringComparison.Ordinal))
                     .Select(candidate => candidate.index)
                     .ToArray();
-                var excludedSmoothNames = BuildExpectedActionTimelineNames(actionName)
+                var excludedSmoothNames = BuildExpectedActionTimelineNames(poseActionName)
                     .Where(name => name.StartsWith(
-                        $"luban-{actionName}-smooth-",
+                        $"luban-{poseActionName}-smooth-",
                         StringComparison.Ordinal))
                     .Skip(profile.SmoothFrameCount.Value)
                     .ToHashSet(StringComparer.Ordinal);
@@ -6016,7 +6044,7 @@ internal static partial class Program
             var expectedActionFrameIndex = wakeFrameCount;
             Assert(GetProperty<int>(clip, "ActionFrameIndex") == expectedActionFrameIndex &&
                    actualMotionNames[expectedActionFrameIndex] ==
-                   $"luban-{actionName}-smooth-001.png",
+                    $"luban-{poseActionName}-smooth-001.png",
                 $"{actionName} ActionFrameIndex 必须指向动作页首个60fps姿势以供预取");
         }
 
@@ -6065,6 +6093,163 @@ internal static partial class Program
                     .Select(GetAnimationFrameName)
                     .Reverse()),
             "Todo 入场和收起必须严格互为反序，快速切换时才能映射到同一姿势");
+    }
+
+    private static void AssertButterflyOverlayContract(MainWindow window)
+    {
+        var workspace = Path.GetDirectoryName(
+            FindWorkspaceFile("DesktopPet.csproj"))!;
+        var mainSource = File.ReadAllText(
+            Path.Combine(workspace, "MainWindow.xaml.cs"));
+        var xamlSource = File.ReadAllText(
+            Path.Combine(workspace, "MainWindow.xaml"));
+        var renderingSource = ExtractPrivateMethodSource(
+            mainSource,
+            "VisualClock_Rendering");
+        var advanceSource = ExtractPrivateMethodSource(
+            mainSource,
+            "AdvanceButterflyOverlay");
+        var frameProgressSource = ExtractPrivateMethodSource(
+            mainSource,
+            "GetActiveFrameProgress");
+        var hideSource = ExtractPrivateMethodSource(
+            mainSource,
+            "HideButterflyOverlay");
+
+        Assert(renderingSource.Contains(
+                   "AdvanceButterflyOverlay(timestamp)",
+                   StringComparison.Ordinal) &&
+               advanceSource.Contains("Stopwatch.Frequency", StringComparison.Ordinal) &&
+               frameProgressSource.Contains(
+                   "_activeFrameDeadlineTimestamp",
+                   StringComparison.Ordinal) &&
+               advanceSource.Contains("ButterflyTranslate.X", StringComparison.Ordinal) &&
+               advanceSource.Contains("ButterflyScale.ScaleX", StringComparison.Ordinal) &&
+               advanceSource.Contains("ButterflyRotate.Angle", StringComparison.Ordinal),
+            "butterfly overlay必须由统一Rendering回调与Stopwatch绝对时间轴驱动位移、扇翅和旋转");
+        Assert(!advanceSource.Contains("new ", StringComparison.Ordinal) &&
+               !advanceSource.Contains("ToArray(", StringComparison.Ordinal) &&
+               !advanceSource.Contains("Select(", StringComparison.Ordinal) &&
+               !advanceSource.Contains("AppLogger", StringComparison.Ordinal),
+            "butterfly每帧回调不得创建对象、构造集合或写磁盘日志");
+        Assert(xamlSource.Contains("x:Name=\"ButterflyOverlay\"", StringComparison.Ordinal) &&
+               xamlSource.Contains("Width=\"14\"", StringComparison.Ordinal) &&
+               xamlSource.Contains("Height=\"14\"", StringComparison.Ordinal) &&
+               xamlSource.Contains("luban-butterfly.png", StringComparison.Ordinal) &&
+               xamlSource.Contains("Visibility=\"Visible\"", StringComparison.Ordinal) &&
+               !hideSource.Contains("Visibility.Collapsed", StringComparison.Ordinal),
+            "14×14蝴蝶必须作为PetVisual常驻透明overlay，只切Opacity避免首次布局闪烁");
+
+        foreach (var interruptionMethodName in new[]
+                 {
+                     "Window_Closing",
+                     "PetHost_PreviewMouseRightButtonDown",
+                     "PetHost_MouseLeftButtonDown",
+                     "CancelPetPointerInteractionForInterruption",
+                     "TryEnterWorkMode",
+                     "EnterEdgePeek",
+                     "SetBubbleMode"
+                 })
+        {
+            Assert(ExtractPrivateMethodSource(mainSource, interruptionMethodName)
+                    .Contains("SuppressButterflyOverlay()", StringComparison.Ordinal),
+                $"{interruptionMethodName}必须先隐藏并抑制butterfly overlay");
+        }
+
+        var overlay = GetField<Image>(window, "ButterflyOverlay");
+        var translate = GetField<TranslateTransform>(
+            window,
+            "ButterflyTranslate");
+        Assert(overlay.Width == 14 && overlay.Height == 14 &&
+               overlay.Visibility == Visibility.Visible &&
+               overlay.Opacity == 0 &&
+               overlay.IsHitTestVisible == false,
+            "butterfly overlay初始必须常驻布局、完全透明且不接管鼠标");
+
+        var butterflyClip = GetField<Array>(window, "_reactionClips")
+            .Cast<object>()
+            .Single(clip =>
+                GetProperty<string>(clip, "ActionName") == "butterfly");
+        var frames = GetClipFrames(butterflyClip).Cast<object>().ToArray();
+        var actionFrameIndex = GetProperty<int>(
+            butterflyClip,
+            "ActionFrameIndex");
+        const int thinkFrameCount = 56;
+        Assert(frames.Skip(actionFrameIndex)
+                   .Take(thinkFrameCount)
+                   .Select(GetAnimationFrameName)
+                   .SequenceEqual(Enumerable.Range(1, thinkFrameCount)
+                       .Select(number => $"luban-think-smooth-{number:000}.png")) &&
+               frames.All(frame =>
+                   !GetAnimationFrameName(frame).Contains(
+                       "butterfly",
+                       StringComparison.OrdinalIgnoreCase)) &&
+               frames.All(frame =>
+                   !GetAnimationFrameName(frame).Contains(
+                       "-loop-",
+                       StringComparison.Ordinal)),
+            "butterfly角色姿势必须复用完整56帧think且0 loop，不能新增全身butterfly帧");
+
+        PrepareIdleSpriteCollectionBaseline(window);
+        SetField(window, "_sessionInactive", false);
+        SetField(window, "_dragStarted", false);
+        SetField(window, "_isTransientPetSizeOverride", false);
+        SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
+        SetField(window, "_butterflyOverlaySuppressed", false);
+        SetField(window, "_activeClip", butterflyClip);
+        var timestamp = Stopwatch.GetTimestamp();
+
+        void PublishOverlayFrame(int frameIndex)
+        {
+            var animationFrame = frames[frameIndex];
+            SetField(window, "_activeFrameIndex", frameIndex);
+            SetField(
+                window,
+                "_currentSpriteFrame",
+                GetProperty<object>(animationFrame, "Image"));
+            SetField(
+                window,
+                "_activeFrameDeadlineTimestamp",
+                checked(timestamp + ToProductionCharacterAnimationTicks(
+                    GetFrameDuration(animationFrame))));
+            Invoke(window, "AdvanceButterflyOverlay", timestamp);
+        }
+
+        PublishOverlayFrame(actionFrameIndex);
+        AssertClose(translate.X + 7, 165, "butterfly fly-in start center X");
+        AssertClose(translate.Y + 7, 38, "butterfly fly-in start center Y");
+        Assert(overlay.Opacity == 1,
+            "think首帧显示后butterfly必须从右上方开始飞入");
+
+        PublishOverlayFrame(actionFrameIndex + thinkFrameCount - 1);
+        AssertClose(translate.X + 7, 96, "butterfly nose center X");
+        AssertClose(translate.Y + 7, 120, "butterfly nose center Y");
+
+        const int matchedForwardPose = 27;
+        PublishOverlayFrame(actionFrameIndex + matchedForwardPose);
+        var forwardX = translate.X;
+        var forwardY = translate.Y;
+        var reverseLastFrameIndex =
+            actionFrameIndex + (thinkFrameCount - 1) * 2;
+        PublishOverlayFrame(reverseLastFrameIndex - matchedForwardPose);
+        AssertClose(translate.X, forwardX, "butterfly reverse path X");
+        AssertClose(translate.Y, forwardY, "butterfly reverse path Y");
+
+        Invoke(window, "SuppressButterflyOverlay");
+        Assert(overlay.Visibility == Visibility.Visible && overlay.Opacity == 0,
+            "交互中断必须立即隐藏overlay但不触发布局切换");
+        Invoke(window, "AdvanceButterflyOverlay", timestamp);
+        Assert(overlay.Opacity == 0,
+            "中断后的同一butterfly clip不得在下一渲染帧重新出现");
+
+        SetField(window, "_activeClip", null);
+        SetField(window, "_activeFrameIndex", -1);
+        SetField(window, "_activeClipStartedTimestamp", 0L);
+        SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+        SetField(window, "_butterflyOverlaySuppressed", false);
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
     }
 
     private static string[] BuildExpectedActionTimelineNames(
@@ -6278,15 +6463,18 @@ internal static partial class Program
     private static string[] BuildExpectedMotionFrameNames(string actionName)
     {
         var profile = GetExpectedMotionClipProfile(actionName);
+        var poseActionName = GetExpectedMotionPoseActionName(actionName);
         var timeline = BuildExpectedActionTimelineNames(
-            actionName,
+            poseActionName,
             profile.SmoothFrameCount);
         var names = new List<string>();
         names.AddRange(timeline.Skip(1));
-        var loopNames = Enumerable.Range(1, 48)
-            .Select(frameNumber =>
-                $"luban-{actionName}-loop-{frameNumber:000}.png")
-            .ToArray();
+        var loopNames = profile.LoopCycleCount == 0
+            ? Array.Empty<string>()
+            : Enumerable.Range(1, 48)
+                .Select(frameNumber =>
+                    $"luban-{actionName}-loop-{frameNumber:000}.png")
+                .ToArray();
         for (var cycle = 0; cycle < profile.LoopCycleCount; cycle++)
         {
             names.AddRange(loopNames);
@@ -6303,6 +6491,7 @@ internal static partial class Program
     private static TimeSpan[] BuildExpectedMotionFrameDurations(string actionName)
     {
         var profile = GetExpectedMotionClipProfile(actionName);
+        var poseActionName = GetExpectedMotionPoseActionName(actionName);
         var names = BuildExpectedMotionFrameNames(actionName);
         var durations = Enumerable.Repeat(profile.FrameInterval, names.Length).ToArray();
         if (profile.EndpointHoldDuration <= TimeSpan.Zero)
@@ -6311,7 +6500,7 @@ internal static partial class Program
         }
 
         var endpointName =
-            $"luban-{actionName}-smooth-{profile.SmoothFrameCount!.Value:000}.png";
+            $"luban-{poseActionName}-smooth-{profile.SmoothFrameCount!.Value:000}.png";
         var endpointIndices = names
             .Select((name, index) => (name, index))
             .Where(candidate =>
@@ -6332,6 +6521,11 @@ internal static partial class Program
             string actionName) =>
         actionName switch
         {
+            "butterfly" => (
+                SmoothFrameCount: 56,
+                LoopCycleCount: 0,
+                EndpointHoldDuration: TimeSpan.FromMilliseconds(1875),
+                FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60)),
             "cute" => (
                 SmoothFrameCount: 56,
                 LoopCycleCount: 0,
@@ -6343,6 +6537,11 @@ internal static partial class Program
                 EndpointHoldDuration: TimeSpan.Zero,
                 FrameInterval: TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60))
         };
+
+    private static string GetExpectedMotionPoseActionName(string actionName) =>
+        string.Equals(actionName, "butterfly", StringComparison.Ordinal)
+            ? "think"
+            : actionName;
 
     private static TimeSpan GetFrameDuration(object frame) =>
         GetProperty<TimeSpan>(frame, "HoldDuration");
@@ -6356,7 +6555,7 @@ internal static partial class Program
 
     private static void AssertNoRunContract(MainWindow window)
     {
-        var expectedActionNames = new[] { "yawn", "cry", "cute", "like", "eat" };
+        var expectedActionNames = new[] { "butterfly", "cry", "cute", "like", "eat" };
         var clips = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .ToArray();
@@ -6367,11 +6566,15 @@ internal static partial class Program
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "run", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "hide", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "wave", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(GetProperty<string>(clip, "ActionName"), "yawn", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(GetProperty<string>(clip, "ActionName"), "think", StringComparison.OrdinalIgnoreCase) &&
                 !GetProperty<string>(clip, "Message").Contains(
                     "认真想一想",
+                    StringComparison.Ordinal) &&
+                !GetProperty<string>(clip, "Message").Contains(
+                    "刚睡醒，让我伸个懒腰",
                     StringComparison.Ordinal)),
-            "运行时必须只保留五种点击动作，不得再出现 run、旧 hide、点击 wave 或 Todo think");
+            "运行时必须只保留五种点击动作，不得再出现run、旧hide、wave、yawn或Todo think");
 
         var activities = GetField<Array>(window, "_automaticActivities")
             .Cast<object?>()
@@ -6401,6 +6604,11 @@ internal static partial class Program
             "RunLoop",
             "luban-run",
             "action-run",
+            "\"yawn\"",
+            "luban-yawn",
+            "action-yawn",
+            "loop-yawn",
+            "刚睡醒，让我伸个懒腰",
             "\"hide\"",
             "HideMotionFrameInterval",
             "luban-hide",
@@ -6410,7 +6618,7 @@ internal static partial class Program
         };
         Assert(forbiddenSourceFragments.All(fragment =>
                 !mainWindowSource.Contains(fragment, StringComparison.OrdinalIgnoreCase)),
-            "MainWindow 运行时代码不得保留跑步、旧 hide 或额外随机冒头实现");
+            "MainWindow运行时代码不得保留跑步、旧hide、yawn或额外随机冒头实现");
         var monitorSource = File.ReadAllText(Path.Combine(workspace, "MonitorWorkArea.cs"));
         var positionerSource = File.ReadAllText(Path.Combine(workspace, "OwnedWindowPositioner.cs"));
         Assert(!monitorSource.Contains("GetAllPhysicalWorkAreas", StringComparison.Ordinal) &&
@@ -6429,6 +6637,9 @@ internal static partial class Program
             "run-loop",
             "run-bridge",
             "luban-run",
+            "luban-yawn",
+            "action-yawn",
+            "loop-yawn",
             "luban-hide",
             "action-hide",
             "loop-hide",
@@ -6437,7 +6648,7 @@ internal static partial class Program
         };
         Assert(toolSources.All(source => forbiddenToolFragments.All(fragment =>
                 !source.Contains(fragment, StringComparison.OrdinalIgnoreCase))),
-            "图集及安装脚本不得再生成或登记 run 或旧 hide");
+            "图集及安装脚本不得再生成或登记run、旧hide或yawn");
 
         var assetsDirectory = Path.Combine(workspace, "Assets");
         var runAssetPaths = Directory.EnumerateFiles(assetsDirectory, "*", SearchOption.AllDirectories)
@@ -6445,13 +6656,17 @@ internal static partial class Program
             .ToArray();
         Assert(runAssetPaths.Length == 0,
             $"Assets 中不得残留跑步派生资产：{string.Join(", ", runAssetPaths.Select(Path.GetFileName))}");
+        var yawnAssetPaths = Directory.EnumerateFiles(assetsDirectory, "*", SearchOption.AllDirectories)
+            .Where(path => Path.GetFileName(path).Contains("yawn", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
         var manifestText = File.ReadAllText(Path.Combine(assetsDirectory, "luban-sprite-pages.json"));
         var hideAssetPaths = Directory.EnumerateFiles(assetsDirectory, "*", SearchOption.AllDirectories)
             .Where(path => Path.GetFileName(path).Contains("hide", StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        Assert(hideAssetPaths.Length == 0 &&
-               !manifestText.Contains("hide", StringComparison.OrdinalIgnoreCase),
-            "旧 hide 必须从 Assets 与图集清单中完整移除");
+        Assert(hideAssetPaths.Length == 0 && yawnAssetPaths.Length == 0 &&
+               !manifestText.Contains("hide", StringComparison.OrdinalIgnoreCase) &&
+               !manifestText.Contains("yawn", StringComparison.OrdinalIgnoreCase),
+            "旧hide与yawn必须从Assets及图集清单中完整移除");
         Assert(!manifestText.Contains("action-run", StringComparison.OrdinalIgnoreCase) &&
                !manifestText.Contains("luban-run", StringComparison.OrdinalIgnoreCase),
             "分页图集清单不得登记 run 分页及帧");
@@ -6459,10 +6674,13 @@ internal static partial class Program
         Assert(!typeof(MainWindow).Assembly.GetManifestResourceNames()
                 .Any(name => name.Contains("action-run", StringComparison.OrdinalIgnoreCase) ||
                              name.Contains("luban-run", StringComparison.OrdinalIgnoreCase) ||
-                             name.Contains("action-hide", StringComparison.OrdinalIgnoreCase) ||
-                             name.Contains("loop-hide", StringComparison.OrdinalIgnoreCase) ||
-                             name.Contains("luban-hide", StringComparison.OrdinalIgnoreCase)),
-            "主程序集不得嵌入 run 或旧 hide 资源");
+                              name.Contains("action-hide", StringComparison.OrdinalIgnoreCase) ||
+                              name.Contains("loop-hide", StringComparison.OrdinalIgnoreCase) ||
+                              name.Contains("luban-hide", StringComparison.OrdinalIgnoreCase) ||
+                              name.Contains("action-yawn", StringComparison.OrdinalIgnoreCase) ||
+                              name.Contains("loop-yawn", StringComparison.OrdinalIgnoreCase) ||
+                              name.Contains("luban-yawn", StringComparison.OrdinalIgnoreCase)),
+            "主程序集不得嵌入run、旧hide或yawn资源");
     }
 
     private static void AssertEdgeRoamingSourceContract()
@@ -7425,7 +7643,7 @@ internal static partial class Program
         AssertProductionDiscreteVsyncTimeline(
             window,
             clips[0],
-            "reaction-yawn");
+            "reaction-butterfly");
         AssertProductionDiscreteVsyncTimeline(
             window,
             clips.Single(clip =>
@@ -8710,6 +8928,14 @@ internal static partial class Program
 
         var firstFrame = frames.GetValue(0)!;
         var firstSpriteFrame = GetProperty<object>(firstFrame, "Image");
+        SetField(window, "_edgeRoamPreloadRequested", true);
+        var pinnedPageNames = GetField<HashSet<string>>(
+            window,
+            "_pinnedSpritePageNames");
+        pinnedPageNames.UnionWith(frames
+            .Cast<object>()
+            .Select(frame => GetProperty<object>(frame, "Image"))
+            .Select(frame => GetSpriteFrameInfo(frame).PageName));
         PrimeAllClipPagesForTest(window, frames);
         PrimeSpritePageForFrame(window, firstSpriteFrame);
         Invoke(window, "ShowStableFrame", firstSpriteFrame);
@@ -8734,7 +8960,11 @@ internal static partial class Program
         SetField(window, "_activeFrameIndex", -1);
         SetField(window, "_activeClipStartedTimestamp", 0L);
         SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+        SetField(window, "_edgeRoamPreloadRequested", false);
+        pinnedPageNames.IntersectWith(
+            GetExpectedPinnedSpritePageNames(window));
         Invoke(window, "ClearDeferredActiveClipClock");
+        Invoke(window, "TrimResidentSpritePagesToBudget", (object?)null);
         Invoke(window, "UpdateVisualClockSubscription");
         return resolvedIndex;
     }
@@ -11758,15 +11988,16 @@ internal static partial class Program
             WaitForPrefetchedSpritePage(window, requestedReactionFrame);
             Invoke(window, "TryShowPendingSpriteFrame");
             var ordinaryActionFrame = GetField<object>(window, "_currentSpriteFrame");
-            Assert((int)Invoke(
-                       window,
-                       "GetTodoEnterStartIndex",
-                       ordinaryActionFrame)! == wakeFrameCount,
-                $"从普通动作打开待办必须直接从第{wakeFrameCount}帧起身终点接入，不能闪回趴枕头待机");
+            var expectedTodoEnterStartIndex = (int)Invoke(
+                window,
+                "GetTodoEnterStartIndex",
+                ordinaryActionFrame)!;
+            Assert(expectedTodoEnterStartIndex == wakeFrameCount + 1,
+                "butterfly复用think-001；打开待办必须从同名Todo姿势无缝续播，不能闪回起身或趴枕头待机");
 
             var todoEnterClip = GetField<object>(window, "_todoEnterClip");
             var requestedTodoEntryFrame = GetProperty<object>(
-                GetClipFrames(todoEnterClip).GetValue(wakeFrameCount)!,
+                GetClipFrames(todoEnterClip).GetValue(expectedTodoEnterStartIndex)!,
                 "Image");
             var requestedTodoEntryFrameInfo = GetSpriteFrameInfo(requestedTodoEntryFrame);
             // This contract inspects the first live Todo pose. Warm that one page
@@ -11808,7 +12039,7 @@ internal static partial class Program
                     "_petSizeEnvelopePrepared");
                 todoVisibleSnapshotValid =
                     ReferenceEquals(visibleClip, todoEnterClip) &&
-                    visibleFrameIndex == wakeFrameCount &&
+                    visibleFrameIndex == expectedTodoEnterStartIndex &&
                     Equals(visibleFrame, requestedTodoEntryFrame) &&
                     visiblePendingFrame is null &&
                     visibleDeadline == long.MaxValue &&
@@ -11948,11 +12179,11 @@ internal static partial class Program
                 $"deadline={todoEntryDeadline}, subscribed={todoEntryClockSubscribed}, " +
                 $"activeIndex={GetField<int>(window, "_activeFrameIndex")}, " +
                 $"pending={GetRawField(window, "_pendingSpriteFrame") is not null}");
-            Assert(ordinaryTodoStartIndex == wakeFrameCount &&
+            Assert(ordinaryTodoStartIndex == expectedTodoEnterStartIndex &&
                    requestedTodoEntryFrameInfo.Name.EndsWith(
-                       $"luban-wake-smooth-{wakeFrameCount:000}.png",
-                       StringComparison.Ordinal),
-                $"普通动作抢占后的Todo入场首帧必须是wake-smooth-{wakeFrameCount:000}；" +
+                        "luban-think-smooth-001.png",
+                        StringComparison.Ordinal),
+                "butterfly抢占后的Todo入场首帧必须无缝复用think-smooth-001；" +
                 $"index={ordinaryTodoStartIndex}, requested={requestedTodoEntryFrameInfo.Name}");
 
             var entryIndex = GetField<int>(window, "_activeFrameIndex");
@@ -16564,7 +16795,7 @@ internal static partial class Program
                 StaticFlags)?.GetRawConstantValue() ?? 0);
         Assert(defaultBudget == ExpectedRoamSpritePageBudgetBytes &&
                capacityBucketBytes == 1 * 1024 * 1024,
-            "sprite页像素池默认总预算必须是104MiB且容量桶必须固定为1MiB");
+            "sprite页像素池默认总预算必须是92MiB且容量桶必须固定为1MiB");
 
         const int mebibyte = 1024 * 1024;
         const long smallBudget = 10L * mebibyte;
@@ -16841,7 +17072,7 @@ internal static partial class Program
                    "RecordDiscardedSpritePageBytes",
                    StringComparison.Ordinal) &&
                poolSource.Contains(
-                     "DefaultHardBudgetBytes = 104L * 1024 * 1024",
+                      "DefaultHardBudgetBytes = 92L * 1024 * 1024",
                     StringComparison.Ordinal) &&
                 poolSource.Contains(
                      "CapacityBucketBytes = 1 * 1024 * 1024",
@@ -17211,16 +17442,16 @@ internal static partial class Program
             "delta-sub必须直接消费Brotli流，前帧暂存只使用容量1的私有池且Rent/Return成对，" +
             "按expected长度严格重建并拒绝不一致的重复sprite；不得保留整页压缩或payload字段");
         Assert(mainSource.Contains(
-                   "SpritePageResidentBudgetBytes = 64L * 1024 * 1024",
+                   "SpritePageResidentBudgetBytes = 52L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
-                   "SpritePageRoamResidentBudgetBytes = 104L * 1024 * 1024",
+                   "SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
-                    "SpritePageIdleResidentTargetBytes = 24L * 1024 * 1024",
+                    "SpritePageIdleResidentTargetBytes = 12L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
-                   "SpritePageCollectionThresholdBytes = 16L * 1024 * 1024",
+                   "SpritePageCollectionThresholdBytes = 8L * 1024 * 1024",
                    StringComparison.Ordinal) &&
                mainSource.Contains(
                    "SpritePageIdleTrimGracePeriod =",
@@ -17288,13 +17519,16 @@ internal static partial class Program
                !prefetchDispatchTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
                    StringComparison.Ordinal) &&
-               !mainSource.Contains(
-                   "_residentSpritePageIdleTrimPending",
-                   StringComparison.Ordinal),
-            "普通活动resident软预算必须是64MiB、绕屏保留104MiB、" +
-            "空闲热集目标必须是24MiB、" +
-            "Gen2债务阈值必须是16MiB；idle裁剪应由独立20秒timer执行，" +
-            "忙碌活动必须取消或延后，不能复用分页dispatcher");
+                !mainSource.Contains(
+                    "_residentSpritePageIdleTrimPending",
+                    StringComparison.Ordinal) &&
+                !mainSource.Contains(
+                    "AddFirstWakeContinuationPageName",
+                    StringComparison.Ordinal),
+            "普通活动resident软预算必须是52MiB、绕屏保留92MiB、" +
+            "空闲热集目标必须是12MiB、" +
+            "Gen2债务阈值必须是8MiB；idle裁剪应由独立20秒timer执行，" +
+            "忙碌活动必须取消或延后，且只能pin idle，不能复用分页dispatcher");
         Assert(removeResidentSpritePage.Contains(
                    "ReturnSpritePageBuffer(residentPage.Pixels)",
                    StringComparison.Ordinal) &&

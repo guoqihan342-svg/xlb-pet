@@ -90,21 +90,17 @@ public partial class MainWindow : Window
     private const int SpriteFrameDescriptorValueCount = 6;
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
-    // Ordinary clips use rolling current/next-page prefetch. With the current
-    // manifest, both hot pages plus the 22 MiB idle runway need at most 54 MiB.
-    // The adjacent-bucket reuse path can add at most 1 MiB to each of those four
-    // buffers; the existing 64 MiB ordinary budget therefore keeps the full
-    // authored runway with six MiB of scheduling headroom. Roaming needs
-    // 93 MiB canonically and at most 101 MiB after the same bounded reuse,
-    // leaving 3 MiB headroom here.
-    private const long SpritePageResidentBudgetBytes = 64L * 1024 * 1024;
-    private const long SpritePageRoamResidentBudgetBytes = 104L * 1024 * 1024;
-    // Keep the startup idle page and one wake continuation page. Their two
-    // 11 MiB capacity buckets need 22 MiB canonically and at most 24 MiB when
-    // the bounded adjacent-bucket reuse path is involved. Do not retain a
-    // third unrelated free buffer after an action or roaming run has settled.
-    private const long SpritePageIdleResidentTargetBytes = 24L * 1024 * 1024;
-    private const long SpritePageCollectionThresholdBytes = 16L * 1024 * 1024;
+    // Ordinary clips keep only their rolling current/next-page working set.
+    // The generated manifest requires at most 49 MiB, leaving a small bounded
+    // reuse margin without retaining an unrelated decoded page.
+    private const long SpritePageResidentBudgetBytes = 52L * 1024 * 1024;
+    // Roaming needs at most 89 MiB for its active page set. The higher ceiling
+    // is active only while roaming and is released back to the idle target.
+    private const long SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024;
+    // Pin just the startup idle page. A single adjacent bucket can hold it
+    // within 12 MiB after every action, reminder, Todo, or roaming sequence.
+    private const long SpritePageIdleResidentTargetBytes = 12L * 1024 * 1024;
+    private const long SpritePageCollectionThresholdBytes = 8L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
     private const int ActionLoopCycleCount = 3;
     private const int WorkEnterFrameCount = 48;
@@ -196,13 +192,26 @@ public partial class MainWindow : Window
     private static readonly TimeSpan MissedReminderGracePeriod =
         TimeSpan.FromSeconds(5);
     private const string TodoPoseActionName = "think";
+    private const string ButterflyActionName = "butterfly";
+    private const double ButterflyVisualSize = 14;
+    private const double ButterflyStartCenterX = 165;
+    private const double ButterflyStartCenterY = 38;
+    private const double ButterflyControlCenterX = 135;
+    private const double ButterflyControlCenterY = 70;
+    private const double ButterflyNoseCenterX = 96;
+    private const double ButterflyNoseCenterY = 120;
+    private const double ButterflyFlapsPerSecond = 5;
     private static readonly string[] ReactionActionNames =
     [
-        "yawn", "cry", "cute", "like", "eat"
+        ButterflyActionName, "cry", "cute", "like", "eat"
     ];
     private static readonly string[] SmoothActionNames =
     [
-        "yawn", "cry", "cute", "like", "eat", TodoPoseActionName
+        "cry", "cute", "like", "eat", TodoPoseActionName
+    ];
+    private static readonly string[] LoopActionNames =
+    [
+        "cry", "like", "eat"
     ];
     private readonly IReadOnlyDictionary<string, SpriteAtlasPage> _spritePages;
     private readonly Dictionary<string, ResidentSpritePage> _residentSpritePages =
@@ -313,6 +322,8 @@ public partial class MainWindow : Window
     private int _activeFrameIndex = -1;
     private long _activeClipStartedTimestamp;
     private long _activeFrameDeadlineTimestamp;
+    private bool _butterflyOverlayVisible;
+    private bool _butterflyOverlaySuppressed;
     private AnimationClip? _deferredActiveClipClock;
     private SpriteFrame? _deferredActiveClipClockFrame;
     private int _deferredActiveClipClockFrameIndex = -1;
@@ -529,7 +540,7 @@ public partial class MainWindow : Window
                     $"Assets/luban-{actionName}-smooth-"),
                 StringComparer.Ordinal));
         _actionLoopFrames = new ReadOnlyDictionary<string, SpriteFrame[]>(
-            ReactionActionNames.ToDictionary(
+            LoopActionNames.ToDictionary(
                 actionName => actionName,
                 actionName => LoadNumberedFrameSequence(
                     $"loop-{actionName}",
@@ -584,15 +595,16 @@ public partial class MainWindow : Window
             "work-serious-exit",
             "Assets/luban-work-serious-exit-",
             expectedFrameCount: WorkSeriousExitFrameCount);
-        // Keep only the idle page and the first continuation page permanently
-        // hot. Remaining wake pages use the same rolling look-ahead as every
-        // other clip, avoiding a permanent 54 MiB wake allocation.
+        // Keep only the idle page permanently hot. Wake and action pages use
+        // the same rolling look-ahead and return to the 12 MiB idle target.
         AddPinnedSpritePageNames([_idleFrame]);
-        AddFirstWakeContinuationPageName();
         _spritePageWarmupOrder = BuildSpritePageWarmupOrder();
         _reactionClips =
         [
-            CreateMotionClip("刚睡醒，让我伸个懒腰～", "yawn"),
+            CreateMotionClip(
+                "嘘～小蝴蝶停在我鼻尖啦！",
+                ButterflyActionName,
+                TodoPoseActionName),
             CreateMotionClip("呜……主人要哄哄我", "cry"),
             CreateMotionClip("给你卖个萌 ♡", "cute"),
             CreateMotionClip("主人真棒！", "like"),
@@ -743,21 +755,6 @@ public partial class MainWindow : Window
         foreach (var frame in frames)
         {
             _pinnedSpritePageNames.Add(frame.PageName);
-        }
-    }
-
-    private void AddFirstWakeContinuationPageName()
-    {
-        foreach (var frame in _wakeFrames)
-        {
-            if (!string.Equals(
-                    frame.PageName,
-                    _idleFrame.PageName,
-                    StringComparison.Ordinal))
-            {
-                _pinnedSpritePageNames.Add(frame.PageName);
-                return;
-            }
         }
     }
 
@@ -925,11 +922,22 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private AnimationClip CreateMotionClip(string message, string actionName)
+    private AnimationClip CreateMotionClip(
+        string message,
+        string actionName,
+        string? poseActionName = null)
     {
-        var profile = ResolveMotionClipProfile(actionName);
-        var timeline = BuildActionTimeline(actionName, profile.SmoothFrameCount);
-        var loopFrames = _actionLoopFrames[actionName];
+        poseActionName ??= actionName;
+        var profile = ResolveMotionClipProfile(actionName, poseActionName);
+        var timeline = BuildActionTimeline(
+            poseActionName,
+            profile.SmoothFrameCount);
+        var loopFrames = profile.LoopCycleCount == 0
+            ? Array.Empty<SpriteFrame>()
+            : _actionLoopFrames.TryGetValue(actionName, out var authoredLoopFrames)
+                ? authoredLoopFrames
+                : throw new InvalidOperationException(
+                    $"Motion action '{actionName}' requires loop frames.");
         var frames = new List<AnimationFrame>(
             (timeline.Frames.Length - 1) * 2 +
             loopFrames.Length * profile.LoopCycleCount);
@@ -973,11 +981,18 @@ public partial class MainWindow : Window
         return new AnimationClip(message, actionName, frames.ToArray(), actionFrameIndex);
     }
 
-    private MotionClipProfile ResolveMotionClipProfile(string actionName)
+    private MotionClipProfile ResolveMotionClipProfile(
+        string actionName,
+        string poseActionName)
     {
-        var availableSmoothFrameCount = _actionSmoothFrames[actionName].Length;
+        var availableSmoothFrameCount = _actionSmoothFrames[poseActionName].Length;
         var profile = actionName switch
         {
+            ButterflyActionName => new MotionClipProfile(
+                availableSmoothFrameCount,
+                LoopCycleCount: 0,
+                EndpointHoldDuration: StableReactionEndpointHoldDuration,
+                FrameInterval: MotionFrameInterval),
             "cute" => new MotionClipProfile(
                 CuteCleanSmoothFrameCount,
                 LoopCycleCount: 0,
@@ -997,6 +1012,7 @@ public partial class MainWindow : Window
         {
             throw new InvalidOperationException(
                 $"Invalid motion profile for '{actionName}': " +
+                $"pose={poseActionName}, " +
                 $"smooth={profile.SmoothFrameCount}/{availableSmoothFrameCount}, " +
                 $"loops={profile.LoopCycleCount}, " +
                 $"interval={profile.FrameInterval}.");
@@ -2158,6 +2174,7 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
+        SuppressButterflyOverlay();
         if (!_isTransientPetSizeOverride)
         {
             PersistLatestPetSizeForShutdownAt(Stopwatch.GetTimestamp());
@@ -2295,11 +2312,13 @@ public partial class MainWindow : Window
         }
 
         _workEnterAfterEdgePeekExitRequested = false;
+        SuppressButterflyOverlay();
         RefreshWorkModeButton();
     }
 
     private void CancelPetPointerInteractionForInterruption()
     {
+        SuppressButterflyOverlay();
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
@@ -2335,6 +2354,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        SuppressButterflyOverlay();
         DeferIdleSpritePageTrim();
         _workEnterAfterEdgePeekExitRequested = false;
         _dragPreservesWorkMode = false;
@@ -2941,6 +2961,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        SuppressButterflyOverlay();
         DeferIdleSpritePageTrim();
         if (_workState == WorkState.Idle)
         {
@@ -3036,6 +3057,7 @@ public partial class MainWindow : Window
             return false;
         }
 
+        SuppressButterflyOverlay();
         var timestamp = Stopwatch.GetTimestamp();
         CancelTodoOpenAfterEdgeRoamStop();
         CancelTodoOpenAfterWorkExit();
@@ -4217,6 +4239,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        SuppressButterflyOverlay();
         _edgePeekHoldTimer.Stop();
         _workEnterAfterEdgePeekExitRequested = false;
         StopEdgeRoaming(
@@ -4650,6 +4673,7 @@ public partial class MainWindow : Window
 
         StopPillowBreathing();
         _automaticTimer.Stop();
+        PrepareButterflyOverlayForClip(clip);
         _activeClip = clip;
         _activeFrameIndex = -1;
         RequestSpritePagePrefetch(
@@ -6412,6 +6436,141 @@ public partial class MainWindow : Window
         }
     }
 
+    private void AdvanceButterflyOverlay(long timestamp)
+    {
+        var clip = _activeClip;
+        if (_butterflyOverlaySuppressed ||
+            clip is null || !IsButterflyClip(clip) ||
+            _isClosing || _sessionInactive || _isReminderActive ||
+            _isTransientPetSizeOverride ||
+            _workState != WorkState.Idle ||
+            _bubbleMode is BubbleMode.Todo or BubbleMode.Reminder ||
+            _dragInteractionActive || _pointerDown || _dragStarted ||
+            PetHost.IsMouseCaptured ||
+            _edgeDock != EdgeDock.None || _isEdgeRoaming ||
+            _activeFrameIndex < 0 ||
+            _activeFrameIndex >= clip.Frames.Length ||
+            _currentSpriteFrame is not SpriteFrame displayedFrame ||
+            displayedFrame != clip.Frames[_activeFrameIndex].Image)
+        {
+            HideButterflyOverlay();
+            return;
+        }
+
+        var smoothFrameCount = _actionSmoothFrames[TodoPoseActionName].Length;
+        var forwardFirstFrameIndex = clip.ActionFrameIndex;
+        var forwardLastFrameIndex =
+            forwardFirstFrameIndex + smoothFrameCount - 1;
+        var reverseFirstFrameIndex = forwardLastFrameIndex + 1;
+        var reverseLastFrameIndex =
+            reverseFirstFrameIndex + smoothFrameCount - 2;
+        if (_activeFrameIndex < forwardFirstFrameIndex ||
+            _activeFrameIndex > reverseLastFrameIndex)
+        {
+            HideButterflyOverlay();
+            return;
+        }
+
+        var frameProgress = GetActiveFrameProgress(clip, timestamp);
+        double pathProgress;
+        if (_activeFrameIndex <= forwardLastFrameIndex)
+        {
+            pathProgress = _activeFrameIndex == forwardLastFrameIndex
+                ? 1
+                : (_activeFrameIndex - forwardFirstFrameIndex + frameProgress) /
+                  (smoothFrameCount - 1d);
+        }
+        else
+        {
+            pathProgress =
+                (reverseLastFrameIndex - _activeFrameIndex - frameProgress) /
+                (smoothFrameCount - 1d);
+        }
+
+        pathProgress = Math.Clamp(pathProgress, 0, 1);
+        var inverseProgress = 1 - pathProgress;
+        var centerX =
+            inverseProgress * inverseProgress * ButterflyStartCenterX +
+            2 * inverseProgress * pathProgress * ButterflyControlCenterX +
+            pathProgress * pathProgress * ButterflyNoseCenterX;
+        var centerY =
+            inverseProgress * inverseProgress * ButterflyStartCenterY +
+            2 * inverseProgress * pathProgress * ButterflyControlCenterY +
+            pathProgress * pathProgress * ButterflyNoseCenterY;
+        var flutter = Math.Sin(
+            timestamp *
+            (Math.Tau * ButterflyFlapsPerSecond / Stopwatch.Frequency));
+        var approachScale = 1 + 0.35 * inverseProgress;
+
+        ButterflyTranslate.X = centerX - ButterflyVisualSize / 2;
+        ButterflyTranslate.Y = centerY - ButterflyVisualSize / 2;
+        ButterflyScale.ScaleX = approachScale * (1 + 0.06 * flutter);
+        ButterflyScale.ScaleY = approachScale * (1 - 0.03 * flutter);
+        ButterflyRotate.Angle = 8 - 14 * pathProgress + 2.5 * flutter;
+        ShowButterflyOverlay();
+    }
+
+    private double GetActiveFrameProgress(AnimationClip clip, long timestamp)
+    {
+        if (_activeFrameIndex < 0 ||
+            _activeFrameIndex >= clip.Frames.Length ||
+            _activeFrameDeadlineTimestamp <= 0 ||
+            _activeFrameDeadlineTimestamp == long.MaxValue)
+        {
+            return 0;
+        }
+
+        var durationTicks = ToCharacterAnimationTicks(
+            clip.Frames[_activeFrameIndex].HoldDuration);
+        var frameStartedTimestamp =
+            _activeFrameDeadlineTimestamp - durationTicks;
+        return Math.Clamp(
+            (timestamp - frameStartedTimestamp) / (double)durationTicks,
+            0,
+            1);
+    }
+
+    private static bool IsButterflyClip(AnimationClip? clip) =>
+        clip is not null &&
+        string.Equals(
+            clip.ActionName,
+            ButterflyActionName,
+            StringComparison.Ordinal);
+
+    private void PrepareButterflyOverlayForClip(AnimationClip clip)
+    {
+        HideButterflyOverlay();
+        _butterflyOverlaySuppressed = !IsButterflyClip(clip);
+    }
+
+    private void SuppressButterflyOverlay()
+    {
+        _butterflyOverlaySuppressed = true;
+        HideButterflyOverlay();
+    }
+
+    private void ShowButterflyOverlay()
+    {
+        if (_butterflyOverlayVisible)
+        {
+            return;
+        }
+
+        ButterflyOverlay.Opacity = 1;
+        _butterflyOverlayVisible = true;
+    }
+
+    private void HideButterflyOverlay()
+    {
+        if (!_butterflyOverlayVisible)
+        {
+            return;
+        }
+
+        ButterflyOverlay.Opacity = 0;
+        _butterflyOverlayVisible = false;
+    }
+
     private bool IsSpritePageImmediatelyAvailable(string pageName) =>
         _residentSpritePages.ContainsKey(pageName);
 
@@ -6551,6 +6710,12 @@ public partial class MainWindow : Window
         if (!ReferenceEquals(_activeClip, clip))
         {
             return;
+        }
+
+        if (IsButterflyClip(clip))
+        {
+            HideButterflyOverlay();
+            _butterflyOverlaySuppressed = false;
         }
 
         if (ReferenceEquals(clip, _workEnterClip))
@@ -7180,6 +7345,8 @@ public partial class MainWindow : Window
                 }
             }
 
+            AdvanceButterflyOverlay(timestamp);
+
             if (_edgeDock != EdgeDock.None)
             {
                 AdvanceEdgePeek(timestamp);
@@ -7216,6 +7383,11 @@ public partial class MainWindow : Window
 
     private void UpdateVisualClockSubscription()
     {
+        if (_butterflyOverlaySuppressed || !IsButterflyClip(_activeClip))
+        {
+            HideButterflyOverlay();
+        }
+
         RefreshWorkModeButton();
         var shouldRun = !_isClosing &&
                           (_isPetSizeAdjustmentActive ||
@@ -8142,6 +8314,7 @@ public partial class MainWindow : Window
             ClearDeferredActiveClipClock();
             if (failedClip is not null && ReferenceEquals(_activeClip, failedClip))
             {
+                SuppressButterflyOverlay();
                 _activeClip = null;
                 _activeFrameIndex = -1;
                 _activeClipStartedTimestamp = 0;
@@ -9472,6 +9645,11 @@ public partial class MainWindow : Window
 
     private void SetBubbleMode(BubbleMode mode)
     {
+        if (mode is BubbleMode.Todo or BubbleMode.Reminder)
+        {
+            SuppressButterflyOverlay();
+        }
+
         if (mode != BubbleMode.None)
         {
             CancelTodoOpenAfterEdgeRoamStop();

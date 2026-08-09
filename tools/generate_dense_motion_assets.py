@@ -45,16 +45,22 @@ MAX_DPI_SCALE = 1.5
 BBOX_SCALE_STEP_LIMIT = 0.025
 BASELINE_STEP_MAX_PHYSICAL_PX_LIMIT = 1.0
 BRIM_STEP_DIP_LIMIT = 2.0
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+ACTION_NAMES = ("cry", "cute", "like", "eat")
+LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
+# Butterfly reuses think.smooth and is composited from one independent 96x96
+# PNG.  It is intentionally not generated as a full-size dense/atlas sequence.
+LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
+ACTION_KEY_FRAME_COUNTS = {"cute": 11}
+ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 EDGE_DIRECTIONS = ("left", "top", "bottom")
 EDGE_PEEK_FRAME_COUNT = 48
 EDGE_PEEK_PHASE_FRAME_COUNT = EDGE_PEEK_FRAME_COUNT // 4
 REMINDER_KEY_COUNT = 8
 REMINDER_ENTER_FRAME_COUNT = 33
 REMINDER_HOLD_FRAME_COUNT = 48
-INTERNAL_BRIDGES = {"yawn": (6,), "cry": (3,), "think": (6,)}
+INTERNAL_BRIDGES = {"cry": (3,), "think": (6,)}
 SKIPPED_ACTION_KEY_FRAMES = {
     # cute frame05 is a redundant closed-mouth pose between the already
     # compatible frame04/frame06 silhouettes. Its two-frame budget is better
@@ -76,7 +82,6 @@ NEUTRAL_SPECS = {
 # preserved.  Values are total substeps for the named zero-based key edge.
 SUBSTEP_OVERRIDES: dict[str, dict[int, int]] = {
     "wake": {4: 8, 15: 4, 20: 8, 21: 4, 23: 4},
-    "yawn": {4: 8, 7: 4, 8: 4, 10: 4, 11: 8, 16: 8, 17: 4, 20: 4},
     "cry": {2: 4},
     "cute": {2: 4, 3: 8, 4: 8, 6: 4, 7: 8, 8: 8},
     "like": {0: 4, 5: 8, 6: 4, 8: 4, 9: 4},
@@ -308,7 +313,7 @@ def clean_existing_motion_assets() -> dict[str, int]:
             if pixel_digest(path) not in key_hashes
         )
 
-    for action in ACTION_NAMES:
+    for action in LOOP_ACTION_NAMES:
         loops = sorted(
             ASSETS.glob(f"luban-{action}-loop-*.png"), key=lambda path: path.name
         )
@@ -622,7 +627,7 @@ def build_action_key_sequences(
                 )
                 neutral_paths.append(neutral_path)
                 neutral_metrics.append(metrics)
-        for number in range(1, 25):
+        for number in range(1, ACTION_KEY_FRAME_COUNTS.get(action, 24) + 1):
             if number in SKIPPED_ACTION_KEY_FRAMES.get(action, frozenset()):
                 continue
             keys.append(ASSETS / f"luban-{action}-frame-{number:02d}.png")
@@ -1142,6 +1147,11 @@ def build_adaptive_actions(
             destination = ASSETS / f"{prefix}-{number:03d}.png"
             atomic_copy_png(source, destination)
             final_outputs.append(destination)
+        expected_count = ACTION_SMOOTH_FRAME_COUNTS.get(action)
+        if expected_count is not None and len(final_outputs) != expected_count:
+            raise AssertionError(
+                f"{action} smooth count {len(final_outputs)} != {expected_count}"
+            )
         remove_stale(prefix, len(final_outputs))
         outputs_by_action[action] = final_outputs
         print(
@@ -1453,7 +1463,7 @@ def build_loops() -> dict[str, list[Path]]:
             ASSETS / f"luban-{action}-frame-23.png",
             ASSETS / f"luban-{action}-frame-24.png",
         ]
-        for action in ACTION_NAMES
+        for action in LOOP_ACTION_NAMES
     }
     for round_number in range(1, 5):
         sequences = build_loop_round(sequences, round_number)
@@ -2035,7 +2045,11 @@ def main() -> None:
         action="store_true",
         help="Refine action edges against cap, baseline, and scale motion limits",
     )
-    parser.add_argument("--loops", action="store_true", help="Generate 48-frame action loops")
+    parser.add_argument(
+        "--loops",
+        action="store_true",
+        help="Generate 48-frame cry/like/eat action loops",
+    )
     parser.add_argument(
         "--edge-peek",
         action="store_true",

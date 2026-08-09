@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 
+from PIL import Image
+
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WORKSPACE / "tools"))
@@ -39,8 +41,12 @@ def make_complete_path_fixture(root: Path) -> None:
     for phase in atlas.REMINDER_PHASES:
         touch_sequence(assets, f"luban-reminder-{phase}", 1)
     for action in atlas.SMOOTH_ACTION_NAMES:
-        touch_sequence(assets, f"luban-{action}-smooth", 8)
-    for action in atlas.ACTION_NAMES:
+        touch_sequence(
+            assets,
+            f"luban-{action}-smooth",
+            atlas.ACTION_SMOOTH_FRAME_COUNTS.get(action, 8),
+        )
+    for action in atlas.LOOP_ACTION_NAMES:
         touch_sequence(
             assets,
             f"luban-{action}-loop",
@@ -56,9 +62,10 @@ def make_complete_path_fixture(root: Path) -> None:
 class ReactionActionRemovalTests(unittest.TestCase):
     def test_removed_reactions_are_not_click_actions(self) -> None:
         self.assertEqual(
-            ("yawn", "cry", "cute", "like", "eat"),
+            ("cry", "cute", "like", "eat"),
             atlas.ACTION_NAMES,
         )
+        self.assertEqual(("cry", "like", "eat"), atlas.LOOP_ACTION_NAMES)
         self.assertEqual("think", atlas.TODO_POSE_NAME)
         self.assertEqual(
             (*atlas.ACTION_NAMES, atlas.TODO_POSE_NAME),
@@ -66,6 +73,71 @@ class ReactionActionRemovalTests(unittest.TestCase):
         )
         self.assertNotIn("wave", atlas.ACTION_NAMES)
         self.assertNotIn("think", atlas.ACTION_NAMES)
+
+    def test_cute_is_a_formal_56_frame_non_loop_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+
+            self.assertEqual(56, len(atlas.action_resource_paths(root, "cute")))
+            pages = atlas.page_resource_paths(root)
+            self.assertEqual(
+                ["action-cute", "action-cute-part-02"],
+                [name for name in pages if name.startswith("action-cute")],
+            )
+            self.assertEqual(
+                [32, 24],
+                [
+                    len(paths)
+                    for name, paths in pages.items()
+                    if name.startswith("action-cute")
+                ],
+            )
+            self.assertNotIn("loop-cute", pages)
+
+    def test_cute_rejects_a_tail_beyond_56_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets = root / "Assets"
+            assets.mkdir()
+            touch_sequence(assets, "luban-cute-smooth", 57)
+
+            with self.assertRaisesRegex(RuntimeError, "exactly 56 frames"):
+                atlas.action_resource_paths(root, "cute")
+
+    def test_legacy_cute_loop_assets_are_not_collected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            touch_sequence(
+                root / "Assets",
+                "luban-cute-loop",
+                atlas.ACTION_LOOP_FRAME_COUNT,
+            )
+
+            source_paths = atlas.resource_paths(root)
+            pages = atlas.page_resource_paths(root)
+            self.assertFalse(
+                any(path.startswith("Assets/luban-cute-loop-") for path in source_paths)
+            )
+            self.assertNotIn("loop-cute", pages)
+
+    def test_legacy_removed_action_assets_are_not_collected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            assets = root / "Assets"
+            touch_sequence(assets, "luban-yawn-smooth", 84)
+            touch_sequence(
+                assets,
+                "luban-yawn-loop",
+                atlas.ACTION_LOOP_FRAME_COUNT,
+            )
+
+            source_paths = atlas.resource_paths(root)
+            pages = atlas.page_resource_paths(root)
+            self.assertFalse(any("yawn" in path for path in source_paths))
+            self.assertFalse(any("yawn" in name for name in pages))
 
     def test_todo_think_smooth_is_collected_without_a_click_loop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -176,12 +248,14 @@ class ReactionActionRemovalTests(unittest.TestCase):
         self.assertNotIn('"wave": "action-v10-wave-entry-rife-alpha.png"', installer_source)
         self.assertNotIn('"wave": 180', installer_source)
         for tool_name in (
+            "build_sprite_atlas.py",
             "install_generated_motion_assets.py",
             "generate_dense_motion_assets.py",
             "qa_dense_motion_assets.py",
             "qa_sprite_atlas_motion.py",
         ):
             source = (WORKSPACE / "tools" / tool_name).read_text(encoding="utf-8")
+            self.assertNotIn("yawn", source.lower(), tool_name)
             action_declaration = next(
                 line
                 for line in source.splitlines()
@@ -195,6 +269,84 @@ class ReactionActionRemovalTests(unittest.TestCase):
                 if line.startswith("SMOOTH_ACTION_NAMES = ")
             )
             self.assertIn("TODO_POSE_NAME", smooth_declaration, tool_name)
+            loop_declaration = next(
+                line
+                for line in source.splitlines()
+                if line.startswith("LOOP_ACTION_NAMES = ")
+            )
+            self.assertEqual(
+                'LOOP_ACTION_NAMES = ("cry", "like", "eat")',
+                loop_declaration,
+                tool_name,
+            )
+
+    def test_removed_action_has_no_derived_repository_assets(self) -> None:
+        tracked_locations = (WORKSPACE / "Assets", WORKSPACE / "tools" / "generated_sources")
+        derived = [
+            path
+            for location in tracked_locations
+            for path in location.glob("*yawn*")
+        ]
+        self.assertEqual([], [path.name for path in derived])
+        self.assertTrue((WORKSPACE / "pic" / "小鲁班1.jpg").is_file())
+
+    def test_repository_has_only_the_reachable_cute_runtime_assets(self) -> None:
+        assets = WORKSPACE / "Assets"
+        self.assertEqual([], [path.name for path in assets.glob("luban-cute-loop-*.png")])
+        self.assertEqual(
+            [],
+            [
+                path.name
+                for path in assets.glob("luban-cute-smooth-*.png")
+                if int(path.stem.rsplit("-", 1)[-1]) > 56
+            ],
+        )
+    def test_butterfly_is_a_clean_small_overlay_outside_the_atlas(self) -> None:
+        path = WORKSPACE / "Assets" / "luban-butterfly.png"
+        with Image.open(path) as opened:
+            self.assertEqual("RGBA", opened.mode)
+            self.assertEqual((96, 96), opened.size)
+            image = opened.copy()
+
+        alpha = image.getchannel("A")
+        alpha_bbox = alpha.getbbox()
+        self.assertIsNotNone(alpha_bbox)
+        assert alpha_bbox is not None
+        left, top, right, bottom = alpha_bbox
+        self.assertGreaterEqual(min(left, top, 96 - right, 96 - bottom), 6)
+        pixels = list(image.get_flattened_data())
+        self.assertFalse(
+            any(
+                alpha_value == 0 and (red or green or blue)
+                for red, green, blue, alpha_value in pixels
+            )
+        )
+        self.assertFalse(
+            any(
+                alpha_value > 0
+                and green >= 80
+                and green > red * 1.2
+                and green > blue * 1.2
+                for red, green, blue, alpha_value in pixels
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_complete_path_fixture(root)
+            overlay = root / "Assets" / "luban-butterfly.png"
+            overlay.write_bytes(path.read_bytes())
+            self.assertNotIn(
+                "Assets/luban-butterfly.png",
+                atlas.resource_paths(root),
+            )
+            self.assertFalse(
+                any(
+                    "butterfly" in resource
+                    for resources in atlas.page_resource_paths(root).values()
+                    for resource in resources
+                )
+            )
 
     def test_repository_has_no_generated_reaction_wave_pngs(self) -> None:
         assets = WORKSPACE / "Assets"

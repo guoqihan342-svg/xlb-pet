@@ -20,9 +20,13 @@ from split_sprite_sheet import (
 )
 
 
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+ACTION_NAMES = ("cry", "cute", "like", "eat")
+LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
+# Butterfly is installed as one independent 96x96 overlay by the runtime asset
+# pipeline; it deliberately has no full-size action sheet or atlas sequence.
+LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
 RUNTIME_CANVAS_SIZE = (450, 550)
 V9_WAKE_CHARACTER_SOURCE_NAME = "wake-v9-character-24-sheet-alpha.png"
 V9_IDLE_PILLOW_SOURCE_NAME = "idle-pillow-v3-alpha.png"
@@ -40,12 +44,10 @@ SNORE_BUBBLE_PATCH_BOX = (143, 405, 179, 438)
 SNORE_REGISTRATION_BOX = (40, 210, 445, 490)
 V6_SCALE_REGISTERED_ACTIONS = SMOOTH_ACTION_NAMES
 V6_ACTION_SOURCE_NAMES = {
-    "yawn": "yawn-v7-24-sheet-alpha.png",
     "cry": "cry-v7-24-sheet-alpha.png",
     "cute": "cute-v7-24-sheet-alpha.png",
 }
 V10_ACTION_ENTRY_SOURCE_NAMES = {
-    "yawn": "action-v10-yawn-entry-rife-alpha.png",
     "cry": "action-v10-cry-entry-rife-alpha.png",
     "cute": "action-v10-cute-entry-rife-alpha.png",
     "like": "action-v10-like-entry-hybrid-alpha.png",
@@ -53,7 +55,6 @@ V10_ACTION_ENTRY_SOURCE_NAMES = {
     "think": "action-v10-think-entry-hybrid-alpha.png",
 }
 V10_ACTION_INTERNAL_SOURCE_NAMES = {
-    "yawn": {6: "action-v10-yawn-06-07-rife-alpha.png"},
     "cry": {3: "action-v10-cry-03-04-rife-alpha.png"},
     "think": {6: "action-v10-think-06-07-rife-alpha.png"},
 }
@@ -84,7 +85,6 @@ EDGE_LEFT_SLEEVE_ALPHA_THRESHOLD = 24
 # single brim target either enlarges the head or makes the standing body pop
 # shorter. These per-group targets keep every action visually aligned.
 V6_ACTION_TARGET_BRIM_WIDTHS = {
-    "yawn": 180,
     "cry": 180,
     "cute": 180,
     "like": 181,
@@ -598,7 +598,7 @@ def reanchor_edge_frames(assets_directory: Path, prefix: str, anchor: str) -> No
 
 
 def install(source_directory: Path, assets_directory: Path) -> None:
-    """Install legacy wake, six smooth-pose, and edge-peek sheets."""
+    """Install legacy wake, five smooth-pose, and edge-peek sheets."""
 
     loaded: list[tuple[list[Image.Image], int, Path, str]] = []
     wake_source = source_directory / "wake-12-sheet-alpha.png"
@@ -719,7 +719,7 @@ def place_wake_character(
     y = round(brim_center_y - current_brim_center_y)
 
     # The generated standing keys keep the requested cap size but have a
-    # slightly longer lower body than the six smooth-pose sheets. Compress only
+    # slightly longer lower body than the five smooth-pose sheets. Compress only
     # the torso/leg tail when needed; the cap, face, and ear pieces remain
     # byte-for-byte at the common 180 px cap scale.
     overflow = y + sprite.height - V6_RUNTIME_BOTTOM
@@ -943,8 +943,6 @@ def install_v6_actions(
                 assets_directory /
                 f"luban-{action}-bridge-{after_frame:02d}-{after_frame + 1:02d}.png",
             )
-
-
 def build_edge_peek_unshifted_frames(
     source_directory: Path,
 ) -> dict[str, list[Image.Image]]:
@@ -1021,7 +1019,7 @@ def install_edge_peek(source_directory: Path, assets_directory: Path) -> None:
 
 
 def install_v6_motion(source_directory: Path, assets_directory: Path) -> None:
-    """Install the current wake, six smooth poses, and manual edge-peek assets."""
+    """Install the current wake, five smooth poses, and manual edge-peek assets."""
 
     assets_directory.mkdir(parents=True, exist_ok=True)
     install_v6_wake(source_directory, assets_directory)
@@ -1067,7 +1065,7 @@ def install_reminder(source_directory: Path, assets_directory: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Install generated wake, six smooth-pose, and manual edge-peek sheets "
+            "Install generated wake, five smooth-pose, and manual edge-peek sheets "
             "with shared registration on 450x550 runtime canvases."
         )
     )
@@ -1091,7 +1089,7 @@ def main() -> None:
         "--v6-motion",
         action="store_true",
         help=(
-            "Install the tracked scale-registered wake, seven standing "
+            "Install the tracked scale-registered wake, five standing "
             "actions, and manual edge-peek sets."
         ),
     )

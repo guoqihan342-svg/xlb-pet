@@ -23,9 +23,15 @@ DISPLAY_HEIGHT = 509
 TRANSPARENT_GUTTER = 2
 REUSABLE_PAGE_MAX_WIDTH = 1540
 MAX_DECODED_PAGE_BYTES = 24 * 1024 * 1024
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+ACTION_NAMES = ("cry", "cute", "like", "eat")
+LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
+# Butterfly is a small independent overlay composited over the existing think
+# sequence.  Keeping it out of the 399x509 full-size atlas avoids turning one
+# 96x96 decoration into another resident sprite page.
+LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
+ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 REMINDER_PHASES = ("enter", "hold")
 WORK_PHASES = (
     "enter",
@@ -327,7 +333,11 @@ def wake_resource_paths(root: Path) -> list[str]:
 
 
 def action_resource_paths(root: Path, action: str) -> list[str]:
-    return numbered_resource_paths(root, f"luban-{action}-smooth")
+    return numbered_resource_paths(
+        root,
+        f"luban-{action}-smooth",
+        expected_count=ACTION_SMOOTH_FRAME_COUNTS.get(action),
+    )
 
 
 def action_loop_resource_paths(root: Path, action: str) -> list[str]:
@@ -699,7 +709,7 @@ def resource_paths(root: Path) -> list[str]:
         paths.extend(work_resource_paths(root, phase))
     for action in SMOOTH_ACTION_NAMES:
         paths.extend(action_resource_paths(root, action))
-        if action in ACTION_NAMES:
+        if action in LOOP_ACTION_NAMES:
             paths.extend(action_loop_resource_paths(root, action))
     if len(set(paths)) != len(paths):
         raise RuntimeError(
@@ -929,7 +939,7 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
             if page_name in pages:
                 raise RuntimeError(f"Duplicate sprite page name: {page_name}")
             pages[page_name] = partition_paths
-        if action in ACTION_NAMES:
+        if action in LOOP_ACTION_NAMES:
             pages[f"loop-{action}"] = action_loop_resource_paths(root, action)
     expected = set(resource_paths(root))
     actual = {path for paths in pages.values() for path in paths}

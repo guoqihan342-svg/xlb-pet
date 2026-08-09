@@ -20,9 +20,12 @@ RUNTIME_SIZE = (450, 550)
 ATLAS_DISPLAY_SIZE = (399, 509)
 ATLAS_X_TO_DIP = 190 / ATLAS_DISPLAY_SIZE[0]
 ATLAS_Y_TO_DIP = 242 / ATLAS_DISPLAY_SIZE[1]
-ACTION_NAMES = ("yawn", "cry", "cute", "like", "eat")
+ACTION_NAMES = ("cry", "cute", "like", "eat")
+LOOP_ACTION_NAMES = ("cry", "like", "eat")
 TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
+LIGHTWEIGHT_OVERLAY_ASSET_NAMES = ("luban-butterfly.png",)
+ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 SOURCE_X_TO_DIP = 190 / 450
 SOURCE_Y_TO_DIP = (488 / 550) * (242 / 509)
 SOURCE_TO_DIP = math.sqrt(SOURCE_X_TO_DIP * SOURCE_Y_TO_DIP)
@@ -1053,6 +1056,16 @@ def main() -> None:
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
+    retired_assets = sorted(
+        ASSETS.glob("luban-cute-loop-*.png"),
+        key=lambda path: path.name,
+    )
+    if retired_assets:
+        raise AssertionError(
+            "retired dense assets remain: "
+            + ", ".join(path.name for path in retired_assets[:12])
+        )
+
     wake_outputs = sorted_sequence("luban-wake-smooth")
     wake_keys = [ASSETS / f"luban-wake-{number:02d}.png" for number in range(1, 28)]
     expected_wake = 1 + sum(
@@ -1094,6 +1107,7 @@ def main() -> None:
                 zip(action_keys[action], action_keys[action][1:])
             )
         )
+        expected_smooth = ACTION_SMOOTH_FRAME_COUNTS.get(action, expected_smooth)
         if len(smooth) != expected_smooth:
             raise AssertionError(
                 f"{action} smooth count {len(smooth)} != {expected_smooth}"
@@ -1115,7 +1129,7 @@ def main() -> None:
         if args.contacts:
             save_contact(smooth, OUT / f"{action}-smooth-contact.png")
 
-        if action not in ACTION_NAMES:
+        if action not in LOOP_ACTION_NAMES:
             continue
 
         loop = sorted_sequence(f"luban-{action}-loop")
@@ -1679,7 +1693,7 @@ def main() -> None:
             )
     if result["wake"]["first_key_mismatch"]:
         failures.append("wake first key mismatch")
-    for action in ACTION_NAMES:
+    for action in LOOP_ACTION_NAMES:
         action_result = result["actions"][action]
         if action_result["loop_exact_key_mismatches"]:
             failures.append(
