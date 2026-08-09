@@ -241,19 +241,22 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## v1.0.63 发布验证（待回填）
+## v1.0.63 发布验证
 
-本节只记录发布前必须完成的验证槽位，当前不得把预估图集数量、未执行命令或未上传附件写成“已通过”。完成同一次正式构建、自动化、实机预览和 Release 回下载后，再用实际提交、哈希和剖面数据替换“待回填”。
+以下结果于 `2026-08-09` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418`、.NET Desktop Runtime `8.0.24` 环境完成。正式 EXE 已替换到用户指定路径，Release 附件也已在独立目录重新下载复核。
 
-| 项目 | 待验证结果 |
+| 项目 | 实际结果 |
 | --- | --- |
-| 源码与版本 | 待回填正式功能提交、`1.0.63.0` 文件版本和产品版本 |
-| 五种普通动作 | 待验证运行时与随机袋严格为 `star-wish / cry / cute / like / eat`，旧 butterfly 与失败 star-cuddle ActionName、人物页和中文对白为 0 命中 |
-| 许愿星与 Todo | 待验证 `star-wish` 逐帧复用 `cute` 56 帧及自然反向退场；唯一 `96×96` 透明星星以常驻、默认透明、不可命中的 `22 DIP` overlay 完成“画面右侧手边沿帽檐外缘升起 → 头顶轻摇 → 飞走”，绝对时钟和抢占清理正常；Todo 仍保持原有完整入场、稳定 `think` 姿势和反向退场 |
-| 图集与资源 | 待验证正式清单仍为 41 页、1240 个源帧和 1240 个分页帧；待确认仅新增 `Assets/luban-wish-star.png` WPF Resource，旧蝴蝶和失败 144 帧人物素材、生成源及图集页均未打包 |
-| 内存 | 预算继续为常规 `52 MiB`、巡游 `92 MiB`、稳定空闲 `12 MiB`、LOH 淘汰债务阈值 `8 MiB`；待回填 `--memory-profile` 实测值并确认无持续增长 |
-| 自动化与实机 | 待回填 Release 构建、完整 `UiStateChecks`、59/60/120/144 Hz、250 ms 阻塞、生产预览、启动/单实例和用户数据哈希结果 |
-| EXE 与 GitHub Release | 待回填字节数、SHA-256、签名状态、标签提交、Release 地址和独立回下载复核 |
+| 源码与版本 | 正式功能提交 `9229603db13804a10e8bbd939b6ddf5e033b8c89`；文件版本 `1.0.63.0`，产品版本 `1.0.63+9229603db13804a10e8bbd939b6ddf5e033b8c89` |
+| 五种普通动作 | 运行时点击循环与随机袋严格为 `star-wish / cry / cute / like / eat`；旧 butterfly 与失败 star-cuddle 的 ActionName、人物页、资源入口和中文对白在生产代码、程序集与最终 EXE 中均为 0 命中 |
+| 许愿星与 Todo | `star-wish` 逐帧复用 `cute` 56 帧及自然反向退场；唯一 `96×96` 透明星星以常驻、默认透明、不可命中的 `22 DIP` overlay 完成“画面右侧手边沿帽檐外缘升起 → 头顶轻摇 → 飞走”。真实 WPF 预览逐帧复核确认始终只有一颗星、不穿脸、不遮手、无残影或人物缩放；Todo 仍保持原有完整入场、稳定 `think` 姿势和反向退场 |
+| 打工吸附与 Alt+Tab | 打工状态拖到左、右、下边缘时，热页直接原子切换到 edge-rest；冷页保持当前工作画面并冻结绝对时钟，加载完成后再原子交接，不再经过枕头待机。六个正式窗口的真实 HWND 均带 `WS_EX_TOOLWINDOW`、清除 `WS_EX_APPWINDOW`，且未设置 `WS_EX_NOACTIVATE`；`--work-mode-only`、`--edge-dock-only` 与 `--alt-tab-only` 均通过 |
+| 图集与资源 | 正式清单保持 41 页、1240 个源帧和 1240 个分页帧；仅新增 `Assets/luban-wish-star.png` WPF Resource，旧蝴蝶和失败 144 帧人物素材、生成源及图集页均未打包；稠密素材 QA 与图集 QA 零失败，Python 测试 32/32 通过 |
+| 内存 | 预算保持常规 `52 MiB`、巡游 `92 MiB`、稳定空闲 `12 MiB`、LOH 淘汰债务阈值 `8 MiB`。`--memory-profile` 实测启动空闲为 `11 MiB` resident / `16.03 MiB` managed / `136.17 MiB` private，活跃普通动作为 `46 MiB` resident / `171.62 MiB` private，活跃巡游为 `82 MiB` resident / `210.57 MiB` private，收缩后空闲为 `11 MiB` resident / `138.66 MiB` private |
+| 自动化与实机 | DesktopPet、UiStateChecks、TodoStoreChecks 的 Release 构建均为 0 警告、0 错误；完整 `UiStateChecks`、三套存储检查、59/59.94/60/120/144 Hz、250 ms 阻塞、冷页、DPI、待办、定时任务和生产预览均通过。用户路径 EXE 短时启动保持响应，3 个用户数据文件哈希前后不变 |
+| EXE 与 GitHub Release | `93,413,510` 字节，SHA-256 `C69688718250F5534274BB46ADD5B48937341124567CF0F40FEF4BCA35F10B05`，`NotSigned`；已发布 [v1.0.63](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.63)，标签与 Release 目标为功能提交 `9229603db13804a10e8bbd939b6ddf5e033b8c89`，GitHub digest、独立回下载、本地候选和两个 `dist` EXE 的大小及 SHA-256 完全一致 |
+
+本机只有一块 `2560×1440` 显示器，因此多屏、负坐标副屏和混合 DPI 结论来自自动化矩阵，不冒充本轮真实双屏硬件验收；实机冒烟覆盖最终用户路径启动、许愿星完整预览、窗口工具样式和用户数据不变。
 
 ## v1.0.62 发布验证
 
