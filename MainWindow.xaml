@@ -362,12 +362,73 @@
                                          Fill="#42FFF2C9"
                                          Opacity="0" />
 
+                                <Ellipse x:Name="WorkSunModeHalo"
+                                         Width="36"
+                                         Height="31"
+                                         IsHitTestVisible="False"
+                                         Opacity="0.30"
+                                         RenderTransformOrigin="0.5,0.5">
+                                    <Ellipse.Fill>
+                                        <RadialGradientBrush Center="0.5,0.58"
+                                                             GradientOrigin="0.5,0.58"
+                                                             RadiusX="0.56"
+                                                             RadiusY="0.56">
+                                            <GradientStop Offset="0" Color="#72FFF0A4" />
+                                            <GradientStop Offset="0.66" Color="#36FFD46D" />
+                                            <GradientStop Offset="1" Color="#00FFD46D" />
+                                        </RadialGradientBrush>
+                                    </Ellipse.Fill>
+                                    <Ellipse.RenderTransform>
+                                        <ScaleTransform x:Name="WorkSunModeHaloScale"
+                                                        ScaleX="1"
+                                                        ScaleY="1" />
+                                    </Ellipse.RenderTransform>
+                                </Ellipse>
+
+                                <Ellipse x:Name="WorkMoonModeHalo"
+                                         Width="36"
+                                         Height="31"
+                                         IsHitTestVisible="False"
+                                         Opacity="0"
+                                         RenderTransformOrigin="0.5,0.5">
+                                    <Ellipse.Fill>
+                                        <RadialGradientBrush Center="0.5,0.58"
+                                                             GradientOrigin="0.5,0.58"
+                                                             RadiusX="0.56"
+                                                             RadiusY="0.56">
+                                            <GradientStop Offset="0" Color="#6EDFD4FF" />
+                                            <GradientStop Offset="0.66" Color="#369E8CEB" />
+                                            <GradientStop Offset="1" Color="#009E8CEB" />
+                                        </RadialGradientBrush>
+                                    </Ellipse.Fill>
+                                    <Ellipse.RenderTransform>
+                                        <ScaleTransform x:Name="WorkMoonModeHaloScale"
+                                                        ScaleX="0.86"
+                                                        ScaleY="0.86" />
+                                    </Ellipse.RenderTransform>
+                                </Ellipse>
+
                                 <Viewbox x:Name="SunIcon"
                                          Width="32"
                                          Height="32"
                                          HorizontalAlignment="Center"
                                          VerticalAlignment="Center"
-                                         IsHitTestVisible="False">
+                                         IsHitTestVisible="False"
+                                         Opacity="1"
+                                         RenderTransformOrigin="0.5,0.5"
+                                         Visibility="Visible">
+                                    <Viewbox.RenderTransform>
+                                        <TransformGroup>
+                                            <ScaleTransform x:Name="WorkSunIconScale"
+                                                            ScaleX="1"
+                                                            ScaleY="1" />
+                                            <RotateTransform x:Name="WorkSunIconRotate"
+                                                             Angle="0" />
+                                            <TranslateTransform x:Name="WorkSunIconTranslate"
+                                                                X="0"
+                                                                Y="0" />
+                                        </TransformGroup>
+                                    </Viewbox.RenderTransform>
                                     <Canvas Width="32" Height="32">
                                         <Path Data="M16,1.5 V5 M16,27 V30.5 M1.5,16 H5 M27,16 H30.5 M5.7,5.7 L8.2,8.2 M23.8,23.8 L26.3,26.3 M26.3,5.7 L23.8,8.2 M8.2,23.8 L5.7,26.3"
                                               Stroke="#F3A641"
@@ -415,7 +476,21 @@
                                          HorizontalAlignment="Center"
                                          VerticalAlignment="Center"
                                          IsHitTestVisible="False"
-                                         Visibility="Collapsed">
+                                         Opacity="0"
+                                         RenderTransformOrigin="0.5,0.5"
+                                         Visibility="Visible">
+                                    <Viewbox.RenderTransform>
+                                        <TransformGroup>
+                                            <ScaleTransform x:Name="WorkMoonIconScale"
+                                                            ScaleX="0.72"
+                                                            ScaleY="0.72" />
+                                            <RotateTransform x:Name="WorkMoonIconRotate"
+                                                             Angle="16" />
+                                            <TranslateTransform x:Name="WorkMoonIconTranslate"
+                                                                X="1.8"
+                                                                Y="3.4" />
+                                        </TransformGroup>
+                                    </Viewbox.RenderTransform>
                                     <Canvas Width="32" Height="32">
                                         <Path Data="M21.8,3.3 C14.2,4.2 9,10.3 9.3,17.3 C9.6,24.7 16.3,29.1 23.4,27.1 C17.7,24.9 14.5,19.7 15.2,14.2 C15.8,9.5 18.4,5.7 21.8,3.3 Z"
                                               Stroke="#E6A84B"
@@ -442,15 +517,36 @@
                                               Fill="#A79AE7" />
                                     </Canvas>
                                 </Viewbox>
+
+                                <Path x:Name="WorkIconTwinkle"
+                                      Width="10"
+                                      Height="10"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Top"
+                                      Margin="0,2,2,0"
+                                      Data="M5,0.5 L6.15,3.85 L9.5,5 L6.15,6.15 L5,9.5 L3.85,6.15 L0.5,5 L3.85,3.85 Z"
+                                      Fill="#FFFFF4B7"
+                                      IsHitTestVisible="False"
+                                      Opacity="0"
+                                      RenderTransformOrigin="0.5,0.5"
+                                      Stroke="#D9F6AE55"
+                                      StrokeThickness="0.55">
+                                    <Path.RenderTransform>
+                                        <TransformGroup>
+                                            <ScaleTransform x:Name="WorkIconTwinkleScale"
+                                                            ScaleX="0.55"
+                                                            ScaleY="0.55" />
+                                            <RotateTransform x:Name="WorkIconTwinkleRotate"
+                                                             Angle="-15" />
+                                        </TransformGroup>
+                                    </Path.RenderTransform>
+                                </Path>
                             </Grid>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="Tag" Value="Working">
-                                    <Setter TargetName="SunIcon"
-                                            Property="Visibility"
-                                            Value="Collapsed" />
-                                    <Setter TargetName="MoonIcon"
-                                            Property="Visibility"
-                                            Value="Visible" />
+                                    <Setter TargetName="WorkIconHoverHalo"
+                                            Property="Fill"
+                                            Value="#3EDFD4FF" />
                                 </Trigger>
                                 <Trigger Property="IsMouseOver"
                                          Value="True">
@@ -468,7 +564,7 @@
                                          Value="False">
                                     <Setter TargetName="WorkIconRoot"
                                             Property="Opacity"
-                                            Value="0.62" />
+                                            Value="0.78" />
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>

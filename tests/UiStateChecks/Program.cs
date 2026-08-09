@@ -309,6 +309,9 @@ internal static partial class Program
                         nameof(AssertWorkModeVisualAndIsolationContract),
                         () => AssertWorkModeVisualAndIsolationContract(window));
                     RunCheck(
+                        nameof(AssertWorkModeIconTransitionContract),
+                        () => AssertWorkModeIconTransitionContract(window));
+                    RunCheck(
                         nameof(AssertWorkModeClockAndInputContract),
                         () => AssertWorkModeClockAndInputContract(window));
                     RunCheck(
@@ -498,6 +501,9 @@ internal static partial class Program
                 RunCheck(
                     nameof(AssertWorkModeVisualAndIsolationContract),
                     () => AssertWorkModeVisualAndIsolationContract(window));
+                RunCheck(
+                    nameof(AssertWorkModeIconTransitionContract),
+                    () => AssertWorkModeIconTransitionContract(window));
                 RunCheck(
                     nameof(AssertWorkModeClockAndInputContract),
                     () => AssertWorkModeClockAndInputContract(window));
@@ -14615,6 +14621,9 @@ internal static partial class Program
                 "列表可视区域必须完整显示前五行");
 
             var input = GetField<TextBox>(todoWindow, "TodoInput");
+            var todoInputPlaceholder = GetField<TextBlock>(
+                todoWindow,
+                "TodoInputPlaceholder");
             input.ApplyTemplate();
             var todoInputBorder = input.Template.FindName(
                 "TodoInputBorder",
@@ -14658,10 +14667,30 @@ internal static partial class Program
                        Color.FromRgb(0xA9, 0xC9, 0xF4) &&
                    todoInputHoverBorder?.Color ==
                        Color.FromRgb(0x8C, 0xB4, 0xF4) &&
-                   todoInputFocusBorder?.Color ==
-                       Color.FromRgb(0x5B, 0x8D, 0xEF),
+                    todoInputFocusBorder?.Color ==
+                        Color.FromRgb(0x5B, 0x8D, 0xEF),
                 "待办输入框必须与定时输入框共用9 DIP圆角结构，" +
                 "同时保留蓝色背景、边框、悬停、焦点和选区");
+            Keyboard.ClearFocus();
+            input.Text = string.Empty;
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Assert(string.Equals(
+                       todoInputPlaceholder.Text,
+                       "写下待办事项...",
+                       StringComparison.Ordinal) &&
+                   !todoInputPlaceholder.IsHitTestVisible &&
+                   todoInputPlaceholder.Visibility == Visibility.Visible,
+                "TodoInput 未输入且未聚焦时必须显示“写下待办事项...”占位文字，且不得截获鼠标");
+            input.Text = "甲";
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Assert(todoInputPlaceholder.Visibility == Visibility.Collapsed,
+                "TodoInput 输入文字后必须隐藏占位文字");
+            input.Text = string.Empty;
+            input.Focus();
+            Keyboard.Focus(input);
+            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            Assert(todoInputPlaceholder.Visibility == Visibility.Collapsed,
+                "TodoInput 空文本获得输入焦点时必须隐藏占位文字，避免遮挡微软输入法组合文本");
             input.Text = "输入框无选区也应复制全文";
             input.Select(0, 0);
             Assert((bool)Invoke(todoWindow, "CanCopyFromTextBox", input)! &&
@@ -19523,24 +19552,58 @@ internal static partial class Program
                namedIcons.All(icon => icon.Attributes().Any(attribute =>
                    attribute.Name.LocalName == "Width" &&
                    attribute.Value == "32")) &&
+               namedIcons.All(icon => icon.Attributes().Any(attribute =>
+                   attribute.Name.LocalName == "Visibility" &&
+                   attribute.Value == "Visible")) &&
+               namedIcons.Single(icon => icon.Attributes().Any(attribute =>
+                       attribute.Name.LocalName == "Name" &&
+                       attribute.Value == "SunIcon"))
+                   .Attributes().Any(attribute =>
+                       attribute.Name.LocalName == "Opacity" &&
+                       attribute.Value == "1") &&
+               namedIcons.Single(icon => icon.Attributes().Any(attribute =>
+                       attribute.Name.LocalName == "Name" &&
+                       attribute.Value == "MoonIcon"))
+                   .Attributes().Any(attribute =>
+                       attribute.Name.LocalName == "Opacity" &&
+                       attribute.Value == "0") &&
                workButton.Descendants().Count(element =>
                    element.Name.LocalName == "TextBlock") == 0 &&
+               workButton.Descendants().Count(element =>
+                   element.Name.LocalName == "Image") == 0 &&
                workButton.Descendants().Count(element =>
                    element.Name.LocalName == "Path") >= 5 &&
                !workButton.Descendants().Any(element =>
                    element.Name.LocalName == "DropShadowEffect"),
             "Work mode must use cute code-native sun/moon vectors without text, " +
             "bitmap scaling, or transparent-window shadow effects.");
-        Assert(workButton.Descendants().Any(element =>
-                   element.Name.LocalName == "Trigger" &&
+        var namedVisualParts = workButton
+            .Descendants()
+            .SelectMany(element => element.Attributes())
+            .Where(attribute => attribute.Name.LocalName == "Name")
+            .Select(attribute => attribute.Value)
+            .ToArray();
+        Assert(namedVisualParts.Contains("WorkSunModeHalo") &&
+               namedVisualParts.Contains("WorkMoonModeHalo") &&
+               namedVisualParts.Contains("WorkIconTwinkle") &&
+               namedVisualParts.Contains("WorkSunIconScale") &&
+               namedVisualParts.Contains("WorkSunIconRotate") &&
+               namedVisualParts.Contains("WorkSunIconTranslate") &&
+               namedVisualParts.Contains("WorkMoonIconScale") &&
+               namedVisualParts.Contains("WorkMoonIconRotate") &&
+               namedVisualParts.Contains("WorkMoonIconTranslate") &&
+               !workButton.Descendants().Any(element =>
+                   element.Name.LocalName == "Setter" &&
+                   element.Attributes().Any(attribute =>
+                       attribute.Name.LocalName == "TargetName" &&
+                       attribute.Value is "SunIcon" or "MoonIcon") &&
                    element.Attributes().Any(attribute =>
                        attribute.Name.LocalName == "Property" &&
-                       attribute.Value == "Tag") &&
-                   element.Attributes().Any(attribute =>
-                       attribute.Name.LocalName == "Value" &&
-                       attribute.Value == "Working")),
-            "The icon template must switch atomically from sun to moon through " +
-            "the existing Idle/Working Tag, with no old/new text flash.");
+                       attribute.Value == "Visibility")) &&
+               !workButton.Descendants().Any(element =>
+                   element.Name.LocalName == "Storyboard"),
+            "Sun and moon must remain resident and Visible while cached transforms, " +
+            "mode-coloured halos, and one preset twinkle provide the smooth switch.");
 
         var protectedFiles = new[]
         {
@@ -19979,6 +20042,215 @@ internal static partial class Program
                 $"Work {sequence} at {refreshRate}Hz/{playbackRate:F0}x must expose " +
                 $"{expectedVisibleCount} authored frame slots per cycle, actual " +
                 $"{visibleFrameIndices.Count}.");
+        }
+    }
+
+    private static void AssertWorkModeIconTransitionContract(MainWindow window)
+    {
+        var source = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var xaml = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml"));
+        var refresh = ExtractPrivateMethodSource(source, "RefreshWorkModeButton");
+        var updateTarget = ExtractPrivateMethodSource(
+            source,
+            "UpdateWorkModeIconVisualTarget");
+        var initialize = ExtractPrivateMethodSource(
+            source,
+            "EnsureWorkModeIconVisuals");
+        var advance = ExtractPrivateMethodSource(
+            source,
+            "AdvanceWorkModeIconTransition");
+        var resolve = ExtractPrivateMethodSource(
+            source,
+            "ResolveWorkModeIconTransitionState");
+        var apply = ExtractPrivateMethodSource(
+            source,
+            "ApplyWorkModeIconVisualState");
+        var rendering = ExtractPrivateMethodSource(source, "VisualClock_Rendering");
+        var subscription = ExtractPrivateMethodSource(
+            source,
+            "UpdateVisualClockSubscription");
+        var stateType = typeof(MainWindow).GetNestedType(
+            "WorkModeIconVisualState",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "找不到 WorkModeIconVisualState");
+
+        Assert(source.Contains(
+                   "WorkModeIconTransitionDurationSeconds = 0.42",
+                   StringComparison.Ordinal) &&
+               stateType.IsValueType &&
+               rendering.Contains(
+                   "AdvanceWorkModeIconTransition(timestamp)",
+                   StringComparison.Ordinal) &&
+               advance.Contains(
+                   "(timestamp - _workModeIconTransitionStartedTimestamp)",
+                   StringComparison.Ordinal) &&
+               advance.Contains("Stopwatch.Frequency", StringComparison.Ordinal) &&
+               subscription.Contains(
+                   "_workModeIconTransitionActive",
+                   StringComparison.Ordinal),
+            "太阳/月亮必须复用单一CompositionTarget.Rendering + Stopwatch的" +
+            "420ms绝对时间轴，且视觉状态必须是无堆分配的值类型。");
+        Assert(refresh.Contains(
+                   "!_workExitRequested",
+                   StringComparison.Ordinal) &&
+               refresh.Contains(
+                   "_workState != WorkState.Exiting",
+                   StringComparison.Ordinal) &&
+               updateTarget.Contains(
+                   "AdvanceWorkModeIconTransition(timestamp)",
+                   StringComparison.Ordinal) &&
+               updateTarget.Contains(
+                   "_workModeIconTransitionStartState = _workModeIconCurrentVisualState",
+                   StringComparison.Ordinal),
+            "退出请求当帧必须把月亮目标反转为太阳；若目标在过渡中反转，" +
+            "必须先解析当前mix并从该值续播，不能跳回任一端点。");
+        Assert(initialize.Contains("ApplyTemplate", StringComparison.Ordinal) &&
+               initialize.Contains("template.FindName", StringComparison.Ordinal) &&
+               !apply.Contains("FindName", StringComparison.Ordinal) &&
+               !apply.Contains("ApplyTemplate", StringComparison.Ordinal) &&
+               !advance.Contains("DispatcherTimer", StringComparison.Ordinal) &&
+               !resolve.Contains("DispatcherTimer", StringComparison.Ordinal) &&
+               !resolve.Contains("Storyboard", StringComparison.Ordinal) &&
+               !resolve.Contains("BeginAnimation", StringComparison.Ordinal) &&
+               !xaml.Contains("<Storyboard", StringComparison.Ordinal) &&
+               !source.Split('\n').Any(line => line.Contains(
+                   "DispatcherTimer _workModeIcon",
+                   StringComparison.Ordinal)),
+            "模板元素只能初始化时查找并缓存；每帧不得查找布局元素、创建timer/" +
+            "Storyboard或启动独立动画对象。");
+
+        object Stable(bool working) => InvokeStatic(
+            typeof(MainWindow),
+            "GetWorkModeIconStableState",
+            working)!;
+        object Resolve(object startState, double seconds, bool toWorking) =>
+            InvokeStatic(
+                typeof(MainWindow),
+                "ResolveWorkModeIconTransitionState",
+                startState,
+                seconds,
+                toWorking)!;
+        double Value(object state, string property) =>
+            GetProperty<double>(state, property);
+
+        var idle = Stable(working: false);
+        var working = Stable(working: true);
+        var forwardStart = Resolve(idle, 0, toWorking: true);
+        var firstRefresh = Resolve(idle, 1d / 60d, toWorking: true);
+        var stalledAt250Milliseconds = Resolve(idle, 0.250, toWorking: true);
+        var incomingOvershoot = Resolve(idle, 0.290, toWorking: true);
+        var forwardEnd = Resolve(idle, 0.420, toWorking: true);
+        AssertWorkModeIconStateClose(
+            forwardStart,
+            idle,
+            "太阳→月亮的起点必须精确保持当前太阳状态");
+        Assert(Value(firstRefresh, "SunScale") is < 0.98 and > 0.72 &&
+               Math.Abs(Value(firstRefresh, "SunRotationDegrees")) > 0.05 &&
+               Value(firstRefresh, "MoonOpacity") > 0 &&
+               Value(firstRefresh, "SunOpacity") +
+                   Value(firstRefresh, "MoonOpacity") is >= 0.999 and <= 1.051,
+            "点击后一个60Hz刷新周期内必须看到太阳收拢/旋转和月亮淡入反馈，" +
+            "且不能出现双图全透明帧。");
+        Assert(Value(incomingOvershoot, "MoonScale") is >= 1.06 and <= 1.081 &&
+               Value(stalledAt250Milliseconds, "TwinkleOpacity") > 0.20 &&
+               Value(stalledAt250Milliseconds, "SunOpacity") > 0 &&
+               Value(stalledAt250Milliseconds, "MoonOpacity") > 0,
+            "入场图标必须从0.72回弹到约1.08再收敛，并以单个预置小星闪烁；" +
+            "250ms阻塞后必须直接定位到当前交叉态。");
+        AssertWorkModeIconStateClose(
+            forwardEnd,
+            working,
+            "420ms结束必须精确收敛到月亮稳定态");
+
+        var reverseStart = Resolve(working, 0, toWorking: false);
+        var reverseFirstRefresh = Resolve(
+            working,
+            1d / 60d,
+            toWorking: false);
+        var reverseOvershoot = Resolve(working, 0.290, toWorking: false);
+        var reverseEnd = Resolve(working, 0.420, toWorking: false);
+        AssertWorkModeIconStateClose(
+            reverseStart,
+            working,
+            "月亮→太阳的起点必须精确保持当前月亮状态");
+        Assert(Value(reverseFirstRefresh, "MoonScale") is < 0.98 and > 0.72 &&
+               Math.Abs(Value(reverseFirstRefresh, "MoonRotationDegrees")) > 0.05 &&
+               Value(reverseFirstRefresh, "SunOpacity") > 0 &&
+               Value(reverseOvershoot, "SunScale") is >= 1.06 and <= 1.081,
+            "月亮退出和太阳入场必须使用同样丝滑的下沉、旋转与回弹质量。");
+        AssertWorkModeIconStateClose(
+            reverseEnd,
+            idle,
+            "420ms反向结束必须精确收敛到太阳稳定态");
+
+        for (var millisecond = 0; millisecond <= 420; millisecond++)
+        {
+            var forward = Resolve(
+                idle,
+                millisecond / 1000d,
+                toWorking: true);
+            var reverse = Resolve(
+                working,
+                millisecond / 1000d,
+                toWorking: false);
+            var forwardCombinedOpacity = Value(forward, "SunOpacity") +
+                                         Value(forward, "MoonOpacity");
+            var reverseCombinedOpacity = Value(reverse, "SunOpacity") +
+                                         Value(reverse, "MoonOpacity");
+            Assert(forwardCombinedOpacity is >= 0.999 and <= 1.051 &&
+                   reverseCombinedOpacity is >= 0.999 and <= 1.051,
+                $"太阳/月亮交叉淡入淡出在{millisecond}ms必须保持总Opacity " +
+                $"1.0–1.05，避免空帧或双图发亮：" +
+                $"{forwardCombinedOpacity:F3}/{reverseCombinedOpacity:F3}。");
+        }
+
+        var forwardMid = Resolve(idle, 0.180, toWorking: true);
+        var reversedFromCurrentMix = Resolve(
+            forwardMid,
+            0,
+            toWorking: false);
+        AssertWorkModeIconStateClose(
+            reversedFromCurrentMix,
+            forwardMid,
+            "中途反转必须从同一mix、transform和halo值连续开始");
+        AssertWorkModeIconStateClose(
+            Resolve(forwardMid, 0.420, toWorking: false),
+            idle,
+            "中途反转仍必须在独立420ms绝对时间后收敛到太阳");
+
+        foreach (var refreshRate in new[] { 59, 60, 120, 144 })
+        {
+            _ = refreshRate;
+            AssertWorkModeIconStateClose(
+                Resolve(idle, 0.250, toWorking: true),
+                stalledAt250Milliseconds,
+                "同一绝对时间在59/60/120/144Hz必须得到同一图标位置");
+        }
+
+        PrepareWorkModeIdleState(window);
+    }
+
+    private static void AssertWorkModeIconStateClose(
+        object actual,
+        object expected,
+        string message)
+    {
+        foreach (var property in new[]
+                 {
+                     "SunOpacity", "MoonOpacity", "SunScale", "MoonScale",
+                     "SunRotationDegrees", "MoonRotationDegrees",
+                     "SunTranslateX", "SunTranslateY",
+                     "MoonTranslateX", "MoonTranslateY",
+                     "SunHaloOpacity", "MoonHaloOpacity",
+                     "SunHaloScale", "MoonHaloScale",
+                     "TwinkleOpacity", "TwinkleScale", "TwinkleRotationDegrees"
+                 })
+        {
+            var actualValue = GetProperty<double>(actual, property);
+            var expectedValue = GetProperty<double>(expected, property);
+            Assert(Math.Abs(actualValue - expectedValue) <= 0.000001,
+                $"{message}: {property}={actualValue:F6}/{expectedValue:F6}");
         }
     }
 
@@ -22141,14 +22413,12 @@ internal static partial class Program
                button.IsEnabled == expectedIsEnabled &&
                button.IsHitTestVisible == expectedIsHitTestVisible &&
                sunIcon is not null && moonIcon is not null &&
-               sunIcon.Visibility ==
-                   (expectedTag == "Idle"
-                       ? Visibility.Visible
-                       : Visibility.Collapsed) &&
-               moonIcon.Visibility ==
-                   (expectedTag == "Working"
-                       ? Visibility.Visible
-                       : Visibility.Collapsed),
+               sunIcon.Visibility == Visibility.Visible &&
+               moonIcon.Visibility == Visibility.Visible &&
+               sunIcon.Opacity + moonIcon.Opacity is >= 0.999 and <= 1.051 &&
+               (expectedTag == "Idle"
+                   ? sunIcon.Opacity > 0.999 && moonIcon.Opacity < 0.001
+                   : moonIcon.Opacity > 0.999 && sunIcon.Opacity < 0.001),
             $"{phase} work-icon contract mismatch: " +
             $"state={actualState}/{expectedState}, " +
             $"tag={button.Tag}/{expectedTag}, " +

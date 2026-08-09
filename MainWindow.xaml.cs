@@ -110,6 +110,7 @@ public partial class MainWindow : Window
     private const int WorkEnterPillowVisibleFrameCount = 24;
     private const double WorkNormalPoseFramesPerSecond = 60;
     private const double WorkFastPlaybackMultiplier = 2;
+    private const double WorkModeIconTransitionDurationSeconds = 0.42;
     // The 96-pose keyboard cycle comes closest to its authored home-row pose at
     // these short neutral micro-seams. Serious/downshift transitions wait for the
     // next one on the unchanged 1x/2x clock instead of racing to loop frame 001.
@@ -340,6 +341,29 @@ public partial class MainWindow : Window
     private double _workExitTargetFramePosition = double.PositiveInfinity;
     private long _workLoopAnchorTimestamp;
     private long _workFastUntilTimestamp;
+    private bool _workModeIconVisualsInitialized;
+    private bool _workModeIconVisualStateInitialized;
+    private bool _workModeIconTransitionActive;
+    private bool _workModeIconTargetWorking;
+    private bool _workModeIconTransitionToWorking;
+    private long _workModeIconTransitionStartedTimestamp;
+    private WorkModeIconVisualState _workModeIconCurrentVisualState;
+    private WorkModeIconVisualState _workModeIconTransitionStartState;
+    private FrameworkElement? _workSunIconVisual;
+    private FrameworkElement? _workMoonIconVisual;
+    private FrameworkElement? _workSunModeHaloVisual;
+    private FrameworkElement? _workMoonModeHaloVisual;
+    private FrameworkElement? _workIconTwinkleVisual;
+    private ScaleTransform? _workSunIconScale;
+    private RotateTransform? _workSunIconRotate;
+    private TranslateTransform? _workSunIconTranslate;
+    private ScaleTransform? _workMoonIconScale;
+    private RotateTransform? _workMoonIconRotate;
+    private TranslateTransform? _workMoonIconTranslate;
+    private ScaleTransform? _workSunModeHaloScale;
+    private ScaleTransform? _workMoonModeHaloScale;
+    private ScaleTransform? _workIconTwinkleScale;
+    private RotateTransform? _workIconTwinkleRotate;
     private int _lastAutomaticActivityIndex = -1;
     private int _outsideTodoCloseGeneration;
     private int _outsideTodoCloseScheduledGeneration;
@@ -2183,6 +2207,8 @@ public partial class MainWindow : Window
         _isClosing = true;
         CancelTodoOpenAfterWorkExit();
         _workState = WorkState.Idle;
+        _workModeIconTransitionActive = false;
+        _workModeIconTransitionStartedTimestamp = 0;
         _workExitRequested = false;
         _workSeriousEnterRequested = false;
         _workSeriousExitRequested = false;
@@ -4001,6 +4027,10 @@ public partial class MainWindow : Window
         {
             WorkModeButton.Tag = visualStateTag;
         }
+        var workIconTargetWorking = workActive &&
+                                    !_workExitRequested &&
+                                    _workState != WorkState.Exiting;
+        UpdateWorkModeIconVisualTarget(workIconTargetWorking, shouldShow);
 
         var automationName = workActive ? "去睡觉" : "去打工";
         var helpText = workActive
@@ -4024,6 +4054,428 @@ public partial class MainWindow : Window
         WorkModeButton.ToolTip = workActive
             ? "月亮：去睡觉"
             : "太阳：去打工";
+    }
+
+    private void UpdateWorkModeIconVisualTarget(
+        bool workActive,
+        bool shouldShow)
+    {
+        if (!EnsureWorkModeIconVisuals())
+        {
+            _workModeIconTransitionActive = false;
+            return;
+        }
+
+        if (!_workModeIconVisualStateInitialized)
+        {
+            _workModeIconVisualStateInitialized = true;
+            _workModeIconTargetWorking = workActive;
+            _workModeIconTransitionToWorking = workActive;
+            _workModeIconTransitionActive = false;
+            _workModeIconTransitionStartedTimestamp = 0;
+            ApplyWorkModeIconVisualState(
+                GetWorkModeIconStableState(workActive));
+            return;
+        }
+
+        if (!shouldShow)
+        {
+            if (_workModeIconTransitionActive ||
+                _workModeIconTargetWorking != workActive)
+            {
+                _workModeIconTargetWorking = workActive;
+                _workModeIconTransitionToWorking = workActive;
+                _workModeIconTransitionActive = false;
+                _workModeIconTransitionStartedTimestamp = 0;
+                ApplyWorkModeIconVisualState(
+                    GetWorkModeIconStableState(workActive));
+            }
+            return;
+        }
+
+        if (_workModeIconTargetWorking == workActive)
+        {
+            return;
+        }
+
+        var timestamp = Stopwatch.GetTimestamp();
+        if (_workModeIconTransitionActive)
+        {
+            // A state interruption can reverse the target between two monitor
+            // refreshes. Resolve the exact current mix first, then continue from
+            // those same transforms and opacities without jumping to an endpoint.
+            AdvanceWorkModeIconTransition(timestamp);
+        }
+
+        _workModeIconTargetWorking = workActive;
+        _workModeIconTransitionToWorking = workActive;
+        _workModeIconTransitionStartState = _workModeIconCurrentVisualState;
+        _workModeIconTransitionStartedTimestamp = timestamp;
+        _workModeIconTransitionActive = true;
+        // Publish the exact outgoing endpoint now. The first composition pass
+        // advances from this absolute timestamp, so click feedback arrives in
+        // no more than one monitor refresh without a Storyboard or extra timer.
+        ApplyWorkModeIconVisualState(
+            ResolveWorkModeIconTransitionState(
+                _workModeIconTransitionStartState,
+                elapsedSeconds: 0,
+                toWorking: workActive));
+    }
+
+    private bool EnsureWorkModeIconVisuals()
+    {
+        if (_workModeIconVisualsInitialized)
+        {
+            return true;
+        }
+
+        _ = WorkModeButton.ApplyTemplate();
+        var template = WorkModeButton.Template;
+        if (template.FindName("SunIcon", WorkModeButton) is not FrameworkElement sunIcon ||
+            template.FindName("MoonIcon", WorkModeButton) is not FrameworkElement moonIcon ||
+            template.FindName("WorkSunModeHalo", WorkModeButton) is not FrameworkElement sunHalo ||
+            template.FindName("WorkMoonModeHalo", WorkModeButton) is not FrameworkElement moonHalo ||
+            template.FindName("WorkIconTwinkle", WorkModeButton) is not FrameworkElement twinkle ||
+            template.FindName("WorkSunIconScale", WorkModeButton) is not ScaleTransform sunScale ||
+            template.FindName("WorkSunIconRotate", WorkModeButton) is not RotateTransform sunRotate ||
+            template.FindName("WorkSunIconTranslate", WorkModeButton) is not TranslateTransform sunTranslate ||
+            template.FindName("WorkMoonIconScale", WorkModeButton) is not ScaleTransform moonScale ||
+            template.FindName("WorkMoonIconRotate", WorkModeButton) is not RotateTransform moonRotate ||
+            template.FindName("WorkMoonIconTranslate", WorkModeButton) is not TranslateTransform moonTranslate ||
+            template.FindName("WorkSunModeHaloScale", WorkModeButton) is not ScaleTransform sunHaloScale ||
+            template.FindName("WorkMoonModeHaloScale", WorkModeButton) is not ScaleTransform moonHaloScale ||
+            template.FindName("WorkIconTwinkleScale", WorkModeButton) is not ScaleTransform twinkleScale ||
+            template.FindName("WorkIconTwinkleRotate", WorkModeButton) is not RotateTransform twinkleRotate)
+        {
+            return false;
+        }
+
+        _workSunIconVisual = sunIcon;
+        _workMoonIconVisual = moonIcon;
+        _workSunModeHaloVisual = sunHalo;
+        _workMoonModeHaloVisual = moonHalo;
+        _workIconTwinkleVisual = twinkle;
+        _workSunIconScale = sunScale;
+        _workSunIconRotate = sunRotate;
+        _workSunIconTranslate = sunTranslate;
+        _workMoonIconScale = moonScale;
+        _workMoonIconRotate = moonRotate;
+        _workMoonIconTranslate = moonTranslate;
+        _workSunModeHaloScale = sunHaloScale;
+        _workMoonModeHaloScale = moonHaloScale;
+        _workIconTwinkleScale = twinkleScale;
+        _workIconTwinkleRotate = twinkleRotate;
+        _workModeIconVisualsInitialized = true;
+        return true;
+    }
+
+    private void AdvanceWorkModeIconTransition(long timestamp)
+    {
+        if (!_workModeIconTransitionActive ||
+            _workModeIconTransitionStartedTimestamp <= 0)
+        {
+            return;
+        }
+
+        var elapsedSeconds = Math.Max(
+            0,
+            (timestamp - _workModeIconTransitionStartedTimestamp) /
+            (double)Stopwatch.Frequency);
+        ApplyWorkModeIconVisualState(
+            ResolveWorkModeIconTransitionState(
+                _workModeIconTransitionStartState,
+                elapsedSeconds,
+                _workModeIconTransitionToWorking));
+        if (elapsedSeconds >= WorkModeIconTransitionDurationSeconds)
+        {
+            _workModeIconTransitionActive = false;
+            _workModeIconTransitionStartedTimestamp = 0;
+        }
+    }
+
+    private static WorkModeIconVisualState ResolveWorkModeIconTransitionState(
+        WorkModeIconVisualState startState,
+        double elapsedSeconds,
+        bool toWorking)
+    {
+        var finiteElapsedSeconds = double.IsFinite(elapsedSeconds)
+            ? Math.Max(0, elapsedSeconds)
+            : WorkModeIconTransitionDurationSeconds;
+        var progress = Math.Clamp(
+            finiteElapsedSeconds / WorkModeIconTransitionDurationSeconds,
+            0,
+            1);
+        var eased = SmoothStep(progress);
+        var arc = Math.Sin(progress * Math.PI);
+        var outgoingDirection = toWorking ? -1d : 1d;
+        var incomingDirection = -outgoingDirection;
+        var startOutgoingOpacity = toWorking
+            ? startState.SunOpacity
+            : startState.MoonOpacity;
+        var startIncomingOpacity = toWorking
+            ? startState.MoonOpacity
+            : startState.SunOpacity;
+        var outgoingOpacity = startOutgoingOpacity *
+                              (1 - SmoothStep(Math.Clamp(
+                                  (progress - 0.18) / 0.82,
+                                  0,
+                                  1)));
+        var incomingOpacity = InterpolateWorkModeIconValue(
+            startIncomingOpacity,
+            1,
+            SmoothStep(Math.Clamp(progress / 0.82, 0, 1)));
+        var combinedOpacity = outgoingOpacity + incomingOpacity;
+        if (combinedOpacity < 1)
+        {
+            incomingOpacity = Math.Min(1, incomingOpacity + 1 - combinedOpacity);
+        }
+        else if (combinedOpacity > 1.05)
+        {
+            var opacityNormalization = 1.05 / combinedOpacity;
+            outgoingOpacity *= opacityNormalization;
+            incomingOpacity *= opacityNormalization;
+        }
+
+        var startOutgoingScale = toWorking
+            ? startState.SunScale
+            : startState.MoonScale;
+        var startIncomingScale = toWorking
+            ? startState.MoonScale
+            : startState.SunScale;
+        var earlySettle = SmoothStep(Math.Clamp(progress / 0.06, 0, 1));
+        var outgoingScale = InterpolateWorkModeIconValue(
+                                startOutgoingScale,
+                                0.72,
+                                eased) -
+                            0.06 * earlySettle * (1 - eased);
+        var incomingScale = Math.Min(
+            1.08,
+            InterpolateWorkModeIconValue(
+                startIncomingScale,
+                1,
+                eased) + 0.174 * arc);
+
+        var startOutgoingRotation = toWorking
+            ? startState.SunRotationDegrees
+            : startState.MoonRotationDegrees;
+        var startIncomingRotation = toWorking
+            ? startState.MoonRotationDegrees
+            : startState.SunRotationDegrees;
+        var outgoingRotation = InterpolateWorkModeIconValue(
+                                   startOutgoingRotation,
+                                   outgoingDirection * 18,
+                                   eased) +
+                               outgoingDirection * 2.5 * arc;
+        var incomingRotation = InterpolateWorkModeIconValue(
+                                   startIncomingRotation,
+                                   0,
+                                   eased) -
+                               incomingDirection * 3.5 * arc;
+
+        var startOutgoingTranslateX = toWorking
+            ? startState.SunTranslateX
+            : startState.MoonTranslateX;
+        var startIncomingTranslateX = toWorking
+            ? startState.MoonTranslateX
+            : startState.SunTranslateX;
+        var startOutgoingTranslateY = toWorking
+            ? startState.SunTranslateY
+            : startState.MoonTranslateY;
+        var startIncomingTranslateY = toWorking
+            ? startState.MoonTranslateY
+            : startState.SunTranslateY;
+        var outgoingTranslateX = InterpolateWorkModeIconValue(
+            startOutgoingTranslateX,
+            outgoingDirection * 1.8,
+            eased);
+        var incomingTranslateX = InterpolateWorkModeIconValue(
+            startIncomingTranslateX,
+            0,
+            eased);
+        var outgoingTranslateY = InterpolateWorkModeIconValue(
+                                     startOutgoingTranslateY,
+                                     3.4,
+                                     eased) +
+                                 0.6 * arc;
+        var incomingTranslateY = InterpolateWorkModeIconValue(
+                                     startIncomingTranslateY,
+                                     0,
+                                     eased) -
+                                 1.6 * arc;
+
+        var startOutgoingHaloOpacity = toWorking
+            ? startState.SunHaloOpacity
+            : startState.MoonHaloOpacity;
+        var startIncomingHaloOpacity = toWorking
+            ? startState.MoonHaloOpacity
+            : startState.SunHaloOpacity;
+        var startOutgoingHaloScale = toWorking
+            ? startState.SunHaloScale
+            : startState.MoonHaloScale;
+        var startIncomingHaloScale = toWorking
+            ? startState.MoonHaloScale
+            : startState.SunHaloScale;
+        var outgoingHaloOpacity = InterpolateWorkModeIconValue(
+                                      startOutgoingHaloOpacity,
+                                      0,
+                                      eased) +
+                                  0.10 * arc;
+        var incomingHaloOpacity = InterpolateWorkModeIconValue(
+                                      startIncomingHaloOpacity,
+                                      0.30,
+                                      eased) +
+                                  0.14 * arc;
+        var outgoingHaloScale = InterpolateWorkModeIconValue(
+                                    startOutgoingHaloScale,
+                                    0.86,
+                                    eased) +
+                                0.08 * arc;
+        var incomingHaloScale = InterpolateWorkModeIconValue(
+                                    startIncomingHaloScale,
+                                    1,
+                                    eased) +
+                                0.12 * arc;
+
+        var twinkleProgress = Math.Clamp(
+            (progress - 0.38) / 0.52,
+            0,
+            1);
+        var twinkleEnvelope = progress is > 0.38 and < 0.90
+            ? Math.Sin(twinkleProgress * Math.PI)
+            : 0;
+        var twinkleFlicker = 0.62 +
+                             0.38 * Math.Abs(Math.Sin(
+                                 twinkleProgress * Math.PI * 3));
+        var twinklePulse = twinkleEnvelope * twinkleFlicker;
+        var twinkleOpacity = Math.Min(
+            1,
+            startState.TwinkleOpacity * (1 - eased) + twinklePulse);
+        var twinkleScale = InterpolateWorkModeIconValue(
+                               startState.TwinkleScale,
+                               0.55,
+                               eased) +
+                           0.68 * twinklePulse;
+        var twinkleRotation = InterpolateWorkModeIconValue(
+                                  startState.TwinkleRotationDegrees,
+                                  toWorking ? 85 : -85,
+                                  eased) +
+                              (toWorking ? 1 : -1) * 35 * twinklePulse;
+
+        return toWorking
+            ? new WorkModeIconVisualState(
+                SunOpacity: outgoingOpacity,
+                MoonOpacity: incomingOpacity,
+                SunScale: outgoingScale,
+                MoonScale: incomingScale,
+                SunRotationDegrees: outgoingRotation,
+                MoonRotationDegrees: incomingRotation,
+                SunTranslateX: outgoingTranslateX,
+                SunTranslateY: outgoingTranslateY,
+                MoonTranslateX: incomingTranslateX,
+                MoonTranslateY: incomingTranslateY,
+                SunHaloOpacity: outgoingHaloOpacity,
+                MoonHaloOpacity: incomingHaloOpacity,
+                SunHaloScale: outgoingHaloScale,
+                MoonHaloScale: incomingHaloScale,
+                TwinkleOpacity: twinkleOpacity,
+                TwinkleScale: twinkleScale,
+                TwinkleRotationDegrees: twinkleRotation)
+            : new WorkModeIconVisualState(
+                SunOpacity: incomingOpacity,
+                MoonOpacity: outgoingOpacity,
+                SunScale: incomingScale,
+                MoonScale: outgoingScale,
+                SunRotationDegrees: incomingRotation,
+                MoonRotationDegrees: outgoingRotation,
+                SunTranslateX: incomingTranslateX,
+                SunTranslateY: incomingTranslateY,
+                MoonTranslateX: outgoingTranslateX,
+                MoonTranslateY: outgoingTranslateY,
+                SunHaloOpacity: incomingHaloOpacity,
+                MoonHaloOpacity: outgoingHaloOpacity,
+                SunHaloScale: incomingHaloScale,
+                MoonHaloScale: outgoingHaloScale,
+                TwinkleOpacity: twinkleOpacity,
+                TwinkleScale: twinkleScale,
+                TwinkleRotationDegrees: twinkleRotation);
+    }
+
+    private static WorkModeIconVisualState GetWorkModeIconStableState(
+        bool working) =>
+        working
+            ? new WorkModeIconVisualState(
+                SunOpacity: 0,
+                MoonOpacity: 1,
+                SunScale: 0.72,
+                MoonScale: 1,
+                SunRotationDegrees: -18,
+                MoonRotationDegrees: 0,
+                SunTranslateX: -1.8,
+                SunTranslateY: 3.4,
+                MoonTranslateX: 0,
+                MoonTranslateY: 0,
+                SunHaloOpacity: 0,
+                MoonHaloOpacity: 0.30,
+                SunHaloScale: 0.86,
+                MoonHaloScale: 1,
+                TwinkleOpacity: 0,
+                TwinkleScale: 0.55,
+                TwinkleRotationDegrees: 85)
+            : new WorkModeIconVisualState(
+                SunOpacity: 1,
+                MoonOpacity: 0,
+                SunScale: 1,
+                MoonScale: 0.72,
+                SunRotationDegrees: 0,
+                MoonRotationDegrees: 18,
+                SunTranslateX: 0,
+                SunTranslateY: 0,
+                MoonTranslateX: 1.8,
+                MoonTranslateY: 3.4,
+                SunHaloOpacity: 0.30,
+                MoonHaloOpacity: 0,
+                SunHaloScale: 1,
+                MoonHaloScale: 0.86,
+                TwinkleOpacity: 0,
+                TwinkleScale: 0.55,
+                TwinkleRotationDegrees: -85);
+
+    private static double InterpolateWorkModeIconValue(
+        double from,
+        double to,
+        double progress) =>
+        from + (to - from) * progress;
+
+    private void ApplyWorkModeIconVisualState(WorkModeIconVisualState state)
+    {
+        if (!_workModeIconVisualsInitialized)
+        {
+            return;
+        }
+
+        _workModeIconCurrentVisualState = state;
+        _workSunIconVisual!.Opacity = state.SunOpacity;
+        _workMoonIconVisual!.Opacity = state.MoonOpacity;
+        _workSunIconScale!.ScaleX = state.SunScale;
+        _workSunIconScale.ScaleY = state.SunScale;
+        _workSunIconRotate!.Angle = state.SunRotationDegrees;
+        _workSunIconTranslate!.X = state.SunTranslateX;
+        _workSunIconTranslate.Y = state.SunTranslateY;
+        _workMoonIconScale!.ScaleX = state.MoonScale;
+        _workMoonIconScale.ScaleY = state.MoonScale;
+        _workMoonIconRotate!.Angle = state.MoonRotationDegrees;
+        _workMoonIconTranslate!.X = state.MoonTranslateX;
+        _workMoonIconTranslate.Y = state.MoonTranslateY;
+        _workSunModeHaloVisual!.Opacity = state.SunHaloOpacity;
+        _workMoonModeHaloVisual!.Opacity = state.MoonHaloOpacity;
+        _workSunModeHaloScale!.ScaleX = state.SunHaloScale;
+        _workSunModeHaloScale.ScaleY = state.SunHaloScale;
+        _workMoonModeHaloScale!.ScaleX = state.MoonHaloScale;
+        _workMoonModeHaloScale.ScaleY = state.MoonHaloScale;
+        _workIconTwinkleVisual!.Opacity = state.TwinkleOpacity;
+        _workIconTwinkleScale!.ScaleX = state.TwinkleScale;
+        _workIconTwinkleScale.ScaleY = state.TwinkleScale;
+        _workIconTwinkleRotate!.Angle = state.TwinkleRotationDegrees;
     }
 
     private void UpdateEdgeDockAfterDrag()
@@ -7501,6 +7953,7 @@ public partial class MainWindow : Window
                 }
             }
 
+            AdvanceWorkModeIconTransition(timestamp);
             UpdateWishStarOverlay(timestamp);
 
             if (_edgeDock != EdgeDock.None)
@@ -7544,6 +7997,7 @@ public partial class MainWindow : Window
                           (_isPetSizeAdjustmentActive ||
                            _petSizeTargetUpdatePending ||
                            _isPetSizeTransitioning ||
+                           _workModeIconTransitionActive ||
                            _activeClip is not null ||
                            (_workEdgeDock != EdgeDock.None &&
                             _workState != WorkState.Idle) ||
@@ -12942,6 +13396,25 @@ public partial class MainWindow : Window
         double TranslateY,
         double RotationDegrees,
         double Scale);
+
+    private readonly record struct WorkModeIconVisualState(
+        double SunOpacity,
+        double MoonOpacity,
+        double SunScale,
+        double MoonScale,
+        double SunRotationDegrees,
+        double MoonRotationDegrees,
+        double SunTranslateX,
+        double SunTranslateY,
+        double MoonTranslateX,
+        double MoonTranslateY,
+        double SunHaloOpacity,
+        double MoonHaloOpacity,
+        double SunHaloScale,
+        double MoonHaloScale,
+        double TwinkleOpacity,
+        double TwinkleScale,
+        double TwinkleRotationDegrees);
 
     private sealed record AnimationClip(
         string Message,

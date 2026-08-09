@@ -1424,6 +1424,32 @@
                                 </Style>
                             </TextBox.Style>
                         </TextBox>
+                        <TextBlock x:Name="TodoInputPlaceholder"
+                                   Grid.Column="0"
+                                   Margin="9,0,15,0"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Microsoft YaHei"
+                                   FontSize="12"
+                                   Foreground="#9AA8B9"
+                                   IsHitTestVisible="False"
+                                   Text="写下待办事项...">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding Text, ElementName=TodoInput}"
+                                                           Value="" />
+                                                <Condition Binding="{Binding IsKeyboardFocusWithin, ElementName=TodoInput}"
+                                                           Value="False" />
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
                         <Button Grid.Column="1"
                                 AutomationProperties.Name="新增待办事项"
                                 Background="#5B8DEF"
