@@ -241,6 +241,21 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
+## v1.0.64 发布验证
+
+以下结果于 `2026-08-09` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418`、.NET Desktop Runtime `8.0.24` 环境完成。正式 EXE 已替换到用户指定路径，Release 附件也已在独立目录重新下载复核。
+
+| 项目 | 实际结果 |
+| --- | --- |
+| 源码与版本 | 正式功能提交 `5e336b72b54e5ae4c5cbc0c42f1d3451b9a8d689`；文件版本 `1.0.64.0`，产品版本 `1.0.64+5e336b72b54e5ae4c5cbc0c42f1d3451b9a8d689` |
+| 待办占位文字 | 新增输入框仅在空文本且未聚焦时显示“写下待办事项...”，输入或聚焦后立即隐藏；占位层不可命中。`--todo-only` 通过，原有 IME、`Ctrl+C`、`Ctrl+X`、回车新增、拖拽排序和完成项沉底契约未回退 |
+| 太阳/月亮切换 | 硬切改为 `420 ms` 绝对时间轴：轻压、下沉旋转、弹入、双色柔光和单颗闪星均复用唯一 `CompositionTarget.Rendering + Stopwatch`。双向约 20 ms 实机抽帧确认无全透明空帧、闪白或图标横跳；中途反转、总透明度 `1.00–1.05`、59/60/120/144 Hz、250 ms 阻塞与稳态退订契约通过 |
+| 自动化与构建 | DesktopPet 与 UiStateChecks Release 构建均为 0 警告、0 错误；`--todo-only`、`--work-mode-only`、完整 `UiStateChecks` 和 TodoStore/AppSettingsStore/ScheduledTaskStore 检查全部通过。图集与人物素材未改变 |
+| EXE 冒烟与用户数据 | `F:\agent\pet\dist\LubanDesktopPet.exe` 启动后响应，二次启动自行退出且始终只有一个实例；`todos.json`、`settings.json`、`scheduled-tasks.json` 的 SHA-256 在替换和启动前后完全不变 |
+| EXE 与 GitHub Release | `93,426,822` 字节，SHA-256 `6D65CCA809A7B457C9D9329ED57AC21EFCCB6B2F80B67D9CF097A688E5E88615`，`NotSigned`；已发布 [v1.0.64](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.64)，标签与 Release 目标为功能提交 `5e336b72b54e5ae4c5cbc0c42f1d3451b9a8d689`，GitHub digest、独立回下载、本地候选和两个 `dist` EXE 的大小及 SHA-256 完全一致 |
+
+本机只有一块 `2560×1440` 显示器，因此多屏、负坐标副屏和混合 DPI 结论仍来自自动化矩阵，不冒充本轮真实双屏硬件验收；本轮实机覆盖待办占位文字、太阳/月亮双向切换、最终用户路径启动、单实例和用户数据不变。
+
 ## v1.0.63 发布验证
 
 以下结果于 `2026-08-09` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418`、.NET Desktop Runtime `8.0.24` 环境完成。正式 EXE 已替换到用户指定路径，Release 附件也已在独立目录重新下载复核。
