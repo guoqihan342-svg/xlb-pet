@@ -246,7 +246,15 @@ git status --short --ignored
 
 ## v1.0.67 发布验证
 
-发布证据待本次功能提交、最终 EXE 构建、独立回下载和用户路径替换全部完成后回填；在此之前不得写入提交哈希、EXE 哈希或“已发布”结论。
+以下结果于 `2026-08-10` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418` 环境完成。正式 EXE 已替换到用户指定路径并保持运行，Release 附件也已在独立目录重新下载复核。
+
+| 项目 | 实际结果 |
+| --- | --- |
+| 源码与版本 | 正式功能及测试隔离提交 `e4b63d9a8af1a302ce44aea429131d083794342e`；文件版本 `1.0.67.0`，产品版本 `1.0.67+e4b63d9a8af1a302ce44aea429131d083794342e` |
+| 免打扰尾部提示 | 真实 WPF 排版中，固定 `292 DIP` 任务面板的“可跨夜”文字槽为 `35.00 DIP`、字体自然宽度为 `28.50 DIP`；`350 DIP` 最小修改窗中分别为 `49.00 / 30.00 DIP`。两处均为 `NoWrap / TextTrimming=None`，没有元素 Clip、布局 Clip 或越过行容器右边界 |
+| 自动化与构建 | DesktopPet、UiStateChecks、TodoStoreChecks Release 构建均为 0 警告、0 错误；`--scheduled-editor-only`、`--todo-only`、TodoStoreChecks 和完整 UiStateChecks 全部通过。完整套件中的尺寸手势复用新 `--pet-size-only` 进程，原 30 次同值点击 `scaleEvents == 0` 严格断言未放宽 |
+| EXE 与用户数据 | `F:\agent\pet\dist\LubanDesktopPet.exe` 启动后响应，二次启动以退出码 0 自行退出且始终只有一个实例；Run 键路径不变。`todos.json`、`settings.json`、`scheduled-tasks.json` 在备份、替换和启动前后 SHA-256 完全不变。正式 EXE 为 `93,343,366` 字节，SHA-256 `9EA13CF78FCA9670FB007B8DA47F2576800ECA864967FD94C1A23E2B65721135`，`NotSigned` |
+| GitHub Release | 已发布 [v1.0.67](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.67)；标签与 Release 目标均为 `e4b63d9a8af1a302ce44aea429131d083794342e`，GitHub digest、独立回下载、本地候选、恢复版 `dist` 和用户路径 EXE 的大小及 SHA-256 完全一致 |
 
 ## v1.0.66 发布验证
 
