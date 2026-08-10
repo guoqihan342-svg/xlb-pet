@@ -244,17 +244,17 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## v1.0.68 发布验证（待真实回填）
+## v1.0.68 发布验证
 
-本节只列出本版必须取得的证据槽位；在对应命令、最终 EXE、用户路径替换和 GitHub Release 实际完成前，均不得写成“已通过”或复用旧版本的数字。
+以下结果于 `2026-08-10` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418` 环境完成。正式 EXE 已替换到用户指定路径并保持运行，Release 附件也已在独立目录重新下载复核。
 
 | 项目 | 实际结果 |
 | --- | --- |
-| 源码与版本 | 待回填：正式功能提交、文件版本和产品版本 |
-| 三项定向回归 | 待回填：免打扰展开后的列表实际高度、滚动范围与末项可见结果；隐藏面板半尺寸/离屏恢复后的原生尺寸和工作区边界；巡游静止点击、临界 DPI 阈值与真实拖动接管结果 |
-| 自动化与构建 | 待回填：DesktopPet、UiStateChecks、TodoStoreChecks 的 Release 构建结果，以及 `--todo-only`、`--reminder-only`、`--roam-interaction-only`、TodoStoreChecks 和完整 UiStateChecks 结果 |
-| EXE 与用户数据 | 待回填：最终 EXE 字节数、SHA-256、签名状态、启动/单实例、用户路径替换，以及 Run 键和三个 JSON 的替换前后校验 |
-| GitHub Release | 待回填：标签、Release 目标、附件 digest、独立回下载与本地候选/用户路径 EXE 的一致性 |
+| 源码与版本 | 正式功能提交 `aa2b13c2244fafa590778d79d98dc3fc139ab715`；文件版本 `1.0.68.0`，产品版本 `1.0.68+aa2b13c2244fafa590778d79d98dc3fc139ab715` |
+| 三项定向回归 | 循环展开免打扰后，定时列表 `166 → 134 DIP`、滚动视口 `164 → 132 DIP`，内容 extent 保持 `193 DIP`，滚动到底后最后一项完整落在列表边界内。隐藏 Todo HWND 被压成半宽并移到 `(-25000,-25000)` 后，不经过逻辑恢复即可由生产定位器按锚点 DPI 恢复 `292×414 DIP` 对应的原生尺寸并夹入工作区；隐藏恢复再右键打开的完整链路也通过。巡游点击在 `150%` DPI 下验证 `5.9 px` 不触发、`6.0 px` 触发 `4 DIP` 拖动阈值，窗口局部坐标漂移 `48 DIP` 而屏幕指针不动时不误拖；随后以生产 `AdvanceEdgeRoaming` 的 `60 Hz` 时钟自然完成退场并稳定回到 idle |
+| 自动化与构建 | DesktopPet、UiStateChecks、TodoStoreChecks Release 构建均为 0 警告、0 错误；`--todo-only`、`--reminder-only`、`--roam-interaction-only`、`--edge-dock-only`、`--work-mode-only`、TodoStoreChecks 和完整 UiStateChecks 全部通过。完整套件还验证了 `49/52 MiB` 普通分页容量、`89/92 MiB` 巡游容量和空闲 resident `32 → 11 MiB` / pool `32 → 12 MiB` 的既有内存边界 |
+| EXE 与用户数据 | 正式 EXE 为 `93,345,414` 字节，SHA-256 `3E4D215058F8421C8DC06DB2D11E9B1F825E9A637326F996D2C458FE6373442A`，`NotSigned`。用户路径启动后响应，二次启动自行退出且始终只有一个实例；恢复版与用户路径两个 `dist` EXE 完全一致。Run 键仍指向 `F:\agent\pet\dist\LubanDesktopPet.exe --autostart`；`todos.json`、`settings.json`、`scheduled-tasks.json` 在备份、替换和启动前后 SHA-256 完全不变 |
+| GitHub Release | 已发布 [v1.0.68](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.68)；标签与 Release 目标均为功能提交 `aa2b13c2244fafa590778d79d98dc3fc139ab715`。GitHub 附件大小与 digest、独立回下载、本地候选、恢复版 `dist` 和用户路径 EXE 的大小及 SHA-256 完全一致 |
 
 ## v1.0.67 发布验证
 
