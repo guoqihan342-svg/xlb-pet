@@ -123,6 +123,9 @@ internal static partial class Program
             var scheduledQuietHoursEnd = GetField<TextBox>(
                 todoWindow,
                 "ScheduledQuietHoursEndInput");
+            var scheduledQuietHoursOvernightHint = GetField<TextBlock>(
+                todoWindow,
+                "ScheduledQuietHoursOvernightHint");
             var scheduledRepeatCount = GetField<TextBox>(
                 todoWindow,
                 "ScheduledRepeatCountInput");
@@ -607,6 +610,10 @@ internal static partial class Program
                    quietHoursTextBrush.Color ==
                        Color.FromRgb(0x8A, 0x56, 0x2E),
                 "勾选循环后必须显示萌橘色免打扰行，开关默认关闭且时间框保持禁用");
+            AssertSingleLineTextIsFullyVisible(
+                scheduledQuietHoursOvernightHint,
+                scheduledQuietHoursEditor,
+                "新增定时任务的免打扰行尾部提示");
             scheduledQuietHoursToggle.IsChecked = true;
             PumpDispatcher(TimeSpan.FromMilliseconds(10));
             Assert(scheduledQuietHoursStart.IsEnabled &&
@@ -1949,6 +1956,9 @@ internal static partial class Program
             var scheduledEditorQuietHoursEnd = GetField<TextBox>(
                 scheduledEditor,
                 "QuietHoursEndTextBox");
+            var scheduledEditorQuietHoursOvernightHint = GetField<TextBlock>(
+                scheduledEditor,
+                "QuietHoursOvernightHint");
             var scheduledEditorRepeatCount = GetField<TextBox>(
                 scheduledEditor,
                 "RepeatCountTextBox");
@@ -2173,6 +2183,14 @@ internal static partial class Program
                        Visibility.Visible &&
                    editRequestedCount == 0,
                 "修改定时任务勾选循环时必须显示免打扰行，并保持选择提醒时间 Popup 和编辑窗");
+            scheduledEditor.Width = scheduledEditor.MinWidth;
+            scheduledEditor.UpdateLayout();
+            AssertSingleLineTextIsFullyVisible(
+                scheduledEditorQuietHoursOvernightHint,
+                scheduledEditorQuietHoursEditor,
+                "最小宽度修改窗的免打扰行尾部提示");
+            scheduledEditor.Width = 450;
+            scheduledEditor.UpdateLayout();
             scheduledEditorQuietHoursToggle.ApplyTemplate();
             scheduledEditorQuietHoursToggle.IsChecked = true;
             PumpDispatcher(TimeSpan.FromMilliseconds(10));
@@ -3700,6 +3718,50 @@ internal static partial class Program
                    .Text.Contains("晚于现在", StringComparison.Ordinal),
             "独立定时修改窗仍必须拒绝一次性过去时间并保留草稿窗口");
         oneOffEditor.CloseWithoutSaving();
+    }
+
+    private static void AssertSingleLineTextIsFullyVisible(
+        TextBlock text,
+        FrameworkElement host,
+        string description)
+    {
+        host.UpdateLayout();
+        text.UpdateLayout();
+
+        var probe = new TextBlock
+        {
+            Text = text.Text,
+            FontFamily = text.FontFamily,
+            FontSize = text.FontSize,
+            FontStretch = text.FontStretch,
+            FontStyle = text.FontStyle,
+            FontWeight = text.FontWeight,
+            FlowDirection = text.FlowDirection,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        probe.Measure(new Size(
+            double.PositiveInfinity,
+            double.PositiveInfinity));
+
+        var origin = text.TranslatePoint(new Point(0, 0), host);
+        var layoutClip = LayoutInformation.GetLayoutClip(text);
+        Console.WriteLine(
+            $"[METRIC] {description}: actual={text.ActualWidth:F2} DIP, " +
+            $"required={probe.DesiredSize.Width:F2} DIP, " +
+            $"host={host.ActualWidth:F2} DIP");
+        Assert(text.Visibility == Visibility.Visible &&
+               text.TextWrapping == TextWrapping.NoWrap &&
+               text.TextTrimming == TextTrimming.None &&
+               text.Clip is null &&
+               !text.ClipToBounds &&
+               layoutClip is null &&
+               text.ActualWidth + 0.5 >= probe.DesiredSize.Width &&
+               origin.X >= -0.5 &&
+               origin.X + text.ActualWidth <= host.ActualWidth + 0.5,
+            $"{description}必须完整显示且不能裁字：" +
+            $"actual={text.ActualWidth:F2}, required={probe.DesiredSize.Width:F2}, " +
+            $"right={origin.X + text.ActualWidth:F2}, host={host.ActualWidth:F2}, " +
+            $"layoutClip={layoutClip}");
     }
 
     private static void AssertScheduledTaskEditContract(MainWindow window)

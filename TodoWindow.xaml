@@ -2189,9 +2189,9 @@
                             </Style>
                         </Grid.Resources>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="75" />
+                            <ColumnDefinition Width="64" />
                             <ColumnDefinition Width="67" />
-                            <ColumnDefinition Width="22" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="67" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
@@ -2241,12 +2241,15 @@
                                  TextChanged="ScheduledQuietHoursTimeInput_TextChanged"
                                  PreviewKeyDown="ScheduledQuietHoursTimeInput_PreviewKeyDown"
                                  PreviewMouseLeftButtonDown="ScheduledQuietHoursTimeInput_PreviewMouseLeftButtonDown" />
-                        <TextBlock Grid.Column="4"
+                        <TextBlock x:Name="ScheduledQuietHoursOvernightHint"
+                                   Grid.Column="4"
                                    Margin="5,0,0,0"
                                    VerticalAlignment="Center"
                                    FontFamily="Microsoft YaHei"
                                    FontSize="9.5"
                                    Foreground="#C58A5A"
+                                   TextTrimming="None"
+                                   TextWrapping="NoWrap"
                                    Text="可跨夜" />
                     </Grid>
 

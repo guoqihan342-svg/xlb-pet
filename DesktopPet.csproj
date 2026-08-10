@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LubanDesktopPet</RootNamespace>
     <AssemblyName>LubanDesktopPet</AssemblyName>
-    <Version>1.0.66</Version>
+    <Version>1.0.67</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\luban-tray.ico</ApplicationIcon>
   </PropertyGroup>

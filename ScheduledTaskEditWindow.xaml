@@ -1607,9 +1607,9 @@
                             </Style>
                         </Grid.Style>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="108" />
+                            <ColumnDefinition Width="104" />
                             <ColumnDefinition Width="75" />
-                            <ColumnDefinition Width="22" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="75" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
@@ -1770,12 +1770,15 @@
                                       StrokeThickness="1.1" />
                             </Grid>
                         </Border>
-                        <TextBlock Grid.Column="4"
+                        <TextBlock x:Name="QuietHoursOvernightHint"
+                                   Grid.Column="4"
                                    Margin="7,0,0,0"
                                    VerticalAlignment="Center"
                                    FontFamily="Microsoft YaHei"
                                    FontSize="10"
                                    Foreground="#C58A5A"
+                                   TextTrimming="None"
+                                   TextWrapping="NoWrap"
                                    Text="可跨夜" />
                     </Grid>
 
