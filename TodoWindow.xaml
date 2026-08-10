@@ -1499,9 +1499,10 @@
                         </Border.Style>
                     </Border>
 
-                    <Grid Grid.Row="0">
+                    <Grid x:Name="ScheduledTaskListHost"
+                          Grid.Row="0"
+                          ClipToBounds="True">
                         <ListBox x:Name="ScheduledTaskItemsControl"
-                                 MinHeight="168"
                                  Background="Transparent"
                                  BorderThickness="0"
                                  ScrollViewer.CanContentScroll="True"

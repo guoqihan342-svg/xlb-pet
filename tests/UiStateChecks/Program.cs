@@ -427,6 +427,9 @@ internal static partial class Program
                 if (args.Contains("--todo-only", StringComparer.OrdinalIgnoreCase))
                 {
                     Invoke(window, "ApplyPetSizeScale", 1d, false, false);
+                    RunCheck(
+                        nameof(AssertHiddenTodoWindowRecoveryContract),
+                        () => AssertHiddenTodoWindowRecoveryContract(window));
                     RunCheck(nameof(AssertOwnedTodoWindowContract),
                         () => AssertOwnedTodoWindowContract(window));
                     RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
@@ -490,6 +493,9 @@ internal static partial class Program
                 RunCheck(nameof(AssertRandomActivityBag), () => AssertRandomActivityBag(window));
                 RunCheck(nameof(AssertMonitorWorkAreaContract), () => AssertMonitorWorkAreaContract(window));
                 RunCheck(nameof(AssertDisplaySettingsChangeRecovery), () => AssertDisplaySettingsChangeRecovery(window));
+                RunCheck(
+                    nameof(AssertHiddenTodoWindowRecoveryContract),
+                    () => AssertHiddenTodoWindowRecoveryContract(window));
                 RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
                 RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
                     () => AssertTodoArrowPositionMatrixContract(window));
@@ -7375,6 +7381,12 @@ internal static partial class Program
         var pointerMove = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseMove");
+        var tryBeginPointerDrag = ExtractPrivateMethodSource(
+            mainSource,
+            "TryBeginPetPointerDrag");
+        var hasExceededPetDragThreshold = ExtractPrivateMethodSource(
+            mainSource,
+            "HasExceededPetDragThreshold");
         var beginDirectDrag = ExtractPrivateMethodSource(
             mainSource,
             "BeginDirectPetDrag");
@@ -7864,11 +7876,32 @@ internal static partial class Program
                pointerDown.Contains(
                    "_suppressClickReactionAfterRoamInterruption = _isEdgeRoaming",
                    StringComparison.Ordinal) &&
+               pointerDown.Contains(
+                   "_pointerDownPixelsPerDip = GetPointerPixelsPerDip()",
+                   StringComparison.Ordinal) &&
                !pointerDown.Contains(
                    "immediate:",
                    StringComparison.Ordinal) &&
                pointerMove.Contains(
+                   "TryBeginPetPointerDrag(",
+                   StringComparison.Ordinal) &&
+               tryBeginPointerDrag.Contains(
+                   "HasExceededPetDragThreshold(",
+                   StringComparison.Ordinal) &&
+               tryBeginPointerDrag.Contains(
+                   "!_suppressClickReactionAfterRoamInterruption",
+                   StringComparison.Ordinal) &&
+               tryBeginPointerDrag.Contains(
                    "BeginDirectPetDrag(",
+                   StringComparison.Ordinal) &&
+               hasExceededPetDragThreshold.Contains(
+                   "minimumHorizontalDragDips *",
+                   StringComparison.Ordinal) &&
+               hasExceededPetDragThreshold.Contains(
+                   "pixelsPerDipAtPointerDown.X",
+                   StringComparison.Ordinal) &&
+               hasExceededPetDragThreshold.Contains(
+                   "if (!allowLocalFallback)",
                    StringComparison.Ordinal) &&
                beginDirectDrag.Contains(
                    "if (_isEdgeRoaming)",
@@ -10546,11 +10579,48 @@ internal static partial class Program
         var petHost = GetField<FrameworkElement>(window, "PetHost");
         var idleFrame = GetRawField(window, "_idleFrame")
             ?? throw new InvalidOperationException("找不到待机帧");
+        var boardingFrames = GetField<Array>(window, "_roamBoardingFrames");
         var flightFrames = GetField<Array>(window, "_roamFlightFrames");
         var flightFrame = flightFrames.GetValue(0)
             ?? throw new InvalidOperationException("找不到熊猫巡游首帧");
         var travelingPhase = GetNestedEnum("EdgeRoamPhase", "Traveling");
         var noneBubbleMode = GetNestedEnum("BubbleMode", "None");
+
+        Assert(!(bool)InvokeStatic(
+                   typeof(MainWindow),
+                   "HasExceededPetDragThreshold",
+                   new Point(20, 30),
+                   new Point(68, 74),
+                   new Point(-1400, 260),
+                   new Point(-1400, 260),
+                   new Vector(1.5, 1.5),
+                   false,
+                   4d,
+                   4d)! &&
+               !(bool)InvokeStatic(
+                   typeof(MainWindow),
+                   "HasExceededPetDragThreshold",
+                   new Point(20, 30),
+                   new Point(20, 30),
+                   new Point(-1400, 260),
+                   new Point(-1394.1, 260),
+                   new Vector(1.5, 1.5),
+                   false,
+                   4d,
+                   4d)! &&
+               (bool)InvokeStatic(
+                   typeof(MainWindow),
+                   "HasExceededPetDragThreshold",
+                   new Point(20, 30),
+                   new Point(20, 30),
+                   new Point(-1400, 260),
+                   new Point(-1394, 260),
+                   new Vector(1.5, 1.5),
+                   false,
+                   4d,
+                   4d)!,
+            "拖动阈值必须锁定按下时DPI并使用物理屏幕位移；" +
+            "HWND转正造成的局部坐标漂移不得冒充鼠标拖动");
 
         void PrepareTravelState(Point startPoint, Point currentPoint, double rotation)
         {
@@ -10578,6 +10648,12 @@ internal static partial class Program
             new Point(firstSupportPoint.X - 500, firstSupportPoint.Y - 300),
             firstSupportPoint,
             90);
+        foreach (var boardingFrame in boardingFrames.Cast<object>()
+                     .GroupBy(frame => GetSpriteFrameInfo(frame).PageName)
+                     .Select(group => group.First()))
+        {
+            PrimeSpritePageForFrame(window, boardingFrame);
+        }
         var leftBefore = window.Left;
         var topBefore = window.Top;
         var leftDown = new MouseButtonEventArgs(
@@ -10589,16 +10665,31 @@ internal static partial class Program
             Source = petHost
         };
         Invoke(window, "PetHost_MouseLeftButtonDown", petHost, leftDown);
+        var pointerDownLocal = GetField<Point>(
+            window,
+            "_pointerDownPosition");
+        var pointerDownScreen = GetField<Point>(
+            window,
+            "_pointerDownScreenPosition");
+        var stationaryRoamDragStarted = (bool)Invoke(
+            window,
+            "TryBeginPetPointerDrag",
+            new Point(
+                pointerDownLocal.X + 48,
+                pointerDownLocal.Y + 48),
+            pointerDownScreen)!;
         Assert(leftDown.Handled &&
+               !stationaryRoamDragStarted &&
                GetField<bool>(window, "_isEdgeRoaming") &&
                GetField<object>(window, "_edgeRoamPhase").ToString() == "Disembarking" &&
+               GetField<bool>(window, "_pointerDown") &&
+               !GetField<bool>(window, "_dragStarted") &&
                GetField<Point>(window, "_edgeRoamDisembarkSupportPoint") == firstSupportPoint &&
                Math.Abs(window.Left - leftBefore) <= 0.01 &&
                Math.Abs(window.Top - topBefore) <= 0.01 &&
                GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption"),
             "巡游中左键按下必须在最后呈现支撑点原地开始退场，不能立即硬切或跳回路线起点");
 
-        Invoke(window, "CompleteEdgeRoamStop", true);
         var leftUp = new MouseButtonEventArgs(
             Mouse.PrimaryDevice,
             Environment.TickCount,
@@ -10609,12 +10700,42 @@ internal static partial class Program
         };
         Invoke(window, "PetHost_MouseLeftButtonUp", petHost, leftUp);
         Assert(leftUp.Handled &&
+               GetField<bool>(window, "_isEdgeRoaming") &&
+               GetField<object>(window, "_edgeRoamPhase").ToString() == "Disembarking" &&
+               !GetField<bool>(window, "_pointerDown") &&
+               !GetField<bool>(window, "_dragStarted"),
+            "巡游点击抬起时即使退场尚未播完，也不得被移动中的HWND误判为拖动");
+        var naturalDisembarkStart = Stopwatch.GetTimestamp();
+        for (var refresh = 0;
+             refresh < 180 && GetField<bool>(window, "_isEdgeRoaming");
+             refresh++)
+        {
+            Invoke(
+                window,
+                "AdvanceEdgeRoaming",
+                checked(
+                    naturalDisembarkStart +
+                    refresh * Stopwatch.Frequency / 60));
+        }
+        Assert(leftUp.Handled &&
                !GetField<bool>(window, "_isEdgeRoaming") &&
+               GetField<object>(window, "_edgeDock").ToString() == "None" &&
                GetRawField(window, "_activeClip") is null &&
                Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
                !todoWindow.IsVisible &&
                !GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption"),
-            "巡游中左键单击完成退场后必须稳定待机，不能追加四种点击动作或打开任务面板");
+            "巡游中左键单击完成退场后必须稳定待机，不能追加四种点击动作或打开任务面板：" +
+            $"roaming={GetField<bool>(window, "_isEdgeRoaming")}, " +
+            $"phase={GetField<object>(window, "_edgeRoamPhase")}, " +
+            $"dock={GetField<object>(window, "_edgeDock")}, " +
+            $"active={GetRawField(window, "_activeClip") is not null}, " +
+            $"idle={Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame)}, " +
+            $"todo={todoWindow.IsVisible}, suppress=" +
+            GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption") +
+            $", pagesReady={GetField<bool>(window, "_edgeRoamBoardingPagesReady")}, " +
+            $"clock={GetField<bool>(window, "_edgeRoamClockStarted")}, " +
+            $"startIndex={GetField<int>(window, "_edgeRoamBoardingStartIndex")}, " +
+            $"current={GetSpriteFrameInfo(GetField<object>(window, "_currentSpriteFrame")).Name}");
 
         var secondSupportPoint = new Point(window.Left + 310, window.Top + 126);
         PrepareTravelState(
@@ -10989,6 +11110,9 @@ internal static partial class Program
         var dragMoveSource = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseMove");
+        var tryBeginDragSource = ExtractPrivateMethodSource(
+            mainSource,
+            "TryBeginPetPointerDrag");
         var beginDragSource = ExtractPrivateMethodSource(
             mainSource,
             "BeginDirectPetDrag");
@@ -11024,6 +11148,9 @@ internal static partial class Program
                dragContextCapture > edgeExit &&
                prepareDirectDrag > dragContextCapture &&
                dragMoveSource.Contains(
+                   "TryBeginPetPointerDrag(",
+                   StringComparison.Ordinal) &&
+               tryBeginDragSource.Contains(
                    "BeginDirectPetDrag(",
                    StringComparison.Ordinal) &&
                beginDragSource.Contains(
@@ -12417,6 +12544,12 @@ internal static partial class Program
         var recoverySource = ExtractPrivateMethodSource(
             mainSource,
             "ProcessSystemRecovery");
+        var recoverTodoGeometry = recoverySource.IndexOf(
+            "_todoWindow.RecoverAfterSystemResume();",
+            StringComparison.Ordinal);
+        var visibleTodoGuard = recoverySource.IndexOf(
+            "if (_todoWindow.IsVisible)",
+            StringComparison.Ordinal);
         var positionerSource = File.ReadAllText(
             FindWorkspaceFile("OwnedWindowPositioner.cs"));
         var liveChildRead = positionerSource.IndexOf(
@@ -12455,9 +12588,8 @@ internal static partial class Program
                preferenceSource.Contains(
                    "QueueSystemRecovery()",
                    StringComparison.Ordinal) &&
-               recoverySource.Contains(
-                   "_todoWindow.RecoverAfterSystemResume()",
-                   StringComparison.Ordinal) &&
+                recoverTodoGeometry >= 0 &&
+                visibleTodoGuard > recoverTodoGeometry &&
                recoverySource.Contains(
                    "_todoWindowPositionCache.InvalidateGeometry()",
                    StringComparison.Ordinal) &&
@@ -12521,7 +12653,262 @@ internal static partial class Program
                recoveredVisibleBounds.Right <= recoveredWorkArea.Right + 0.5 &&
                recoveredVisibleBounds.Top >= recoveredWorkArea.Top - 0.5 &&
                recoveredVisibleBounds.Bottom <= recoveredWorkArea.Bottom + 0.5,
-            "显示器切换或断开后桌宠必须被重新夹取到仍有效的工作区内");
+             "显示器切换或断开后桌宠必须被重新夹取到仍有效的工作区内");
+    }
+
+    private static void AssertHiddenTodoWindowRecoveryContract(
+        MainWindow window)
+    {
+        const double expectedLogicalWidth = 292;
+        const double expectedLogicalHeight = 414;
+        if (!window.IsVisible)
+        {
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+        }
+
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var petAnchor = GetField<Viewbox>(window, "PetSizeViewbox");
+        var positionCache = GetRawField(
+            window,
+            "_todoWindowPositionCache")!;
+        var positionerType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.OwnedWindowPositioner",
+            throwOnError: true)!;
+        var tryGetPhysicalBounds = positionerType.GetMethod(
+            "TryGetPhysicalBounds",
+            StaticFlags)
+            ?? throw new InvalidOperationException(
+                "找不到OwnedWindowPositioner.TryGetPhysicalBounds");
+        var todoMode = GetNestedEnum("BubbleMode", "Todo");
+        var noneMode = GetNestedEnum("BubbleMode", "None");
+
+        (int Left, int Top, int Right, int Bottom) ReadNativeBounds()
+        {
+            var arguments = new object?[] { todoWindow, null };
+            var success = (bool)(tryGetPhysicalBounds.Invoke(
+                null,
+                arguments) ?? false);
+            Assert(success && arguments[1] is not null,
+                "必须能读取TodoWindow真实原生矩形");
+            var nativeBounds = arguments[1]!;
+            return (
+                GetField<int>(nativeBounds, "Left"),
+                GetField<int>(nativeBounds, "Top"),
+                GetField<int>(nativeBounds, "Right"),
+                GetField<int>(nativeBounds, "Bottom"));
+        }
+
+        SetField(window, "_suppressTodoWindowDeactivate", true);
+        try
+        {
+            SetField(window, "_sessionInactive", false);
+            SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+            SetField(window, "_activeClip", null);
+            SetField(window, "_bubbleMode", noneMode);
+            if (!todoWindow.IsVisible)
+            {
+                todoWindow.Opacity = 0;
+                todoWindow.Show();
+                todoWindow.UpdateLayout();
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            }
+
+            Invoke(positionCache, "InvalidateGeometry");
+            Invoke(window, "UpdateTodoWindowPosition");
+            todoWindow.Opacity = 0;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+
+            // Exercise the native expected-size branch directly while the
+            // layered HWND is materialized. Do not call the logical recovery
+            // helper here: UpdateTodoWindowPosition itself must repair a bad
+            // native size using the anchor monitor's current DPI.
+            var directDamageDpi = VisualTreeHelper.GetDpi(petAnchor);
+            var directExpectedWidth = (int)Math.Round(
+                expectedLogicalWidth * directDamageDpi.DpiScaleX,
+                MidpointRounding.AwayFromZero);
+            var directExpectedHeight = (int)Math.Round(
+                expectedLogicalHeight * directDamageDpi.DpiScaleY,
+                MidpointRounding.AwayFromZero);
+            var positionUpdateQueuedBefore = GetField<bool>(
+                window,
+                "_todoPositionUpdateQueued");
+            SetField(window, "_todoPositionUpdateQueued", true);
+            bool directDamageApplied;
+            bool directDamageMoved;
+            (int Left, int Top, int Right, int Bottom) directDamagedBounds;
+            try
+            {
+                directDamageApplied = (bool)InvokeStatic(
+                    positionerType,
+                    "TrySetBounds",
+                    todoWindow,
+                    new Rect(
+                        todoWindow.Left,
+                        todoWindow.Top,
+                        expectedLogicalWidth / 2,
+                        expectedLogicalHeight / 2))!;
+                directDamageMoved = (bool)InvokeStatic(
+                    positionerType,
+                    "TrySetPhysicalPosition",
+                    todoWindow,
+                    -25000,
+                    -25000)!;
+                directDamagedBounds = ReadNativeBounds();
+            }
+            finally
+            {
+                SetField(
+                    window,
+                    "_todoPositionUpdateQueued",
+                    positionUpdateQueuedBefore);
+            }
+            Assert(directDamageApplied && directDamageMoved &&
+                   directDamagedBounds.Right - directDamagedBounds.Left <
+                       directExpectedWidth,
+                "隔离回归必须先把已物化Todo HWND压成半宽，才能验证定位器自身的尺寸修复");
+            Invoke(positionCache, "InvalidateGeometry");
+            Invoke(window, "UpdateTodoWindowPosition");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var directRecoveredBounds = ReadNativeBounds();
+            var directWorkArea = GetRawField(positionCache, "_workArea")!;
+            Assert(directRecoveredBounds.Right - directRecoveredBounds.Left ==
+                       directExpectedWidth &&
+                   directRecoveredBounds.Bottom - directRecoveredBounds.Top ==
+                       directExpectedHeight &&
+                   directRecoveredBounds.Left >=
+                       GetField<int>(directWorkArea, "Left") &&
+                   directRecoveredBounds.Top >=
+                       GetField<int>(directWorkArea, "Top") &&
+                   directRecoveredBounds.Right <=
+                       GetField<int>(directWorkArea, "Right") &&
+                   directRecoveredBounds.Bottom <=
+                       GetField<int>(directWorkArea, "Bottom"),
+                "UpdateTodoWindowPosition必须独立把错误原生尺寸恢复为当前锚点DPI下的完整尺寸并夹入工作区");
+
+            todoWindow.Opacity = 1;
+            todoWindow.Hide();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+
+            var damaged = (bool)InvokeStatic(
+                positionerType,
+                "TrySetBounds",
+                todoWindow,
+                new Rect(
+                    todoWindow.Left,
+                    todoWindow.Top,
+                    expectedLogicalWidth / 2,
+                    expectedLogicalHeight / 2))!;
+            var movedOffscreen = (bool)InvokeStatic(
+                positionerType,
+                "TrySetPhysicalPosition",
+                todoWindow,
+                -30000,
+                -30000)!;
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var damagedBounds = ReadNativeBounds();
+            var damageDpi = VisualTreeHelper.GetDpi(petAnchor);
+            var fullNativeWidth = (int)Math.Round(
+                expectedLogicalWidth * damageDpi.DpiScaleX,
+                MidpointRounding.AwayFromZero);
+            Assert(damaged && movedOffscreen &&
+                   damagedBounds.Right - damagedBounds.Left <
+                       fullNativeWidth &&
+                   damagedBounds.Left <= -30000 &&
+                   damagedBounds.Top <= -30000 &&
+                   !todoWindow.IsVisible,
+                "回归必须先构造锁屏/拓扑变化后隐藏Todo HWND窄成半宽且离屏的现场：" +
+                $"setBounds={damaged}, moved={movedOffscreen}, visible={todoWindow.IsVisible}, " +
+                $"native=({damagedBounds.Left},{damagedBounds.Top})-" +
+                $"({damagedBounds.Right},{damagedBounds.Bottom})");
+
+            Invoke(window, "ProcessSystemRecovery");
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(!todoWindow.IsVisible &&
+                   todoWindow.WindowState == WindowState.Normal &&
+                   Math.Abs(
+                       todoWindow.Width -
+                       expectedLogicalWidth) <= 0.01 &&
+                   Math.Abs(
+                       todoWindow.Height -
+                       expectedLogicalHeight) <= 0.01,
+                "解锁恢复隐藏TodoWindow的逻辑尺寸时不能提前显示窗口");
+
+            Invoke(window, "OpenTodoFromPetRightClick");
+            PumpDispatcher(TimeSpan.FromMilliseconds(80));
+            todoWindow.UpdateLayout();
+            var recoveredBounds = ReadNativeBounds();
+            var anchorDpi = VisualTreeHelper.GetDpi(petAnchor);
+            var expectedWidth = (int)Math.Round(
+                expectedLogicalWidth * anchorDpi.DpiScaleX,
+                MidpointRounding.AwayFromZero);
+            var expectedHeight = (int)Math.Round(
+                expectedLogicalHeight * anchorDpi.DpiScaleY,
+                MidpointRounding.AwayFromZero);
+            var workArea = GetRawField(positionCache, "_workArea")!;
+            var workLeft = GetField<int>(workArea, "Left");
+            var workTop = GetField<int>(workArea, "Top");
+            var workRight = GetField<int>(workArea, "Right");
+            var workBottom = GetField<int>(workArea, "Bottom");
+            Assert(todoWindow.IsVisible &&
+                   recoveredBounds.Right - recoveredBounds.Left ==
+                       expectedWidth &&
+                   recoveredBounds.Bottom - recoveredBounds.Top ==
+                       expectedHeight &&
+                   recoveredBounds.Left >= workLeft &&
+                   recoveredBounds.Top >= workTop &&
+                   recoveredBounds.Right <= workRight &&
+                   recoveredBounds.Bottom <= workBottom,
+                "隐藏TodoWindow在解锁/多屏恢复后重新右键打开时必须原子恢复完整尺寸并落在当前工作区：" +
+                $"actual=({recoveredBounds.Left},{recoveredBounds.Top})-" +
+                $"({recoveredBounds.Right},{recoveredBounds.Bottom}), " +
+                $"expected={expectedWidth}x{expectedHeight}, " +
+                $"work=({workLeft},{workTop})-({workRight},{workBottom})");
+
+            var mainSource = File.ReadAllText(
+                FindWorkspaceFile("MainWindow.xaml.cs"));
+            var showBubbleSource = ExtractPrivateMethodSource(
+                mainSource,
+                "ShowBubbleVisuals");
+            var positionerSource = File.ReadAllText(
+                FindWorkspaceFile("OwnedWindowPositioner.cs"));
+            var recoverBeforeShowIndex = showBubbleSource.IndexOf(
+                "_todoWindow.RecoverAfterSystemResume();",
+                StringComparison.Ordinal);
+            var showRecoveredTodoIndex = showBubbleSource.IndexOf(
+                "_todoWindow.Show();",
+                StringComparison.Ordinal);
+            Assert(recoverBeforeShowIndex >= 0 &&
+                   showRecoveredTodoIndex > recoverBeforeShowIndex &&
+                   positionerSource.Contains(
+                       "Size? expectedLogicalSize = null",
+                       StringComparison.Ordinal) &&
+                   positionerSource.Contains(
+                       "VisualTreeHelper.GetDpi(anchor)",
+                       StringComparison.Ordinal) &&
+                   positionerSource.Contains(
+                       "childSizeMatchesTarget ? 0 : targetChildWidth",
+                       StringComparison.Ordinal),
+                "Todo重开必须在透明Show前恢复逻辑状态，并按宠物当前DPI纠正原生尺寸；" +
+                "尺寸正常时仍须保留SWP_NOSIZE快速路径");
+        }
+        finally
+        {
+            if (todoWindow.IsVisible)
+            {
+                Invoke(window, "SetBubbleMode", noneMode);
+                todoWindow.Hide();
+            }
+
+            var activeClip = GetRawField(window, "_activeClip");
+            if (activeClip is not null)
+            {
+                Invoke(window, "CompleteActiveClip", activeClip);
+            }
+
+            SetField(window, "_bubbleMode", noneMode);
+            SetField(window, "_suppressTodoWindowDeactivate", false);
+        }
     }
 
     private static void AssertOwnedTodoWindowContract(MainWindow window)
@@ -18808,9 +19195,16 @@ internal static partial class Program
                    "GetWindowRect(cache._childHandle, out var movedChildRect)",
                    StringComparison.Ordinal) &&
                positionerSource.Contains(
-                   "cache._childWidth = movedChildRect.Right - movedChildRect.Left",
+                   "var childSizeMatchesTarget =",
+                   StringComparison.Ordinal) &&
+               positionerSource.Contains(
+                   "firstMoveFlags |= SwpNoSize",
+                   StringComparison.Ordinal) &&
+               positionerSource.Contains(
+                   "var movedChildWidth = movedChildRect.Right - movedChildRect.Left",
                    StringComparison.Ordinal),
-            "待办窗口目标物理像素未变时必须跳过SetWindowPos");
+            "待办窗口目标物理位置和尺寸都未变时必须跳过SetWindowPos；" +
+            "尺寸正确的移动仍须保留SWP_NOSIZE快速路径");
         var ownedWindowPositionerType = typeof(MainWindow).Assembly.GetType(
             "LubanDesktopPet.OwnedWindowPositioner",
             throwOnError: true)!;
@@ -20308,6 +20702,9 @@ internal static partial class Program
         var mouseMove = ExtractPrivateMethodSource(
             source,
             "PetHost_MouseMove");
+        var tryBeginDirectDrag = ExtractPrivateMethodSource(
+            source,
+            "TryBeginPetPointerDrag");
         var beginDirectDrag = ExtractPrivateMethodSource(
             source,
             "BeginDirectPetDrag");
@@ -20434,14 +20831,17 @@ internal static partial class Program
                !source.Contains("luban-work-tap-", StringComparison.Ordinal),
             "Runtime source must not retain delayed single-click arbitration or work-tap assets.");
 
-        var thresholdReturn = mouseMove.IndexOf(
-            "if (!movedFarEnough)",
+        var thresholdReturn = tryBeginDirectDrag.IndexOf(
+            "if (!HasExceededPetDragThreshold(",
             StringComparison.Ordinal);
-        var cancelPending = mouseMove.IndexOf(
+        var cancelPending = tryBeginDirectDrag.IndexOf(
             "BeginDirectPetDrag(",
             StringComparison.Ordinal);
         Assert(thresholdReturn >= 0 &&
                cancelPending > thresholdReturn &&
+               mouseMove.Contains(
+                   "TryBeginPetPointerDrag(",
+                   StringComparison.Ordinal) &&
                beginDirectDrag.Contains(
                    "_workPointerClickCount = 0",
                    StringComparison.Ordinal) &&
@@ -20688,6 +21088,11 @@ internal static partial class Program
             "Normal typing must continue from loop-001 at 60 authored poses/second " +
             "after the serious-exit clip.");
 
+        // The assertions below mutate the production clock anchors directly.
+        // Freeze the shared compositor subscription first so a real Rendering
+        // callback from earlier full-suite work cannot advance the visible pose
+        // between the before/after snapshots.
+        Invoke(window, "StopVisualClock");
         var singleClickAnchorTimestamp = Stopwatch.GetTimestamp();
         const double singleClickAnchorPosition = 17.25d;
         SetField(window, "_activeClip", loopClip);
@@ -20757,6 +21162,11 @@ internal static partial class Program
         // loop page. The speculative first-click prewarm must not replace it,
         // cancel it, change its urgency, or advance the page generation.
         WaitForSpritePagePrefetchToSettle(window);
+        Invoke(window, "StopVisualClock");
+        singleClipBefore = GetRawField(window, "_activeClip");
+        singleFrameIndexBefore = GetField<int>(window, "_activeFrameIndex");
+        singleFrameNameBefore = GetSpriteFrameInfo(
+            GetField<object>(window, "_currentSpriteFrame")).Name;
         var normalLoopColdFrame = loopFrames.GetValue(32)!;
         var normalLoopColdPageName = GetSpriteFrameInfo(normalLoopColdFrame).PageName;
         var pendingNormalLoopDecode = CreatePendingSpritePageLoadTask();

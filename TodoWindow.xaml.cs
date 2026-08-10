@@ -17,6 +17,8 @@ namespace LubanDesktopPet;
 
 public partial class TodoWindow : Window
 {
+    internal const double DefaultWindowWidth = 292;
+    internal const double DefaultWindowHeight = 414;
     private const double TaskFullTextPopupGap = 12;
     private static readonly Brush TodoDropIndicatorBrush =
         CreateTodoDropIndicatorBrush();
@@ -405,8 +407,8 @@ public partial class TodoWindow : Window
     {
         CloseScheduledPickers();
         WindowState = WindowState.Normal;
-        Width = 292;
-        Height = 414;
+        Width = DefaultWindowWidth;
+        Height = DefaultWindowHeight;
         InvalidateMeasure();
         InvalidateArrange();
         InvalidateVisual();

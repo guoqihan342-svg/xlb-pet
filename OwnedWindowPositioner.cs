@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 
 namespace LubanDesktopPet;
 
@@ -49,7 +50,8 @@ internal static class OwnedWindowPositioner
         Window child,
         PositionCache cache,
         out bool childIsOnLeft,
-        bool? preferredChildIsOnLeft = null)
+        bool? preferredChildIsOnLeft = null,
+        Size? expectedLogicalSize = null)
     {
         childIsOnLeft = true;
         try
@@ -111,6 +113,37 @@ internal static class OwnedWindowPositioner
                 return false;
             }
 
+            var targetChildWidth = cache._childWidth;
+            var targetChildHeight = cache._childHeight;
+            if (expectedLogicalSize is { } logicalSize)
+            {
+                var anchorDpi = VisualTreeHelper.GetDpi(anchor);
+                if (!double.IsFinite(logicalSize.Width) ||
+                    !double.IsFinite(logicalSize.Height) ||
+                    logicalSize.Width <= 0 || logicalSize.Height <= 0 ||
+                    !double.IsFinite(anchorDpi.DpiScaleX) ||
+                    !double.IsFinite(anchorDpi.DpiScaleY) ||
+                    anchorDpi.DpiScaleX <= 0 ||
+                    anchorDpi.DpiScaleY <= 0)
+                {
+                    return false;
+                }
+
+                // The anchor already belongs to the destination monitor. Use
+                // its current DPI rather than a hidden child's potentially
+                // stale CompositionTarget after lock/unlock or topology change.
+                targetChildWidth = RoundPhysicalPixel(
+                    logicalSize.Width,
+                    anchorDpi.DpiScaleX);
+                targetChildHeight = RoundPhysicalPixel(
+                    logicalSize.Height,
+                    anchorDpi.DpiScaleY);
+                if (targetChildWidth <= 0 || targetChildHeight <= 0)
+                {
+                    return false;
+                }
+            }
+
             var anchorLeft = (int)Math.Round(anchorTopLeft.X);
             var anchorRight = (int)Math.Round(anchorBottomRight.X);
             var anchorBottom = (int)Math.Round(anchorBottomRight.Y);
@@ -118,18 +151,22 @@ internal static class OwnedWindowPositioner
                 anchorLeft,
                 anchorRight,
                 anchorBottom,
-                cache._childWidth,
-                cache._childHeight,
+                targetChildWidth,
+                targetChildHeight,
                 cache._workArea,
                 preferredChildIsOnLeft,
                 out childIsOnLeft);
 
+            var childSizeMatchesTarget =
+                cache._childWidth == targetChildWidth &&
+                cache._childHeight == targetChildHeight;
             if (childRect.Left == desiredPosition.X &&
-                childRect.Top == desiredPosition.Y)
+                childRect.Top == desiredPosition.Y &&
+                childSizeMatchesTarget)
             {
                 childIsOnLeft = IsChildActuallyOnLeft(
                     childRect.Left,
-                    cache._childWidth,
+                    targetChildWidth,
                     anchorLeft,
                     anchorRight);
                 cache._lastLeft = childRect.Left;
@@ -138,14 +175,21 @@ internal static class OwnedWindowPositioner
                 return true;
             }
 
+            var firstMoveFlags =
+                SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder;
+            if (childSizeMatchesTarget)
+            {
+                firstMoveFlags |= SwpNoSize;
+            }
+
             if (!SetWindowPos(
                 cache._childHandle,
                 IntPtr.Zero,
                 desiredPosition.X,
                 desiredPosition.Y,
-                0,
-                0,
-                SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder))
+                childSizeMatchesTarget ? 0 : targetChildWidth,
+                childSizeMatchesTarget ? 0 : targetChildHeight,
+                firstMoveFlags))
             {
                 cache._hasLastPosition = false;
                 return false;
@@ -161,8 +205,10 @@ internal static class OwnedWindowPositioner
             // WM_DPICHANGED can synchronously alter the physical child size
             // during the first move. Recompute against the current work area
             // and correct the position once with that post-move rectangle.
-            cache._childWidth = movedChildRect.Right - movedChildRect.Left;
-            cache._childHeight = movedChildRect.Bottom - movedChildRect.Top;
+            var movedChildWidth = movedChildRect.Right - movedChildRect.Left;
+            var movedChildHeight = movedChildRect.Bottom - movedChildRect.Top;
+            cache._childWidth = movedChildWidth;
+            cache._childHeight = movedChildHeight;
             cache._hasChildGeometry =
                 cache._childWidth > 0 && cache._childHeight > 0;
             if (!cache._hasChildGeometry)
@@ -171,37 +217,73 @@ internal static class OwnedWindowPositioner
                 return false;
             }
 
+            var correctedChildWidth = expectedLogicalSize.HasValue
+                ? targetChildWidth
+                : movedChildWidth;
+            var correctedChildHeight = expectedLogicalSize.HasValue
+                ? targetChildHeight
+                : movedChildHeight;
             var correctedPosition = CalculateDesiredPosition(
                 anchorLeft,
                 anchorRight,
                 anchorBottom,
-                cache._childWidth,
-                cache._childHeight,
+                correctedChildWidth,
+                correctedChildHeight,
                 cache._workArea,
                 preferredChildIsOnLeft,
                 out childIsOnLeft);
-            if ((movedChildRect.Left != correctedPosition.X ||
-                 movedChildRect.Top != correctedPosition.Y) &&
-                !SetWindowPos(
-                    cache._childHandle,
-                    IntPtr.Zero,
-                    correctedPosition.X,
-                    correctedPosition.Y,
-                    0,
-                    0,
-                    SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder))
+            var correctedSizeMatchesTarget =
+                movedChildWidth == correctedChildWidth &&
+                movedChildHeight == correctedChildHeight;
+            var needsCorrection =
+                movedChildRect.Left != correctedPosition.X ||
+                movedChildRect.Top != correctedPosition.Y ||
+                !correctedSizeMatchesTarget;
+            var finalChildRect = movedChildRect;
+            if (needsCorrection)
+            {
+                var correctionFlags =
+                    SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder;
+                if (correctedSizeMatchesTarget)
+                {
+                    correctionFlags |= SwpNoSize;
+                }
+
+                if (!SetWindowPos(
+                        cache._childHandle,
+                        IntPtr.Zero,
+                        correctedPosition.X,
+                        correctedPosition.Y,
+                        correctedSizeMatchesTarget ? 0 : correctedChildWidth,
+                        correctedSizeMatchesTarget ? 0 : correctedChildHeight,
+                        correctionFlags) ||
+                    !GetWindowRect(cache._childHandle, out finalChildRect))
+                {
+                    cache._hasLastPosition = false;
+                    return false;
+                }
+            }
+
+            cache._childWidth = finalChildRect.Right - finalChildRect.Left;
+            cache._childHeight = finalChildRect.Bottom - finalChildRect.Top;
+            cache._hasChildGeometry =
+                cache._childWidth > 0 && cache._childHeight > 0;
+            if (!cache._hasChildGeometry ||
+                (expectedLogicalSize.HasValue &&
+                 (cache._childWidth != targetChildWidth ||
+                  cache._childHeight != targetChildHeight)))
             {
                 cache._hasLastPosition = false;
                 return false;
             }
 
             childIsOnLeft = IsChildActuallyOnLeft(
-                correctedPosition.X,
+                finalChildRect.Left,
                 cache._childWidth,
                 anchorLeft,
                 anchorRight);
-            cache._lastLeft = correctedPosition.X;
-            cache._lastTop = correctedPosition.Y;
+            cache._lastLeft = finalChildRect.Left;
+            cache._lastTop = finalChildRect.Top;
             cache._hasLastPosition = true;
             return true;
         }

@@ -60,6 +60,9 @@ internal static partial class Program
             var todoPage = GetField<Grid>(todoWindow, "TodoPage");
             var todoInput = GetField<TextBox>(todoWindow, "TodoInput");
             var scheduledPage = GetField<Grid>(todoWindow, "ScheduledTaskPage");
+            var scheduledListHost = GetField<Grid>(
+                todoWindow,
+                "ScheduledTaskListHost");
             var scheduledList = GetField<ListBox>(todoWindow, "ScheduledTaskItemsControl");
             var scheduledInput = GetField<TextBox>(todoWindow, "ScheduledTaskInput");
             var scheduledRepeatEditor = GetField<Grid>(
@@ -244,6 +247,15 @@ internal static partial class Program
                         Visibility.Visible
                     ? BoundsInTodo(scheduledRepeatRulePreview)
                     : BoundsInTodo(validationText);
+                var listHostBounds = BoundsInTodo(scheduledListHost);
+                var listBounds = BoundsInTodo(scheduledList);
+                var statusRowBounds = BoundsInTodo(statusRowHost!);
+                Assert(scheduledListHost.ClipToBounds &&
+                       listBounds.Top >= listHostBounds.Top - 0.5 &&
+                       listBounds.Bottom <= listHostBounds.Bottom + 0.5 &&
+                       listHostBounds.Bottom <= statusRowBounds.Top + 0.5,
+                    $"{stage}定时任务列表必须按星号行真实收缩，不能侵入校验和表单区域：" +
+                    $"list={listBounds}, host={listHostBounds}, status={statusRowBounds}");
                 Assert(statusBounds.Bottom <=
                            scheduledInputBounds.Top + 0.5,
                     $"{stage}校验/循环预览行不得覆盖定时任务输入框");
@@ -565,6 +577,14 @@ internal static partial class Program
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             todoWindow.UpdateLayout();
             AssertScheduledFormLayout("默认新增态");
+            var scheduledScrollViewer =
+                FindVisualDescendant<ScrollViewer>(scheduledList)
+                ?? throw new InvalidOperationException(
+                    "定时任务列表找不到内部 ScrollViewer");
+            var defaultScheduledListHeight = scheduledList.ActualHeight;
+            var defaultScheduledViewportHeight =
+                scheduledScrollViewer.ViewportHeight;
+            var defaultScheduledExtentHeight = scheduledScrollViewer.ExtentHeight;
             Assert(scheduledQuietHoursEditor.Visibility ==
                        Visibility.Collapsed &&
                    scheduledQuietHoursToggle.IsChecked != true &&
@@ -584,7 +604,9 @@ internal static partial class Program
                 "CuteCheckShell",
                 scheduledRepeatToggle) as Border;
             scheduledRepeatToggle.IsChecked = true;
-            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            todoWindow.UpdateLayout();
+            AssertScheduledFormLayout("循环新增态");
             Assert(scheduledRepeatShell?.Background is SolidColorBrush
                        repeatCheckedBackground &&
                    repeatCheckedBackground.Color ==
@@ -610,6 +632,46 @@ internal static partial class Program
                    quietHoursTextBrush.Color ==
                        Color.FromRgb(0x8A, 0x56, 0x2E),
                 "勾选循环后必须显示萌橘色免打扰行，开关默认关闭且时间框保持禁用");
+            var recurringScheduledListHeight = scheduledList.ActualHeight;
+            Assert(defaultScheduledListHeight - recurringScheduledListHeight is >= 31 and <= 33 &&
+                   defaultScheduledViewportHeight -
+                       scheduledScrollViewer.ViewportHeight is >= 31 and <= 33 &&
+                   Math.Abs(
+                       (recurringScheduledListHeight -
+                        scheduledScrollViewer.ViewportHeight) -
+                       (defaultScheduledListHeight -
+                        defaultScheduledViewportHeight)) <= 0.5 &&
+                   scheduledScrollViewer.ExtentHeight >=
+                       defaultScheduledExtentHeight - 1 &&
+                   scheduledScrollViewer.ComputedVerticalScrollBarVisibility ==
+                       Visibility.Visible,
+                "循环新增免打扰行后列表必须真实缩小约32 DIP并扩大可滚范围，" +
+                $"不能继续用旧168 DIP视口遮住任务：list={defaultScheduledListHeight:F1}/" +
+                $"{recurringScheduledListHeight:F1}, viewport={defaultScheduledViewportHeight:F1}/" +
+                $"{scheduledScrollViewer.ViewportHeight:F1}, extent={defaultScheduledExtentHeight:F1}/" +
+                $"{scheduledScrollViewer.ExtentHeight:F1}");
+            var finalScheduledItem = scheduledTasks[^1];
+            scheduledList.ScrollIntoView(finalScheduledItem);
+            scheduledScrollViewer.ScrollToEnd();
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var finalScheduledContainer =
+                scheduledList.ItemContainerGenerator.ContainerFromItem(
+                    finalScheduledItem) as FrameworkElement
+                ?? throw new InvalidOperationException(
+                    "循环态滚动到底后最后一个定时任务没有生成可视容器");
+            var finalScheduledTop = finalScheduledContainer.TranslatePoint(
+                new Point(0, 0),
+                scheduledList).Y;
+            var finalScheduledBottom = finalScheduledContainer.TranslatePoint(
+                new Point(0, finalScheduledContainer.ActualHeight),
+                scheduledList).Y;
+            Assert(finalScheduledTop >= -0.5 &&
+                   finalScheduledBottom <= scheduledList.ActualHeight + 0.5,
+                "循环态滚动到底后最后一个定时任务必须完整可见：" +
+                $"item={finalScheduledTop:F1}..{finalScheduledBottom:F1}, " +
+                $"viewport=0..{scheduledList.ActualHeight:F1}");
+            scheduledScrollViewer.ScrollToTop();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
             AssertSingleLineTextIsFullyVisible(
                 scheduledQuietHoursOvernightHint,
                 scheduledQuietHoursEditor,
@@ -691,7 +753,15 @@ internal static partial class Program
                 "选择免打扰开始或结束时间不能串改上方提醒时间");
             scheduledQuietHoursToggle.IsChecked = false;
             scheduledRepeatToggle.IsChecked = false;
-            PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            todoWindow.UpdateLayout();
+            Assert(Math.Abs(
+                       scheduledList.ActualHeight -
+                       defaultScheduledListHeight) <= 0.5 &&
+                   Math.Abs(
+                       scheduledScrollViewer.ViewportHeight -
+                       defaultScheduledViewportHeight) <= 1.5,
+                "关闭循环后列表必须恢复默认高度，不能遗留缩小的滚动视口");
             Invoke(todoWindow, "ResetScheduledQuietHoursDraft");
             scheduledInput.ApplyTemplate();
             var scheduledInputBorder = scheduledInput.Template.FindName(
@@ -750,18 +820,14 @@ internal static partial class Program
                    scheduledTime.ActualWidth >=
                    formattedTime.WidthIncludingTrailingWhitespace,
                 "日期行必须给 HH:mm:ss 留足宽度，不能被时钟图标或下拉箭头裁掉");
-            var scheduledScrollViewer =
-                FindVisualDescendant<ScrollViewer>(scheduledList)
-                ?? throw new InvalidOperationException(
-                    "定时任务列表找不到内部 ScrollViewer");
             var scheduledVisibleContainers = Enumerable.Range(0, 3)
                 .Select(index =>
                     scheduledList.ItemContainerGenerator
                         .ContainerFromIndex(index))
                 .OfType<FrameworkElement>()
                 .ToArray();
-            Assert(scheduledList.MinHeight >= 168 &&
-                   scheduledList.ActualHeight >= 168 &&
+            Assert(scheduledList.MinHeight <= 0.01 &&
+                   scheduledList.ActualHeight >= 165.5 &&
                    scheduledVisibleContainers.Length == 3 &&
                    scheduledVisibleContainers.All(container =>
                    {

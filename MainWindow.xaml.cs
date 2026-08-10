@@ -299,6 +299,7 @@ public partial class MainWindow : Window
     private bool _cuteBubbleTailReconciliationQueued;
     private Point _pointerDownPosition;
     private Point _pointerDownScreenPosition;
+    private Vector _pointerDownPixelsPerDip = new(1d, 1d);
     private Point _latestDragScreenPosition;
     private Vector _dragPointerOffsetFromWindowInPhysicalPixels;
     private double _dragContactTopOffsetInPhysicalPixels;
@@ -1859,6 +1860,7 @@ public partial class MainWindow : Window
 
         _petSizeLogicalAnchor = null;
         _todoWindowPositionCache.InvalidateGeometry();
+        _todoWindow.RecoverAfterSystemResume();
         var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
         var visiblePetBounds = GetPetViewboxBoundsInScreenDips();
         var correctedVisibleLeft = Math.Clamp(
@@ -1879,7 +1881,6 @@ public partial class MainWindow : Window
 
         if (_todoWindow.IsVisible)
         {
-            _todoWindow.RecoverAfterSystemResume();
             UpdateTodoWindowPosition();
         }
 
@@ -2037,19 +2038,24 @@ public partial class MainWindow : Window
                 _todoWindow,
                 _todoWindowPositionCache,
                 out var childIsOnLeft,
-                _isPetSizePreviewSessionActive ? _petSizeTodoChildOnLeft : null))
+                _isPetSizePreviewSessionActive ? _petSizeTodoChildOnLeft : null,
+                new Size(
+                    TodoWindow.DefaultWindowWidth,
+                    TodoWindow.DefaultWindowHeight)))
         {
             UpdateTodoWindowTailPlacement(childIsOnLeft);
             return;
         }
 
+        // Keep the WPF fallback authoritative too. If the native path failed
+        // during a transient lock-screen or topology change, never reuse the
+        // damaged HWND's ActualWidth/ActualHeight and make the half-size state
+        // persistent on the next open.
+        _todoWindow.Width = TodoWindow.DefaultWindowWidth;
+        _todoWindow.Height = TodoWindow.DefaultWindowHeight;
         var workArea = MonitorWorkArea.GetForVisual(this, PetSizeViewbox);
-        var bubbleWidth = _todoWindow.ActualWidth > 0
-            ? _todoWindow.ActualWidth
-            : _todoWindow.Width;
-        var bubbleHeight = _todoWindow.ActualHeight > 0
-            ? _todoWindow.ActualHeight
-            : _todoWindow.Height;
+        var bubbleWidth = TodoWindow.DefaultWindowWidth;
+        var bubbleHeight = TodoWindow.DefaultWindowHeight;
         var petTopLeft = PetSizeViewbox.TranslatePoint(new Point(0, 0), this);
         var petBottomRight = PetSizeViewbox.TranslatePoint(
             new Point(PetSizeViewbox.ActualWidth, PetSizeViewbox.ActualHeight),
@@ -2338,6 +2344,7 @@ public partial class MainWindow : Window
         _workEdgeHandoffFrozenTimestamp = 0;
         _pointerDownPosition = default;
         _pointerDownScreenPosition = default;
+        _pointerDownPixelsPerDip = new Vector(1d, 1d);
         _latestDragScreenPosition = default;
         _dragPointerOffsetFromWindowInPhysicalPixels = default;
         _dragContactTopOffsetInPhysicalPixels = 0;
@@ -2385,6 +2392,7 @@ public partial class MainWindow : Window
 
         CancelTodoOpenAfterEdgeRoamStop();
         CancelTodoOpenAfterWorkExit();
+        _pointerDownPixelsPerDip = GetPointerPixelsPerDip();
         _suppressClickReactionAfterRoamInterruption = _isEdgeRoaming;
         StopEdgeRoaming(
             scheduleNext: true,
@@ -2410,6 +2418,7 @@ public partial class MainWindow : Window
             _dragStarted = false;
             _dragInteractionActive = false;
             _dragPreservesWorkMode = false;
+            _pointerDownPixelsPerDip = new Vector(1d, 1d);
             _edgeDockDragContext = null;
             _suppressClickReactionAfterRoamInterruption = false;
             _workPointerClickCount = 0;
@@ -2447,22 +2456,106 @@ public partial class MainWindow : Window
             return;
         }
 
-        var movedFarEnough =
-            Math.Abs(currentPosition.X - _pointerDownPosition.X) >=
-            SystemParameters.MinimumHorizontalDragDistance ||
-            Math.Abs(currentPosition.Y - _pointerDownPosition.Y) >=
-            SystemParameters.MinimumVerticalDragDistance;
-
-        if (!movedFarEnough)
+        if (!TryBeginPetPointerDrag(
+                currentPosition,
+                currentScreenPosition))
         {
             return;
         }
 
-        BeginDirectPetDrag(
-            currentPosition,
-            currentScreenPosition);
-
         e.Handled = true;
+    }
+
+    private bool TryBeginPetPointerDrag(
+        Point currentLocalPosition,
+        Point currentScreenPosition)
+    {
+        if (!HasExceededPetDragThreshold(
+                _pointerDownPosition,
+                currentLocalPosition,
+                _pointerDownScreenPosition,
+                currentScreenPosition,
+                _pointerDownPixelsPerDip,
+                allowLocalFallback:
+                    !_suppressClickReactionAfterRoamInterruption,
+                SystemParameters.MinimumHorizontalDragDistance,
+                SystemParameters.MinimumVerticalDragDistance))
+        {
+            return false;
+        }
+
+        BeginDirectPetDrag(
+            currentLocalPosition,
+            currentScreenPosition);
+        return true;
+    }
+
+    private static bool HasExceededPetDragThreshold(
+        Point pointerDownLocalDips,
+        Point currentLocalDips,
+        Point pointerDownScreenPixels,
+        Point currentScreenPixels,
+        Vector pixelsPerDipAtPointerDown,
+        bool allowLocalFallback,
+        double minimumHorizontalDragDips,
+        double minimumVerticalDragDips)
+    {
+        var hasPhysicalCoordinates =
+            double.IsFinite(pointerDownScreenPixels.X) &&
+            double.IsFinite(pointerDownScreenPixels.Y) &&
+            double.IsFinite(currentScreenPixels.X) &&
+            double.IsFinite(currentScreenPixels.Y) &&
+            double.IsFinite(pixelsPerDipAtPointerDown.X) &&
+            double.IsFinite(pixelsPerDipAtPointerDown.Y) &&
+            pixelsPerDipAtPointerDown.X > 0 &&
+            pixelsPerDipAtPointerDown.Y > 0;
+        if (hasPhysicalCoordinates)
+        {
+            return Math.Abs(
+                       currentScreenPixels.X -
+                       pointerDownScreenPixels.X) >=
+                   minimumHorizontalDragDips *
+                   pixelsPerDipAtPointerDown.X ||
+                   Math.Abs(
+                       currentScreenPixels.Y -
+                       pointerDownScreenPixels.Y) >=
+                   minimumVerticalDragDips *
+                   pixelsPerDipAtPointerDown.Y;
+        }
+
+        if (!allowLocalFallback)
+        {
+            // During roam disembark the HWND moves under a stationary pointer.
+            // A temporarily unavailable screen point must not reinterpret that
+            // local-coordinate drift as an intentional drag.
+            return false;
+        }
+
+        return Math.Abs(currentLocalDips.X - pointerDownLocalDips.X) >=
+                   minimumHorizontalDragDips ||
+               Math.Abs(currentLocalDips.Y - pointerDownLocalDips.Y) >=
+                   minimumVerticalDragDips;
+    }
+
+    private Vector GetPointerPixelsPerDip()
+    {
+        try
+        {
+            var transform =
+                PresentationSource.FromVisual(this)?.CompositionTarget?
+                    .TransformToDevice ?? Matrix.Identity;
+            return new Vector(
+                double.IsFinite(transform.M11) && transform.M11 > 0
+                    ? transform.M11
+                    : 1d,
+                double.IsFinite(transform.M22) && transform.M22 > 0
+                    ? transform.M22
+                    : 1d);
+        }
+        catch (InvalidOperationException)
+        {
+            return new Vector(1d, 1d);
+        }
     }
 
     private void BeginDirectPetDrag(
@@ -2543,6 +2636,7 @@ public partial class MainWindow : Window
                             !_suppressClickReactionAfterRoamInterruption;
         _pointerDown = false;
         _dragInteractionActive = false;
+        _pointerDownPixelsPerDip = new Vector(1d, 1d);
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
         _workPointerClickCount = 0;
@@ -2589,6 +2683,7 @@ public partial class MainWindow : Window
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
+        _pointerDownPixelsPerDip = new Vector(1d, 1d);
         _dragPreservesWorkMode = false;
         _directDragPhysicalGeometryReady = false;
         _directDragTopClamped = false;
@@ -2806,6 +2901,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            _pointerDownPixelsPerDip = new Vector(1d, 1d);
             _edgeDockDragContext = null;
             _dragPreservesWorkMode = false;
             _suppressClickReactionAfterRoamInterruption = false;
@@ -10554,6 +10650,7 @@ public partial class MainWindow : Window
             if (!_todoWindow.IsVisible)
             {
                 _todoWindow.ShowDefaultTab();
+                _todoWindow.RecoverAfterSystemResume();
                 _todoWindow.Opacity = 0;
                 _todoWindow.Show();
                 _todoWindow.UpdateLayout();
