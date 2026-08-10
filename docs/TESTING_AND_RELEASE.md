@@ -243,17 +243,20 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## v1.0.66 发布验证（待真实回填）
+## v1.0.66 发布验证
 
-本节只预留发布证据位置。必须在最终功能提交、自动回归、真实 WPF 视觉验收、单文件发布、用户路径替换和 GitHub Release 回下载全部完成后填写；在此之前不得预写提交 SHA、EXE 大小、SHA-256 或“已发布”结论。
+以下结果于 `2026-08-10` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418`、.NET Desktop Runtime `8.0.24` 环境完成。正式 EXE 已替换到用户指定路径并保持运行，Release 附件也已在独立目录重新下载复核。
 
-| 项目 | 待回填证据 |
+| 项目 | 实际结果 |
 | --- | --- |
-| 源码与版本 | 待回填最终功能提交、文件版本和产品版本 |
-| 侧边完整短弯前臂 | 待回填最终图集的左右镜像/Bottom 不变校验，以及真实 `190×242 DIP`、`0.75 / 1.40` 缩放下左右浅探与深探视觉结果 |
-| 自动化与构建 | 待回填 Python 素材/图集 QA、定向 UI、完整 UI、存储检查及 Release 构建结果 |
-| EXE 与用户数据 | 待回填最终 EXE 路径、响应/单实例、用户数据哈希前后对照、字节数、SHA-256 和签名状态 |
-| GitHub Release | 待回填标签、Release 目标、附件上传、独立回下载和哈希复核结果 |
+| 源码、版本与图集 | 正式功能提交 `85109464444a02b38b13776157c66cd6b891c03a`；文件版本 `1.0.66.0`，产品版本 `1.0.66+85109464444a02b38b13776157c66cd6b891c03a`；正式清单仍为 41 页、1240 个源帧和 1240 个分页帧 |
+| 侧边完整短弯前臂 | 左侧 48/48 帧唯一，循环 ROI Alpha IoU 最低 `0.957418`、面积变化最高 `3.2806%`、腕心步进最高 `1.5495 px`、曲线端点步进最高 `1.9621 px`、水平底边最长 `6 px`、端点桥最小 Alpha 面积 `295 px`；右侧继续精确水平镜像。真实 `190×242 DIP` 运行渲染按 `0.75 / 1.40` 缩放检查左右浅探、深探及浅/深背景，均无下方缺口、闪断、旧横管或平切。Bottom 的 52 张 PNG、图集页和清单条目与上一版完全一致 |
+| 可复建与图集 | 完整 `install → generate --edge-peek → fix` clean path 通过，4 个 key 精确对应 `f048 / f012 / f024 / f036`；48 帧二次投影为零像素变化。Dense Motion QA 为 `failures=[]`，Atlas Motion QA 为 41 页、1240 帧、`failure_count=0`；41 个图集页中仅 `luban-edge-left.pbgra.br` 改变，其 SHA-256 为 `DFD6BF4A57228604787F79543C72B89C83CA0B1EDBC00962EA04C39E84FD2F9D` |
+| 自动化、构建与内存 | Python 37/37 通过；DesktopPet、UiStateChecks、TodoStoreChecks Release 构建均为 0 警告、0 错误。`--edge-dock-only`、`--work-mode-only`、`--resident-cache-only`、`--atlas-hash-only`、`--memory-profile`、`--todo-only`、三套存储检查及完整 UiStateChecks 全部通过。普通/绕屏容量为 `49/52 MiB`、`89/92 MiB`，空闲裁剪后 resident/pool 为 `11/11 MiB`、managed 约 `16.05 MiB` |
+| EXE 与用户数据 | `F:\agent\pet\dist\LubanDesktopPet.exe` 启动后响应，二次启动以退出码 0 自行退出且始终只有一个实例；Run 键路径不变。`todos.json`、`settings.json`、`scheduled-tasks.json` 在备份、替换和启动前后 SHA-256 完全不变。正式 EXE 为 `93,342,854` 字节，SHA-256 `3EEF809A71056316FDDEFB8231129C7E51354595A4877A2CB02E8620BFE003CD`，`NotSigned` |
+| GitHub Release | 已发布 [v1.0.66](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.66)；标签与 Release 目标均为功能提交 `85109464444a02b38b13776157c66cd6b891c03a`，GitHub digest、独立回下载、本地候选、恢复版 `dist` 和用户路径 EXE 的大小及 SHA-256 完全一致 |
+
+本机只有一块 `2560×1440` 显示器，因此多屏、负坐标副屏和混合 DPI 结论仍来自自动化矩阵，不冒充本轮真实双屏硬件验收。Computer Use 能确认桌宠按设计不进入普通可定位窗口列表；本轮真实输入复现使用诊断拖放链，最终左右人物画面使用正式 Assets 和运行缩放链逐帧验收，Bottom 则以源文件、图集页和清单条目逐字节锁定。
 
 ## v1.0.65 发布验证
 
