@@ -36,6 +36,15 @@ MAX_ADJACENT_ROI_AREA_CHANGE = 0.04
 MAX_ADJACENT_WRIST_CENTER_STEP = 2.0
 CUFF_DROP_CLEANUP_Y = 411
 CUFF_DROP_CLEANUP_X = 31
+ENDPOINT_BRIDGE_FRAMES = frozenset({1, 2, 3, 4, 5, 44, 45, 46, 47, 48})
+MIN_ENDPOINT_BRIDGE_ALPHA_PIXELS = 260
+FOREARM_OUTLINE_RGB = np.array([83, 40, 93], dtype=np.uint8)
+MAX_FINAL_OUTSIDE_CURVE_PIXELS = 16
+MIN_FINAL_OUTLINE_PIXELS = 250
+AUTHORED_SOURCE_REVEAL = 7.0
+AUTHORED_SOURCE_Y_IN = (345.0, 361.0)
+AUTHORED_SOURCE_Y_OUT = (420.0, 438.0)
+AUTHORED_SOURCE_X_OUT = (95.0, 120.0)
 
 
 def pixel_sha256(pixels: np.ndarray) -> str:
@@ -71,6 +80,67 @@ def save_png_atomically(pixels: np.ndarray, destination: Path) -> None:
 def dilate(mask: np.ndarray, size: int) -> np.ndarray:
     kernel = np.ones((size, size), dtype=np.uint8)
     return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1) > 0
+
+
+def _smoothstep(values: np.ndarray) -> np.ndarray:
+    values = np.clip(values, 0.0, 1.0)
+    return values * values * (3.0 - 2.0 * values)
+
+
+def authored_lower_arm_source(frame: np.ndarray) -> np.ndarray:
+    """Reconstruct the old authored pixel field without restoring its shape.
+
+    Earlier releases sampled this field directly into the full sleeve, which
+    produced a long tube at the screen boundary.  The field is now private
+    source material only: callers may copy its pixels through the approved
+    short C-shaped mask, but can never expose its former outer silhouette.
+    """
+
+    height, width = frame.shape[:2]
+    yy, xx = np.mgrid[:height, :width]
+    fade_in = _smoothstep(
+        (yy.astype(np.float32) - AUTHORED_SOURCE_Y_IN[0])
+        / (AUTHORED_SOURCE_Y_IN[1] - AUTHORED_SOURCE_Y_IN[0])
+    )
+    fade_out = 1.0 - _smoothstep(
+        (yy.astype(np.float32) - AUTHORED_SOURCE_Y_OUT[0])
+        / (AUTHORED_SOURCE_Y_OUT[1] - AUTHORED_SOURCE_Y_OUT[0])
+    )
+    horizontal = 1.0 - _smoothstep(
+        (xx.astype(np.float32) - AUTHORED_SOURCE_X_OUT[0])
+        / (AUTHORED_SOURCE_X_OUT[1] - AUTHORED_SOURCE_X_OUT[0])
+    )
+    displacement = AUTHORED_SOURCE_REVEAL * fade_in * fade_out * horizontal
+    source_x = np.clip(xx.astype(np.float32) - displacement, 0, width - 1)
+    x0 = np.floor(source_x).astype(np.int32)
+    x1 = np.minimum(x0 + 1, width - 1)
+    fraction = (source_x - x0)[..., None]
+    alpha = frame[..., 3:4].astype(np.float32) / 255.0
+    premultiplied = np.concatenate(
+        (
+            frame[..., :3].astype(np.float32) * alpha,
+            frame[..., 3:4].astype(np.float32),
+        ),
+        axis=2,
+    )
+    sampled = (
+        premultiplied[yy, x0] * (1.0 - fraction)
+        + premultiplied[yy, x1] * fraction
+    )
+    authored = frame.copy()
+    support = displacement > 1e-6
+    sampled_alpha = np.clip(np.rint(sampled[..., 3]), 0, 255).astype(np.uint8)
+    sampled_rgb = np.zeros_like(sampled[..., :3], dtype=np.uint8)
+    visible = sampled[..., 3] > 0.5
+    sampled_rgb[visible] = np.clip(
+        np.rint(sampled[..., :3][visible] * 255.0 / sampled[..., 3:4][visible]),
+        0,
+        255,
+    ).astype(np.uint8)
+    authored[support, :3] = sampled_rgb[support]
+    authored[support, 3] = sampled_alpha[support]
+    authored[authored[..., 3] == 0, :3] = 0
+    return authored
 
 
 def purple_mask(frame: np.ndarray) -> np.ndarray:
@@ -225,7 +295,7 @@ def side_grip_phase(frame_number: int) -> float:
     return max(0.0, math.sin(math.pi * frame_number / FRAME_COUNT))
 
 
-def side_grip_bottom_curve(
+def compact_baseline_bottom_curve(
     frame_number: int, xx: np.ndarray
 ) -> tuple[np.ndarray, float]:
     peek = side_grip_phase(frame_number)
@@ -243,6 +313,88 @@ def side_grip_bottom_curve(
     end_y = 378.0 - 4.0 * peek
     curve = 412.0 - 5.0 * first_run + (end_y - 407.0) * eased
     return curve, x_end
+
+
+def side_grip_bottom_curve(
+    frame_number: int, xx: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Return the approved short, full C-shaped forearm silhouette."""
+
+    peek = side_grip_phase(frame_number)
+    x_end = 102.0 + 30.0 * peek
+    cap_width = 28.0
+    cap_start = x_end - cap_width
+    start_y = 418.0 - 2.0 * peek
+    end_y = 378.0 - 4.0 * peek
+    join_y = end_y + 28.0
+    values = xx.astype(np.float32)
+    body_u = np.clip(
+        (values - 28.0) / max(1.0, cap_start - 28.0),
+        0.0,
+        1.0,
+    )
+    body = start_y + (join_y - start_y) * (
+        0.90 * body_u + 0.10 * body_u * body_u
+    )
+    cap_u = np.clip((values - cap_start) / cap_width, 0.0, 1.0)
+    cap = join_y + (end_y - join_y) * (
+        0.20 * cap_u + 0.80 * cap_u * cap_u
+    )
+    return np.where(values <= cap_start, body, cap), x_end
+
+
+def is_final_side_grip_frame(frame: np.ndarray, frame_number: int) -> bool:
+    """Recognize the projected final geometry so repeated installs are no-ops."""
+
+    height, width = frame.shape[:2]
+    yy, xx = np.mgrid[:height, :width]
+    protected = protected_character_mask(frame)
+    curve, x_end = side_grip_bottom_curve(frame_number, xx)
+    outside_curve = (
+        (xx >= 28)
+        & (xx < ROI[2])
+        & (yy >= ROI[1])
+        & (yy < ROI[3])
+        & ~protected
+        & purple_mask(frame)
+        & ((xx > x_end + 1.0) | (yy > curve + 2.0))
+    )
+
+    line_mask = np.zeros((height, width), dtype=np.uint8)
+    curve_1d, _ = side_grip_bottom_curve(
+        frame_number, np.arange(width)[None, :]
+    )
+    points = np.asarray(
+        [
+            (x, int(round(float(curve_1d[0, x]))))
+            for x in range(28, int(math.floor(x_end)) + 1)
+        ],
+        dtype=np.int32,
+    )
+    cv2.polylines(
+        line_mask,
+        [points],
+        False,
+        255,
+        thickness=2,
+        lineType=cv2.LINE_AA,
+    )
+    exact_outline = (
+        (line_mask > 0)
+        & np.all(frame[..., :3] == FOREARM_OUTLINE_RGB, axis=2)
+        & (frame[..., 3] > 0)
+        & ~protected
+    )
+    if int(outside_curve.sum()) > MAX_FINAL_OUTSIDE_CURVE_PIXELS:
+        return False
+    if int(exact_outline.sum()) < MIN_FINAL_OUTLINE_PIXELS:
+        return False
+    if (
+        frame_number in ENDPOINT_BRIDGE_FRAMES
+        and endpoint_bridge_alpha_area(frame) < MIN_ENDPOINT_BRIDGE_ALPHA_PIXELS
+    ):
+        return False
+    return True
 
 
 def repeated_warp_prefix_mask(
@@ -270,12 +422,28 @@ def reshape_side_grip_frame(
     if frame.shape != (CANVAS_SIZE[1], CANVAS_SIZE[0], 4):
         raise ValueError(f"Unexpected side-grip array shape: {frame.shape}")
 
+    if is_final_side_grip_frame(frame, frame_number):
+        _, x_end = side_grip_bottom_curve(
+            frame_number, np.zeros((1, 1), dtype=np.float32)
+        )
+        return frame.copy(), {
+            "frame": frame_number,
+            "phase": side_grip_phase(frame_number),
+            "xEnd": x_end,
+            "changedPixels": 0,
+            "protectedChanges": 0,
+            "outsideSupportChanges": 0,
+            "removedRepeatedPrefixPixels": 0,
+            "alreadyFinal": True,
+        }
+
     output = frame.copy()
+    authored_source = authored_lower_arm_source(frame)
     height, width = frame.shape[:2]
     yy, xx = np.mgrid[:height, :width]
     protected = protected_character_mask(frame)
     support = arm_support_mask(frame, protected)
-    curve, x_end = side_grip_bottom_curve(frame_number, xx)
+    curve, x_end = compact_baseline_bottom_curve(frame_number, xx)
     remove = support & (
         (xx.astype(np.float32) > x_end)
         | (yy.astype(np.float32) > curve)
@@ -323,7 +491,7 @@ def reshape_side_grip_frame(
         output[remove] = 0
 
         line_mask = np.zeros((height, width), dtype=np.uint8)
-        curve_1d, _ = side_grip_bottom_curve(
+        curve_1d, _ = compact_baseline_bottom_curve(
             frame_number, np.arange(width)[None, :]
         )
         points = [
@@ -358,8 +526,115 @@ def reshape_side_grip_frame(
                 np.rint(220.0 * line_alpha[line]).astype(np.uint8),
             )
 
+    # Restore the approved full, short forearm from the authored input after
+    # producing the compact baseline above.  This deliberately reuses only
+    # source artwork; the character, hands and face stay byte-for-byte locked.
+    final_protected = protected_character_mask(output)
+    final_curve, final_x_end = side_grip_bottom_curve(frame_number, xx)
+    authored_near_purple = dilate(purple_mask(authored_source), 15)
+    restore = (
+        (xx >= 28)
+        & (xx <= final_x_end)
+        & (yy >= ROI[1])
+        & (yy <= final_curve)
+        & (authored_source[..., 3] > 0)
+        & authored_near_purple
+        & ~final_protected
+    )
+    output[restore] = authored_source[restore]
+
+    # Rebuild the short curved boundary with one exact colour from the authored
+    # sleeve palette.  The curve is continuously sloped and its quantized run
+    # is hard-limited by QA to six source pixels.
+    final_line_mask = np.zeros((height, width), dtype=np.uint8)
+    final_curve_1d, _ = side_grip_bottom_curve(
+        frame_number, np.arange(width)[None, :]
+    )
+    final_points = np.asarray(
+        [
+            (x, int(round(float(final_curve_1d[0, x]))))
+            for x in range(28, int(math.floor(final_x_end)) + 1)
+        ],
+        dtype=np.int32,
+    )
+    cv2.polylines(
+        final_line_mask,
+        [final_points],
+        False,
+        255,
+        thickness=2,
+        lineType=cv2.LINE_AA,
+    )
+    near_output = dilate(output[..., 3] > 0, 3)
+    final_line = (
+        (final_line_mask > 0)
+        & near_output
+        & ~final_protected
+        & (xx >= 28)
+        & (xx <= final_x_end)
+    )
+    output[final_line, :3] = FOREARM_OUTLINE_RGB
+    output[final_line, 3] = np.maximum(
+        output[final_line, 3],
+        np.rint(
+            220.0 * final_line_mask[final_line].astype(np.float32) / 255.0
+        ).astype(np.uint8),
+    )
+    edit_support |= restore | final_line
+    source_layer_edits = restore | final_line
+
+    # At the shortest loop endpoints the compact baseline exposes a rectangular
+    # bite below the gripping hand.  Fill only that bite with same-coordinate
+    # authored pixels under a tilted elliptical boundary.  The bridge never
+    # reaches the retired flat row and introduces no generated RGB.
+    if frame_number in ENDPOINT_BRIDGE_FRAMES:
+        dx = (xx.astype(np.float32) - 25.0) / 17.0
+        shifted_y = yy.astype(np.float32) - 0.25 * (
+            xx.astype(np.float32) - 25.0
+        )
+        dy = (shifted_y - 399.0) / 18.0
+        endpoint_bridge = (
+            (dx * dx + dy * dy <= 1.0)
+            & (yy >= 390)
+            & (yy <= 417)
+            & (xx <= 34)
+            & (authored_source[..., 3] > 0)
+            & (output[..., 3] == 0)
+            & ~final_protected
+        )
+        output[endpoint_bridge] = authored_source[endpoint_bridge]
+        edit_support |= endpoint_bridge
+        source_layer_edits |= endpoint_bridge
+
+    # The full-reveal authored key contains two premultiplied-resample specks
+    # in the vacated cuff field.  They are absent from the accepted key and are
+    # not part of either protected hand component.
+    if frame_number == 24:
+        full_reveal_specks = np.zeros((height, width), dtype=bool)
+        full_reveal_specks[402, 17] = True
+        full_reveal_specks[403, 19] = True
+        output[full_reveal_specks] = 0
+        final_protected &= ~full_reveal_specks
+        edit_support |= full_reveal_specks
+
+    # Match the asset installer's alpha-preserving despill before its second,
+    # now-idempotent pass.  Restrict it to restored source pixels so untouched
+    # character art remains byte-for-byte identical.
+    red = output[..., 0]
+    green = output[..., 1]
+    blue = output[..., 2]
+    despill = (
+        source_layer_edits
+        & (output[..., 3] > 0)
+        & (green > red)
+        & (green > blue)
+    )
+    output[despill, 1] = np.maximum(red[despill], blue[despill])
+
+    output[output[..., 3] == 0, :3] = 0
+
     changed = np.any(frame != output, axis=2)
-    if np.any(changed & protected):
+    if np.any(changed & final_protected):
         raise AssertionError("compact side grip changed protected character pixels")
     if np.any(changed & ~edit_support):
         raise AssertionError("compact side grip changed pixels outside its sleeve support")
@@ -369,9 +644,9 @@ def reshape_side_grip_frame(
     return output, {
         "frame": frame_number,
         "phase": side_grip_phase(frame_number),
-        "xEnd": x_end,
+        "xEnd": final_x_end,
         "changedPixels": int(changed.sum()),
-        "protectedChanges": int(np.count_nonzero(changed & protected)),
+        "protectedChanges": int(np.count_nonzero(changed & final_protected)),
         "outsideSupportChanges": int(np.count_nonzero(changed & ~edit_support)),
         "removedRepeatedPrefixPixels": int(repeated_prefix.sum()),
     }
@@ -404,6 +679,12 @@ def roi_alpha_area(frame: np.ndarray) -> int:
     )
 
 
+def endpoint_bridge_alpha_area(frame: np.ndarray) -> int:
+    """Measure the once-missing rectangular wrist-to-sleeve connection."""
+
+    return int(np.count_nonzero(frame[399:419, 19:35, 3] >= ALPHA_THRESHOLD))
+
+
 def wrist_center(frame: np.ndarray) -> tuple[float, float]:
     height, width = frame.shape[:2]
     yy, xx = np.mgrid[:height, :width]
@@ -424,15 +705,28 @@ def wrist_center(frame: np.ndarray) -> tuple[float, float]:
 def maximum_quantized_horizontal_run(frame_number: int) -> int:
     xx = np.arange(ROI[2])[None, :]
     curve, x_end = side_grip_bottom_curve(frame_number, xx)
-    values = np.rint(curve[0, : int(math.floor(x_end)) + 1]).astype(np.int32)
+    runs = [
+        np.rint(curve[0, 28 : int(math.floor(x_end)) + 1]).astype(np.int32)
+    ]
+    if frame_number in ENDPOINT_BRIDGE_FRAMES:
+        bridge_x = np.arange(8, 29, dtype=np.float32)
+        bridge_dx = (bridge_x - 25.0) / 17.0
+        bridge_bottom = (
+            399.0
+            + 0.25 * (bridge_x - 25.0)
+            + 18.0 * np.sqrt(np.clip(1.0 - bridge_dx * bridge_dx, 0.0, 1.0))
+        )
+        runs.append(np.rint(bridge_bottom).astype(np.int32))
+
     maximum = 1
-    current = 1
-    for first, second in zip(values, values[1:]):
-        if int(first) == int(second):
-            current += 1
-            maximum = max(maximum, current)
-        else:
-            current = 1
+    for values in runs:
+        current = 1
+        for first, second in zip(values, values[1:]):
+            if int(first) == int(second):
+                current += 1
+                maximum = max(maximum, current)
+            else:
+                current = 1
     return maximum
 
 
@@ -477,6 +771,10 @@ def analyze_sequence(frames: list[np.ndarray]) -> dict[str, object]:
             maximum_quantized_horizontal_run(number)
             for number in range(1, FRAME_COUNT + 1)
         ),
+        "minEndpointBridgeAlphaPixels": min(
+            endpoint_bridge_alpha_area(frames[number - 1])
+            for number in sorted(ENDPOINT_BRIDGE_FRAMES)
+        ),
         "rightEdgeRuntimeContract": "horizontal-mirror-of-left",
         "rightMirroredDecodedSequenceSha256": sequence_sha256(
             [np.ascontiguousarray(frame[:, ::-1]) for frame in frames]
@@ -495,6 +793,8 @@ def analyze_sequence(frames: list[np.ndarray]) -> dict[str, object]:
         failures.append("side-grip curved endpoint moves by more than 2px")
     if metrics["maxQuantizedHorizontalBottomRun"] > MAX_HORIZONTAL_BOTTOM_RUN:
         failures.append("side-grip bottom contains a horizontal run over 6px")
+    if metrics["minEndpointBridgeAlphaPixels"] < MIN_ENDPOINT_BRIDGE_ALPHA_PIXELS:
+        failures.append("side-grip endpoint wrist bridge has a transparent bite")
     metrics["failures"] = failures
     return metrics
 

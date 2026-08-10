@@ -373,6 +373,10 @@ class CompactSideGripTests(unittest.TestCase):
             ),
             side_grip.MAX_HORIZONTAL_BOTTOM_RUN,
         )
+        self.assertEqual(
+            frozenset({1, 2, 3, 4, 5, 44, 45, 46, 47, 48}),
+            side_grip.ENDPOINT_BRIDGE_FRAMES,
+        )
 
     def test_formal_compact_sequence_passes_hard_continuity_qa(self) -> None:
         frames = [
@@ -390,6 +394,10 @@ class CompactSideGripTests(unittest.TestCase):
             "horizontal-mirror-of-left",
             metrics["rightEdgeRuntimeContract"],
         )
+        self.assertGreaterEqual(
+            metrics["minEndpointBridgeAlphaPixels"],
+            side_grip.MIN_ENDPOINT_BRIDGE_ALPHA_PIXELS,
+        )
 
     def test_each_quarter_frame_is_the_exact_compact_key(self) -> None:
         for key_number, frame_number in side_grip.KEY_PHASE_FRAMES.items():
@@ -405,6 +413,23 @@ class CompactSideGripTests(unittest.TestCase):
                 self.assertEqual(
                     side_grip.pixel_sha256(key),
                     side_grip.pixel_sha256(smooth),
+                )
+
+    def test_formal_side_grip_projection_is_idempotent_for_all_48_frames(self) -> None:
+        for frame_number in range(1, side_grip.FRAME_COUNT + 1):
+            with self.subTest(frame=frame_number):
+                frame = side_grip.load_pixels(
+                    WORKSPACE
+                    / "Assets"
+                    / f"luban-edge-left-smooth-{frame_number:03d}.png"
+                )
+                output, metrics = side_grip.reshape_side_grip_frame(
+                    frame, frame_number
+                )
+                self.assertTrue(metrics["alreadyFinal"])
+                self.assertEqual(
+                    side_grip.pixel_sha256(frame),
+                    side_grip.pixel_sha256(output),
                 )
 
 
