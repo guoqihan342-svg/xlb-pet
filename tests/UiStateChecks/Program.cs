@@ -508,9 +508,8 @@ internal static partial class Program
                 RunCheck(nameof(AssertScheduledQuietHoursRuntimeContract),
                     () => AssertScheduledQuietHoursRuntimeContract(window));
                 RunCheck(
-                    nameof(AssertPetSizeMoveToPointGestureContract),
-                    () => AssertPetSizeMoveToPointGestureContract(window));
-                RunCheck(nameof(AssertPetSizeScaleContract), () => AssertPetSizeScaleContract(window));
+                    "PetSizeContractsInIsolatedProcess",
+                    () => RunIsolatedUiStateChecks("--pet-size-only"));
                 RunCheck(
                     nameof(AssertWorkModeVisualAndIsolationContract),
                     () => AssertWorkModeVisualAndIsolationContract(window));
@@ -1622,6 +1621,54 @@ internal static partial class Program
         Console.WriteLine($"[RUN] {name}");
         check();
         Console.WriteLine($"[PASS] {name}");
+    }
+
+    private static void RunIsolatedUiStateChecks(string argument)
+    {
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new InvalidOperationException(
+                "无法定位 UiStateChecks 当前可执行文件，不能启动隔离回归进程");
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executablePath,
+            WorkingDirectory = Environment.CurrentDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add(argument);
+
+        using var process = Process.Start(startInfo) ??
+                            throw new InvalidOperationException(
+                                $"无法启动隔离 UiStateChecks 进程：{argument}");
+        var standardOutputTask = process.StandardOutput.ReadToEndAsync();
+        var standardErrorTask = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit((int)TimeSpan.FromMinutes(5).TotalMilliseconds))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException(
+                $"隔离 UiStateChecks 进程超时：{argument}");
+        }
+
+        var standardOutput = standardOutputTask.GetAwaiter().GetResult();
+        var standardError = standardErrorTask.GetAwaiter().GetResult();
+        if (!string.IsNullOrWhiteSpace(standardOutput))
+        {
+            Console.Write(standardOutput);
+        }
+
+        if (!string.IsNullOrWhiteSpace(standardError))
+        {
+            Console.Error.Write(standardError);
+        }
+
+        Assert(process.ExitCode == 0,
+            $"隔离 UiStateChecks 进程失败：{argument}, exit={process.ExitCode}");
     }
 
     private static void AssertAltTabWindowSourceContract()

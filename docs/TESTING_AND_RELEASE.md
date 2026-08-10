@@ -38,6 +38,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj -c Release
 ```
 
 完整套件包含动画、缓存、内存、绝对时间轴、多屏、DPI、边缘吸附、巡游、待办、输入法、开机自启、托盘和提醒堆叠。发布前不能忽略失败项。
+其中桌宠尺寸手势会在新的 `--pet-size-only` 子进程和全新 `MainWindow` 中执行，防止前序提醒测试的 WPF 布局状态串入；子进程退出码仍属于完整套件结果，失败不会被忽略。
 
 ## 3. 定向 UI 入口
 
