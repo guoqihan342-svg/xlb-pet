@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Runtime;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
@@ -300,6 +301,10 @@ public partial class MainWindow : Window
     private Point _pointerDownPosition;
     private Point _pointerDownScreenPosition;
     private Vector _pointerDownPixelsPerDip = new(1d, 1d);
+    // Null in production. UiStateChecks can replace the native cursor sample
+    // without moving the operator's real pointer while exercising the exact
+    // production gesture path.
+    private Func<Point?>? _pointerScreenPointProviderForTesting = null;
     private Point _latestDragScreenPosition;
     private Vector _dragPointerOffsetFromWindowInPhysicalPixels;
     private double _dragContactTopOffsetInPhysicalPixels;
@@ -2392,8 +2397,15 @@ public partial class MainWindow : Window
 
         CancelTodoOpenAfterEdgeRoamStop();
         CancelTodoOpenAfterWorkExit();
+        var interruptedRoam = _isEdgeRoaming;
         _pointerDownPixelsPerDip = GetPointerPixelsPerDip();
-        _suppressClickReactionAfterRoamInterruption = _isEdgeRoaming;
+        _pointerDownPosition = e.GetPosition(this);
+        _pointerDownScreenPosition = GetPointerScreenPointOrFallback(
+            _pointerDownPosition,
+            new Point(double.NaN, double.NaN),
+            allowLocalFallback: !interruptedRoam);
+        _latestDragScreenPosition = _pointerDownScreenPosition;
+        _suppressClickReactionAfterRoamInterruption = interruptedRoam;
         StopEdgeRoaming(
             scheduleNext: true,
             restoreIdleFrame: true,
@@ -2404,11 +2416,6 @@ public partial class MainWindow : Window
         _pointerDown = true;
         _dragStarted = false;
         _edgeDockDragContext = null;
-        _pointerDownPosition = e.GetPosition(this);
-        _pointerDownScreenPosition = GetScreenPointOrFallback(
-            _pointerDownPosition,
-            new Point(double.NaN, double.NaN));
-        _latestDragScreenPosition = _pointerDownScreenPosition;
         _directDragPhysicalGeometryReady = false;
         _directDragTopClamped = false;
         _directDragTopClampPointerYInPhysicalPixels = double.NaN;
@@ -2438,9 +2445,11 @@ public partial class MainWindow : Window
         }
 
         var currentPosition = e.GetPosition(this);
-        var currentScreenPosition = GetScreenPointOrFallback(
+        var currentScreenPosition = GetPointerScreenPointOrFallback(
             currentPosition,
-            _latestDragScreenPosition);
+            _latestDragScreenPosition,
+            allowLocalFallback:
+                !_suppressClickReactionAfterRoamInterruption);
         _latestDragScreenPosition = currentScreenPosition;
         if (_dragStarted)
         {
@@ -2613,15 +2622,35 @@ public partial class MainWindow : Window
             return;
         }
 
+        var dragStartedOnRelease = false;
+        var releaseLocalPosition = e.GetPosition(this);
+        if (_dragInteractionActive && (_pointerDown || _dragStarted))
+        {
+            _latestDragScreenPosition = GetPointerScreenPointOrFallback(
+                releaseLocalPosition,
+                _latestDragScreenPosition,
+                allowLocalFallback:
+                    !_suppressClickReactionAfterRoamInterruption);
+            if (!_dragStarted && _pointerDown)
+            {
+                // A fast press-move-release can be coalesced without a WPF
+                // MouseMove reaching this window. Give the authoritative
+                // physical release point the same final threshold check so a
+                // real drag cannot fall through as a click.
+                dragStartedOnRelease = TryBeginPetPointerDrag(
+                    releaseLocalPosition,
+                    _latestDragScreenPosition);
+            }
+        }
+
         if (_dragStarted)
         {
-            var releaseLocalPosition = e.GetPosition(this);
-            _latestDragScreenPosition = GetScreenPointOrFallback(
-                releaseLocalPosition,
-                _latestDragScreenPosition);
-            ContinueDirectPetDrag(
-                releaseLocalPosition,
-                _latestDragScreenPosition);
+            if (!dragStartedOnRelease)
+            {
+                ContinueDirectPetDrag(
+                    releaseLocalPosition,
+                    _latestDragScreenPosition);
+            }
             CompleteDirectPetDrag(updateEdgeDock: true);
             e.Handled = true;
             return;
@@ -2673,9 +2702,11 @@ public partial class MainWindow : Window
 
         if (_dragStarted)
         {
-            _latestDragScreenPosition = GetScreenPointOrFallback(
+            _latestDragScreenPosition = GetPointerScreenPointOrFallback(
                 e.GetPosition(this),
-                _latestDragScreenPosition);
+                _latestDragScreenPosition,
+                allowLocalFallback:
+                    !_suppressClickReactionAfterRoamInterruption);
             CompleteDirectPetDrag(updateEdgeDock: true);
             return;
         }
@@ -3082,6 +3113,12 @@ public partial class MainWindow : Window
 
     private bool CanEnterWorkMode()
     {
+        return CanShowIdleWorkModeButton() &&
+               !_dragInteractionActive && !_pointerDown;
+    }
+
+    private bool CanShowIdleWorkModeButton()
+    {
         return IsLoaded &&
                !_isClosing && !_sessionInactive && _automaticAnimationEnabled &&
                _workState == WorkState.Idle &&
@@ -3089,7 +3126,6 @@ public partial class MainWindow : Window
                _currentSpriteFrame is SpriteFrame currentFrame &&
                currentFrame == _idleFrame &&
                !_isReminderActive && !_isTransientPetSizeOverride &&
-               !_dragInteractionActive && !_pointerDown &&
                !_isPetSizeTransitioning && !_isPetSizePreviewSessionActive &&
                !_isPetSizeAdjustmentActive && !_petSizeTargetUpdatePending &&
                !_isFrameBlending && _pendingSpriteFrame is null &&
@@ -4060,6 +4096,7 @@ public partial class MainWindow : Window
         {
             WorkModeButton.HorizontalAlignment = iconAlignment;
         }
+        var canShowIdle = !workActive && CanShowIdleWorkModeButton();
         var canEnter = !workActive && CanEnterWorkMode();
         var todoOpenPending = _openTodoAfterWorkExitRequested ||
                               _todoOpenAfterWorkExitQueued;
@@ -4071,7 +4108,7 @@ public partial class MainWindow : Window
         var docked = _edgeDock != EdgeDock.None;
         var shouldShow = !todoOpenPending && !workEdgeHandoffPending &&
                          !docked &&
-                         (workActive || canEnter);
+                         (workActive || canShowIdle);
         var shouldEnable = shouldShow &&
                            (canEnter ||
                             (_workState == WorkState.Typing &&
@@ -4694,6 +4731,55 @@ public partial class MainWindow : Window
         {
             return fallback;
         }
+    }
+
+    private Point GetPointerScreenPointOrFallback(
+        Point localPoint,
+        Point fallback,
+        bool allowLocalFallback)
+    {
+        if (TryGetPointerScreenPoint(out var screenPoint))
+        {
+            return screenPoint;
+        }
+
+        // A roaming window moves underneath a stationary pointer while the
+        // reverse boarding animation straightens it. Reconstructing a screen
+        // point from WPF local coordinates in that state can turn HWND motion
+        // into a false drag, so a failed native sample deliberately holds the
+        // last known physical point. Ordinary dragging keeps the existing WPF
+        // fallback for a not-yet-created HWND or a transient native failure.
+        return allowLocalFallback
+            ? GetScreenPointOrFallback(localPoint, fallback)
+            : fallback;
+    }
+
+    private bool TryGetPointerScreenPoint(out Point screenPoint)
+    {
+        var provider = _pointerScreenPointProviderForTesting;
+        if (provider is not null)
+        {
+            var providedPoint = provider();
+            if (providedPoint is Point point &&
+                double.IsFinite(point.X) &&
+                double.IsFinite(point.Y))
+            {
+                screenPoint = point;
+                return true;
+            }
+
+            screenPoint = default;
+            return false;
+        }
+
+        if (GetCursorPos(out var cursorPoint))
+        {
+            screenPoint = new Point(cursorPoint.X, cursorPoint.Y);
+            return true;
+        }
+
+        screenPoint = default;
+        return false;
     }
 
     private static bool IsFiniteRect(Rect rect) =>
@@ -5761,7 +5847,7 @@ public partial class MainWindow : Window
 
         if (wasRoaming)
         {
-            RequestIdleSpritePageTrim();
+            RequestIdleSpritePageTrim(immediate: true);
             RestartAutomaticCountdown();
             UpdateVisualClockSubscription();
         }
@@ -9332,9 +9418,26 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RequestIdleSpritePageTrim()
+    private void RequestIdleSpritePageTrim(bool immediate = false)
     {
-        DeferIdleSpritePageTrim();
+        if (!immediate)
+        {
+            DeferIdleSpritePageTrim();
+            return;
+        }
+
+        if (_isClosing)
+        {
+            return;
+        }
+
+        // CompleteEdgeRoamStop can run inside CompositionTarget.Rendering.
+        // A zero-delay DispatcherTimer posts the deep trim until composition
+        // has returned instead of mutating the resident dictionary/LRU there.
+        // The Tick keeps the same full-idle gate and five-second busy retry.
+        _spritePageIdleTrimTimer.Stop();
+        _spritePageIdleTrimTimer.Interval = TimeSpan.Zero;
+        _spritePageIdleTrimTimer.Start();
     }
 
     private void DeferIdleSpritePageTrim()
@@ -13269,6 +13372,17 @@ public partial class MainWindow : Window
     private void SaveScheduledTasks()
     {
         _scheduledTaskStore.Save(_scheduledTasks);
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativeCursorPoint point);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeCursorPoint
+    {
+        public int X;
+        public int Y;
     }
 
     private enum BubbleMode

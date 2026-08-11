@@ -41,6 +41,7 @@ internal static partial class Program
     private const long ExpectedRoamSpritePageBudgetBytes = 92L * 1024L * 1024L;
     private const long ExpectedIdleSpritePageTargetBytes = 12L * 1024L * 1024L;
     private const long ExpectedSpritePageCollectionThresholdBytes = 8L * 1024L * 1024L;
+    private const long ExpectedActiveRoamSpriteResidentBytes = 82L * 1024L * 1024L;
     private const long ExpectedMaximumOrdinarySpriteWorkingSetBytes = 49L * 1024L * 1024L;
     private const long ExpectedMaximumRoamSpriteWorkingSetBytes = 89L * 1024L * 1024L;
     private const int AltTabGwlExStyle = -20;
@@ -2037,11 +2038,55 @@ internal static partial class Program
         }
 
         WriteMemoryProfileMetric(window, "active-roam");
-
+        var activeRoamResidentBytes = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var activeRoamPoolBytes = GetProperty<long>(
+            profiledPool,
+            "AllocatedBytes");
+        Assert(activeRoamResidentBytes == ExpectedActiveRoamSpriteResidentBytes &&
+               activeRoamPoolBytes == ExpectedActiveRoamSpriteResidentBytes,
+            "The memory profile must establish the measured 82 MiB roaming " +
+            "resident/pool hot set before completion.");
         SetField(window, "_edgeRoamPreloadRequested", false);
-        PrimeSpritePageForFrame(window, idleFrame);
-        Invoke(window, "ShowStableFrame", idleFrame);
-        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(
+            window,
+            "_edgeRoamPhase",
+            GetNestedEnum("EdgeRoamPhase", "Traveling"));
+        SetField(window, "_edgeRoamStopScheduleNext", false);
+        SetField(window, "_edgeRoamStopInterrupted", false);
+        SetField(window, "_openTodoAfterEdgeRoamStopRequested", false);
+        SetField(window, "_pointerDown", false);
+        SetField(window, "_dragInteractionActive", false);
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
+        {
+            Invoke(window, "CompleteEdgeRoamStop", true);
+            var idleTrimTimer = GetField<DispatcherTimer>(
+                window,
+                "_spritePageIdleTrimTimer");
+            Assert(idleTrimTimer.IsEnabled &&
+                   idleTrimTimer.Interval == TimeSpan.Zero &&
+                   GetField<long>(window, "_residentSpritePageBytes") ==
+                   activeRoamResidentBytes &&
+                   GetProperty<long>(profiledPool, "AllocatedBytes") ==
+                   activeRoamPoolBytes,
+                "Roaming completion inside Rendering must only post the " +
+                "zero-delay dispatcher trim.");
+        }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+        Assert(GetField<long>(window, "_residentSpritePageBytes") ==
+                   11L * 1024L * 1024L &&
+               GetProperty<long>(profiledPool, "AllocatedBytes") ==
+                   11L * 1024L * 1024L,
+            "The memory profile must prove roaming completion releases the " +
+            "82 MiB hot set to the single 11 MiB idle page.");
         WriteMemoryProfileMetric(window, "trimmed-idle");
     }
 
@@ -2581,7 +2626,7 @@ internal static partial class Program
         try
         {
             Invoke(window, "ShowStableFrame", coldFrame);
-            Invoke(window, "RequestIdleSpritePageTrim");
+            Invoke(window, "RequestIdleSpritePageTrim", false);
         }
         finally
         {
@@ -3399,7 +3444,7 @@ internal static partial class Program
         Assert(timerResidentBytesBefore > idleTargetBytes,
             "idle timer测试必须重新建立超过12MiB的resident压力");
 
-        Invoke(window, "RequestIdleSpritePageTrim");
+        Invoke(window, "RequestIdleSpritePageTrim", false);
         Assert(idleTrimTimer.IsEnabled &&
                idleTrimTimer.Interval == idleTrimGracePeriod &&
                GetField<long>(window, "_residentSpritePageBytes") ==
@@ -3442,6 +3487,113 @@ internal static partial class Program
             $"{timerResidentBytesAfter / (1024d * 1024d):F2} MiB, pool " +
             $"{timerPoolAllocatedBefore / (1024d * 1024d):F2}->" +
             $"{timerPoolAllocatedAfter / (1024d * 1024d):F2} MiB");
+
+        // The preceding generic idle-target scenario is allowed to keep one
+        // 1 MiB free bucket inside its 12 MiB target. Remove only that test
+        // slack so the roaming fixture starts from the measured 11 MiB idle
+        // resident/pool baseline used by --memory-profile.
+        Invoke(
+            window,
+            "TrimSpritePageBufferPoolToTarget",
+            timerResidentBytesAfter);
+        ResetSpritePageCollectionTestState(window);
+        SetField(window, "_edgeRoamPreloadRequested", true);
+        var roamPageNames = new[]
+            {
+                "_roamBoardingFrames",
+                "_roamFlightFrames",
+                "_roamWaveFrames"
+            }
+            .SelectMany(fieldName =>
+                GetField<Array>(window, fieldName).Cast<object>())
+            .Select(frame => GetSpriteFrameInfo(frame).PageName)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static pageName => pageName, StringComparer.Ordinal)
+            .ToArray();
+        foreach (var pageName in roamPageNames)
+        {
+            LoadSpritePageForTest(window, pageName);
+        }
+
+        var loadedRoamPageName = GetField<string>(
+            window,
+            "_loadedSpritePageName");
+        Invoke(
+            window,
+            "ShowStableFrame",
+            GetFirstSpriteFrameOnPage(window, loadedRoamPageName));
+
+        var roamResidentBytesBefore = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var roamPoolAllocatedBefore = GetProperty<long>(
+            spritePageBufferPool,
+            "AllocatedBytes");
+        var roamResidentNamesBefore = GetDictionaryEntries(residentPages)
+            .Select(entry => (string)entry.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(roamResidentBytesBefore == ExpectedActiveRoamSpriteResidentBytes &&
+               roamPoolAllocatedBefore == ExpectedActiveRoamSpriteResidentBytes,
+            "The roaming completion fixture must establish the measured " +
+            "82 MiB resident/pool hot set before testing immediate release.");
+
+        SetField(window, "_edgeRoamPreloadRequested", false);
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(
+            window,
+            "_edgeRoamPhase",
+            GetNestedEnum("EdgeRoamPhase", "Traveling"));
+        SetField(window, "_edgeRoamStopScheduleNext", false);
+        SetField(window, "_edgeRoamStopInterrupted", false);
+        SetField(window, "_openTodoAfterEdgeRoamStopRequested", false);
+        SetField(window, "_pointerDown", false);
+        SetField(window, "_dragInteractionActive", false);
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
+        {
+            Invoke(window, "CompleteEdgeRoamStop", true);
+            Assert(!GetField<bool>(window, "_isEdgeRoaming") &&
+                   idleTrimTimer.IsEnabled &&
+                   idleTrimTimer.Interval == TimeSpan.Zero &&
+                   GetField<long>(window, "_residentSpritePageBytes") ==
+                   roamResidentBytesBefore &&
+                   GetProperty<long>(spritePageBufferPool, "AllocatedBytes") ==
+                   roamPoolAllocatedBefore &&
+                   roamResidentNamesBefore.SetEquals(
+                       GetDictionaryEntries(residentPages)
+                           .Select(entry => (string)entry.Key)),
+                "Completing roaming inside Rendering may only post a " +
+                "zero-delay idle trim; it must not evict resident pages or " +
+                "mutate the LRU-backed resident set in the render callback.");
+        }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+
+        Assert((bool)Invoke(window, "CanRunIdleSpritePageCollection")!,
+            "Roaming completion must restore the complete idle trim gate.");
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+        var roamResidentBytesAfter = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var roamPoolAllocatedAfter = GetProperty<long>(
+            spritePageBufferPool,
+            "AllocatedBytes");
+        Console.WriteLine(
+            $"[METRIC] roam completion cache: resident " +
+            $"{roamResidentBytesBefore / (1024d * 1024d):F2}->" +
+            $"{roamResidentBytesAfter / (1024d * 1024d):F2} MiB, pool " +
+            $"{roamPoolAllocatedBefore / (1024d * 1024d):F2}->" +
+            $"{roamPoolAllocatedAfter / (1024d * 1024d):F2} MiB");
+        Assert(!idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == idleTrimGracePeriod &&
+               roamResidentBytesAfter == 11L * 1024L * 1024L &&
+               roamPoolAllocatedAfter == 11L * 1024L * 1024L &&
+               pinnedPageNames.All(residentPages.Contains),
+            "The dispatcher idle-trim tick after roaming must reduce the " +
+            "measured 82 MiB resident/pool hot set to the single 11 MiB idle " +
+            "page without changing the 12 MiB retention target.");
         ResetSpritePageCollectionTestState(window);
     }
 
@@ -3944,7 +4096,7 @@ internal static partial class Program
         try
         {
             Invoke(window, "RequestResidentSpritePageTrim");
-            Invoke(window, "RequestIdleSpritePageTrim");
+            Invoke(window, "RequestIdleSpritePageTrim", false);
             Invoke(
                 window,
                 "HandleSpritePagePrefetchFailure",
@@ -7381,6 +7533,15 @@ internal static partial class Program
         var pointerMove = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseMove");
+        var pointerLostCapture = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_LostMouseCapture");
+        var getPointerScreenPoint = ExtractPrivateMethodSource(
+            mainSource,
+            "GetPointerScreenPointOrFallback");
+        var tryGetPointerScreenPoint = ExtractPrivateMethodSource(
+            mainSource,
+            "TryGetPointerScreenPoint");
         var tryBeginPointerDrag = ExtractPrivateMethodSource(
             mainSource,
             "TryBeginPetPointerDrag");
@@ -7874,16 +8035,43 @@ internal static partial class Program
         Assert(stopBeforeDrag >= 0 &&
                dragBecomesActive > stopBeforeDrag &&
                pointerDown.Contains(
-                   "_suppressClickReactionAfterRoamInterruption = _isEdgeRoaming",
+                   "_suppressClickReactionAfterRoamInterruption = interruptedRoam",
                    StringComparison.Ordinal) &&
                pointerDown.Contains(
                    "_pointerDownPixelsPerDip = GetPointerPixelsPerDip()",
+                   StringComparison.Ordinal) &&
+               pointerDown.Contains(
+                   "GetPointerScreenPointOrFallback(",
+                   StringComparison.Ordinal) &&
+               pointerDown.Contains(
+                   "allowLocalFallback: !interruptedRoam",
                    StringComparison.Ordinal) &&
                !pointerDown.Contains(
                    "immediate:",
                    StringComparison.Ordinal) &&
                pointerMove.Contains(
                    "TryBeginPetPointerDrag(",
+                   StringComparison.Ordinal) &&
+               pointerMove.Contains(
+                   "GetPointerScreenPointOrFallback(",
+                   StringComparison.Ordinal) &&
+               pointerMove.Contains(
+                   "!_suppressClickReactionAfterRoamInterruption",
+                   StringComparison.Ordinal) &&
+               pointerUp.Contains(
+                   "GetPointerScreenPointOrFallback(",
+                   StringComparison.Ordinal) &&
+               pointerLostCapture.Contains(
+                   "GetPointerScreenPointOrFallback(",
+                   StringComparison.Ordinal) &&
+               getPointerScreenPoint.Contains(
+                   "TryGetPointerScreenPoint(out var screenPoint)",
+                   StringComparison.Ordinal) &&
+               getPointerScreenPoint.Contains(
+                   "return allowLocalFallback",
+                   StringComparison.Ordinal) &&
+               tryGetPointerScreenPoint.Contains(
+                   "GetCursorPos(out var cursorPoint)",
                    StringComparison.Ordinal) &&
                tryBeginPointerDrag.Contains(
                    "HasExceededPetDragThreshold(",
@@ -10577,6 +10765,10 @@ internal static partial class Program
 
         var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
         var petHost = GetField<FrameworkElement>(window, "PetHost");
+        var petSizeViewbox = GetField<Viewbox>(window, "PetSizeViewbox");
+        var monitorWorkAreaType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
         var idleFrame = GetRawField(window, "_idleFrame")
             ?? throw new InvalidOperationException("找不到待机帧");
         var boardingFrames = GetField<Array>(window, "_roamBoardingFrames");
@@ -10585,6 +10777,12 @@ internal static partial class Program
             ?? throw new InvalidOperationException("找不到熊猫巡游首帧");
         var travelingPhase = GetNestedEnum("EdgeRoamPhase", "Traveling");
         var noneBubbleMode = GetNestedEnum("BubbleMode", "None");
+        Point? nativePointerScreenPoint = new Point(-1400, 260);
+        Func<Point?> nativePointerProvider = () => nativePointerScreenPoint;
+        SetField(
+            window,
+            "_pointerScreenPointProviderForTesting",
+            nativePointerProvider);
 
         Assert(!(bool)InvokeStatic(
                    typeof(MainWindow),
@@ -10671,15 +10869,40 @@ internal static partial class Program
         var pointerDownScreen = GetField<Point>(
             window,
             "_pointerDownScreenPosition");
+        Invoke(window, "MoveMainWindowTo", leftBefore + 48, topBefore + 48);
+        var locallyDriftedPosition = new Point(
+            pointerDownLocal.X + 48,
+            pointerDownLocal.Y + 48);
+        var authoritativeStationaryPoint = (Point)Invoke(
+            window,
+            "GetPointerScreenPointOrFallback",
+            locallyDriftedPosition,
+            pointerDownScreen,
+            false)!;
         var stationaryRoamDragStarted = (bool)Invoke(
             window,
             "TryBeginPetPointerDrag",
-            new Point(
-                pointerDownLocal.X + 48,
-                pointerDownLocal.Y + 48),
-            pointerDownScreen)!;
+            locallyDriftedPosition,
+            authoritativeStationaryPoint)!;
+        nativePointerScreenPoint = null;
+        var failedNativePoint = (Point)Invoke(
+            window,
+            "GetPointerScreenPointOrFallback",
+            locallyDriftedPosition,
+            pointerDownScreen,
+            false)!;
+        var failedNativeRoamDragStarted = (bool)Invoke(
+            window,
+            "TryBeginPetPointerDrag",
+            locallyDriftedPosition,
+            failedNativePoint)!;
+        nativePointerScreenPoint = pointerDownScreen;
+        Invoke(window, "MoveMainWindowTo", leftBefore, topBefore);
         Assert(leftDown.Handled &&
                !stationaryRoamDragStarted &&
+               !failedNativeRoamDragStarted &&
+               authoritativeStationaryPoint == pointerDownScreen &&
+               failedNativePoint == pointerDownScreen &&
                GetField<bool>(window, "_isEdgeRoaming") &&
                GetField<object>(window, "_edgeRoamPhase").ToString() == "Disembarking" &&
                GetField<bool>(window, "_pointerDown") &&
@@ -10705,25 +10928,51 @@ internal static partial class Program
                !GetField<bool>(window, "_pointerDown") &&
                !GetField<bool>(window, "_dragStarted"),
             "巡游点击抬起时即使退场尚未播完，也不得被移动中的HWND误判为拖动");
+        var disembarkResidentBytesBefore = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        var disembarkResidentNamesBefore = GetDictionaryEntries(
+                GetField<IDictionary>(window, "_residentSpritePages"))
+            .Select(entry => (string)entry.Key)
+            .ToHashSet(StringComparer.Ordinal);
         var naturalDisembarkStart = Stopwatch.GetTimestamp();
-        for (var refresh = 0;
-             refresh < 180 && GetField<bool>(window, "_isEdgeRoaming");
-             refresh++)
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
         {
-            Invoke(
-                window,
-                "AdvanceEdgeRoaming",
-                checked(
-                    naturalDisembarkStart +
-                    refresh * Stopwatch.Frequency / 60));
+            for (var refresh = 0;
+                 refresh < 180 && GetField<bool>(window, "_isEdgeRoaming");
+                 refresh++)
+            {
+                Invoke(
+                    window,
+                    "AdvanceEdgeRoaming",
+                    checked(
+                        naturalDisembarkStart +
+                        refresh * Stopwatch.Frequency / 60));
+            }
         }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+        var immediateIdleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
         Assert(leftUp.Handled &&
                !GetField<bool>(window, "_isEdgeRoaming") &&
                GetField<object>(window, "_edgeDock").ToString() == "None" &&
                GetRawField(window, "_activeClip") is null &&
                Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
                !todoWindow.IsVisible &&
-               !GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption"),
+               !GetField<bool>(window, "_suppressClickReactionAfterRoamInterruption") &&
+               immediateIdleTrimTimer.IsEnabled &&
+               immediateIdleTrimTimer.Interval == TimeSpan.Zero &&
+               GetField<long>(window, "_residentSpritePageBytes") ==
+               disembarkResidentBytesBefore &&
+               disembarkResidentNamesBefore.SetEquals(
+                   GetDictionaryEntries(
+                           GetField<IDictionary>(window, "_residentSpritePages"))
+                       .Select(entry => (string)entry.Key)),
             "巡游中左键单击完成退场后必须稳定待机，不能追加四种点击动作或打开任务面板：" +
             $"roaming={GetField<bool>(window, "_isEdgeRoaming")}, " +
             $"phase={GetField<object>(window, "_edgeRoamPhase")}, " +
@@ -10736,6 +10985,160 @@ internal static partial class Program
             $"clock={GetField<bool>(window, "_edgeRoamClockStarted")}, " +
             $"startIndex={GetField<int>(window, "_edgeRoamBoardingStartIndex")}, " +
             $"current={GetSpriteFrameInfo(GetField<object>(window, "_currentSpriteFrame")).Name}");
+        Invoke(window, "StopIdleSpritePageTrim");
+
+        var dragSupportPoint = new Point(window.Left + 228, window.Top + 188);
+        PrepareTravelState(
+            new Point(dragSupportPoint.X - 360, dragSupportPoint.Y + 240),
+            dragSupportPoint,
+            90);
+        var petHostCenter = petHost.PointToScreen(
+            new Point(
+                Math.Max(1, petHost.ActualWidth) / 2,
+                Math.Max(1, petHost.ActualHeight) / 2));
+        nativePointerScreenPoint = petHostCenter;
+        var dragDown = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = UIElement.MouseLeftButtonDownEvent,
+            Source = petHost
+        };
+        Invoke(window, "PetHost_MouseLeftButtonDown", petHost, dragDown);
+        var dragDownLocal = GetField<Point>(window, "_pointerDownPosition");
+        var dragDownScreen = GetField<Point>(window, "_pointerDownScreenPosition");
+        var pixelsPerDip = GetField<Vector>(window, "_pointerDownPixelsPerDip");
+        var physicalThreshold = Math.Ceiling(
+            SystemParameters.MinimumHorizontalDragDistance *
+            Math.Max(1d, pixelsPerDip.X));
+        nativePointerScreenPoint = new Point(
+            dragDownScreen.X + physicalThreshold,
+            dragDownScreen.Y);
+        var authoritativeMovedPoint = (Point)Invoke(
+            window,
+            "GetPointerScreenPointOrFallback",
+            dragDownLocal,
+            dragDownScreen,
+            false)!;
+        var physicalRoamDragStarted = (bool)Invoke(
+            window,
+            "TryBeginPetPointerDrag",
+            dragDownLocal,
+            authoritativeMovedPoint)!;
+        Assert(dragDown.Handled &&
+               physicalRoamDragStarted &&
+               GetField<bool>(window, "_dragStarted") &&
+               !GetField<bool>(window, "_isEdgeRoaming") &&
+               Math.Abs(authoritativeMovedPoint.X - dragDownScreen.X -
+                        physicalThreshold) <= 0.01,
+            "巡游手势必须忽略 HWND 造成的局部坐标漂移，但 Win32 光标真的越过" +
+            "按下时 DPI 对应的物理阈值后仍要立即交给拖动。");
+        Invoke(window, "CompleteDirectPetDrag", false);
+
+        // Exercise the production MouseUp path without an intervening
+        // MouseMove. Windows can coalesce a fast press-move-release, so the
+        // release sample itself must still cross the physical threshold,
+        // transfer ownership to direct dragging, and run release docking.
+        var releaseOnlyOriginalLeft = window.Left;
+        var releaseOnlyOriginalTop = window.Top;
+        var releaseOnlySupportPoint = new Point(
+            window.Left + 238,
+            window.Top + 198);
+        PrepareTravelState(
+            new Point(
+                releaseOnlySupportPoint.X - 420,
+                releaseOnlySupportPoint.Y + 220),
+            releaseOnlySupportPoint,
+            90);
+        nativePointerScreenPoint = petHost.PointToScreen(
+            new Point(
+                Math.Max(1, petHost.ActualWidth) / 2,
+                Math.Max(1, petHost.ActualHeight) / 2));
+        var releaseOnlyDown = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = UIElement.MouseLeftButtonDownEvent,
+            Source = petHost
+        };
+        Invoke(
+            window,
+            "PetHost_MouseLeftButtonDown",
+            petHost,
+            releaseOnlyDown);
+        var releaseOnlyDownScreen = GetField<Point>(
+            window,
+            "_pointerDownScreenPosition");
+        var releaseOnlyPixelsPerDip = GetField<Vector>(
+            window,
+            "_pointerDownPixelsPerDip");
+        var releaseOnlyWorkArea = (Rect)InvokeStatic(
+            monitorWorkAreaType,
+            "GetForVisual",
+            window,
+            petSizeViewbox)!;
+        var releaseOnlyBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        var releaseOnlyMinimumPhysicalThreshold = Math.Ceiling(
+            SystemParameters.MinimumVerticalDragDistance *
+            Math.Max(1d, releaseOnlyPixelsPerDip.Y));
+        var releaseOnlyPhysicalDeltaY = Math.Ceiling(
+            Math.Max(
+                SystemParameters.MinimumVerticalDragDistance + 1,
+                releaseOnlyWorkArea.Bottom -
+                releaseOnlyBounds.Bottom + 24) *
+            Math.Max(1d, releaseOnlyPixelsPerDip.Y));
+        nativePointerScreenPoint = new Point(
+            releaseOnlyDownScreen.X,
+            releaseOnlyDownScreen.Y + releaseOnlyPhysicalDeltaY);
+        var releaseOnlyUp = new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Left)
+        {
+            RoutedEvent = UIElement.MouseLeftButtonUpEvent,
+            Source = petHost
+        };
+        Invoke(
+            window,
+            "PetHost_MouseLeftButtonUp",
+            petHost,
+            releaseOnlyUp);
+        var releaseOnlyDockedBounds = (Rect)Invoke(
+            window,
+            "GetPetViewboxBoundsInScreenDips")!;
+        Assert(releaseOnlyDown.Handled && releaseOnlyUp.Handled &&
+               releaseOnlyPhysicalDeltaY >=
+               releaseOnlyMinimumPhysicalThreshold &&
+               !GetField<bool>(window, "_dragStarted") &&
+               !GetField<bool>(window, "_dragInteractionActive") &&
+               !GetField<bool>(window, "_pointerDown") &&
+               !GetField<bool>(window, "_isEdgeRoaming") &&
+               GetField<object>(window, "_edgeDock").ToString() == "Bottom" &&
+               !GetField<bool>(
+                   window,
+                   "_suppressClickReactionAfterRoamInterruption") &&
+               !petHost.IsMouseCaptured &&
+               Math.Abs(
+                   releaseOnlyDockedBounds.Bottom -
+                   releaseOnlyWorkArea.Bottom) <= 1.01,
+            "A roaming press/release with no MouseMove must use the native " +
+            "MouseUp point for the final physical threshold check, complete " +
+            "direct dragging, and dock at Bottom without becoming a click. " +
+            $"delta={releaseOnlyPhysicalDeltaY:F0}, " +
+            $"threshold={releaseOnlyMinimumPhysicalThreshold:F0}, " +
+            $"dock={GetField<object>(window, "_edgeDock")}, " +
+            $"bottom={releaseOnlyDockedBounds.Bottom:F2}/" +
+            $"{releaseOnlyWorkArea.Bottom:F2}");
+        Invoke(window, "ExitEdgePeek", false, true);
+        Invoke(
+            window,
+            "MoveMainWindowTo",
+            releaseOnlyOriginalLeft,
+            releaseOnlyOriginalTop);
 
         var secondSupportPoint = new Point(window.Left + 310, window.Top + 126);
         PrepareTravelState(
@@ -10773,6 +11176,7 @@ internal static partial class Program
             "巡游中右键退场后必须只打开一次默认待办页，并清除所有延迟意图");
 
         Invoke(window, "SetBubbleMode", noneBubbleMode);
+        SetField(window, "_pointerScreenPointProviderForTesting", null);
         PumpDispatcher(TimeSpan.FromMilliseconds(20));
     }
 
@@ -18278,6 +18682,9 @@ internal static partial class Program
         var requestIdleSpritePageTrim = ExtractPrivateMethodSource(
             mainSource,
             "RequestIdleSpritePageTrim");
+        var completeEdgeRoamStop = ExtractPrivateMethodSource(
+            mainSource,
+            "CompleteEdgeRoamStop");
         var deferIdleSpritePageTrim = ExtractPrivateMethodSource(
             mainSource,
             "DeferIdleSpritePageTrim");
@@ -18560,7 +18967,25 @@ internal static partial class Program
                     "RecordDiscardedSpritePageBytes(discardedBytes)",
                    StringComparison.Ordinal) &&
                requestIdleSpritePageTrim.Contains(
+                   "bool immediate = false",
+                   StringComparison.Ordinal) &&
+               requestIdleSpritePageTrim.Contains(
+                   "if (!immediate)",
+                   StringComparison.Ordinal) &&
+               requestIdleSpritePageTrim.Contains(
                    "DeferIdleSpritePageTrim();",
+                   StringComparison.Ordinal) &&
+               requestIdleSpritePageTrim.Contains(
+                   "_spritePageIdleTrimTimer.Interval = TimeSpan.Zero",
+                   StringComparison.Ordinal) &&
+               requestIdleSpritePageTrim.Contains(
+                   "_spritePageIdleTrimTimer.Start()",
+                   StringComparison.Ordinal) &&
+               !requestIdleSpritePageTrim.Contains(
+                   "TrimResidentSpritePagesToIdleTarget()",
+                   StringComparison.Ordinal) &&
+               completeEdgeRoamStop.Contains(
+                   "RequestIdleSpritePageTrim(immediate: true)",
                    StringComparison.Ordinal) &&
                deferIdleSpritePageTrim.Contains(
                    "_spritePageIdleTrimTimer.Stop()",
@@ -22243,7 +22668,7 @@ internal static partial class Program
                    AutomationProperties.GetName(button),
                    "去打工",
                    StringComparison.Ordinal),
-            "The sun icon must be available only at the fully settled idle pose.");
+            "A fully settled idle pose must expose the enabled sun icon.");
 
         var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
         var iconFacingCompensation = GetField<ScaleTransform>(
@@ -22260,6 +22685,8 @@ internal static partial class Program
         Assert(button.HorizontalAlignment == HorizontalAlignment.Left &&
                Math.Abs(iconFacingCompensation.ScaleX - 1d) <= 0.000001,
             "人物恢复正向后太阳必须回到画布左侧并清除镜像补偿");
+
+        AssertIdleWorkModeButtonFollowsDrag(window);
 
         SetField(window, "_isReminderActive", true);
         Assert(!(bool)Invoke(window, "CanEnterWorkMode")!,
@@ -22417,6 +22844,139 @@ internal static partial class Program
             "Session lock must restore idle immediately.");
 
         PrepareWorkModeIdleState(window);
+    }
+
+    private static void AssertIdleWorkModeButtonFollowsDrag(MainWindow window)
+    {
+        var button = GetField<Button>(window, "WorkModeButton");
+        var petVisual = GetField<Grid>(window, "PetVisual");
+        var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
+        var noDock = GetNestedEnum("EdgeDock", "None");
+        var leftDock = GetNestedEnum("EdgeDock", "Left");
+        var monitorWorkAreaType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.MonitorWorkArea",
+            throwOnError: true)!;
+        var originalLeft = window.Left;
+        var originalTop = window.Top;
+        var originalFacingScaleX = facingScale.ScaleX;
+
+        try
+        {
+            var workArea = (Rect)InvokeStatic(
+                monitorWorkAreaType,
+                "GetForWindow",
+                window)!;
+            var windowWidth = window.ActualWidth > 0
+                ? window.ActualWidth
+                : window.Width;
+            var windowHeight = window.ActualHeight > 0
+                ? window.ActualHeight
+                : window.Height;
+            var firstLeft = workArea.Left +
+                            Math.Max(0, workArea.Width - windowWidth) * 0.42;
+            var firstTop = workArea.Top +
+                           Math.Max(0, workArea.Height - windowHeight) * 0.42;
+            var secondLeft = Math.Clamp(
+                firstLeft + 47,
+                workArea.Left,
+                Math.Max(workArea.Left, workArea.Right - windowWidth));
+            var secondTop = Math.Clamp(
+                firstTop + 31,
+                workArea.Top,
+                Math.Max(workArea.Top, workArea.Bottom - windowHeight));
+
+            foreach (var mirrored in new[] { false, true })
+            {
+                facingScale.ScaleX = mirrored ? -1d : 1d;
+                SetField(window, "_edgeDock", noDock);
+                SetField(window, "_dragInteractionActive", false);
+                SetField(window, "_pointerDown", false);
+                SetField(window, "_dragStarted", false);
+                Invoke(window, "MoveMainWindowTo", firstLeft, firstTop);
+                Invoke(window, "RefreshWorkModeButton");
+                window.UpdateLayout();
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+
+                var buttonBefore = GetVisualPhysicalBounds(button);
+                var petBefore = GetVisualPhysicalBounds(petVisual);
+
+                SetField(window, "_dragInteractionActive", true);
+                SetField(window, "_pointerDown", true);
+                SetField(window, "_dragStarted", true);
+                Invoke(window, "RefreshWorkModeButton");
+                window.UpdateLayout();
+
+                Assert((bool)Invoke(
+                           window,
+                           "CanShowIdleWorkModeButton")! &&
+                       !(bool)Invoke(window, "CanEnterWorkMode")! &&
+                       button.Visibility == Visibility.Visible &&
+                       button.Opacity > 0.99 &&
+                       !button.IsEnabled &&
+                       !button.IsHitTestVisible,
+                    $"{(mirrored ? "镜像" : "正向")}待机拖动期间太阳必须持续可见，" +
+                    "但在释放前不能响应点击");
+
+                Invoke(window, "MoveMainWindowTo", secondLeft, secondTop);
+                window.UpdateLayout();
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+
+                var buttonAfter = GetVisualPhysicalBounds(button);
+                var petAfter = GetVisualPhysicalBounds(petVisual);
+                var buttonDelta = new Vector(
+                    buttonAfter.Left - buttonBefore.Left,
+                    buttonAfter.Top - buttonBefore.Top);
+                var petDelta = new Vector(
+                    petAfter.Left - petBefore.Left,
+                    petAfter.Top - petBefore.Top);
+                var relativeBefore = new Vector(
+                    buttonBefore.Left - petBefore.Left,
+                    buttonBefore.Top - petBefore.Top);
+                var relativeAfter = new Vector(
+                    buttonAfter.Left - petAfter.Left,
+                    buttonAfter.Top - petAfter.Top);
+
+                Assert(buttonDelta.Length > 4 &&
+                       Math.Abs(buttonDelta.X - petDelta.X) <= 1.01 &&
+                       Math.Abs(buttonDelta.Y - petDelta.Y) <= 1.01 &&
+                       Math.Abs(relativeAfter.X - relativeBefore.X) <= 1.01 &&
+                       Math.Abs(relativeAfter.Y - relativeBefore.Y) <= 1.01,
+                    $"{(mirrored ? "镜像" : "正向")}待机拖动必须让太阳和人物共用真实 HWND 位移：" +
+                    $"buttonDelta={buttonDelta}, petDelta={petDelta}, " +
+                    $"relative={relativeBefore}/{relativeAfter}");
+
+                SetField(window, "_edgeDock", leftDock);
+                Invoke(window, "RefreshWorkModeButton");
+                Assert(button.Visibility == Visibility.Collapsed &&
+                       button.Opacity < 0.01 &&
+                       !button.IsEnabled &&
+                       !button.IsHitTestVisible,
+                    "拖动释放到既有边缘吸附时，待机太阳仍必须隐藏");
+
+                SetField(window, "_edgeDock", noDock);
+                SetField(window, "_dragInteractionActive", false);
+                SetField(window, "_pointerDown", false);
+                SetField(window, "_dragStarted", false);
+                Invoke(window, "RefreshWorkModeButton");
+                Assert(button.Visibility == Visibility.Visible &&
+                       button.Opacity > 0.99 &&
+                       button.IsEnabled &&
+                       button.IsHitTestVisible,
+                    "普通位置释放后，待机太阳必须恢复可点击状态");
+            }
+        }
+        finally
+        {
+            facingScale.ScaleX = originalFacingScaleX;
+            SetField(window, "_edgeDock", noDock);
+            SetField(window, "_dragInteractionActive", false);
+            SetField(window, "_pointerDown", false);
+            SetField(window, "_dragStarted", false);
+            Invoke(window, "MoveMainWindowTo", originalLeft, originalTop);
+            Invoke(window, "RefreshWorkModeButton");
+            window.UpdateLayout();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+        }
     }
 
     private static void AssertWorkModeRegressionContract(MainWindow window)
