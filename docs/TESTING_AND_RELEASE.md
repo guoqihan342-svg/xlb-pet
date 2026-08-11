@@ -244,17 +244,18 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## v1.0.69 发布验证（待真实回填）
+## v1.0.69 发布验证
 
-本节不预写任何“已通过”或“已发布”结果。下面各项目前都是发布门槛；必须以本轮最终源码运行真实命令、完成发布 EXE 实机冒烟，并在 GitHub Release 附件回下载复核后，才能把“待回填”替换为实际日期、提交、计数、字节数和哈希。
+以下结果于 `2026-08-11` 在 Windows 11 Pro Insider Preview x64（`10.0.26220`）、.NET SDK `8.0.418` 环境完成。正式 EXE 已替换到用户指定路径并保持运行，Release 附件也已在独立目录重新下载复核。
 
-| 项目 | 当前状态与待回填证据 |
+| 项目 | 实测结果 |
 | --- | --- |
-| 源码与版本 | 待回填最终功能提交、文件版本 `1.0.69.0` 和产品版本；当前版本号本身不代表已经发布 |
-| 三项定向回归 | 待真实运行 `--roam-interaction-only`、`--work-mode-only`、`--resident-cache-only`：分别记录 Win32 真实光标单击/真实拖动与完整逆播 idle、待机太阳跟随且不可命中/边缘隐藏、巡游结束 Rendering 安全深裁的断言结果 |
-| 自动化、构建与内存 | 待真实运行 DesktopPet、UiStateChecks、TodoStoreChecks Release 构建、定向套件与完整 UiStateChecks；内存项须回填受控剖面原始输出，确认巡游结束 resident / pool `82 / 82 → 11 / 11 MiB`，并确认普通动作 `20 秒`缓存、`52 / 92 MiB` 预算、图集素材和帧数未变 |
-| EXE 与用户数据 | 待回填最终 EXE 字节数、SHA-256、签名状态、单实例与响应性，以及替换前后 `todos.json`、`settings.json`、`scheduled-tasks.json` 的真实哈希 |
-| GitHub Release | 待创建并回填 `v1.0.69` 标签、Release 目标提交、附件 digest 和独立回下载哈希；完成前不得写成已推送或已发布 |
+| 源码与版本 | 功能提交 `dbf5090fc9fb0e6cbd504986b4a9412eca9bf174`；文件版本 `1.0.69.0`，产品版本 `1.0.69+dbf5090fc9fb0e6cbd504986b4a9412eca9bf174` |
+| 三项定向回归 | `--roam-interaction-only`、`--edge-dock-only`、`--work-mode-only`、`--resident-cache-only` 全部通过；覆盖静止光标下窗口逆播不误判拖动、无 `MouseMove` 的快速松开仍正确拖动吸附、太阳拖动中同步可见但不可命中、边缘隐藏，以及 Rendering 回调只排队不直接淘汰分页 |
+| 自动化与构建 | DesktopPet、UiStateChecks、TodoStoreChecks 的 Release 构建均为 `0` 警告、`0` 错误；完整 UiStateChecks 输出 `UI state checks passed.`；TodoStore、AppSettingsStore、ScheduledTaskStore 检查通过 |
+| 内存实测 | `--memory-profile` 中 startup idle 为 resident `11.00 MiB`、managed `16.13 MiB`、private `136.87 MiB`；active roam 为 resident / pool `82.00 / 82.00 MiB`、managed `87.16 MiB`、private `210.11 MiB`；完成巡游后 trimmed idle 收敛为 resident / pool `11.00 / 11.00 MiB`、managed `16.16 MiB`、private `138.20 MiB`。普通动作 `20 秒`缓存、`52 / 92 MiB` 预算及图集素材和帧数未变 |
+| EXE 与用户数据 | 单文件 EXE 为 `93,345,926` 字节，SHA-256 `4027B8112CEABF0A4D4E95B07CDFD88B4B2917CBE004D946CBD7FB4637A616F8`，Authenticode 状态 `NotSigned`；用户路径仅一个进程（PID `6480`）且响应正常。替换前后 `todos.json`、`settings.json`、`scheduled-tasks.json` 哈希分别保持 `BA09FAF7D7CD2DA5FC98E47A9E4C6ADF08019ACB4F23E15A6849A0D03E645C11`、`7A938AD904254D85CD5D287EA7208E2FE439B85A21CB890BBD2E093112483E7C`、`8BFA42E4BF20E9006F9BCD9018A93F48F54B74C464835C29D9A5E9906198785E` |
+| GitHub Release | `v1.0.69` 标签与 Release 均指向功能提交 `dbf5090fc9fb0e6cbd504986b4a9412eca9bf174`；附件 digest 为 `sha256:4027b8112ceabf0a4d4e95b07cdfd88b4b2917cbe004d946cbd7fb4637a616f8`，独立回下载 SHA-256 与本地候选完全一致 |
 
 ## v1.0.68 发布验证
 
