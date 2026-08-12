@@ -92,14 +92,14 @@ public partial class MainWindow : Window
     private const int MaximumDecodedSpritePageBytes = 24 * 1024 * 1024;
     private const int MaximumSpritePagePayloadBytes = 32 * 1024 * 1024;
     // Ordinary clips keep only their rolling current/next-page working set.
-    // The generated manifest requires at most 49 MiB, leaving a small bounded
-    // reuse margin without retaining an unrelated decoded page.
+    // The generated manifest leaves a small bounded best-fit reuse margin
+    // without retaining an unrelated decoded page.
     private const long SpritePageResidentBudgetBytes = 52L * 1024 * 1024;
-    // Roaming needs at most 89 MiB for its active page set. The higher ceiling
-    // is active only while roaming and is released back to the idle target.
+    // The higher roaming ceiling holds its complete active page set plus the
+    // bounded best-fit reuse margin, then releases back to the idle target.
     private const long SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024;
-    // Pin just the startup idle page. A single adjacent bucket can hold it
-    // within 12 MiB after every action, reminder, Todo, or roaming sequence.
+    // Pin just the startup idle page. Its exact-sized array remains within
+    // 12 MiB after every action, reminder, Todo, or roaming sequence.
     private const long SpritePageIdleResidentTargetBytes = 12L * 1024 * 1024;
     private const long SpritePageCollectionThresholdBytes = 8L * 1024 * 1024;
     private const int ActionLoopFrameCount = 48;
@@ -5559,6 +5559,8 @@ public partial class MainWindow : Window
             }
         }
 
+        TrimReusableSpritePageBuffersForReadyRoam();
+
         // The final decode completion can wake an already-due roam directly;
         // no 16 ms polling timer is needed while background I/O is in flight.
         ArmAutomaticWakeTimer(Stopwatch.GetTimestamp());
@@ -5575,6 +5577,21 @@ public partial class MainWindow : Window
         }
 
         return AreAllSequencePagesResident(_roamFlightFrames);
+    }
+
+    private void TrimReusableSpritePageBuffersForReadyRoam()
+    {
+        if (_spritePagePrefetchTask is not null ||
+            !AreAllEdgeRoamPreloadPagesResident())
+        {
+            return;
+        }
+
+        // Every page needed by forward travel and immediate reverse boarding
+        // is resident now. Free decode arrays cannot improve this roam, so drop
+        // only those free arrays before animation starts; resident pixels and
+        // all frame timing remain untouched.
+        TrimSpritePageBufferPoolToTarget(_residentSpritePageBytes);
     }
 
     private bool StartEdgeRoaming()
@@ -5669,6 +5686,7 @@ public partial class MainWindow : Window
         _edgeRoamPhase = EdgeRoamPhase.None;
         _edgeRoamLandingSeamElapsedSeconds = 0;
         _nextEdgeRoamDueTimestamp = 0;
+        TrimReusableSpritePageBuffersForReadyRoam();
         _edgeRoamPreloadRequested = false;
         CancelTodoOpenAfterEdgeRoamStop();
         _isEdgeRoaming = true;

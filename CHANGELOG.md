@@ -2,6 +2,12 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.70
+
+- 精灵页像素缓冲的新分配从固定 `1 MiB` 桶改为真实解码字节数；free 数组继续在旧有相邻容量复用边界内采用 best-fit，选择能够满足请求的最小数组。常规、巡游、稳定空闲与 LOH 淘汰债务预算仍为 `52 / 92 / 12 / 8 MiB`。
+- 全部绕屏页就绪后只丢弃 free decode arrays，resident 的正播与逆播帧保持不动；图集、像素、帧率和时序均未改变。
+- 同一内存剖面的 baseline → candidate resident 为：idle `11.00 → 10.86 MiB`、active reaction `49.00 → 47.77 MiB`、all reactions `48.00 → 46.38 MiB`、active roam `82.00 → 79.53 MiB`；后三项 managed 分别为 `57.12 → 55.37 MiB`、`53.13 → 51.53 MiB`、`87.14 → 84.70 MiB`。三轮巡游进程 Private 中位数为 `209.43 → 208.08 MiB`，属于小幅实测下降，不声称减半。
+
 ## v1.0.69
 
 - 绕屏动画的左键手势改用 Win32 `GetCursorPos` 直接采样真实屏幕光标；窗口在逆播退场时从光标下方移动不再制造虚假位移，原地单击仍完整逆播下坐骑并回到稳定待机，真实光标越过系统拖动阈值时仍立即交给拖动。

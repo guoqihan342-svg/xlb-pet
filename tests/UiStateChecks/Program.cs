@@ -41,9 +41,10 @@ internal static partial class Program
     private const long ExpectedRoamSpritePageBudgetBytes = 92L * 1024L * 1024L;
     private const long ExpectedIdleSpritePageTargetBytes = 12L * 1024L * 1024L;
     private const long ExpectedSpritePageCollectionThresholdBytes = 8L * 1024L * 1024L;
-    private const long ExpectedActiveRoamSpriteResidentBytes = 82L * 1024L * 1024L;
-    private const long ExpectedMaximumOrdinarySpriteWorkingSetBytes = 49L * 1024L * 1024L;
-    private const long ExpectedMaximumRoamSpriteWorkingSetBytes = 89L * 1024L * 1024L;
+    private const long ExpectedIdleSpriteResidentBytes = 11_383_992L;
+    private const long ExpectedActiveRoamSpriteResidentBytes = 83_397_164L;
+    private const long ExpectedMaximumOrdinarySpriteWorkingSetBytes = 51_229_880L;
+    private const long ExpectedMaximumRoamSpriteWorkingSetBytes = 92_124_344L;
     private const int AltTabGwlExStyle = -20;
     private const long AltTabWsExToolWindow = 0x00000080L;
     private const long AltTabWsExAppWindow = 0x00040000L;
@@ -2016,9 +2017,9 @@ internal static partial class Program
         var profiledPool = GetRawField(window, "_spritePageBufferPool")
             ?? throw new InvalidOperationException(
                 "MainWindow 缺少 sprite 页像素复用池");
-        Assert(GetProperty<long>(profiledPool, "AllocationCount") <= 40 &&
-               GetProperty<long>(profiledPool, "ReuseCount") >= 12,
-            "四种普通动作依次覆盖时必须实际复用预驱逐的相邻容量桶，不能退回逐页LOH重分配");
+        Assert(GetProperty<long>(profiledPool, "AllocationCount") <= 25 &&
+               GetProperty<long>(profiledPool, "ReuseCount") >= 13,
+            "四种普通动作依次覆盖时最多只允许比旧分桶基线多一次分配，并必须保留best-fit复用，不能退回逐页LOH重分配");
 
         SetField(window, "_edgeRoamPreloadRequested", true);
         var roamPageNames = new[]
@@ -2037,6 +2038,7 @@ internal static partial class Program
             LoadSpritePageForMemoryProfile(window, pageName);
         }
 
+        Invoke(window, "TrimReusableSpritePageBuffersForReadyRoam");
         WriteMemoryProfileMetric(window, "active-roam");
         var activeRoamResidentBytes = GetField<long>(
             window,
@@ -2046,7 +2048,7 @@ internal static partial class Program
             "AllocatedBytes");
         Assert(activeRoamResidentBytes == ExpectedActiveRoamSpriteResidentBytes &&
                activeRoamPoolBytes == ExpectedActiveRoamSpriteResidentBytes,
-            "The memory profile must establish the measured 82 MiB roaming " +
+            "The memory profile must establish the exact roaming " +
             "resident/pool hot set before completion.");
         SetField(window, "_edgeRoamPreloadRequested", false);
         SetField(window, "_isEdgeRoaming", true);
@@ -2082,11 +2084,11 @@ internal static partial class Program
 
         Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
         Assert(GetField<long>(window, "_residentSpritePageBytes") ==
-                   11L * 1024L * 1024L &&
+                   ExpectedIdleSpriteResidentBytes &&
                GetProperty<long>(profiledPool, "AllocatedBytes") ==
-                   11L * 1024L * 1024L,
+                   ExpectedIdleSpriteResidentBytes,
             "The memory profile must prove roaming completion releases the " +
-            "82 MiB hot set to the single 11 MiB idle page.");
+            "hot set to the single exact-sized idle page.");
         WriteMemoryProfileMetric(window, "trimmed-idle");
     }
 
@@ -2730,8 +2732,8 @@ internal static partial class Program
             ?? throw new InvalidOperationException(
                 "MainWindow 缺少 sprite 页像素复用池");
         var poolType = pool.GetType();
-        var capacityBucketBytes = (int)(poolType.GetField(
-                "CapacityBucketBytes",
+        var reuseCapacityStepBytes = (int)(poolType.GetField(
+                "ReuseCapacityStepBytes",
                 StaticFlags)?.GetRawConstantValue() ?? 0);
         var ordinaryBudgetBytes = (long)(typeof(MainWindow).GetField(
                 "SpritePageResidentBudgetBytes",
@@ -2744,9 +2746,11 @@ internal static partial class Program
             GetField<object>(window, "_idleFrame")).PageName;
 
         long CapacityOf(string pageName) =>
-            RoundUpSpritePageCapacity(
-                GetSpritePageByteCount(pageMap, pageName),
-                capacityBucketBytes);
+            GetSpritePageByteCount(pageMap, pageName);
+
+        long MaximumReusableCapacityOf(string pageName) =>
+            GetMaximumReusableSpritePageCapacity(
+                GetSpritePageByteCount(pageMap, pageName));
 
         static HashSet<string> PageNamesFromFrames(Array frames) =>
             frames.Cast<object>()
@@ -2820,15 +2824,13 @@ internal static partial class Program
                     .OrderByDescending(CapacityOf)
                     .Take(2))
                 .ToHashSet(StringComparer.Ordinal);
-            var canonicalBytes = protectedNames.Sum(CapacityOf);
-            var adjacentReusablePageCount = protectedNames.Count(pageName =>
-                !string.Equals(
+            var adjacentReuseWorstCaseBytes = protectedNames.Sum(pageName =>
+                string.Equals(
                     pageName,
                     startupIdlePageName,
-                    StringComparison.Ordinal));
-            var adjacentReuseWorstCaseBytes = checked(
-                canonicalBytes +
-                (long)adjacentReusablePageCount * capacityBucketBytes);
+                    StringComparison.Ordinal)
+                    ? CapacityOf(pageName)
+                    : MaximumReusableCapacityOf(pageName));
             maximumOrdinaryBytes = Math.Max(
                 maximumOrdinaryBytes,
                 adjacentReuseWorstCaseBytes);
@@ -2842,22 +2844,27 @@ internal static partial class Program
             .Concat(PageNamesFromFrames(
                 GetField<Array>(window, "_roamWaveFrames")))
             .ToHashSet(StringComparer.Ordinal);
-        var canonicalRoamBytes = roamPageNames.Sum(CapacityOf);
-        var maximumRoamBytes = checked(
-            canonicalRoamBytes +
-            (long)roamPageNames.Count * capacityBucketBytes);
+        var maximumRoamBytes = roamPageNames.Sum(pageName =>
+            string.Equals(
+                pageName,
+                startupIdlePageName,
+                StringComparison.Ordinal)
+                ? CapacityOf(pageName)
+                : MaximumReusableCapacityOf(pageName));
 
-        Assert(capacityBucketBytes == 1 * 1024 * 1024 &&
+        Assert(reuseCapacityStepBytes == 1 * 1024 * 1024 &&
                maximumOrdinaryBytes == ExpectedMaximumOrdinarySpriteWorkingSetBytes &&
                maximumOrdinaryBytes <= ordinaryBudgetBytes,
-            $"普通分页预算必须精确覆盖单页idle、当前页、下一页及相邻桶复用余量：" +
-            $"需要 {maximumOrdinaryBytes / 1048576d:F2}MiB，" +
+            $"普通分页预算必须精确覆盖单页idle、当前页、下一页及best-fit复用余量：" +
+            $"需要 {maximumOrdinaryBytes} bytes / " +
+            $"{maximumOrdinaryBytes / 1048576d:F2}MiB，" +
             $"预算 {ordinaryBudgetBytes / 1048576d:F2}MiB");
         Assert(maximumRoamBytes == ExpectedMaximumRoamSpriteWorkingSetBytes &&
                maximumRoamBytes <= roamBudgetBytes &&
                GetProperty<long>(pool, "HardBudgetBytes") == roamBudgetBytes,
             $"绕屏分页预算与池硬预算必须容纳全部boarding/flight/wave页以及" +
-            $"相邻桶复用余量：需要 {maximumRoamBytes / 1048576d:F2}MiB，" +
+            $"best-fit复用余量：需要 {maximumRoamBytes} bytes / " +
+            $"{maximumRoamBytes / 1048576d:F2}MiB，" +
             $"预算 {roamBudgetBytes / 1048576d:F2}MiB");
         Console.WriteLine(
             $"[METRIC] sprite budget: ordinary-required=" +
@@ -3360,7 +3367,7 @@ internal static partial class Program
         Assert(poolHardBudget == ExpectedRoamSpritePageBudgetBytes &&
                poolAllocatedBefore >= residentBytesBefore &&
                poolAllocatedBefore > idleTargetBytes,
-            "the bucketed pool hard budget must preserve the 92 MiB roaming " +
+            "the reusable pool hard budget must preserve the 92 MiB roaming " +
             "ceiling, and this test must establish total storage above idle.");
         Assert(residentBytesBefore > idleTargetBytes,
             "idle回收测试必须先建立超过12MiB的真实解码页缓存压力");
@@ -3394,8 +3401,8 @@ internal static partial class Program
         Assert(poolAllocatedAfter == poolRentedAfter + poolFreeAfter &&
                poolAllocatedAfter >= residentBytesAfter &&
                poolAllocatedAfter <= Math.Max(idleTargetBytes, residentBytesAfter),
-            "idle trim遇到受保护pending页时只能保留目标内可复用桶；" +
-            "若受保护租出页本身超标则不得再保留free桶。");
+            "idle trim遇到受保护pending页时只能保留目标内可复用数组；" +
+            "若受保护租出页本身超标则不得再保留free数组。");
         Assert(poolRentedBefore - poolRentedAfter ==
                    returnedResidentBytes &&
                poolFreeAfter - poolFreeBefore ==
@@ -3405,7 +3412,7 @@ internal static partial class Program
                    window,
                    "_spritePageEvictedBytesSinceCollection") ==
                    collectionDebtBefore + discardedPoolBytes,
-            "idle淘汰必须把resident像素桶归还复用池；只有池为收敛预算真正丢弃的数组才累计Gen2债");
+            "idle淘汰必须把resident像素数组归还复用池；只有池为收敛预算真正丢弃的数组才累计Gen2债");
         AssertResidentSpriteCacheAccounting(window, "12MiB idle回收与pending保护");
 
         SetField(window, "_pendingSpriteFrame", null);
@@ -3488,10 +3495,10 @@ internal static partial class Program
             $"{timerPoolAllocatedBefore / (1024d * 1024d):F2}->" +
             $"{timerPoolAllocatedAfter / (1024d * 1024d):F2} MiB");
 
-        // The preceding generic idle-target scenario is allowed to keep one
-        // 1 MiB free bucket inside its 12 MiB target. Remove only that test
-        // slack so the roaming fixture starts from the measured 11 MiB idle
-        // resident/pool baseline used by --memory-profile.
+        // The preceding generic idle-target scenario may retain a free
+        // best-fit array inside its 12 MiB target. Remove only that test slack
+        // so the roaming fixture starts from the exact idle resident/pool
+        // baseline used by --memory-profile.
         Invoke(
             window,
             "TrimSpritePageBufferPoolToTarget",
@@ -3515,6 +3522,8 @@ internal static partial class Program
             LoadSpritePageForTest(window, pageName);
         }
 
+        Invoke(window, "TrimReusableSpritePageBuffersForReadyRoam");
+
         var loadedRoamPageName = GetField<string>(
             window,
             "_loadedSpritePageName");
@@ -3535,7 +3544,7 @@ internal static partial class Program
         Assert(roamResidentBytesBefore == ExpectedActiveRoamSpriteResidentBytes &&
                roamPoolAllocatedBefore == ExpectedActiveRoamSpriteResidentBytes,
             "The roaming completion fixture must establish the measured " +
-            "82 MiB resident/pool hot set before testing immediate release.");
+            "exact resident/pool hot set before testing immediate release.");
 
         SetField(window, "_edgeRoamPreloadRequested", false);
         SetField(window, "_isEdgeRoaming", true);
@@ -3588,11 +3597,11 @@ internal static partial class Program
             $"{roamPoolAllocatedAfter / (1024d * 1024d):F2} MiB");
         Assert(!idleTrimTimer.IsEnabled &&
                idleTrimTimer.Interval == idleTrimGracePeriod &&
-               roamResidentBytesAfter == 11L * 1024L * 1024L &&
-               roamPoolAllocatedAfter == 11L * 1024L * 1024L &&
+               roamResidentBytesAfter == ExpectedIdleSpriteResidentBytes &&
+               roamPoolAllocatedAfter == ExpectedIdleSpriteResidentBytes &&
                pinnedPageNames.All(residentPages.Contains),
             "The dispatcher idle-trim tick after roaming must reduce the " +
-            "measured 82 MiB resident/pool hot set to the single 11 MiB idle " +
+            "exact resident/pool hot set to the single exact-sized idle " +
             "page without changing the 12 MiB retention target.");
         ResetSpritePageCollectionTestState(window);
     }
@@ -3871,16 +3880,21 @@ internal static partial class Program
         return GetProperty<int>(pageMap[pageName]!, "UncompressedByteCount");
     }
 
-    private static long RoundUpSpritePageCapacity(
-        long byteCount,
-        int capacityBucketBytes)
+    private static long GetMaximumReusableSpritePageCapacity(long byteCount)
     {
-        Assert(byteCount > 0 && capacityBucketBytes > 0,
-            "sprite分页逻辑字节与容量桶必须大于零");
-        return checked(
-            (byteCount + capacityBucketBytes - 1) /
-            capacityBucketBytes *
-            capacityBucketBytes);
+        Assert(byteCount > 0 && byteCount <= int.MaxValue,
+            "sprite分页逻辑字节必须处于有效数组范围");
+        var poolType = typeof(MainWindow).Assembly.GetType(
+            "LubanDesktopPet.SpritePageBufferPool",
+            throwOnError: true)
+            ?? throw new InvalidOperationException(
+                "找不到 SpritePageBufferPool 类型");
+        var method = poolType.GetMethod(
+            "GetMaximumReusableCapacity",
+            StaticFlags)
+            ?? throw new InvalidOperationException(
+                "SpritePageBufferPool 缺少最大复用容量契约");
+        return (int)(method.Invoke(null, [(int)byteCount]) ?? 0);
     }
 
     private static void LoadSpritePageForTest(MainWindow window, string pageName)
@@ -3954,11 +3968,10 @@ internal static partial class Program
             var logicalByteCount =
                 GetSpritePageByteCount(pageMap, pageName);
             Assert(pixels.LongLength >= logicalByteCount &&
-                   pixels.LongLength % (1L * 1024L * 1024L) == 0 &&
-                   pixels.LongLength - logicalByteCount <
-                       2L * 1024L * 1024L &&
+                   pixels.LongLength <=
+                       GetMaximumReusableSpritePageCapacity(logicalByteCount) &&
                    GetProperty<long>(entry.Value!, "ByteCount") == pixels.LongLength,
-                $"{stage} 分页 {pageName} 必须只保留一份相邻1MiB容量桶数组，并按真实容量记账");
+                $"{stage} 分页 {pageName} 必须只保留一份精确或既有相邻容量范围内的best-fit数组，并按真实容量记账");
             Assert(string.Equals(
                        residentLruNode.Value,
                        pageName,
@@ -4355,7 +4368,7 @@ internal static partial class Program
             Assert(GetProperty<long>(bufferPool, "AllocatedBytes") == 0 &&
                    GetProperty<long>(bufferPool, "RentedBytes") == 0 &&
                    GetProperty<long>(bufferPool, "FreeBytes") == 0,
-                $"{stage}必须把迟到解码页从分桶池彻底释放，不能留下任何rented/free LOH数组");
+                $"{stage}必须把迟到解码页从复用池彻底释放，不能留下任何rented/free LOH数组");
         }
     }
 
@@ -5797,25 +5810,25 @@ internal static partial class Program
                 Hash(directPayload)));
         Assert(streamedDirectOutput.SequenceEqual(directPayload),
             "direct payload必须可从流直接精确读入最终decodedPixels，不依赖整页payload scratch");
-        var bucketedDirectOutput = new byte[1 * 1024 * 1024];
-        Array.Fill(bucketedDirectOutput, (byte)0xA5);
+        var oversizedDirectOutput = new byte[1 * 1024 * 1024];
+        Array.Fill(oversizedDirectOutput, (byte)0xA5);
         _ = decodeStream.Invoke(
             null,
             StreamArguments(
                 "pbgra32",
                 new MemoryStream(directPayload, writable: false),
                 directPayload.Length,
-                bucketedDirectOutput,
+                oversizedDirectOutput,
                 2,
                 1,
                 [],
                 Hash(directPayload)));
-        Assert(bucketedDirectOutput
+        Assert(oversizedDirectOutput
                    .AsSpan(0, directPayload.Length)
                    .SequenceEqual(directPayload) &&
-               bucketedDirectOutput[directPayload.Length] == 0xA5 &&
-               bucketedDirectOutput[^1] == 0xA5,
-            "1MiB容量桶的direct页面只能读写和校验有效atlas前缀，桶尾不得参与SHA256或被覆盖");
+               oversizedDirectOutput[directPayload.Length] == 0xA5 &&
+               oversizedDirectOutput[^1] == 0xA5,
+            "复用到较大数组的direct页面只能读写和校验有效atlas前缀，数组尾不得参与SHA256或被覆盖");
         var directBrotliBytes = CompressBrotli(directPayload);
         using var directCompressedStream = new MemoryStream(
             directBrotliBytes,
@@ -5921,25 +5934,25 @@ internal static partial class Program
                 Hash(expectedDeltaAtlas)));
         Assert(streamedDeltaOutput.SequenceEqual(expectedDeltaAtlas),
             "delta-sub必须逐头、逐行从流重建相同atlas，不得依赖完整payload byte[]");
-        var bucketedDeltaOutput = new byte[1 * 1024 * 1024];
-        Array.Fill(bucketedDeltaOutput, (byte)0x5A);
+        var oversizedDeltaOutput = new byte[1 * 1024 * 1024];
+        Array.Fill(oversizedDeltaOutput, (byte)0x5A);
         _ = decodeStream.Invoke(
             null,
             StreamArguments(
                 "pbgra32-delta-sub-v1",
                 new MemoryStream(deltaPayload, writable: false),
                 deltaPayload.Length,
-                bucketedDeltaOutput,
+                oversizedDeltaOutput,
                 4,
                 2,
                 deltaDescriptors,
                 Hash(expectedDeltaAtlas)));
-        Assert(bucketedDeltaOutput
+        Assert(oversizedDeltaOutput
                    .AsSpan(0, expectedDeltaAtlas.Length)
                    .SequenceEqual(expectedDeltaAtlas) &&
-               bucketedDeltaOutput[expectedDeltaAtlas.Length] == 0x5A &&
-               bucketedDeltaOutput[^1] == 0x5A,
-            "1MiB容量桶的delta-sub页面只能重建和校验有效atlas前缀，桶尾必须保持未触碰");
+               oversizedDeltaOutput[expectedDeltaAtlas.Length] == 0x5A &&
+               oversizedDeltaOutput[^1] == 0x5A,
+            "复用到较大数组的delta-sub页面只能重建和校验有效atlas前缀，数组尾必须保持未触碰");
         var deltaBrotliBytes = CompressBrotli(deltaPayload);
         using var deltaCompressedStream = new MemoryStream(
             deltaBrotliBytes,
@@ -16432,6 +16445,10 @@ internal static partial class Program
         todoWindow.PetSizeAdjustmentStarted += started;
         todoWindow.PetSizeAdjustmentCompleted += completed;
         todoWindow.PetSizeScaleChanged += scaleChanged;
+        var originalCursorAvailable = GetTestCursorPos(
+            out var originalCursorPoint);
+        Assert(originalCursorAvailable,
+            "move-to-point回归必须能保存真实Win32光标位置");
 
         try
         {
@@ -16489,14 +16506,30 @@ internal static partial class Program
             window.LocationChanged += locationChanged;
             try
             {
+                var deterministicCursorDips = track.PointToScreen(
+                    new Point(-64, track.ActualHeight / 2));
+                Assert(double.IsFinite(deterministicCursorDips.X) &&
+                       double.IsFinite(deterministicCursorDips.Y) &&
+                       SetTestCursorPos(
+                           (int)Math.Round(deterministicCursorDips.X),
+                           (int)Math.Round(deterministicCursorDips.Y)),
+                    "move-to-point回归必须把真实光标固定到Track左侧");
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                Assert(Math.Abs(track.ValueFromPoint(
+                                   Mouse.GetPosition(track)) -
+                               slider.Minimum) <= 0.000001,
+                    "Track左侧固定光标必须稳定映射到最小值");
+
                 var envelopeWidth = window.Width;
                 var envelopeHeight = window.Height;
                 var envelopeLeft = window.Left;
                 var envelopeTop = window.Top;
 
-                // Let WPF's real move-to-point class handler resolve this
-                // RepeatButton to the current pointer coordinate once. Every
-                // later routed press targets that exact same value.
+                // Let WPF's real move-to-point class handler resolve the
+                // deterministic Win32 cursor position once, then let the real
+                // 400 ms persistence debounce finish. Keeping the cursor left
+                // of the Track makes every later routed press target the same
+                // minimum value even when the Todo window follows pet scale.
                 RaisePreviewMouseDown(trackSource);
                 RaisePreviewMouseUp(trackSource);
                 PumpDispatcher(TimeSpan.FromMilliseconds(460));
@@ -16927,6 +16960,13 @@ internal static partial class Program
                 window,
                 "_suppressTodoWindowDeactivate",
                 originalSuppressDeactivate);
+            if (originalCursorAvailable)
+            {
+                Assert(SetTestCursorPos(
+                           originalCursorPoint.X,
+                           originalCursorPoint.Y),
+                    "move-to-point回归结束后必须恢复真实Win32光标位置");
+            }
         }
     }
 
@@ -18244,15 +18284,20 @@ internal static partial class Program
         var defaultBudget = (long)(poolType.GetField(
                 "DefaultHardBudgetBytes",
                 StaticFlags)?.GetRawConstantValue() ?? 0L);
-        var capacityBucketBytes = (int)(poolType.GetField(
-                "CapacityBucketBytes",
+        var reuseCapacityStepBytes = (int)(poolType.GetField(
+                "ReuseCapacityStepBytes",
                 StaticFlags)?.GetRawConstantValue() ?? 0);
         Assert(defaultBudget == ExpectedRoamSpritePageBudgetBytes &&
-               capacityBucketBytes == 1 * 1024 * 1024,
-            "sprite页像素池默认总预算必须是92MiB且容量桶必须固定为1MiB");
+               reuseCapacityStepBytes == 1 * 1024 * 1024,
+            "sprite页像素池默认总预算必须是92MiB且复用容量步进固定为1MiB");
 
         const int mebibyte = 1024 * 1024;
         const long smallBudget = 10L * mebibyte;
+        Assert(GetMaximumReusableSpritePageCapacity(mebibyte) ==
+                   2L * mebibyte &&
+               GetMaximumReusableSpritePageCapacity(mebibyte + 1L) ==
+                   3L * mebibyte,
+            "最大复用容量必须与旧分桶池的本桶+相邻一桶边界完全一致");
         var pool = Activator.CreateInstance(
             poolType,
             InstanceFlags,
@@ -18269,12 +18314,12 @@ internal static partial class Program
                GetProperty<long>(pool, "RentedBytes") ==
                    exact.LongLength &&
                GetProperty<long>(pool, "FreeBytes") == 0,
-            "整桶请求必须返回同容量数组并同步维护allocated/rented/free字节");
+            "精确请求必须返回同长度数组并同步维护allocated/rented/free字节");
         Invoke(pool, "Return", exact);
         Assert(GetProperty<long>(pool, "RentedBytes") == 0 &&
                GetProperty<long>(pool, "FreeBytes") ==
                    exact.LongLength,
-            "Return必须把容量桶数组转入可复用free集合");
+            "Return必须把数组转入可复用free集合");
         var reused = (byte[])Invoke(pool, "Rent", 1 * mebibyte)!;
         Assert(ReferenceEquals(reused, exact) &&
                reused.Length == 1 * mebibyte &&
@@ -18286,16 +18331,55 @@ internal static partial class Program
             () => Invoke(pool, "Return", reused),
             "像素池必须拒绝双归还，避免同一数组被并发租给两个页面");
 
-        var bucketedOddLength = (byte[])Invoke(
+        var boundedOddLength = (byte[])Invoke(
             pool,
             "Rent",
             12_345)!;
-        Assert(ReferenceEquals(bucketedOddLength, exact) &&
-               bucketedOddLength.Length == capacityBucketBytes &&
+        Assert(ReferenceEquals(boundedOddLength, exact) &&
+               boundedOddLength.Length == mebibyte &&
                GetProperty<long>(pool, "AllocationCount") == 1 &&
                GetProperty<long>(pool, "ReuseCount") == 2,
-            "同一1MiB容量桶内的不同页面长度必须跨长度复用同一LOH数组");
-        Invoke(pool, "Return", bucketedOddLength);
+            "best-fit必须复用余量不超过1MiB的现有大数组");
+        Invoke(pool, "Return", boundedOddLength);
+
+        var exactOddPool = Activator.CreateInstance(
+            poolType,
+            InstanceFlags,
+            binder: null,
+            args: [smallBudget],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException(
+                "无法创建精确奇数长度测试池");
+        var exactOddLength = (byte[])Invoke(
+            exactOddPool,
+            "Rent",
+            123_457)!;
+        Assert(exactOddLength.Length == 123_457 &&
+               GetProperty<long>(exactOddPool, "AllocatedBytes") == 123_457 &&
+               GetProperty<long>(exactOddPool, "AllocationCount") == 1 &&
+               GetProperty<long>(exactOddPool, "ReuseCount") == 0,
+            "没有可复用数组时必须按请求真实长度分配，不能再向上取整到MiB桶");
+        Invoke(exactOddPool, "Return", exactOddLength);
+
+        var bestFitPool = Activator.CreateInstance(
+            poolType,
+            InstanceFlags,
+            binder: null,
+            args: [smallBudget],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException(
+                "无法创建best-fit测试池");
+        var farther = (byte[])Invoke(bestFitPool, "Rent", 2 * mebibyte)!;
+        var nearer = (byte[])Invoke(bestFitPool, "Rent", 1536 * 1024)!;
+        Invoke(bestFitPool, "Return", farther);
+        Invoke(bestFitPool, "Return", nearer);
+        var bestFit = (byte[])Invoke(bestFitPool, "Rent", 1 * mebibyte)!;
+        Assert(ReferenceEquals(bestFit, nearer) &&
+               !ReferenceEquals(bestFit, farther) &&
+               GetProperty<long>(bestFitPool, "AllocationCount") == 2 &&
+               GetProperty<long>(bestFitPool, "ReuseCount") == 1,
+            "多个可容纳数组同时空闲时必须选择容量最小的best-fit，避免扩大resident浪费");
+        Invoke(bestFitPool, "Return", bestFit);
 
         var adjacentPool = Activator.CreateInstance(
             poolType,
@@ -18304,7 +18388,7 @@ internal static partial class Program
             args: [smallBudget],
             culture: CultureInfo.InvariantCulture)
             ?? throw new InvalidOperationException(
-                "无法创建相邻桶复用测试池");
+                "无法创建相邻容量复用测试池");
         var adjacentLarge = (byte[])Invoke(
             adjacentPool,
             "Rent",
@@ -18314,15 +18398,15 @@ internal static partial class Program
             adjacentPool,
             "Rent",
             1 * mebibyte)!;
-        var adjacentFreeBuckets = GetField<IDictionary>(
+        var adjacentFreeCapacities = GetField<IDictionary>(
             adjacentPool,
             "_freeBuffersByCapacity");
         Assert(ReferenceEquals(adjacentLarge, adjacentSmaller) &&
                adjacentSmaller.Length == 2 * mebibyte &&
                GetProperty<long>(adjacentPool, "AllocationCount") == 1 &&
                GetProperty<long>(adjacentPool, "ReuseCount") == 1 &&
-               adjacentFreeBuckets.Count == 0,
-            "缺少精确桶时必须复用仅大1MiB的最近空闲桶，避免相邻页面反复分配LOH");
+               adjacentFreeCapacities.Count == 0,
+            "缺少精确长度时必须复用仅大1MiB的最近空闲数组，避免相邻页面反复分配LOH");
         Invoke(adjacentPool, "Return", adjacentSmaller);
 
         var distantPool = Activator.CreateInstance(
@@ -18332,7 +18416,7 @@ internal static partial class Program
             args: [smallBudget],
             culture: CultureInfo.InvariantCulture)
             ?? throw new InvalidOperationException(
-                "无法创建跨桶上限测试池");
+                "无法创建跨容量上限测试池");
         var distantLarge = (byte[])Invoke(
             distantPool,
             "Rent",
@@ -18346,8 +18430,32 @@ internal static partial class Program
                distantSmall.Length == 1 * mebibyte &&
                GetProperty<long>(distantPool, "AllocationCount") == 2 &&
                GetProperty<long>(distantPool, "ReuseCount") == 0,
-            "相差超过1MiB的空闲桶不得服务小页，避免容量浪费挤掉当前/下一热页");
+            "相差超过1MiB的空闲数组不得服务小页，避免容量浪费挤掉当前/下一热页");
         Invoke(distantPool, "Return", distantSmall);
+
+        var boundaryPool = Activator.CreateInstance(
+            poolType,
+            InstanceFlags,
+            binder: null,
+            args: [smallBudget],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException(
+                "无法创建复用边界测试池");
+        var justOverMaximum = (byte[])Invoke(
+            boundaryPool,
+            "Rent",
+            2 * mebibyte + 1)!;
+        Invoke(boundaryPool, "Return", justOverMaximum);
+        var boundaryExact = (byte[])Invoke(
+            boundaryPool,
+            "Rent",
+            1 * mebibyte)!;
+        Assert(!ReferenceEquals(justOverMaximum, boundaryExact) &&
+               boundaryExact.Length == mebibyte &&
+               GetProperty<long>(boundaryPool, "AllocationCount") == 2 &&
+               GetProperty<long>(boundaryPool, "ReuseCount") == 0,
+            "空闲数组只要超过既有相邻容量上限1字节就不得复用");
+        Invoke(boundaryPool, "Return", boundaryExact);
 
         var discardedToIdleTarget = (long)(InvokeOverload(
             pool,
@@ -18357,7 +18465,7 @@ internal static partial class Program
                GetProperty<long>(pool, "AllocatedBytes") == 0 &&
                GetProperty<long>(pool, "RentedBytes") == 0 &&
                GetProperty<long>(pool, "FreeBytes") == 0,
-            "idle target不足一个容量桶时必须丢弃完整free桶并保持字节账归零");
+            "idle target不足现有free数组时必须丢弃完整数组并保持字节账归零");
 
         var overshootPool = Activator.CreateInstance(
             poolType,
@@ -18401,6 +18509,90 @@ internal static partial class Program
                    GetProperty<long>(overshootPool, "FreeBytes"),
             "全部页面归还后像素池必须保持预算内且字节账严格守恒");
 
+        var concurrentPool = Activator.CreateInstance(
+            poolType,
+            InstanceFlags,
+            binder: null,
+            args: [4L * mebibyte],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException(
+                "无法创建并发租还测试像素池");
+        var activeBuffers = new HashSet<byte[]>(
+            ReferenceEqualityComparer.Instance);
+        var concurrentFailures =
+            new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        Parallel.For(0, 8, workerIndex =>
+        {
+            for (var iteration = 0; iteration < 32; iteration++)
+            {
+                byte[]? rentedBuffer = null;
+                var trackedAsActive = false;
+                try
+                {
+                    var requestedLength =
+                        (96 + (workerIndex + iteration) % 4 * 32) * 1024;
+                    rentedBuffer = (byte[])Invoke(
+                        concurrentPool,
+                        "Rent",
+                        requestedLength)!;
+                    if (rentedBuffer.Length < requestedLength ||
+                        rentedBuffer.Length >
+                            GetMaximumReusableSpritePageCapacity(
+                                requestedLength))
+                    {
+                        throw new InvalidOperationException(
+                            "并发Rent返回的数组不满足请求长度或既有复用容量上限");
+                    }
+
+                    lock (activeBuffers)
+                    {
+                        trackedAsActive = activeBuffers.Add(rentedBuffer);
+                    }
+
+                    if (!trackedAsActive)
+                    {
+                        throw new InvalidOperationException(
+                            "同一个数组被同时租给了两个并发调用者");
+                    }
+
+                    rentedBuffer[0] = (byte)(workerIndex + iteration);
+                }
+                catch (Exception exception)
+                {
+                    concurrentFailures.Enqueue(exception);
+                }
+                finally
+                {
+                    if (rentedBuffer is not null && trackedAsActive)
+                    {
+                        lock (activeBuffers)
+                        {
+                            _ = activeBuffers.Remove(rentedBuffer);
+                        }
+
+                        try
+                        {
+                            Invoke(concurrentPool, "Return", rentedBuffer);
+                        }
+                        catch (Exception exception)
+                        {
+                            concurrentFailures.Enqueue(exception);
+                        }
+                    }
+                }
+            }
+        });
+        Assert(concurrentFailures.IsEmpty &&
+               activeBuffers.Count == 0 &&
+               GetProperty<long>(concurrentPool, "RentedBytes") == 0 &&
+               GetProperty<long>(concurrentPool, "AllocatedBytes") ==
+                   GetProperty<long>(concurrentPool, "FreeBytes") &&
+               GetProperty<long>(concurrentPool, "AllocatedBytes") <=
+                   4L * mebibyte &&
+               GetProperty<long>(concurrentPool, "ReuseCount") > 0,
+            $"并发Rent/Return必须保持引用唯一、预算内和字节账守恒；" +
+            $"首个错误={concurrentFailures.FirstOrDefault()?.Message ?? "无"}");
+
         var mainSource = File.ReadAllText(
             FindWorkspaceFile("MainWindow.xaml.cs"));
         var poolSource = File.ReadAllText(
@@ -18435,6 +18627,15 @@ internal static partial class Program
         var clearResidentSource = ExtractPrivateMethodSource(
             mainSource,
             "ClearResidentSpritePages");
+        var continueEdgeRoamPreloadSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ContinueEdgeRoamPreload");
+        var startEdgeRoamingSource = ExtractPrivateMethodSource(
+            mainSource,
+            "StartEdgeRoaming");
+        var trimReadyRoamBuffersSource = ExtractPrivateMethodSource(
+            mainSource,
+            "TrimReusableSpritePageBuffersForReadyRoam");
         Assert(mainSource.Contains(
                    "private readonly SpritePageBufferPool _spritePageBufferPool = new()",
                    StringComparison.Ordinal) &&
@@ -18450,7 +18651,7 @@ internal static partial class Program
                decodeSource.Contains(
                    "ReturnSpritePageBuffer(decodedPixels)",
                    StringComparison.Ordinal),
-            "DecodeSpritePage必须从分桶池Rent，并在取消、hash失败或解码异常时同步归还");
+            "DecodeSpritePage必须从复用池Rent，并在取消、hash失败或解码异常时同步归还");
         var prepareBeforeTask = startPrefetchSource.IndexOf(
             "PrepareSpritePageBufferForIncomingPage(pageName, page)",
             StringComparison.Ordinal);
@@ -18471,7 +18672,7 @@ internal static partial class Program
                prepareIncomingPageSource.Contains(
                    "preservePageName: pageName",
                    StringComparison.Ordinal),
-            "后台Rent前必须先归还稍后必然淘汰的非保护LRU页，让相邻容量桶可直接复用");
+            "后台Rent前必须先归还稍后必然淘汰的非保护LRU页，让近似容量数组可直接复用");
         Assert(startPrefetchSource.Contains(
                    "Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished",
                    StringComparison.Ordinal) &&
@@ -18526,17 +18727,26 @@ internal static partial class Program
                    "RecordDiscardedSpritePageBytes",
                    StringComparison.Ordinal) &&
                poolSource.Contains(
-                      "DefaultHardBudgetBytes = 92L * 1024 * 1024",
+                   "DefaultHardBudgetBytes = 92L * 1024 * 1024",
                     StringComparison.Ordinal) &&
-                poolSource.Contains(
-                     "CapacityBucketBytes = 1 * 1024 * 1024",
-                     StringComparison.Ordinal) &&
-                poolSource.Contains(
-                     "selectedCapacity = capacity + CapacityBucketBytes",
-                     StringComparison.Ordinal) &&
-                poolSource.Contains(
-                     "buffer.Length - capacity > CapacityBucketBytes",
-                     StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "ReuseCapacityStepBytes = 1 * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "GetMaximumReusableCapacity(requestedLength)",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "capacity >= requestedLength",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "capacity <= maximumCapacity",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "capacity < selectedCapacity",
+                   StringComparison.Ordinal) &&
+               poolSource.Contains(
+                   "buffer.Length > maximumCapacity",
+                   StringComparison.Ordinal) &&
                poolSource.Contains(
                     "GetCapacity(length)",
                     StringComparison.Ordinal) &&
@@ -18544,6 +18754,30 @@ internal static partial class Program
                     "RuntimeHelpers.GetHashCode(value)",
                     StringComparison.Ordinal),
             "resident淘汰只归还复用池；仅池真正丢弃数组时才累计GC债，并以引用身份防止双归还");
+        var startTrimIndex = startEdgeRoamingSource.IndexOf(
+            "TrimReusableSpritePageBuffersForReadyRoam()",
+            StringComparison.Ordinal);
+        var clearPreloadIndex = startEdgeRoamingSource.IndexOf(
+            "_edgeRoamPreloadRequested = false",
+            StringComparison.Ordinal);
+        Assert(continueEdgeRoamPreloadSource.Contains(
+                   "TrimReusableSpritePageBuffersForReadyRoam()",
+                   StringComparison.Ordinal) &&
+               startTrimIndex >= 0 &&
+               clearPreloadIndex > startTrimIndex &&
+               trimReadyRoamBuffersSource.Contains(
+                   "_spritePagePrefetchTask is not null",
+                   StringComparison.Ordinal) &&
+               trimReadyRoamBuffersSource.Contains(
+                   "!AreAllEdgeRoamPreloadPagesResident()",
+                   StringComparison.Ordinal) &&
+               trimReadyRoamBuffersSource.Contains(
+                   "TrimSpritePageBufferPoolToTarget(_residentSpritePageBytes)",
+                   StringComparison.Ordinal) &&
+               !trimReadyRoamBuffersSource.Contains(
+                   "TrimResidentSpritePagesToTarget",
+                   StringComparison.Ordinal),
+            "绕屏全部页面就绪后必须只清理无主free数组，并在动画开始前保留全部resident正播/逆播页");
     }
 
     private static void AssertLoggingContract()
@@ -23999,6 +24233,28 @@ internal static partial class Program
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseClipboard();
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeCursorPoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "GetCursorPos",
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTestCursorPos(
+        out NativeCursorPoint point);
+
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "SetCursorPos",
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetTestCursorPos(int x, int y);
 
     private static IntPtr GetAltTabWindowLongPtr(
         IntPtr windowHandle,
