@@ -246,7 +246,7 @@ git status --short --ignored
 
 ## v1.0.72 发布验证
 
-以下结果于 `2026-08-12` 在 .NET SDK `8.0.418` 环境完成。功能验证已完成；提交、EXE 和 GitHub Release 字段必须在真实发布及独立回下载后再回填。
+以下结果于 `2026-08-12` 在 .NET SDK `8.0.418` 环境完成；功能、构建、真实发布及独立回下载验证均已完成。
 
 | 项目 | 实测结果 |
 | --- | --- |
@@ -255,9 +255,9 @@ git status --short --ignored
 | 产品质量边界 | collection timer、GC 淘汰债务、LOH `30 秒`节流、`52 / 92 / 12 / 8 MiB` 预算、素材、像素、画质、帧数、FPS、时序、输入、待办、提醒和其他交互全部不变 |
 | 自动化与构建 | `DesktopPet` 与 `UiStateChecks` 的 Release 构建均为 `0 warning / 0 error`；`--resident-cache-only`、`--work-mode-only`、`--todo-only`、`--reminder-only`、`--roam-interaction-only` 专项全部通过；完整 `UiStateChecks` 输出 `UI state checks passed.` |
 | 内存剖面 | startup idle：resident / pool / managed / private 为 `10.86 / 10.86 / 15.90 / 137.09 MiB`；active roam 为 `79.53 / 79.53 / 84.60 / 208.59 MiB`；trimmed idle 为 `10.86 / 10.86 / 15.93 / 139.27 MiB`。这些结果验证内存边界未回退，不声称本轮降低常驻内存 |
-| 源码与版本 | 源码版本 `v1.0.72`，`FileVersion=1.0.72.0`；功能提交与 `ProductVersion` 提交后缀：`[待真实发布后回填]` |
-| EXE | 文件大小、SHA-256 与 Authenticode：`[待真实发布后回填]` |
-| GitHub Release | 标签、Release target、附件 digest 与独立回下载复核：`[待真实发布后回填]` |
+| 源码与版本 | 源码版本 `v1.0.72`；功能提交 `ec8a0a3f5476c7567b523b3c886a4ae411c985a2`，`FileVersion=1.0.72.0`，`ProductVersion=1.0.72+ec8a0a3f5476c7567b523b3c886a4ae411c985a2` |
+| EXE | 单文件框架依赖 EXE 为 `93,347,462` bytes，SHA-256 `4F9911BF5F2F998AB023D8048A958A87865880E7AE001095DA660C051819E9DA`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | `v1.0.72` 为非 Draft、非 prerelease，标签与 Release target 均指向功能提交 `ec8a0a3f5476c7567b523b3c886a4ae411c985a2`；附件元数据 digest 为 `sha256:4f9911bf5f2f998ab023d8048a958a87865880e7ae001095da660c051819e9da`，独立新目录回下载后的大小、SHA-256、FileVersion 与 ProductVersion 均和发布源逐项一致 |
 
 ## v1.0.71 发布验证
 
