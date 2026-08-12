@@ -7848,7 +7848,10 @@ public partial class MainWindow : Window
         if (_directDisplayFrameBounds is { } previousBounds)
         {
             dirtyBounds = UnionPixelBounds(previousBounds, nextBounds);
-            ClearPixelBounds(_displayFramePixels, dirtyBounds);
+            ClearPixelBoundsDifference(
+                _displayFramePixels,
+                previousBounds,
+                nextBounds);
         }
         else
         {
@@ -7867,6 +7870,67 @@ public partial class MainWindow : Window
         CopyFramePixels(frame, _displayFramePixels, nextBounds);
         WriteDisplayFrame(_displayFramePixels, dirtyBounds);
         _directDisplayFrameBounds = nextBounds;
+    }
+
+    private static void ClearPixelBoundsDifference(
+        byte[] pixels,
+        Int32Rect previousBounds,
+        Int32Rect nextBounds)
+    {
+        if (previousBounds.Width <= 0 || previousBounds.Height <= 0)
+        {
+            return;
+        }
+
+        var previousRight = checked(
+            previousBounds.X + previousBounds.Width);
+        var previousBottom = checked(
+            previousBounds.Y + previousBounds.Height);
+        var nextRight = checked(nextBounds.X + nextBounds.Width);
+        var nextBottom = checked(nextBounds.Y + nextBounds.Height);
+        var intersectionLeft = Math.Max(
+            previousBounds.X,
+            nextBounds.X);
+        var intersectionTop = Math.Max(
+            previousBounds.Y,
+            nextBounds.Y);
+        var intersectionRight = Math.Min(previousRight, nextRight);
+        var intersectionBottom = Math.Min(previousBottom, nextBottom);
+        if (intersectionRight <= intersectionLeft ||
+            intersectionBottom <= intersectionTop)
+        {
+            ClearPixelBounds(pixels, previousBounds);
+            return;
+        }
+
+        ClearPixelBounds(
+            pixels,
+            new Int32Rect(
+                previousBounds.X,
+                previousBounds.Y,
+                previousBounds.Width,
+                intersectionTop - previousBounds.Y));
+        ClearPixelBounds(
+            pixels,
+            new Int32Rect(
+                previousBounds.X,
+                intersectionBottom,
+                previousBounds.Width,
+                previousBottom - intersectionBottom));
+        ClearPixelBounds(
+            pixels,
+            new Int32Rect(
+                previousBounds.X,
+                intersectionTop,
+                intersectionLeft - previousBounds.X,
+                intersectionBottom - intersectionTop));
+        ClearPixelBounds(
+            pixels,
+            new Int32Rect(
+                intersectionRight,
+                intersectionTop,
+                previousRight - intersectionRight,
+                intersectionBottom - intersectionTop));
     }
 
     private static Int32Rect GetVisibleFrameBounds(SpriteFrame frame)
@@ -10242,10 +10306,15 @@ public partial class MainWindow : Window
 
             if (!regionWasWritten)
             {
-                if (validatedRegions.Any(existing => existing.Intersects(region)))
+                for (var regionIndex = 0;
+                     regionIndex < validatedRegions.Count;
+                     regionIndex++)
                 {
-                    throw new InvalidDataException(
-                        $"Delta-sub atlas regions overlap at frame {frameIndex}.");
+                    if (validatedRegions[regionIndex].Intersects(region))
+                    {
+                        throw new InvalidDataException(
+                            $"Delta-sub atlas regions overlap at frame {frameIndex}.");
+                    }
                 }
 
                 validatedRegions.Add(region);
@@ -10254,37 +10323,18 @@ public partial class MainWindow : Window
                     (destinationX, destinationY));
             }
 
-            for (var row = 0; row < spriteHeight; row++)
-            {
-                var atlasRowOffset = checked(
-                    (atlasY + row) * atlasStride + atlasX * 4);
-                var displayY = (long)destinationY + row;
-                for (var column = 0; column < spriteWidth; column++)
-                {
-                    var atlasPixelOffset = checked(atlasRowOffset + column * 4);
-                    var displayX = (long)destinationX + column;
-                    var sourcePixelOffset = displayX >= 0 &&
-                                            displayX < DisplayPixelWidth &&
-                                            displayY >= 0 &&
-                                            displayY < DisplayPixelHeight
-                        ? checked((int)(displayY * displayStride + displayX * 4))
-                        : -1;
-                    for (var channel = 0; channel < 4; channel++)
-                    {
-                        var value = sourcePixelOffset >= 0
-                            ? previousDisplayFrame[sourcePixelOffset + channel]
-                            : (byte)0;
-                        if (regionWasWritten &&
-                            atlasPixels[atlasPixelOffset + channel] != value)
-                        {
-                            throw new InvalidDataException(
-                                $"Repeated delta-sub sprite differs at frame {frameIndex}.");
-                        }
-
-                        atlasPixels[atlasPixelOffset + channel] = value;
-                    }
-                }
-            }
+            CopyOrValidateDeltaSpriteRegion(
+                previousDisplayFrame,
+                atlasPixels,
+                atlasStride,
+                atlasX,
+                atlasY,
+                spriteWidth,
+                spriteHeight,
+                destinationX,
+                destinationY,
+                regionWasWritten,
+                frameIndex);
         }
 
         if (payloadOffset != payloadByteCount)
@@ -10299,6 +10349,108 @@ public partial class MainWindow : Window
                 previousDisplayFrame,
                 clearArray: false);
         }
+    }
+
+    private static void CopyOrValidateDeltaSpriteRegion(
+        byte[] displayPixels,
+        byte[] atlasPixels,
+        int atlasStride,
+        int atlasX,
+        int atlasY,
+        int spriteWidth,
+        int spriteHeight,
+        int destinationX,
+        int destinationY,
+        bool validateExisting,
+        int frameIndex)
+    {
+        var displayStride = checked(DisplayPixelWidth * 4);
+        var spriteRowByteCount = checked(spriteWidth * 4);
+        for (var row = 0; row < spriteHeight; row++)
+        {
+            var atlasRowOffset = checked(
+                (atlasY + row) * atlasStride + atlasX * 4);
+            var displayY = (long)destinationY + row;
+            var visibleStartColumn = checked((int)Math.Max(
+                0L,
+                -(long)destinationX));
+            var visibleEndColumn = checked((int)Math.Min(
+                (long)spriteWidth,
+                (long)DisplayPixelWidth - destinationX));
+            if (displayY < 0 ||
+                displayY >= DisplayPixelHeight ||
+                visibleStartColumn >= visibleEndColumn)
+            {
+                if (validateExisting &&
+                    ContainsNonZero(
+                        atlasPixels.AsSpan(
+                            atlasRowOffset,
+                            spriteRowByteCount)))
+                {
+                    throw new InvalidDataException(
+                        $"Repeated delta-sub sprite differs at frame {frameIndex}.");
+                }
+
+                continue;
+            }
+
+            var visibleByteOffset = checked(visibleStartColumn * 4);
+            var visibleByteCount = checked(
+                (visibleEndColumn - visibleStartColumn) * 4);
+            var visibleDisplayX = checked((int)(
+                (long)destinationX + visibleStartColumn));
+            var sourceOffset = checked(
+                (int)displayY * displayStride + visibleDisplayX * 4);
+            var atlasVisibleOffset = checked(
+                atlasRowOffset + visibleByteOffset);
+            if (!validateExisting)
+            {
+                Buffer.BlockCopy(
+                    displayPixels,
+                    sourceOffset,
+                    atlasPixels,
+                    atlasVisibleOffset,
+                    visibleByteCount);
+                continue;
+            }
+
+            if ((visibleByteOffset > 0 &&
+                 ContainsNonZero(
+                     atlasPixels.AsSpan(
+                         atlasRowOffset,
+                         visibleByteOffset))) ||
+                !atlasPixels.AsSpan(
+                        atlasVisibleOffset,
+                        visibleByteCount)
+                    .SequenceEqual(
+                        displayPixels.AsSpan(
+                            sourceOffset,
+                            visibleByteCount)) ||
+                (visibleByteOffset + visibleByteCount < spriteRowByteCount &&
+                 ContainsNonZero(
+                     atlasPixels.AsSpan(
+                         atlasVisibleOffset + visibleByteCount,
+                         spriteRowByteCount -
+                         visibleByteOffset -
+                         visibleByteCount))))
+            {
+                throw new InvalidDataException(
+                    $"Repeated delta-sub sprite differs at frame {frameIndex}.");
+            }
+        }
+    }
+
+    private static bool ContainsNonZero(ReadOnlySpan<byte> bytes)
+    {
+        foreach (var value in bytes)
+        {
+            if (value != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void ValidateSpriteAtlasDecodedHash(

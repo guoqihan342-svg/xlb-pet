@@ -2429,8 +2429,103 @@ internal static partial class Program
         InvokeOverload(window, "CopyFramePixels", idleFrame, fullReference);
         Assert(incrementalPixels.AsSpan().SequenceEqual(fullReference),
             "不同bounds从负Destination帧切回较大普通帧时，旧像素清理必须逐字节等于全清重绘参考");
+        AssertDirtyRectangleDifferenceEquivalence();
         SetField(window, "_currentSpriteFrame", null);
         Invoke(window, "ShowStableFrame", idleFrame);
+    }
+
+    private static void AssertDirtyRectangleDifferenceEquivalence()
+    {
+        var rectanglePairs = new List<(Int32Rect Previous, Int32Rect Next)>
+        {
+            (new Int32Rect(0, 0, 399, 509), new Int32Rect(0, 0, 399, 509)),
+            (new Int32Rect(10, 20, 300, 400), new Int32Rect(30, 40, 80, 90)),
+            (new Int32Rect(30, 40, 80, 90), new Int32Rect(10, 20, 300, 400)),
+            (new Int32Rect(0, 0, 200, 250), new Int32Rect(150, 200, 249, 309)),
+            (new Int32Rect(0, 0, 80, 90), new Int32Rect(300, 400, 99, 109)),
+            (new Int32Rect(0, 200, 399, 120), new Int32Rect(100, 0, 200, 509)),
+            (new Int32Rect(398, 508, 1, 1), Int32Rect.Empty),
+            (new Int32Rect(0, 0, 1, 1), new Int32Rect(398, 508, 1, 1))
+        };
+        var random = new Random(0x5A17D1FF);
+        for (var index = 0; index < 96; index++)
+        {
+            var previousX = random.Next(RenderPixelWidth);
+            var previousY = random.Next(RenderPixelHeight);
+            var nextX = random.Next(RenderPixelWidth);
+            var nextY = random.Next(RenderPixelHeight);
+            rectanglePairs.Add((
+                new Int32Rect(
+                    previousX,
+                    previousY,
+                    random.Next(1, RenderPixelWidth - previousX + 1),
+                    random.Next(1, RenderPixelHeight - previousY + 1)),
+                index % 17 == 0
+                    ? Int32Rect.Empty
+                    : new Int32Rect(
+                        nextX,
+                        nextY,
+                        random.Next(1, RenderPixelWidth - nextX + 1),
+                        random.Next(1, RenderPixelHeight - nextY + 1))));
+        }
+
+        var initial = new byte[RenderPixelWidth * RenderPixelHeight * 4];
+        var baseline = new byte[initial.Length];
+        var candidate = new byte[initial.Length];
+
+        foreach (var (previousBounds, nextBounds) in rectanglePairs)
+        {
+            var dirtyBounds = (Int32Rect)InvokeStatic(
+                typeof(MainWindow),
+                "UnionPixelBounds",
+                previousBounds,
+                nextBounds)!;
+            Array.Fill(initial, (byte)0xA5);
+            InvokeStatic(
+                typeof(MainWindow),
+                "ClearPixelBounds",
+                initial,
+                dirtyBounds);
+            WriteDeterministicRectanglePixels(initial, previousBounds);
+            Buffer.BlockCopy(initial, 0, baseline, 0, initial.Length);
+            Buffer.BlockCopy(initial, 0, candidate, 0, initial.Length);
+            InvokeStatic(
+                typeof(MainWindow),
+                "ClearPixelBounds",
+                baseline,
+                dirtyBounds);
+            InvokeStatic(
+                typeof(MainWindow),
+                "ClearPixelBoundsDifference",
+                candidate,
+                previousBounds,
+                nextBounds);
+            WriteDeterministicRectanglePixels(baseline, nextBounds);
+            WriteDeterministicRectanglePixels(candidate, nextBounds);
+            Assert(candidate.AsSpan().SequenceEqual(baseline),
+                $"差集清理必须逐字节等于旧版union全清后重绘：" +
+                $"previous={previousBounds}, next={nextBounds}");
+        }
+    }
+
+    private static void WriteDeterministicRectanglePixels(
+        byte[] pixels,
+        Int32Rect bounds)
+    {
+        var stride = RenderPixelWidth * 4;
+        for (var row = 0; row < bounds.Height; row++)
+        {
+            for (var column = 0; column < bounds.Width; column++)
+            {
+                var x = bounds.X + column;
+                var y = bounds.Y + row;
+                var offset = y * stride + x * 4;
+                pixels[offset] = (byte)((x * 3 + y * 5 + 17) & 0xFF);
+                pixels[offset + 1] = (byte)((x * 7 + y * 11 + 29) & 0xFF);
+                pixels[offset + 2] = (byte)((x * 13 + y * 17 + 41) & 0xFF);
+                pixels[offset + 3] = (byte)(1 + ((x * 19 + y * 23) % 255));
+            }
+        }
     }
 
     private static void AssertHighDensityScalingAndDpiContract(MainWindow window)
@@ -6092,6 +6187,35 @@ internal static partial class Program
                 message);
         }
 
+        void AssertClippedRepeat(
+            ushort changeX,
+            ushort changeY,
+            byte[] pixel,
+            int atlasWidth,
+            int atlasHeight,
+            int[] descriptors,
+            byte[] expectedAtlas,
+            string message)
+        {
+            var payload = new List<byte>();
+            AppendHeader(payload, changeX, changeY, 1, 1);
+            payload.AddRange(pixel);
+            AppendHeader(payload, 0, 0, 0, 0);
+            var output = new byte[expectedAtlas.Length];
+            _ = decodePayload.Invoke(
+                null,
+                Arguments(
+                    "pbgra32-delta-sub-v1",
+                    payload.ToArray(),
+                    payload.Count,
+                    output,
+                    atlasWidth,
+                    atlasHeight,
+                    descriptors,
+                    Hash(expectedAtlas)));
+            Assert(output.SequenceEqual(expectedAtlas), message);
+        }
+
         AssertBadDelta(new byte[7], oneFrameDescriptor,
             "delta header截断时必须fail-closed");
 
@@ -6137,6 +6261,66 @@ internal static partial class Program
         AssertBadDelta(emptyHeader.ToArray(),
             new[] { int.MaxValue, 0, int.MaxValue, 1, 0, 0 },
             "delta atlas descriptor整数溢出风险必须fail-closed");
+        AssertBadDelta(emptyHeader.ToArray(),
+            new[] { 0, 0, 1, 1, int.MinValue, 0 },
+            "delta destinationX为int.MinValue且不与display相交时必须fail-closed");
+        AssertBadDelta(emptyHeader.ToArray(),
+            new[] { 0, 0, 1, 1, int.MaxValue, 0 },
+            "delta destinationX为int.MaxValue且不与display相交时必须fail-closed");
+        AssertBadDelta(emptyHeader.ToArray(),
+            new[] { 0, 0, 1, 1, 0, int.MinValue },
+            "delta destinationY为int.MinValue且不与display相交时必须fail-closed");
+        AssertBadDelta(emptyHeader.ToArray(),
+            new[] { 0, 0, 1, 1, 0, int.MaxValue },
+            "delta destinationY为int.MaxValue且不与display相交时必须fail-closed");
+
+        AssertClippedRepeat(
+            398,
+            0,
+            [1, 2, 3, 4],
+            2,
+            1,
+            [
+                0, 0, 2, 1, 398, 0,
+                0, 0, 2, 1, 398, 0
+            ],
+            [1, 2, 3, 4, 0, 0, 0, 0],
+            "右侧裁剪sprite及其重复引用必须保留可见像素并对屏外suffix透明补0");
+        AssertClippedRepeat(
+            0,
+            0,
+            [5, 6, 7, 8],
+            1,
+            2,
+            [
+                0, 0, 1, 2, 0, -1,
+                0, 0, 1, 2, 0, -1
+            ],
+            [0, 0, 0, 0, 5, 6, 7, 8],
+            "顶部裁剪sprite及其重复引用必须对屏外整行透明补0");
+        AssertClippedRepeat(
+            0,
+            508,
+            [9, 10, 11, 12],
+            1,
+            2,
+            [
+                0, 0, 1, 2, 0, 508,
+                0, 0, 1, 2, 0, 508
+            ],
+            [9, 10, 11, 12, 0, 0, 0, 0],
+            "底部裁剪sprite及其重复引用必须对屏外整行透明补0");
+
+        var overlappingRegions = new List<byte>();
+        AppendHeader(overlappingRegions, 0, 0, 0, 0);
+        AppendHeader(overlappingRegions, 0, 0, 0, 0);
+        AssertBadDelta(
+            overlappingRegions.ToArray(),
+            [
+                0, 0, 2, 1, 0, 0,
+                1, 0, 1, 1, 0, 0
+            ],
+            "不同atlas sprite区域只要相交就必须fail-closed");
 
         var inconsistentRepeat = new List<byte>();
         AppendHeader(inconsistentRepeat, 0, 0, 1, 1);
@@ -18883,6 +19067,15 @@ internal static partial class Program
         var reconstructDeltaSubPage = ExtractPrivateMethodSource(
             mainSource,
             "ReconstructDeltaSubSpritePage");
+        var copyOrValidateDeltaSpriteRegion = ExtractPrivateMethodSource(
+            mainSource,
+            "CopyOrValidateDeltaSpriteRegion");
+        var writeDirectSpriteFrame = ExtractPrivateMethodSource(
+            mainSource,
+            "WriteDirectSpriteFrame");
+        var clearPixelBoundsDifference = ExtractPrivateMethodSource(
+            mainSource,
+            "ClearPixelBoundsDifference");
         var buildSpritePageWarmupOrder = ExtractPrivateMethodSource(
             mainSource,
             "BuildSpritePageWarmupOrder");
@@ -19155,12 +19348,47 @@ internal static partial class Program
                    "payloadOffset != payloadByteCount",
                    StringComparison.Ordinal) &&
                reconstructDeltaSubPage.Contains(
+                   "CopyOrValidateDeltaSpriteRegion(",
+                   StringComparison.Ordinal) &&
+               !reconstructDeltaSubPage.Contains(
+                   "validatedRegions.Any",
+                   StringComparison.Ordinal) &&
+               copyOrValidateDeltaSpriteRegion.Contains(
+                   "Buffer.BlockCopy(",
+                   StringComparison.Ordinal) &&
+               copyOrValidateDeltaSpriteRegion.Contains(
+                   ".SequenceEqual(",
+                   StringComparison.Ordinal) &&
+               copyOrValidateDeltaSpriteRegion.Contains(
+                   "ContainsNonZero(",
+                   StringComparison.Ordinal) &&
+               copyOrValidateDeltaSpriteRegion.Contains(
                    "Repeated delta-sub sprite differs",
+                   StringComparison.Ordinal) &&
+               !copyOrValidateDeltaSpriteRegion.Contains(
+                   "new byte[",
                    StringComparison.Ordinal) &&
                !rendering.Contains("DecodeSpritePagePayload", StringComparison.Ordinal) &&
                !rendering.Contains("ReconstructDeltaSub", StringComparison.Ordinal),
             "delta-sub必须直接消费Brotli流，前帧暂存只使用容量1的私有池且Rent/Return成对，" +
-            "按expected长度严格重建并拒绝不一致的重复sprite；不得保留整页压缩或payload字段");
+            "可见行必须批量复制且严格拒绝不一致的重复sprite；" +
+            "不得保留整页压缩或payload字段");
+        Assert(writeDirectSpriteFrame.Contains(
+                   "dirtyBounds = UnionPixelBounds(previousBounds, nextBounds)",
+                   StringComparison.Ordinal) &&
+               writeDirectSpriteFrame.Contains(
+                   "ClearPixelBoundsDifference(",
+                   StringComparison.Ordinal) &&
+               writeDirectSpriteFrame.Split(
+                   "WriteDisplayFrame(",
+                   StringSplitOptions.None).Length == 2 &&
+               clearPixelBoundsDifference.Contains(
+                   "ClearPixelBounds(",
+                   StringComparison.Ordinal) &&
+               !clearPixelBoundsDifference.Contains(
+                   "new byte[",
+                   StringComparison.Ordinal),
+            "直接帧必须保留old/new union单次提交，并只清理不会被下一帧覆盖的旧像素差集");
         Assert(mainSource.Contains(
                    "SpritePageResidentBudgetBytes = 52L * 1024 * 1024",
                    StringComparison.Ordinal) &&
