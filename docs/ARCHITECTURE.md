@@ -131,6 +131,7 @@ Left/Top 最后对齐物理像素
 
 - 常规 resident 预算：`52 MiB`。
 - 打工状态 resident 预算：`57 MiB`。normal / serious 循环的固定 idle 页与 3 个活动页精确需要 `55,392,540 B`（`52.826 MiB`）；当前清单在相邻容量 best-fit 复用边界内的最坏热集为 `59,191,344 B`，仍低于 `57 MiB`。预算只在非 Idle 工作状态生效，退出后恢复常规/空闲裁剪。
+- `v1.0.74` 在上述工作预算之上只为 serious requested / enter / loop / exit 增加 `73 MiB` 短时例外。idle + 3 张 serious loop 页 + serious-exit 页精确需要 `71,156,796 B`（`67.8604 MiB`）；当前 manifest 在相邻容量 best-fit 规则下的最坏可达热集为 `75,982,272 B`（`72.4623 MiB`），低于 `76,546,048 B` 的上限并留有 `563,776 B` 余量。普通 normal 工作仍使用 `57 MiB`；绕屏 active / preload 的 `92 MiB` 判定在 serious 之前，保持最高优先级。
 - 熊猫巡游期间预算：`92 MiB`。
 - 稳定空闲收敛目标：`12 MiB`；只永久固定完整待机页，第一张起身续页改为按需预取，不保留无关空闲桶。
 - 左、右、下边缘探头仅在静止保持段允许空闲收缩；运动段仍禁止回收，并保护完整边缘序列页。
@@ -138,6 +139,8 @@ Left/Top 最后对齐物理像素
 - idle-trim 调度必须区分长期与短期阻塞。提醒待确认、可见 Todo、打工、会话 inactive 和绕屏会停止 `DispatcherTimer`，不再每 `5 秒`空轮询；状态退出后通过同一请求入口按既有 `20 秒`缓存宽限重排。desired、prefetch、拖动、缩放和 `Rendering` 属于短期阻塞，仍以 `5 秒` watchdog 重试。这个边界只改变调度唤醒，不改变实际 collection timer、GC 淘汰债务、LOH `30 秒`节流、缓存保留或回收判定。
 - 普通动画结束后继续保留既有 `20 秒`缓存宽限，避免连续点击反复解码；巡游则在完整逆播并发布稳定 idle 的 Rendering 安全点立即深裁，不等待普通宽限。精灵页缓冲新分配按真实解码字节申请；free 数组的 best-fit 仍受旧有相邻容量复用边界约束，只选择边界内能够满足请求的最小数组。全部绕屏页就绪后只丢弃 free decode arrays，resident 的正播与逆播帧均不动。常规、巡游、稳定空闲与 LOH 淘汰债务预算保持 `52 / 92 / 12 / 8 MiB`，图集、像素、帧率、时序以及待办、定时任务和其他动画状态机均不改变。
 - 上一条的 `52 MiB` 是非打工普通状态预算；`v1.0.73` 只在打工期间增加上述 `57 MiB` 例外。原 `52 MiB` 下 normal / serious 每 10 秒会出现 `+12 / +13` 次缓冲分配，约 `17.881 MiB/s` 托管分配；`57 MiB` 预热后两类循环均为 `+0 allocation / +0 reuse`、`0.0859 MiB/s`。代价是工作 active resident 从 `37.17–39.67 MiB` 提高为稳定 `52.83 MiB`，换取不再每圈淘汰、解码和制造 LOH 压力；素材、像素、帧、FPS、绝对时序、输入、Todo 与其他状态机不变。
+- `v1.0.74` 的自然 normal → serious → normal 契约首次只允许 4 次 serious 必要分页获取和 3 次 normal 必要分页获取；预热后连续两个 serious 循环不得再出现 allocation、reuse 或冷页 pending。serious-exit 完成并切回 normal 的同一调用内必须恢复 `57 MiB`，退出工作后恢复 `52 MiB`，稳定 idle 深裁后仅保留 `11,383,992 B` 固定页并低于 `12 MiB` 目标。
+- serious loop 右键退出时，唯一分页预取槽必须先服务 serious-exit：`PrefetchPendingWorkTransitionPages` 的通用 work-exit 分支在 active serious-enter / serious-loop 期间不得抢占该槽；实测 serious-loop 链中，中性缝上的 serious-exit 首帧必须从 resident 立即显示且不得 pending，进入 serious-exit 后再在该 clip 完整播放窗口内预热 work-exit。这一 guard 不改变 normal-loop 和 work-enter 的早预热，也不改变任何作者帧、时钟或输入语义。
 - delta-sub 页仍按相同 header、行 delta、destination 与 sprite descriptor 重建；完成 delta 应用后，以裁剪后的可见行通过 `Buffer.BlockCopy` 写入页图集。屏外部分必须保持透明，重复 sprite 必须逐字节一致，不同 sprite 区域仍禁止重叠，最终页仍执行清单哈希校验，所有截断、尾随、越界或不一致输入继续 fail-closed。隔离 A/B 的 warm 中位数为：`work-loop-part-02` `33.427 → 13.348 ms`（`-60.1%`），全部 16 个 delta 页总计 `1052.763 → 798.671 ms`（`-24.1%`）。该优化不改变 Assets、manifest、像素、帧数、FPS、动画时序或缓存预算，也不代表稳态内存下降。
 
 启动后台解码前会先归还稍后必然淘汰的非保护 LRU 页，使旧有相邻容量边界内的最近数组可直接复用；当前、pending、desired、唯一固定的待机页和巡游保护页不能预淘汰。LRU 淘汰、预取取消和退出都必须归还像素数组，迟到结果不能在状态结束或应用关闭后重新常驻。普通 Gen2 不代表 LOH 已压缩，分页淘汰债务只能在程序显式请求的空闲压缩完成后扣除。清单帧数、分页数和动作长度均从 `Assets/luban-sprite-pages.json` 动态读取，不得把文档快照当作运行时契约。
@@ -179,6 +182,7 @@ JSON 文件采用临时文件替换，避免正常保存过程中留下半写文
 | 打工进入/退出、单双击消歧、三边原子交接、抢占和绝对时钟 | `--work-mode-only`、`--work-preview` |
 | 精确右侧水平镜像逐字节等价与非目标矩阵回退 | `--clip-clock-only` |
 | 工作三页热集预热后不再分配或复用 | `--resident-cache-only`、完整 `UiStateChecks`；`--memory-profile` 只提供剖面输出，不属于 pass/fail 测试 |
+| serious `73 MiB` 边界、normal 往返、预取顺序与退出收缩 | `--resident-cache-only`、完整 `UiStateChecks` |
 | 四种普通动作、点击随机且不连续重复、自动袋独立、Todo 专用思考及许愿星退役边界 | `--reaction-random-only`、`--clip-clock-only`、`--atlas-hash-only` |
 | 定时任务编辑、免打扰展开后的列表收缩和末项滚动 | `--todo-only`、`--scheduled-editor-only` |
 | 提醒分页、关闭语义和堆叠 | `--reminder-only` |

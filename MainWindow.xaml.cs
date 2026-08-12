@@ -101,6 +101,11 @@ public partial class MainWindow : Window
     // Keep that hot set only while work is active so its 1.6-second loop never
     // evicts and re-decodes the next page.
     private const long SpritePageWorkResidentBudgetBytes = 57L * 1024 * 1024;
+    // Serious typing also keeps its authored expression-exit page ready while
+    // cycling across three loop pages. Give only that short-lived state enough
+    // room for idle + loop + exit; ordinary work stays on the 57 MiB budget.
+    private const long SpritePageSeriousWorkResidentBudgetBytes =
+        73L * 1024 * 1024;
     // The higher roaming ceiling holds its complete active page set plus the
     // bounded best-fit reuse margin, then releases back to the idle target.
     private const long SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024;
@@ -4001,6 +4006,8 @@ public partial class MainWindow : Window
 
         if (_workExitRequested &&
             _workState is not WorkState.Idle and not WorkState.Exiting &&
+            !ReferenceEquals(_activeClip, _workSeriousEnterClip) &&
+            !ReferenceEquals(_activeClip, _workSeriousLoopClip) &&
             !IsSpritePageImmediatelyAvailable(
                 _workExitClip.Frames[0].Image.PageName))
         {
@@ -9495,7 +9502,13 @@ public partial class MainWindow : Window
         _isEdgeRoaming || _edgeRoamPreloadRequested
             ? SpritePageRoamResidentBudgetBytes
             : _workState != WorkState.Idle
-                ? SpritePageWorkResidentBudgetBytes
+                ? _workSeriousEnterRequested ||
+                  _workSeriousExitRequested ||
+                  ReferenceEquals(_activeClip, _workSeriousEnterClip) ||
+                  ReferenceEquals(_activeClip, _workSeriousLoopClip) ||
+                  ReferenceEquals(_activeClip, _workSeriousExitClip)
+                    ? SpritePageSeriousWorkResidentBudgetBytes
+                    : SpritePageWorkResidentBudgetBytes
                 : SpritePageResidentBudgetBytes;
 
     private void TrimResidentSpritePagesToIdleTarget()

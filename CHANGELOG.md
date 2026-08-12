@@ -2,6 +2,12 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.74
+
+- `v1.0.73` 的 `57 MiB` 可分别容纳 normal / serious 的 idle + 3 页稳态循环，但完整 serious 转换还需同时保留 serious-exit 页。本版只在 serious requested / enter / loop / exit 期间使用 `73 MiB` resident 预算：idle + 3 张 serious loop 页 + serious-exit 页精确为 `71,156,796 B`（`67.8604 MiB`），当前 manifest 在相邻容量 best-fit 边界内的最坏可达值为 `75,982,272 B`（`72.4623 MiB`），距 `73 MiB` 上限仍有 `563,776 B` 余量。normal 工作保持 `57 MiB`，普通、巡游、稳定空闲和 LOH 门槛保持 `52 / 92 / 12 / 8 MiB`，巡游 `92 MiB` 优先级最高。
+- 自然 normal → serious → normal 往返的回归夹具中，首次 serious 稳态只发生 4 次必要分页获取，回到 normal 再发生 3 次，合计 7 次；预热后连续两个完整 serious 周期没有新的 allocation、reuse 或冷页 pending。serious-exit 完成并切回 normal 的同一调用恢复 `57 MiB`，退出工作恢复 `52 MiB`，深裁后仍只保留 `11,383,992 B` 的 idle 页。这是以短时、有界的 serious resident 换取转换稳定，不声称常驻内存或进程 CPU 固定下降。
+- serious loop 中右键退出时，到中性缝之前保留 serious-exit 热页，不让 work-exit 抢占唯一预取槽；serious-exit 首帧从 resident 直接显示后，再在其完整播放窗口内预热 work-exit。normal loop 和 work-enter 中途退出仍保留既有的早预热行为。动画素材、manifest、像素、画质、帧数、FPS、绝对时序、输入、Todo、定时任务和提醒均不改变。
+
 ## v1.0.73
 
 - 右侧边缘人物使用精确完整水平镜像时，像素变换仅对逆矩阵 `[-1,0;0,1,width,0]` 启用逐行反向复制快路径；平移、缩放、分数偏移、旋转及其他矩阵继续完整回落既有采样与舍入算法。6 种尺寸和真实 `GetPetVisualMatrix` 均与旧路径逐字节一致。隔离 A/B 的纯镜像中位耗时约为 `3.93 → 0.15 ms`，计入 `WritePixels` 的显示提交约为 `4.49–4.57 → 0.202–0.218 ms`；该路径只改善低频右侧边界响应，不据此宣称全局 CPU 显著下降。

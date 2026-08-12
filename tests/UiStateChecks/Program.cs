@@ -38,6 +38,9 @@ internal static partial class Program
     private const long MaximumDecodedSpritePageBytes = 24L * 1024L * 1024L;
     private const long MaximumSpritePagePayloadBytes = 32L * 1024L * 1024L;
     private const long ExpectedResidentSpritePageBudgetBytes = 52L * 1024L * 1024L;
+    private const long ExpectedWorkSpritePageBudgetBytes = 57L * 1024L * 1024L;
+    private const long ExpectedSeriousWorkSpritePageBudgetBytes =
+        73L * 1024L * 1024L;
     private const long ExpectedRoamSpritePageBudgetBytes = 92L * 1024L * 1024L;
     private const long ExpectedIdleSpritePageTargetBytes = 12L * 1024L * 1024L;
     private const long ExpectedSpritePageCollectionThresholdBytes = 8L * 1024L * 1024L;
@@ -371,6 +374,8 @@ internal static partial class Program
                         () => AssertResidentSpritePageWarmupContract(window));
                     RunCheck(nameof(AssertWorkSpritePageHotSetContract),
                         () => AssertWorkSpritePageHotSetContract(window));
+                    RunCheck(nameof(AssertSeriousWorkExitPrefetchOrderingContract),
+                        () => AssertSeriousWorkExitPrefetchOrderingContract(window));
                     RunCheck(nameof(AssertSpritePagePrefetchIdleTrimDeferralContract),
                         () => AssertSpritePagePrefetchIdleTrimDeferralContract(window));
                     RunCheck(nameof(AssertIdleSpritePageTrimContract),
@@ -453,6 +458,8 @@ internal static partial class Program
                     () => AssertResidentSpritePageWarmupContract(window));
                 RunCheck(nameof(AssertWorkSpritePageHotSetContract),
                     () => AssertWorkSpritePageHotSetContract(window));
+                RunCheck(nameof(AssertSeriousWorkExitPrefetchOrderingContract),
+                    () => AssertSeriousWorkExitPrefetchOrderingContract(window));
                 RunCheck(nameof(AssertSpritePagePrefetchIdleTrimDeferralContract),
                     () => AssertSpritePagePrefetchIdleTrimDeferralContract(window));
                 RunCheck(nameof(AssertIdleSpritePageTrimContract),
@@ -3241,14 +3248,20 @@ internal static partial class Program
         var workBudgetBytes = (long)(typeof(MainWindow).GetField(
                 "SpritePageWorkResidentBudgetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
+        var seriousWorkBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageSeriousWorkResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
         var roamBudgetBytes = (long)(typeof(MainWindow).GetField(
                 "SpritePageRoamResidentBudgetBytes",
                 StaticFlags)!.GetValue(null) ?? 0L);
 
-        Assert(ordinaryBudgetBytes == 52L * 1024 * 1024 &&
-               workBudgetBytes == 57L * 1024 * 1024 &&
-               roamBudgetBytes == 92L * 1024 * 1024,
-            "工作热集只能新增57MiB专用预算；普通52MiB和绕屏92MiB必须保持不变");
+        Assert(ordinaryBudgetBytes == ExpectedResidentSpritePageBudgetBytes &&
+               workBudgetBytes == ExpectedWorkSpritePageBudgetBytes &&
+               seriousWorkBudgetBytes ==
+                   ExpectedSeriousWorkSpritePageBudgetBytes &&
+               roamBudgetBytes == ExpectedRoamSpritePageBudgetBytes,
+            "工作热集必须使用normal 57MiB / serious 73MiB动态预算；" +
+            "普通52MiB和绕屏92MiB必须保持不变");
 
         var manifestPageByteCounts = GetDictionaryEntries(pageMap)
             .Select(entry => (long)GetProperty<int>(
@@ -3269,6 +3282,35 @@ internal static partial class Program
                 .Max();
         }
 
+        var seriousHotPageNames = GetClipPageNames(
+                GetField<object>(window, "_workSeriousLoopClip"))
+            .Append(GetSpriteFrameInfo(
+                GetProperty<object>(
+                    GetClipFrames(GetField<object>(
+                        window,
+                        "_workSeriousExitClip")).GetValue(0)!,
+                    "Image")).PageName)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var seriousHotSetExactBytes = seriousHotPageNames
+            .Append(idlePageName)
+            .Distinct(StringComparer.Ordinal)
+            .Sum(pageName => GetSpritePageByteCount(pageMap, pageName));
+        var seriousHotSetWorstBytes = GetSpritePageByteCount(
+                                                 pageMap,
+                                                 idlePageName) +
+                                     seriousHotPageNames.Sum(
+                                         GetLargestReachableReusableCapacity);
+        Assert(seriousHotPageNames.Length == 4 &&
+               seriousHotSetExactBytes == 71_156_796L &&
+               seriousHotSetWorstBytes == 75_982_272L &&
+               seriousHotSetExactBytes > workBudgetBytes &&
+               seriousHotSetWorstBytes > workBudgetBytes &&
+               seriousHotSetWorstBytes <= seriousWorkBudgetBytes,
+            "认真打工必须静态证明idle + 三张loop + serious-exit页在" +
+            "57MiB中放不下、在73MiB及当前manifest可达best-fit边界内放得下：" +
+            $"exact={seriousHotSetExactBytes}, worst={seriousHotSetWorstBytes}");
+
         foreach (var (clipFieldName, stage) in new[]
                  {
                      ("_workLoopClip", "普通打工循环"),
@@ -3285,6 +3327,10 @@ internal static partial class Program
 
             var clip = GetField<object>(window, clipFieldName);
             SetField(window, "_activeClip", clip);
+            var expectedActiveBudgetBytes =
+                clipFieldName == "_workSeriousLoopClip"
+                    ? seriousWorkBudgetBytes
+                    : workBudgetBytes;
             var spriteFrames = GetClipFrames(clip).Cast<object>()
                 .Select(frame => GetProperty<object>(frame, "Image"))
                 .ToArray();
@@ -3355,10 +3401,11 @@ internal static partial class Program
                            .Select(entry => (string)entry.Key)) &&
                    (long)(Invoke(window,
                        "GetSpritePageResidentBudgetBytes") ?? 0L) ==
-                       workBudgetBytes,
+                       expectedActiveBudgetBytes,
                 $"{stage}必须在manifest可达best-fit历史下常驻idle加三张循环页：" +
                 $"actual={actualHotSetBytes}, exact={exactHotSetBytes}, " +
-                $"worst={worstCaseHotSetBytes}, budget={workBudgetBytes} bytes");
+                $"worst={worstCaseHotSetBytes}, " +
+                $"budget={expectedActiveBudgetBytes} bytes");
 
             var allocationCount = GetProperty<long>(pool, "AllocationCount");
             var reuseCount = GetProperty<long>(pool, "ReuseCount");
@@ -3383,6 +3430,14 @@ internal static partial class Program
             AssertResidentSpriteCacheAccounting(window, $"{stage}完整热集");
         }
 
+        AssertSeriousWorkTransitionHotSetContract(
+            window,
+            ordinaryBudgetBytes,
+            workBudgetBytes,
+            seriousWorkBudgetBytes,
+            seriousHotSetExactBytes,
+            seriousHotSetWorstBytes);
+
         SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
         SetField(window, "_activeClip", null);
         SetField(window, "_pendingSpriteFrame", null);
@@ -3406,6 +3461,635 @@ internal static partial class Program
             "打工热集的既有idle裁剪必须回到单页12MiB目标");
         AssertResidentSpriteCacheAccounting(window, "打工热集退出裁剪");
         ResetSpritePageCollectionTestState(window);
+    }
+
+    private static void AssertSeriousWorkTransitionHotSetContract(
+        MainWindow window,
+        long ordinaryBudgetBytes,
+        long workBudgetBytes,
+        long seriousWorkBudgetBytes,
+        long seriousHotSetExactBytes,
+        long seriousHotSetWorstBytes)
+    {
+        PrepareWorkModeIdleState(window);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        EnterWorkTypingForTest(window);
+        WaitForSpritePagePrefetchToSettle(window);
+
+        var pool = GetRawField(window, "_spritePageBufferPool")
+            ?? throw new InvalidOperationException(
+                "MainWindow 缺少 sprite 页像素复用池");
+        var residentPages = GetField<IDictionary>(
+            window,
+            "_residentSpritePages");
+        var idlePageName = GetSpriteFrameInfo(
+            GetField<object>(window, "_idleFrame")).PageName;
+        var normalLoopClip = GetField<object>(window, "_workLoopClip");
+        var seriousEnterClip = GetField<object>(
+            window,
+            "_workSeriousEnterClip");
+        var seriousLoopClip = GetField<object>(
+            window,
+            "_workSeriousLoopClip");
+        var seriousExitClip = GetField<object>(
+            window,
+            "_workSeriousExitClip");
+        var normalLoopPageNames = GetClipPageNames(normalLoopClip);
+        var seriousLoopFrames = GetClipFrames(seriousLoopClip)
+            .Cast<object>()
+            .Select(frame => GetProperty<object>(frame, "Image"))
+            .ToArray();
+        var seriousHotPageNames = GetClipPageNames(seriousLoopClip)
+            .Append(GetSpriteFrameInfo(
+                GetProperty<object>(
+                    GetClipFrames(seriousExitClip).GetValue(0)!,
+                    "Image")).PageName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Let the natural normal loop visit all three pages once. Its complete
+        // idle + three-page hot set must settle on 57 MiB before the measured
+        // serious transition starts.
+        foreach (var frame in GetClipFrames(normalLoopClip).Cast<object>())
+        {
+            Invoke(window, "ShowStableFrame", GetProperty<object>(frame, "Image"));
+            WaitForSpritePagePrefetchToSettle(window);
+        }
+
+        var expectedNormalHotPageNames = normalLoopPageNames
+            .Append(idlePageName)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert((long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   workBudgetBytes &&
+               expectedNormalHotPageNames.SetEquals(
+                   GetDictionaryEntries(residentPages)
+                       .Select(entry => (string)entry.Key)),
+            "普通打工稳态必须保持57MiB并常驻idle + 三张normal loop页");
+
+        var singleClickClip = GetRawField(window, "_activeClip");
+        Invoke(window, "HandleWorkPetClick", 1);
+        var singleClickBudget = (long)(Invoke(
+            window,
+            "GetSpritePageResidentBudgetBytes") ?? 0L);
+        var singleClickStateUnchanged =
+            !GetField<bool>(window, "_workSeriousEnterRequested") &&
+            singleClickBudget == workBudgetBytes &&
+            ReferenceEquals(
+                GetRawField(window, "_activeClip"),
+                singleClickClip);
+        Assert(singleClickStateUnchanged,
+            "normal loop首个单击只能预热表情页；预算必须仍为57MiB且" +
+            "active clip不变（视觉/时钟no-op由work-mode契约独立覆盖）：" +
+            $"budget={singleClickBudget}, serious=" +
+            $"{GetField<bool>(window, "_workSeriousEnterRequested")}, " +
+            $"clip={ReferenceEquals(GetRawField(window, "_activeClip"), singleClickClip)}");
+        WaitForSpritePagePrefetchToSettle(window);
+        foreach (var frame in GetClipFrames(normalLoopClip).Cast<object>())
+        {
+            Invoke(window, "ShowStableFrame", GetProperty<object>(frame, "Image"));
+            WaitForSpritePagePrefetchToSettle(window);
+        }
+
+        var selectorClip = GetRawField(window, "_activeClip");
+        SetField(window, "_workSeriousEnterRequested", true);
+        var requestedBudget = (long)(Invoke(
+            window,
+            "GetSpritePageResidentBudgetBytes") ?? 0L);
+        long roamPriorityBudget;
+        SetField(window, "_isEdgeRoaming", true);
+        try
+        {
+            roamPriorityBudget = (long)(Invoke(
+                window,
+                "GetSpritePageResidentBudgetBytes") ?? 0L);
+        }
+        finally
+        {
+            SetField(window, "_isEdgeRoaming", false);
+        }
+        Assert(requestedBudget == seriousWorkBudgetBytes &&
+               roamPriorityBudget == ExpectedRoamSpritePageBudgetBytes &&
+               ReferenceEquals(GetRawField(window, "_activeClip"), selectorClip),
+            "预算getter必须只读保持active clip，并且绕屏92MiB必须优先于" +
+            "serious requested的73MiB");
+        SetField(window, "_workSeriousEnterRequested", false);
+
+        var decodeCountBeforeSerious =
+            GetProperty<long>(pool, "AllocationCount") +
+            GetProperty<long>(pool, "ReuseCount");
+        var seriousAnchorTimestamp = Stopwatch.GetTimestamp();
+        SetField(window, "_activeClip", normalLoopClip);
+        SetField(window, "_workLoopAnchorFramePosition", 0d);
+        SetField(window, "_workLoopAnchorTimestamp", seriousAnchorTimestamp);
+        SetField(window, "_workLoopPlaybackRate", 1d);
+        Invoke(window, "StartFastWorkTypingAt", seriousAnchorTimestamp);
+        Assert(GetField<bool>(window, "_workSeriousEnterRequested") &&
+               (long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   seriousWorkBudgetBytes,
+            "serious-entry requested但尚未成为active clip时必须立即切到73MiB");
+        WaitForSpritePagePrefetchToSettle(window);
+
+        var seriousEnterTarget = GetField<double>(
+            window,
+            "_workSeriousEnterTargetFramePosition");
+        var seriousEnterTimestamp = checked(
+            seriousAnchorTimestamp +
+            (long)Math.Ceiling(
+                seriousEnterTarget / 120d * Stopwatch.Frequency) + 2);
+        Invoke(window, "AdvanceWorkLoop", seriousEnterTimestamp);
+        WaitForSpritePagePrefetchToSettle(window);
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   seriousEnterClip) &&
+               (long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   seriousWorkBudgetBytes,
+            "serious-enter active clip必须保持73MiB预算");
+
+        var seriousLoopTimestamp = checked(
+            seriousEnterTimestamp +
+            ToProductionStopwatchTicks(TimeSpan.FromMilliseconds(133.34)));
+        Invoke(
+            window,
+            "CompleteActiveClipAt",
+            seriousEnterClip,
+            seriousLoopTimestamp);
+        Invoke(
+            window,
+            "StartActiveClipClockAt",
+            seriousLoopTimestamp,
+            TimeSpan.Zero);
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   seriousLoopClip),
+            "认真打工自然往返夹具必须进入serious loop");
+
+        // Drive one complete serious cycle through the production page
+        // presenter. The first cycle may decode the four necessary serious
+        // pages; after that, two complete cycles must cause no new decode.
+        foreach (var frame in seriousLoopFrames)
+        {
+            Invoke(window, "ShowStableFrame", frame);
+            WaitForSpritePagePrefetchToSettle(window);
+        }
+        var seriousExitPage = GetProperty<object>(
+            GetClipFrames(seriousExitClip).GetValue(0)!,
+            "Image");
+        Invoke(window, "ShowStableFrame", seriousExitPage);
+        WaitForSpritePagePrefetchToSettle(window);
+        var decodeCountAtSeriousSteady =
+            GetProperty<long>(pool, "AllocationCount") +
+            GetProperty<long>(pool, "ReuseCount");
+        var residentPeakBytes = GetField<long>(
+            window,
+            "_residentSpritePageBytes");
+        Assert(decodeCountAtSeriousSteady - decodeCountBeforeSerious == 4 &&
+               residentPeakBytes >= seriousHotSetExactBytes &&
+               residentPeakBytes <= seriousHotSetWorstBytes &&
+               residentPeakBytes <= seriousWorkBudgetBytes &&
+               seriousHotPageNames.Append(idlePageName)
+                   .ToHashSet(StringComparer.Ordinal)
+                   .SetEquals(GetDictionaryEntries(residentPages)
+                       .Select(entry => (string)entry.Key)),
+            "认真打工稳态必须只解码enter/loop三页加exit共四张必要页，" +
+            "并在73MiB边界内完整常驻");
+
+        for (var cycle = 0; cycle < 2; cycle++)
+        {
+            foreach (var frame in seriousLoopFrames)
+            {
+                Invoke(window, "ShowStableFrame", frame);
+                Assert(GetRawField(window, "_pendingSpriteFrame") is null,
+                    "认真循环完整热集不得再请求冷页");
+            }
+        }
+        Assert(GetProperty<long>(pool, "AllocationCount") +
+                   GetProperty<long>(pool, "ReuseCount") ==
+                   decodeCountAtSeriousSteady,
+            "认真循环稳态连续两周期不得重复解码或复用分页");
+
+        SetField(window, "_workSeriousExitRequested", false);
+        SetField(window, "_activeClip", seriousExitClip);
+
+        var normalReturnTimestamp = checked(
+            seriousLoopTimestamp + Stopwatch.Frequency * 5L);
+        Invoke(
+            window,
+            "CompleteActiveClipAt",
+            seriousExitClip,
+            normalReturnTimestamp);
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   normalLoopClip) &&
+               (long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   workBudgetBytes,
+            "serious-exit完成并切回normal clip的同一调用内必须恢复57MiB");
+        Invoke(
+            window,
+            "StartActiveClipClockAt",
+            normalReturnTimestamp,
+            TimeSpan.Zero);
+        foreach (var frame in GetClipFrames(normalLoopClip).Cast<object>())
+        {
+            Invoke(window, "ShowStableFrame", GetProperty<object>(frame, "Image"));
+            WaitForSpritePagePrefetchToSettle(window);
+        }
+        var decodeCountAfterNormalReturn =
+            GetProperty<long>(pool, "AllocationCount") +
+            GetProperty<long>(pool, "ReuseCount");
+        Assert(decodeCountAfterNormalReturn - decodeCountBeforeSerious == 7 &&
+               (long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   workBudgetBytes &&
+               expectedNormalHotPageNames.SetEquals(
+                   GetDictionaryEntries(residentPages)
+                       .Select(entry => (string)entry.Key)),
+            "完整normal→serious→normal往返只能解码4张serious页和3张normal页，" +
+            "回到normal后必须恢复57MiB及idle + 三页热集");
+
+        Invoke(window, "StopWorkModeImmediately", true);
+        Assert((long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   ordinaryBudgetBytes,
+            "退出打工后必须立即恢复普通52MiB预算");
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        Assert(GetField<long>(window, "_residentSpritePageBytes") ==
+                   ExpectedIdleSpriteResidentBytes &&
+               residentPages.Count == 1 &&
+               residentPages.Contains(idlePageName),
+            "最终idle深裁必须回到12MiB目标内的唯一idle页");
+        AssertResidentSpriteCacheAccounting(window, "serious往返最终idle");
+    }
+
+    private static void AssertSeriousWorkExitPrefetchOrderingContract(
+        MainWindow window)
+    {
+        PrepareWorkModeIdleState(window);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        EnterWorkTypingForTest(window);
+        WaitForSpritePagePrefetchToSettle(window);
+
+        var residentPages = GetField<IDictionary>(
+            window,
+            "_residentSpritePages");
+        var normalLoopClip = GetField<object>(window, "_workLoopClip");
+        var seriousLoopClip = GetField<object>(
+            window,
+            "_workSeriousLoopClip");
+        var seriousExitClip = GetField<object>(
+            window,
+            "_workSeriousExitClip");
+        var workExitClip = GetField<object>(window, "_workExitClip");
+        var seriousLoopFrames = GetClipFrames(seriousLoopClip)
+            .Cast<object>()
+            .Select(frame => GetProperty<object>(frame, "Image"))
+            .ToArray();
+        var seriousExitFrame = GetProperty<object>(
+            GetClipFrames(seriousExitClip).GetValue(0)!,
+            "Image");
+        var workExitFirstFrame = GetProperty<object>(
+            GetClipFrames(workExitClip).GetValue(0)!,
+            "Image");
+        var seriousExitPageName = GetSpriteFrameInfo(
+            seriousExitFrame).PageName;
+        var workExitPageName = GetSpriteFrameInfo(
+            workExitFirstFrame).PageName;
+
+        SetField(window, "_activeClip", seriousLoopClip);
+        SetField(window, "_workSeriousEnterRequested", false);
+        SetField(window, "_workSeriousExitRequested", false);
+        SetField(window, "_workExitRequested", false);
+        foreach (var pageName in seriousLoopFrames
+                     .Select(frame => GetSpriteFrameInfo(frame).PageName)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            LoadSpritePageForTest(window, pageName);
+        }
+        LoadSpritePageForTest(window, seriousExitPageName);
+        if (residentPages.Contains(workExitPageName))
+        {
+            EvictResidentSpritePageForTest(window, workExitPageName);
+        }
+        if (string.Equals(
+                GetRawField(window, "_loadedSpritePageName") as string,
+                workExitPageName,
+                StringComparison.Ordinal))
+        {
+            SetField(window, "_loadedSpritePageName", null);
+            SetField(window, "_spritePagePixels", null);
+        }
+
+        var displayedSeriousFrame = seriousLoopFrames[1];
+        LoadSpritePageForTest(
+            window,
+            GetSpriteFrameInfo(displayedSeriousFrame).PageName);
+        Invoke(window, "ShowStableFrame", displayedSeriousFrame);
+        Invoke(window, "StopVisualClock");
+        LoadSpritePageForTest(window, seriousExitPageName);
+        SetField(window, "_activeClip", seriousLoopClip);
+        SetField(window, "_activeFrameIndex", 1);
+        var displayedSeriousPageName = GetSpriteFrameInfo(
+            displayedSeriousFrame).PageName;
+        var loopPrefetchPageName = seriousLoopFrames
+            .Select(frame => GetSpriteFrameInfo(frame).PageName)
+            .Distinct(StringComparer.Ordinal)
+            .First(pageName => !string.Equals(
+                pageName,
+                displayedSeriousPageName,
+                StringComparison.Ordinal));
+        EvictResidentSpritePageForTest(window, loopPrefetchPageName);
+        Invoke(
+            window,
+            "RequestSpritePagePrefetch",
+            loopPrefetchPageName,
+            false);
+        var loopPrefetchTask = GetRawField(
+                window,
+                "_spritePagePrefetchTask") as Task
+            ?? throw new InvalidOperationException(
+                "serious右键预取顺序夹具必须先建立真实loop页后台解码");
+        var loopPrefetchCancellation = GetRawField(
+                window,
+                "_spritePagePrefetchCancellation") as CancellationTokenSource
+            ?? throw new InvalidOperationException(
+                "serious右键预取顺序夹具缺少loop页取消令牌");
+        var loopPrefetchGeneration = GetField<int>(
+            window,
+            "_spritePagePrefetchGeneration");
+        Assert(string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   loopPrefetchPageName,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_spritePagePrefetchPageName") as string,
+                   loopPrefetchPageName,
+                   StringComparison.Ordinal),
+            "serious右键预取顺序夹具必须先让非当前loop页真实在途：" +
+            $"page={loopPrefetchPageName}, " +
+            $"desired={GetRawField(window, "_desiredSpritePageName")}, " +
+            $"prefetch={GetRawField(window, "_spritePagePrefetchPageName")}, " +
+            $"task={GetRawField(window, "_spritePagePrefetchTask") is not null}, " +
+            $"resident={residentPages.Contains(loopPrefetchPageName)}");
+        SetField(window, "_workLoopAnchorFramePosition", 1.25d);
+        var rightClickTimestamp = Stopwatch.GetTimestamp();
+        SetField(window, "_workLoopAnchorTimestamp", rightClickTimestamp);
+        SetField(window, "_workLoopPlaybackRate", 2d);
+        SetField(
+            window,
+            "_workFastUntilTimestamp",
+            checked(rightClickTimestamp + Stopwatch.Frequency * 4L));
+        Invoke(window, "RequestWorkExit");
+        Assert(GetField<bool>(window, "_workExitRequested") &&
+               ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   seriousLoopClip) &&
+               residentPages.Contains(seriousExitPageName) &&
+               !residentPages.Contains(workExitPageName) &&
+               !string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               !string.Equals(
+                   GetRawField(window, "_spritePagePrefetchPageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               ReferenceEquals(
+                   GetRawField(window, "_spritePagePrefetchTask"),
+                   loopPrefetchTask) &&
+               ReferenceEquals(
+                   GetRawField(window, "_spritePagePrefetchCancellation"),
+                   loopPrefetchCancellation) &&
+               !loopPrefetchCancellation.IsCancellationRequested &&
+               GetField<int>(window, "_spritePagePrefetchGeneration") ==
+                   loopPrefetchGeneration,
+            "serious loop真实右键到中性缝前必须保留serious-exit热页，" +
+            "不得让work-exit抢占或取消正在解码的loop页：" +
+            $"exitRequested={GetField<bool>(window, "_workExitRequested")}, " +
+            $"active={GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName")}, " +
+            $"exitResident={residentPages.Contains(seriousExitPageName)}, " +
+            $"workResident={residentPages.Contains(workExitPageName)}, " +
+            $"desired={GetRawField(window, "_desiredSpritePageName")}, " +
+            $"prefetch={GetRawField(window, "_spritePagePrefetchPageName")}, " +
+            $"sameTask={ReferenceEquals(GetRawField(window, "_spritePagePrefetchTask"), loopPrefetchTask)}, " +
+            $"cancelled={loopPrefetchCancellation.IsCancellationRequested}, " +
+            $"generation={GetField<int>(window, "_spritePagePrefetchGeneration")}/{loopPrefetchGeneration}");
+
+        var exitTarget = GetField<double>(
+            window,
+            "_workExitTargetFramePosition");
+        var seriousExitStartTimestamp = checked(
+            rightClickTimestamp +
+            (long)Math.Ceiling(
+                (exitTarget - 1.25d) / 120d * Stopwatch.Frequency) + 2);
+        SetField(window, "_isInsideVisualRenderingCallback", true);
+        try
+        {
+            Invoke(window, "AdvanceWorkLoop", seriousExitStartTimestamp);
+        }
+        finally
+        {
+            SetField(window, "_isInsideVisualRenderingCallback", false);
+        }
+        Invoke(window, "StopVisualClock");
+        var seamDesiredPageName = GetRawField(window, "_desiredSpritePageName") as string;
+        var seamPrefetchPageName = GetRawField(window, "_spritePagePrefetchPageName") as string;
+        var seamPrefetchTaskPresent = GetRawField(window, "_spritePagePrefetchTask") is not null;
+        var seamWorkExitResident = residentPages.Contains(workExitPageName);
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   seriousExitClip) &&
+               Equals(
+                   GetRawField(window, "_currentSpriteFrame"),
+                   seriousExitFrame) &&
+               GetRawField(window, "_pendingSpriteFrame") is null &&
+               residentPages.Contains(seriousExitPageName) &&
+               string.Equals(
+                   GetRawField(window, "_renderDeferredSpritePageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               GetField<DispatcherTimer>(
+                   window,
+                   "_spritePagePrefetchDispatchTimer").IsEnabled &&
+               ReferenceEquals(
+                   GetRawField(window, "_spritePagePrefetchTask"),
+                   loopPrefetchTask) &&
+               string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   loopPrefetchPageName,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_spritePagePrefetchPageName") as string,
+                   loopPrefetchPageName,
+                   StringComparison.Ordinal) &&
+               !loopPrefetchCancellation.IsCancellationRequested,
+            "到达中性缝后serious-exit首帧必须立即从resident显示，不能pending或停帧：" +
+            $"active={GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName")}, " +
+            $"current={GetSpriteFrameInfo(GetRawField(window, "_currentSpriteFrame")!).Name}, " +
+            $"expected={GetSpriteFrameInfo(seriousExitFrame).Name}, " +
+            $"activeRef={ReferenceEquals(GetRawField(window, "_activeClip"), seriousExitClip)}, " +
+            $"frameEqual={Equals(GetRawField(window, "_currentSpriteFrame"), seriousExitFrame)}, " +
+            $"pending={GetRawField(window, "_pendingSpriteFrame") is not null}, " +
+            $"resident={residentPages.Contains(seriousExitPageName)}, " +
+            $"workResident={seamWorkExitResident}, desired={seamDesiredPageName}, " +
+            $"prefetch={seamPrefetchPageName}, task={seamPrefetchTaskPresent}, " +
+            $"deferred={GetRawField(window, "_renderDeferredSpritePageName")}, " +
+            $"dispatch={GetField<DispatcherTimer>(window, "_spritePagePrefetchDispatchTimer").IsEnabled}");
+        // Finish the already accepted loop-page decode first. The work-exit
+        // request remains a render-safe deferred signal until the one-shot
+        // dispatcher timer runs outside composition.
+        WaitForSpritePagePrefetchToSettleWithoutRendering(window);
+        Invoke(
+            window,
+            "SpritePagePrefetchDispatchTimer_Tick",
+            null,
+            EventArgs.Empty);
+        WaitForSpritePagePrefetchToSettleWithoutRendering(window);
+        Assert(residentPages.Contains(workExitPageName),
+            "serious-exit开始后必须在其完整播放窗口内预热work-exit页：" +
+            $"workExitRequested={GetField<bool>(window, "_workExitRequested")}, " +
+            $"workState={GetRawField(window, "_workState")}, " +
+            $"workEdgeDock={GetRawField(window, "_workEdgeDock")}, " +
+            $"active={GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName")}, " +
+            $"workExitPage={workExitPageName}, " +
+            $"seamWorkResident={seamWorkExitResident}, seamDesired={seamDesiredPageName}, " +
+            $"seamPrefetch={seamPrefetchPageName}, seamTask={seamPrefetchTaskPresent}, " +
+            $"desired={GetRawField(window, "_desiredSpritePageName")}, " +
+            $"desiredUrgent={GetField<bool>(window, "_desiredSpritePageUrgent")}, " +
+            $"prefetch={GetRawField(window, "_spritePagePrefetchPageName")}, " +
+            $"task={GetRawField(window, "_spritePagePrefetchTask") is not null}, " +
+            $"pending={GetRawField(window, "_pendingSpriteFrame") is not null}, " +
+            $"insideRendering={GetField<bool>(window, "_isInsideVisualRenderingCallback")}, " +
+            $"deferred={GetRawField(window, "_renderDeferredSpritePageName")}, " +
+            $"failed={GetRawField(window, "_failedSpritePageName")}, " +
+            $"loaded={GetRawField(window, "_loadedSpritePageName")}, " +
+            $"resident={string.Join(",", GetDictionaryEntries(residentPages).Select(entry => (string)entry.Key))}");
+
+        Invoke(
+            window,
+            "CompleteActiveClipAt",
+            seriousExitClip,
+            checked(seriousExitStartTimestamp + Stopwatch.Frequency / 2));
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   workExitClip) &&
+               Equals(
+                   GetRawField(window, "_currentSpriteFrame"),
+                   workExitFirstFrame) &&
+               GetRawField(window, "_pendingSpriteFrame") is null,
+            "serious-exit完成后必须无冷页停顿地进入work-exit：" +
+            $"active={GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName")}, " +
+            $"activeRef={ReferenceEquals(GetRawField(window, "_activeClip"), workExitClip)}, " +
+            $"current={GetSpriteFrameInfo(GetRawField(window, "_currentSpriteFrame")!).Name}, " +
+            $"expected={GetSpriteFrameInfo(workExitFirstFrame).Name}, " +
+            $"frameEqual={Equals(GetRawField(window, "_currentSpriteFrame"), workExitFirstFrame)}, " +
+            $"pending={GetRawField(window, "_pendingSpriteFrame") is not null}");
+        Invoke(
+            window,
+            "CompleteActiveClipAt",
+            workExitClip,
+            checked(seriousExitStartTimestamp + Stopwatch.Frequency * 2L));
+        Assert(string.Equals(
+                   GetRawField(window, "_workState")?.ToString(),
+                   "Idle",
+                   StringComparison.Ordinal),
+            "serious真实右键缓存顺序链必须完整返回idle");
+
+        // The guard is deliberately narrow: normal-loop and work-enter exits
+        // must retain their existing early work-exit warm-up behavior.
+        PrepareWorkModeIdleState(window);
+        EnterWorkTypingForTest(window);
+        WaitForSpritePagePrefetchToSettle(window);
+        if (residentPages.Contains(workExitPageName))
+        {
+            EvictResidentSpritePageForTest(window, workExitPageName);
+        }
+        if (string.Equals(
+                GetRawField(window, "_loadedSpritePageName") as string,
+                workExitPageName,
+                StringComparison.Ordinal))
+        {
+            SetField(window, "_loadedSpritePageName", null);
+            SetField(window, "_spritePagePixels", null);
+        }
+        SetField(window, "_activeClip", normalLoopClip);
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        SetField(window, "_failedSpritePageName", null);
+        SetField(window, "_workExitRequested", true);
+        Invoke(window, "PrefetchPendingWorkTransitionPages");
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   normalLoopClip) &&
+               string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_spritePagePrefetchPageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               GetRawField(window, "_spritePagePrefetchTask") is Task,
+            "normal loop右键退出必须由pending-transition分支立即接受work-exit预取：" +
+            $"active={GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName")}, " +
+            $"activeRef={ReferenceEquals(GetRawField(window, "_activeClip"), normalLoopClip)}, " +
+            $"desired={GetRawField(window, "_desiredSpritePageName")}, " +
+            $"prefetch={GetRawField(window, "_spritePagePrefetchPageName")}, " +
+            $"task={GetRawField(window, "_spritePagePrefetchTask") is not null}, " +
+            $"resident={residentPages.Contains(workExitPageName)}");
+        WaitForSpritePagePrefetchToSettle(window);
+        Assert(residentPages.Contains(workExitPageName),
+            "normal loop右键退出必须继续预热work-exit页");
+
+        PrepareWorkModeIdleState(window);
+        Assert((bool)Invoke(window, "TryEnterWorkMode")!,
+            "work-enter预取回归夹具必须成功进入打工");
+        WaitForSpritePagePrefetchToSettle(window);
+        if (residentPages.Contains(workExitPageName))
+        {
+            EvictResidentSpritePageForTest(window, workExitPageName);
+        }
+        if (string.Equals(
+                GetRawField(window, "_loadedSpritePageName") as string,
+                workExitPageName,
+                StringComparison.Ordinal))
+        {
+            SetField(window, "_loadedSpritePageName", null);
+            SetField(window, "_spritePagePixels", null);
+        }
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_desiredSpritePageUrgent", false);
+        SetField(window, "_failedSpritePageName", null);
+        SetField(window, "_workExitRequested", true);
+        Invoke(window, "PrefetchPendingWorkTransitionPages");
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   GetRawField(window, "_workEnterClip")) &&
+               string.Equals(
+                   GetRawField(window, "_desiredSpritePageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   GetRawField(window, "_spritePagePrefetchPageName") as string,
+                   workExitPageName,
+                   StringComparison.Ordinal) &&
+               GetRawField(window, "_spritePagePrefetchTask") is Task,
+            "work-enter阶段必须由pending-transition分支立即接受work-exit预取：" +
+            $"active={GetProperty<string>(GetRawField(window, "_activeClip")!, "ActionName")}, " +
+            $"enterRef={ReferenceEquals(GetRawField(window, "_activeClip"), GetRawField(window, "_workEnterClip"))}, " +
+            $"desired={GetRawField(window, "_desiredSpritePageName")}, " +
+            $"prefetch={GetRawField(window, "_spritePagePrefetchPageName")}, " +
+            $"task={GetRawField(window, "_spritePagePrefetchTask") is not null}, " +
+            $"resident={residentPages.Contains(workExitPageName)}");
+        WaitForSpritePagePrefetchToSettle(window);
+        Assert(residentPages.Contains(workExitPageName),
+            "work-enter中途右键退出必须继续预热work-exit页");
+        PrepareWorkModeIdleState(window);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        AssertResidentSpriteCacheAccounting(window, "serious右键预取顺序最终idle");
     }
 
     private static void AssertSpritePagePrefetchIdleTrimDeferralContract(
@@ -19770,19 +20454,44 @@ internal static partial class Program
         Assert(mainSource.Contains(
                    "SpritePageWorkResidentBudgetBytes = 57L * 1024 * 1024",
                    StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageSeriousWorkResidentBudgetBytes",
+                   StringComparison.Ordinal) &&
                getSpritePageResidentBudgetBytes.Contains(
                    "_isEdgeRoaming || _edgeRoamPreloadRequested",
                    StringComparison.Ordinal) &&
                getSpritePageResidentBudgetBytes.Contains(
                    "_workState != WorkState.Idle",
                    StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "_workSeriousEnterRequested",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "_workSeriousExitRequested",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(_activeClip, _workSeriousEnterClip)",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(_activeClip, _workSeriousLoopClip)",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(_activeClip, _workSeriousExitClip)",
+                   StringComparison.Ordinal) &&
                getSpritePageResidentBudgetBytes.IndexOf(
                    "SpritePageRoamResidentBudgetBytes",
                    StringComparison.Ordinal) <
                getSpritePageResidentBudgetBytes.IndexOf(
+                   "SpritePageSeriousWorkResidentBudgetBytes",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "SpritePageSeriousWorkResidentBudgetBytes",
+                   StringComparison.Ordinal) <
+               getSpritePageResidentBudgetBytes.IndexOf(
                    "SpritePageWorkResidentBudgetBytes",
                    StringComparison.Ordinal),
-            "分页预算必须仅在工作状态扩为57MiB，绕屏92MiB优先级和普通52MiB不得改变");
+            "分页预算必须保持绕屏92MiB最高优先级，认真状态短暂73MiB，" +
+            "普通打工57MiB和普通52MiB；requested/enter/loop/exit均不得漏选");
         Assert(residentPrefetchCheck >= 0 &&
                busyPrefetchCheck > residentPrefetchCheck &&
                duplicatePrefetchCheck > busyPrefetchCheck &&

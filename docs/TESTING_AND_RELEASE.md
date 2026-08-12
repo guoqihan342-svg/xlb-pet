@@ -1,4 +1,4 @@
-# v1.0.73 测试与发布
+# v1.0.74 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -70,7 +70,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
 | `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟、四种普通动作的绝对时间轴、精确完整水平镜像 6 种尺寸及真实窗口矩阵的逐字节旧路径等价，以及非目标矩阵严格回退 |
 | `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
-| `--resident-cache-only` | 仅待机页常驻、普通/打工/巡游/稳定空闲 `52/57/92/12 MiB` 预算、`8 MiB` LOH 门槛、normal / serious 的 idle+3 页热集、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
+| `--resident-cache-only` | 仅待机页常驻、普通/normal 工作/serious 工作/巡游/稳定空闲 `52/57/73/92/12 MiB` 预算、`8 MiB` LOH 门槛、normal 的 idle+3 页与 serious 的 idle+3 loop+serious-exit 热集、normal → serious → normal 自然往返、serious 右键退出的唯一预取槽顺序、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
 | `--atlas-hash-only` | 图集页上限、Brotli payload 和像素哈希失败关闭 |
 | `--memory-profile` | 本地内存剖面输出；不是普通 pass/fail 快速测试 |
 
@@ -206,6 +206,7 @@ if ($exe.Length -ge 100MB) {
 - 打工从 Entering、普通/认真打字、认真进出或 Exiting 拖到左、右、下边缘时，热页和冷页 descriptor 序列都只能是“当前工作帧 → 目标 edge-rest”；不得播放普通 `work-exit`，也不得出现 idle 页、枕头、待机帧、尺寸包络或锚点跳变。目标页失败才回退 idle，顶部和未命中拖放保持工作状态。
 - 主桌宠、任务、提醒、确认和两个编辑窗口的真实 HWND 均含 `WS_EX_TOOLWINDOW`、清除 `WS_EX_APPWINDOW`、不设置 `WS_EX_NOACTIVATE` 且 `ShowInTaskbar=false`；人工按 `Alt+Tab` 时不得出现透明框或任何辅助窗口，输入法、焦点和编辑仍须正常。
 - 完全待机时可点击人物视觉左上角的萌太阳进入电脑场景；按住待机人物拖动时，太阳必须与人物保持相同的 HWND 屏幕位移和相对位置，但在释放前禁用点击与命中，普通位置释放后恢复可点，左、右、下边缘仍隐藏。进入打工后用 420 ms 绝对时间轴原位交叉切换为萌月亮；退出请求必须在一个刷新周期内开始反向，中途反转从当前混合状态连续折返，总透明度保持 `1.00–1.05`，59/60/120/144 Hz 同一绝对时间结果一致，250 ms UI 阻塞后直接定位且不补播。人物镜像时图标仍保持屏幕左上和正向，不得出现文字胶囊。普通 96 帧循环必须在 1.6 秒内显示 8 次不等间隔四指落键；工作中单击严格保持活动帧、相位、倍速与认真期限，双击立即连续切到 2 倍速并完整保持至少 4 秒认真状态；点击月亮后平滑回到稳定待机。
+- serious 工作中右键退出时，中性缝之前必须保持 serious-exit 页 resident，不得让 work-exit 抢占唯一预取槽；serious-exit 首帧必须立即显示且不得出现 pending 冷页停顿，随后应在该 clip 的完整播放窗口内预热 work-exit。normal loop 和 work-enter 中途退出仍必须保留原有早预热行为。
 - 左、右、下普通边缘探头时太阳必须隐藏、禁用且不可命中；三边从末尾休息姿势进入。侧边下手必须保持边缘接触，紫袖为短而圆的上扬弧线，不能出现横向长管、平切底边、重手、黑边或光纹；右侧必须是左侧精确镜像，底边素材保持不变，顶部仍不吸附。任务面板打开时拖入任一受支持边缘，待办/定时页面必须立即关闭且不得被迟到回调重新打开。
 - 侧边素材必须在最终 `190×242 DIP` 真实 WPF 窗口中复核，而不是只看 `450×550` 源图：分别以 75%（`0.75`）和 140%（`1.40`）桌宠大小检查左、右浅探与深探。每种组合都要看见下手后的完整短弯前臂，深探时下半部分不得显得被裁掉；右侧镜像和 Bottom 不变需同时确认。
 - 打工期间不启动自动动作、呼噜或绕屏；拖动过程应继续当前动画与绝对相位。松手命中左、右或下外边缘时，必须锁定目标边缘并完全跳过普通 `work-exit`、枕头和 idle：热页在同一渲染提交中从当前工作描述符原子切到 edge-rest，冷页冻结当前工作描述符直至 edge-rest resident；目标页失败才允许安全回到 idle。顶部及双屏内部接缝不触发边缘交接，右键和定时提醒接管时不得留下迟到请求。
@@ -243,6 +244,20 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.74 发布验证
+
+以下结果于 `2026-08-13` 在同一 Windows / .NET SDK `8.0.418` 环境取得。当前只记录源码差异、本地回归和语义终审；功能提交、Git 标签、EXE、哈希、文件版本、签名状态、GitHub Release 与独立回下载结果必须等真实发布后回填，不得据此声称已经发布。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 动态预算边界 | 普通、normal 工作、serious 工作、巡游与稳定空闲分别为 `52 / 57 / 73 / 92 / 12 MiB`，LOH 门槛仍为 `8 MiB`。serious requested 在尚未成为 active clip 时即选择 `73 MiB`，enter / loop / exit 全部保持；绕屏 active / preload 始终优先选择 `92 MiB`，normal 单击仍保持 `57 MiB` |
+| 静态容量证明 | normal idle + 3 页精确为 `55,392,540 B`（`52.8264 MiB`），best-fit 最坏可达 `59,191,344 B`（`56.4493 MiB`），距 `57 MiB` 上限 `577,488 B`。serious idle + 3 loop + serious-exit 精确为 `71,156,796 B`（`67.8604 MiB`），best-fit 最坏可达 `75,982,272 B`（`72.4623 MiB`），距 `73 MiB` 上限 `563,776 B` |
+| serious 自然往返 | normal → serious → normal 首次只有 4 次 serious 必要分页获取与 3 次 normal 必要分页获取，合计 7 次；预热后连续两个完整 serious 周期为 `+0 allocation / +0 reuse`，没有冷页 pending。serious-exit 完成同一调用恢复 normal `57 MiB`，退出工作恢复 `52 MiB`，深裁后唯一 idle 页为 `11,383,992 B` 并低于 `12 MiB` |
+| serious 右键顺序 | serious loop 到中性缝前保留 serious-exit resident，work-exit 不得成为 desired / prefetch 或增加分页获取；中性缝上的 serious-exit 首帧立即显示、无 pending，随后在 serious-exit 播放窗口内预热 work-exit，并无冷页停顿地进入 work-exit。normal loop 和 work-enter 中途退出的早预热保持不变 |
+| 产品质量边界 | 本轮只改动 resident 预算选择和分页预取顺序；动画 Assets、manifest、像素、画质、帧数、FPS、绝对时序、输入、Todo、定时任务、提醒和其他状态机不变。serious resident 在该短时状态内有意提高，不将本轮表述为常驻内存下降或固定 CPU 降幅 |
+| 自动化与终审 | `DesktopPet` 与 `UiStateChecks` 的 Release 构建均为 `0 warning / 0 error`；强化后 `--resident-cache-only` 通过，完整 `UiStateChecks` 输出 `UI state checks passed.`。独立只读语义终审通过，确认动态预算优先级、serious 右键 guard 边界和 normal / work-enter 旧行为保留 |
+| 源码与发布 | **待真实提交与发布后回填：功能提交、标签、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、Release target、附件 size / digest 和独立回下载复核** |
 
 ## v1.0.73 发布验证
 
