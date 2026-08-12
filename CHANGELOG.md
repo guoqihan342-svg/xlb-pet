@@ -2,6 +2,12 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.72
+
+- 空闲精灵页裁剪遇到提醒待确认、可见 Todo、打工、会话 inactive 或绕屏这类长期阻塞状态时，不再让 idle-trim `DispatcherTimer` 每 `5 秒`空轮询；相关状态退出后重新按既有 `20 秒`缓存宽限安排裁剪。desired、prefetch、拖动、缩放和 `Rendering` 等短期阻塞仍保留 `5 秒` watchdog，避免失去恢复兜底。
+- 隔离探针测得每次 handler 中位耗时 `1.860 us`、临时分配 `440 B`；持续阻塞一天可消除 `17,280` 次 UI Dispatcher 唤醒，折合约 `32.1 ms` 直接 handler CPU 和 `7.25 MiB/天`可回收分配。这是后台空唤醒治理，不声称降低常驻内存或带来明显 CPU 降幅。
+- collection timer、GC 淘汰债务、LOH `30 秒`节流及 `52 / 92 / 12 / 8 MiB` 预算全部不变；动画素材、像素、画质、帧数、FPS、时序、输入、待办、提醒与其他交互也不改变。
+
 ## v1.0.71
 
 - `SpriteFrame` 直接提交继续以 old/new bounds 并集作为唯一 dirty 区并只调用一次 `WritePixels`，但清零范围由整个并集收窄为 previous bounds 中不与 next bounds 重叠的差集；next 区域仍由同一帧像素完整覆盖，提交区域、最终像素和动画时序不变。正式 bounds 模型的清零流量为 `479.886 → 1.929 MiB`（`-99.60%`），计入像素复制后的模型流量下降 `33.24%`，隔离微基准为 `32.822 → 21.179 us/帧`（`-35.5%`）。

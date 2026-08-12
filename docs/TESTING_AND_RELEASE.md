@@ -1,4 +1,4 @@
-# v1.0.70 测试与发布
+# v1.0.72 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -70,7 +70,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
 | `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟和四种普通动作的绝对时间轴 |
 | `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
-| `--resident-cache-only` | 仅待机页常驻、`52/92/12 MiB` 预算、`8 MiB` LOH 门槛、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
+| `--resident-cache-only` | 仅待机页常驻、`52/92/12 MiB` 预算、`8 MiB` LOH 门槛、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
 | `--atlas-hash-only` | 图集页上限、Brotli payload 和像素哈希失败关闭 |
 | `--memory-profile` | 本地内存剖面输出；不是普通 pass/fail 快速测试 |
 
@@ -243,6 +243,21 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.72 发布验证
+
+以下结果于 `2026-08-12` 在 .NET SDK `8.0.418` 环境完成。功能验证已完成；提交、EXE 和 GitHub Release 字段必须在真实发布及独立回下载后再回填。
+
+| 项目 | 实测结果 |
+| --- | --- |
+| idle-trim 调度 | 提醒待确认、可见 Todo、打工、会话 inactive 和绕屏这五类长期阻塞会停止 idle-trim `DispatcherTimer`，不再每 `5 秒`空轮询；退出后按原 `20 秒`宽限重新安排。desired、prefetch、拖动、缩放和 `Rendering` 等短期阻塞继续保留 `5 秒` watchdog |
+| 隔离探针 | 每次 handler 中位耗时 `1.860 us`、临时分配 `440 B`；持续阻塞一天消除 `17,280` 次 UI Dispatcher 唤醒，折合约 `32.1 ms` 直接 handler CPU 和 `7.25 MiB/天`可回收分配。该量级不用于声称常驻内存下降或明显 CPU 降幅 |
+| 产品质量边界 | collection timer、GC 淘汰债务、LOH `30 秒`节流、`52 / 92 / 12 / 8 MiB` 预算、素材、像素、画质、帧数、FPS、时序、输入、待办、提醒和其他交互全部不变 |
+| 自动化与构建 | `DesktopPet` 与 `UiStateChecks` 的 Release 构建均为 `0 warning / 0 error`；`--resident-cache-only`、`--work-mode-only`、`--todo-only`、`--reminder-only`、`--roam-interaction-only` 专项全部通过；完整 `UiStateChecks` 输出 `UI state checks passed.` |
+| 内存剖面 | startup idle：resident / pool / managed / private 为 `10.86 / 10.86 / 15.90 / 137.09 MiB`；active roam 为 `79.53 / 79.53 / 84.60 / 208.59 MiB`；trimmed idle 为 `10.86 / 10.86 / 15.93 / 139.27 MiB`。这些结果验证内存边界未回退，不声称本轮降低常驻内存 |
+| 源码与版本 | 源码版本 `v1.0.72`，`FileVersion=1.0.72.0`；功能提交与 `ProductVersion` 提交后缀：`[待真实发布后回填]` |
+| EXE | 文件大小、SHA-256 与 Authenticode：`[待真实发布后回填]` |
+| GitHub Release | 标签、Release target、附件 digest 与独立回下载复核：`[待真实发布后回填]` |
 
 ## v1.0.71 发布验证
 

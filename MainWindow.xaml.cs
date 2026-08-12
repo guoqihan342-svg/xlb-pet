@@ -1784,6 +1784,7 @@ public partial class MainWindow : Window
                     }
 
                     _sessionInactive = true;
+                    StopIdleSpritePageTrim();
                     CancelPetPointerInteractionForInterruption();
                     CancelTodoOpenAfterEdgeRoamStop();
                     CancelTodoOpenAfterWorkExit();
@@ -1918,6 +1919,7 @@ public partial class MainWindow : Window
         }
 
         RefreshWorkModeButton();
+        RequestIdleSpritePageTrim();
 
     }
 
@@ -9502,6 +9504,12 @@ public partial class MainWindow : Window
 
     private void RequestIdleSpritePageTrim(bool immediate = false)
     {
+        if (IsLongLivedSpritePageIdleTrimBlocker())
+        {
+            StopIdleSpritePageTrim();
+            return;
+        }
+
         if (!immediate)
         {
             DeferIdleSpritePageTrim();
@@ -9526,6 +9534,12 @@ public partial class MainWindow : Window
     {
         if (_isClosing)
         {
+            return;
+        }
+
+        if (IsLongLivedSpritePageIdleTrimBlocker())
+        {
+            StopIdleSpritePageTrim();
             return;
         }
 
@@ -9555,9 +9569,17 @@ public partial class MainWindow : Window
         }
 
         // Deep trimming is allowed only in the same fully idle window used for
-        // low-frequency collection. A Todo/reminder, drag, size preview, edge
-        // pose or newly started clip therefore keeps the hot pages intact and
-        // simply retries after the interaction has settled.
+        // low-frequency collection. Long-lived states stop this timer until
+        // their explicit exit path schedules one new grace period; transient
+        // decode, drag, resize and Rendering work retain the five-second
+        // watchdog so a missed completion signal cannot keep hot pages forever.
+        if (IsLongLivedSpritePageIdleTrimBlocker())
+        {
+            _spritePageIdleTrimTimer.Interval =
+                SpritePageIdleTrimGracePeriod;
+            return;
+        }
+
         if (!CanRunIdleSpritePageCollection())
         {
             _spritePageIdleTrimTimer.Interval =
@@ -9570,6 +9592,14 @@ public partial class MainWindow : Window
         _spritePageIdleTrimTimer.Interval =
             SpritePageIdleTrimGracePeriod;
     }
+
+    private bool IsLongLivedSpritePageIdleTrimBlocker() =>
+        _sessionInactive ||
+        _workState != WorkState.Idle ||
+        _isReminderActive ||
+        _bubbleMode is BubbleMode.Todo or BubbleMode.Reminder ||
+        _todoWindow.IsVisible ||
+        _isEdgeRoaming;
 
     private void ScheduleSpritePageCollectionIfNeeded()
     {

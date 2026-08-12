@@ -3546,6 +3546,128 @@ internal static partial class Program
         Assert(timerResidentBytesBefore > idleTargetBytes,
             "idle timer测试必须重新建立超过12MiB的resident压力");
 
+        var residentLru = GetField<LinkedList<string>>(
+            window,
+            "_residentSpritePageLru");
+        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+        var noneBubbleMode = GetNestedEnum("BubbleMode", "None");
+        var todoBubbleMode = GetNestedEnum("BubbleMode", "Todo");
+        var reminderBubbleMode = GetNestedEnum("BubbleMode", "Reminder");
+        var idleWorkState = GetNestedEnum("WorkState", "Idle");
+        var enteringWorkState = GetNestedEnum("WorkState", "Entering");
+        var longLivedBlockers = new (
+            Action Enter,
+            Action Exit,
+            string Scenario)[]
+        {
+            (
+                () =>
+                {
+                    SetField(window, "_isReminderActive", true);
+                    SetField(window, "_bubbleMode", reminderBubbleMode);
+                },
+                () =>
+                {
+                    SetField(window, "_isReminderActive", false);
+                    SetField(window, "_bubbleMode", noneBubbleMode);
+                },
+                "active reminder"),
+            (
+                () =>
+                {
+                    SetField(window, "_bubbleMode", todoBubbleMode);
+                    todoWindow.Show();
+                    PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                    Assert(todoWindow.IsVisible,
+                        "Todo blocker fixture must use a visible Todo window.");
+                },
+                () =>
+                {
+                    todoWindow.Hide();
+                    SetField(window, "_bubbleMode", noneBubbleMode);
+                },
+                "visible Todo"),
+            (
+                () => SetField(window, "_workState", enteringWorkState),
+                () => SetField(window, "_workState", idleWorkState),
+                "work mode"),
+            (
+                () => SetField(window, "_sessionInactive", true),
+                () => SetField(window, "_sessionInactive", false),
+                "inactive session"),
+            (
+                () => SetField(window, "_isEdgeRoaming", true),
+                () => SetField(window, "_isEdgeRoaming", false),
+                "edge roaming")
+        };
+
+        foreach (var blocker in longLivedBlockers)
+        {
+            blocker.Enter();
+            Assert((bool)Invoke(
+                       window,
+                       "IsLongLivedSpritePageIdleTrimBlocker")!,
+                $"{blocker.Scenario} must be a long-lived idle-trim blocker.");
+            var blockedResidentBytes = GetField<long>(
+                window,
+                "_residentSpritePageBytes");
+            var blockedPoolAllocated = GetProperty<long>(
+                spritePageBufferPool,
+                "AllocatedBytes");
+            var blockedPoolRented = GetProperty<long>(
+                spritePageBufferPool,
+                "RentedBytes");
+            var blockedPoolFree = GetProperty<long>(
+                spritePageBufferPool,
+                "FreeBytes");
+            var blockedResidentNames = GetDictionaryEntries(residentPages)
+                .Select(entry => (string)entry.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            var blockedLru = residentLru.ToArray();
+
+            Invoke(window, "RequestIdleSpritePageTrim", false);
+            Assert(!idleTrimTimer.IsEnabled &&
+                   idleTrimTimer.Interval == idleTrimGracePeriod,
+                $"{blocker.Scenario} must stop normal idle-trim scheduling.");
+
+            idleTrimTimer.Interval = TimeSpan.Zero;
+            idleTrimTimer.Start();
+            Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+            Assert(!idleTrimTimer.IsEnabled &&
+                   idleTrimTimer.Interval == idleTrimGracePeriod,
+                $"{blocker.Scenario} tick must stop without a 5-second retry.");
+
+            idleTrimTimer.Interval = TimeSpan.Zero;
+            idleTrimTimer.Start();
+            Invoke(window, "RequestIdleSpritePageTrim", true);
+            Assert(!idleTrimTimer.IsEnabled &&
+                   idleTrimTimer.Interval == idleTrimGracePeriod &&
+                   GetField<long>(window, "_residentSpritePageBytes") ==
+                       blockedResidentBytes &&
+                   GetProperty<long>(spritePageBufferPool, "AllocatedBytes") ==
+                       blockedPoolAllocated &&
+                   GetProperty<long>(spritePageBufferPool, "RentedBytes") ==
+                       blockedPoolRented &&
+                   GetProperty<long>(spritePageBufferPool, "FreeBytes") ==
+                       blockedPoolFree &&
+                   blockedResidentNames.SetEquals(
+                       GetDictionaryEntries(residentPages)
+                           .Select(entry => (string)entry.Key)) &&
+                   blockedLru.SequenceEqual(residentLru),
+                $"{blocker.Scenario} must preserve resident, pool, and LRU state.");
+
+            blocker.Exit();
+            Assert(!(bool)Invoke(
+                       window,
+                       "IsLongLivedSpritePageIdleTrimBlocker")!,
+                $"Exiting {blocker.Scenario} must clear the long-lived blocker.");
+            Invoke(window, "RequestIdleSpritePageTrim", false);
+            Assert(idleTrimTimer.IsEnabled &&
+                   idleTrimTimer.Interval == idleTrimGracePeriod,
+                $"Exiting {blocker.Scenario} must restore one 20-second plan.");
+            Invoke(window, "StopIdleSpritePageTrim");
+        }
+
         Invoke(window, "RequestIdleSpritePageTrim", false);
         Assert(idleTrimTimer.IsEnabled &&
                idleTrimTimer.Interval == idleTrimGracePeriod &&
@@ -3907,6 +4029,7 @@ internal static partial class Program
     private static void PrepareIdleSpriteCollectionBaseline(MainWindow window)
     {
         SetField(window, "_isClosing", false);
+        SetField(window, "_sessionInactive", false);
         SetField(window, "_isInsideVisualRenderingCallback", false);
         SetField(window, "_activeClip", null);
         SetField(window, "_isReminderActive", false);
@@ -19109,6 +19232,21 @@ internal static partial class Program
         var requestIdleSpritePageTrim = ExtractPrivateMethodSource(
             mainSource,
             "RequestIdleSpritePageTrim");
+        var isLongLivedSpritePageIdleTrimBlocker = ExtractPrivateMethodSource(
+            mainSource,
+            "IsLongLivedSpritePageIdleTrimBlocker");
+        var queueSessionInactive = ExtractPrivateMethodSource(
+            mainSource,
+            "QueueSessionInactive");
+        var processSystemRecovery = ExtractPrivateMethodSource(
+            mainSource,
+            "ProcessSystemRecovery");
+        var finishWorkExit = ExtractPrivateMethodSource(
+            mainSource,
+            "FinishWorkExit");
+        var completeActiveClipAt = ExtractPrivateMethodSource(
+            mainSource,
+            "CompleteActiveClipAt");
         var completeEdgeRoamStop = ExtractPrivateMethodSource(
             mainSource,
             "CompleteEdgeRoamStop");
@@ -19428,11 +19566,35 @@ internal static partial class Program
                trimSpritePageBufferPoolToTarget.Contains(
                     "RecordDiscardedSpritePageBytes(discardedBytes)",
                    StringComparison.Ordinal) &&
-               requestIdleSpritePageTrim.Contains(
-                   "bool immediate = false",
-                   StringComparison.Ordinal) &&
-               requestIdleSpritePageTrim.Contains(
-                   "if (!immediate)",
+                requestIdleSpritePageTrim.Contains(
+                    "bool immediate = false",
+                    StringComparison.Ordinal) &&
+                isLongLivedSpritePageIdleTrimBlocker.Contains(
+                    "_sessionInactive",
+                    StringComparison.Ordinal) &&
+                isLongLivedSpritePageIdleTrimBlocker.Contains(
+                    "_workState != WorkState.Idle",
+                    StringComparison.Ordinal) &&
+                isLongLivedSpritePageIdleTrimBlocker.Contains(
+                    "_isReminderActive",
+                    StringComparison.Ordinal) &&
+                isLongLivedSpritePageIdleTrimBlocker.Contains(
+                    "_bubbleMode is BubbleMode.Todo or BubbleMode.Reminder",
+                    StringComparison.Ordinal) &&
+                isLongLivedSpritePageIdleTrimBlocker.Contains(
+                    "_todoWindow.IsVisible",
+                    StringComparison.Ordinal) &&
+                isLongLivedSpritePageIdleTrimBlocker.Contains(
+                    "_isEdgeRoaming",
+                    StringComparison.Ordinal) &&
+                requestIdleSpritePageTrim.Contains(
+                    "IsLongLivedSpritePageIdleTrimBlocker()",
+                    StringComparison.Ordinal) &&
+                requestIdleSpritePageTrim.Contains(
+                    "StopIdleSpritePageTrim();",
+                    StringComparison.Ordinal) &&
+                requestIdleSpritePageTrim.Contains(
+                    "if (!immediate)",
                    StringComparison.Ordinal) &&
                requestIdleSpritePageTrim.Contains(
                    "DeferIdleSpritePageTrim();",
@@ -19449,9 +19611,15 @@ internal static partial class Program
                completeEdgeRoamStop.Contains(
                    "RequestIdleSpritePageTrim(immediate: true)",
                    StringComparison.Ordinal) &&
-               deferIdleSpritePageTrim.Contains(
-                   "_spritePageIdleTrimTimer.Stop()",
-                   StringComparison.Ordinal) &&
+                deferIdleSpritePageTrim.Contains(
+                    "_spritePageIdleTrimTimer.Stop()",
+                    StringComparison.Ordinal) &&
+                deferIdleSpritePageTrim.Contains(
+                    "IsLongLivedSpritePageIdleTrimBlocker()",
+                    StringComparison.Ordinal) &&
+                deferIdleSpritePageTrim.Contains(
+                    "StopIdleSpritePageTrim();",
+                    StringComparison.Ordinal) &&
                deferIdleSpritePageTrim.Contains(
                    "SpritePageIdleTrimGracePeriod",
                    StringComparison.Ordinal) &&
@@ -19470,19 +19638,40 @@ internal static partial class Program
                requestPagePrefetch.Contains(
                    "DeferIdleSpritePageTrim();",
                    StringComparison.Ordinal) &&
-               idleSpritePageTrimTimerTick.Contains(
-                   "SpritePageIdleTrimRetryDelay",
-                   StringComparison.Ordinal) &&
+                idleSpritePageTrimTimerTick.Contains(
+                    "SpritePageIdleTrimRetryDelay",
+                    StringComparison.Ordinal) &&
+                idleSpritePageTrimTimerTick.Contains(
+                    "IsLongLivedSpritePageIdleTrimBlocker()",
+                    StringComparison.Ordinal) &&
                idleSpritePageTrimTimerTick.Contains(
                    "_spritePageIdleTrimTimer.Start()",
                    StringComparison.Ordinal) &&
                idleSpritePageTrimTimerTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
                    StringComparison.Ordinal) &&
-               idleSpritePageTrimTimerTick.Contains(
-                   "SpritePageIdleTrimGracePeriod",
-                   StringComparison.Ordinal) &&
-               !prefetchDispatchTick.Contains(
+                idleSpritePageTrimTimerTick.Contains(
+                    "SpritePageIdleTrimGracePeriod",
+                    StringComparison.Ordinal) &&
+                queueSessionInactive.IndexOf(
+                    "StopIdleSpritePageTrim();",
+                    StringComparison.Ordinal) >
+                queueSessionInactive.IndexOf(
+                    "_sessionInactive = true;",
+                    StringComparison.Ordinal) &&
+                processSystemRecovery.IndexOf(
+                    "RequestIdleSpritePageTrim();",
+                    StringComparison.Ordinal) >
+                processSystemRecovery.IndexOf(
+                    "_sessionInactive = false;",
+                    StringComparison.Ordinal) &&
+                finishWorkExit.Contains(
+                    "RequestIdleSpritePageTrim();",
+                    StringComparison.Ordinal) &&
+                completeActiveClipAt.Contains(
+                    "RequestIdleSpritePageTrim();",
+                    StringComparison.Ordinal) &&
+                !prefetchDispatchTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
                    StringComparison.Ordinal) &&
                 !mainSource.Contains(
@@ -19525,8 +19714,8 @@ internal static partial class Program
                scheduleSpritePageCollection.Contains(
                    "MinimumSpritePageCollectionInterval - elapsed",
                    StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("_activeClip is null", StringComparison.Ordinal) &&
-               canRunIdleSpritePageCollection.Contains("!_isInsideVisualRenderingCallback", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("_activeClip is null", StringComparison.Ordinal) &&
+                canRunIdleSpritePageCollection.Contains("!_isInsideVisualRenderingCallback", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_isReminderActive", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_dragInteractionActive", StringComparison.Ordinal) &&
                canRunIdleSpritePageCollection.Contains("!_pointerDown", StringComparison.Ordinal) &&
