@@ -244,18 +244,19 @@ git status --short --ignored
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
 
-## v1.0.71 发布验证（待真实回填）
+## v1.0.71 发布验证
 
-当前工作树源码版本已更新为 `v1.0.71`。本节只记录已经完成的候选实现 A/B 数据；最终功能提交、产品版本、完整自动化、发布 EXE、标签、GitHub Release 和独立回下载尚未完成，必须在实际完成后按真实结果回填，不能把下表中的待办项视为发布证据。
+以下结果于 `2026-08-12` 在 .NET SDK `8.0.418` 环境完成。功能提交、标签和 GitHub Release 均固定到 `9008ec7765a48be77740519393fb645b9ddae952`；Release 附件已下载到独立目录复核。为避免影响用户正在运行的 `v1.0.69`，本次没有停止或替换该进程及其 EXE。
 
-| 项目 | 当前证据或待办 |
+| 项目 | 实测结果 |
 | --- | --- |
 | 直接帧提交 A/B | old/new bounds 并集和单次 `WritePixels` 保持不变，只清 previous 与 next 不重叠差集；正式 bounds 模型清零流量 `479.886 → 1.929 MiB`（`-99.60%`），计入 Copy 后模型流量 `-33.24%`，隔离微基准 `32.822 → 21.179 us/帧`（`-35.5%`） |
 | delta-sub A/B | 逐行 `Buffer.BlockCopy` 保留可见/屏外透明/重复 sprite/overlap/hash/fail-closed 契约；warm `work-loop-part-02` 中位数 `33.427 → 13.348 ms`（`-60.1%`），全部 16 个 delta 页 warm 总中位数 `1052.763 → 798.671 ms`（`-24.1%`） |
 | 产品质量边界 | Assets、manifest、人物像素、画质、帧数、FPS、时序、输入、待办、提醒及 `52 / 92 / 12 / 8 MiB` 预算不变；本轮不声称降低稳态内存 |
-| 源码与版本 | 最终功能提交、文件版本和产品版本：待真实构建后回填 |
-| 自动化与构建 | 定向检查、完整 UiStateChecks、存储检查和 Release 构建：待实际完成后回填 |
-| EXE 与 GitHub Release | 文件大小、SHA-256、Authenticode、标签/Release 目标、附件 digest 与独立回下载复核：待实际发布后回填；当前不声称 `v1.0.71` 已发布 |
+| 源码与版本 | 功能提交 `9008ec7765a48be77740519393fb645b9ddae952`；`FileVersion=1.0.71.0`，`ProductVersion=1.0.71+9008ec7765a48be77740519393fb645b9ddae952` |
+| 自动化与构建 | `DesktopPet` 与 `UiStateChecks` Release 构建均为 `0 warning / 0 error`；`--atlas-hash-only`、`--memory-profile`、完整 `UiStateChecks` 全部通过；Python 图集测试 `29 / 29` 通过；隔离单文件 `dotnet publish` 退出码为 `0` |
+| EXE | `LubanDesktopPet.exe`，`93,347,462` bytes，SHA-256 `6D66F890B904633E6DE57E042D14EA42160E40DCBB183791CEB54D6495246C21`，Authenticode `NotSigned` |
+| GitHub Release | [`v1.0.71`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.71) 为正式非草稿、非预发布 Release；标签和 Release target 均为功能提交，附件 size/digest 与本地一致，独立回下载后的大小、SHA-256、文件版本及产品版本全部一致 |
 
 ## v1.0.70 发布验证
 
