@@ -247,7 +247,7 @@ git status --short --ignored
 
 ## v1.0.75 发布验证
 
-以下源码差异、构建、自动回归和同机隔离 A/B 于 `2026-08-13` 完成；正式 EXE、提交、标签、GitHub Release 与独立回下载证据待发布后回填。
+以下源码差异、构建、自动回归、同机隔离 A/B、真实发布与独立回下载验证于 `2026-08-13` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
@@ -258,9 +258,9 @@ git status --short --ignored
 | 自动化与构建 | `DesktopPet` 与 `UiStateChecks` 两个 Release 构建均为 `0 warning / 0 error`；`--work-mode-only`、`--clip-clock-only`、`--resident-cache-only`、`--roam-interaction-only`、`--todo-only`、`--reminder-only`、`--edge-dock-only`、`--pet-size-only` 专项全部通过，完整 `UiStateChecks` 输出 `UI state checks passed.` |
 | 审计拒绝项 | action-limited prefetch 候选未进入版本功能：真实 WPF like-L2 仍只有 `2/3` cold boundary 通过，未满足质量零妥协门槛；当前预取行为保持不变 |
 | 产品质量边界 | Assets、manifest、像素、画质、帧数、FPS、动画与输入时序、Todo、定时任务、提醒、resident/pool/LRU 和预取语义不变；只消除已证明相同的重复显示提交 |
-| 源码与版本 | 源码版本 `v1.0.75`；功能提交、`FileVersion` 与 `ProductVersion` 待最终提交后回填 |
-| EXE | 待正式发布构建后回填大小、SHA-256 与 Authenticode 状态 |
-| GitHub Release | 待创建标签和 Release、上传附件并在独立目录回下载验真后回填 |
+| 源码与版本 | 功能提交 `146e9512cb55570a5dbb3258ed63f12e24b325ee`；`FileVersion=1.0.75.0`，`ProductVersion=1.0.75+146e9512cb55570a5dbb3258ed63f12e24b325ee` |
+| EXE | 单文件框架依赖 EXE 为 `93,348,998` bytes，SHA-256 `AEA69C285F4AA4B38DC6BC33DF4D57CCB82F8F70EDFDF63387713332C4FE47B3`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.75`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.75) 为非 Draft、非 prerelease；annotated tag 剥离后的提交、Release target 与功能提交一致，且只有一个 `LubanDesktopPet.exe` 附件。附件元数据 size 为 `93,348,998`、digest 为 `sha256:aea69c285f4aa4b38dc6bc33df4d57ccb82f8f70edfdf63387713332c4fe47b3`；独立全新目录回下载后的大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致。验真过程未运行附件，也未停止或替换用户正在运行的 `v1.0.69` |
 
 ## v1.0.74 发布验证
 
