@@ -95,6 +95,12 @@ public partial class MainWindow : Window
     // The generated manifest leaves a small bounded best-fit reuse margin
     // without retaining an unrelated decoded page.
     private const long SpritePageResidentBudgetBytes = 52L * 1024 * 1024;
+    // The three-page work loop plus the permanently pinned idle page needs
+    // 55,392,540 exact bytes and at most 59,191,344 bytes when every page reuses
+    // the largest compatible capacity reachable from the current manifest.
+    // Keep that hot set only while work is active so its 1.6-second loop never
+    // evicts and re-decodes the next page.
+    private const long SpritePageWorkResidentBudgetBytes = 57L * 1024 * 1024;
     // The higher roaming ceiling holds its complete active page set plus the
     // bounded best-fit reuse margin, then releases back to the idle target.
     private const long SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024;
@@ -8389,6 +8395,16 @@ public partial class MainWindow : Window
 
         var inverse = visualMatrix;
         inverse.Invert();
+        if (TryTransformExactHorizontalMirror(
+                sourcePixels,
+                outputPixels,
+                width,
+                height,
+                inverse))
+        {
+            return;
+        }
+
         if (Math.Abs(inverse.M12) < 0.000_000_1 &&
             Math.Abs(inverse.M21) < 0.000_000_1)
         {
@@ -8448,6 +8464,52 @@ public partial class MainWindow : Window
                 }
             }
         }
+    }
+
+    private static bool TryTransformExactHorizontalMirror(
+        byte[] sourcePixels,
+        byte[] outputPixels,
+        int width,
+        int height,
+        Matrix inverse)
+    {
+        // The decoded atlas/display pipeline supplies valid Pbgra32 pixels
+        // (B/G/R <= A), enforced by the production atlas QA. Under that
+        // precondition, zero-weight bilinear samples are byte-for-byte copies.
+        // Admit only the exact, complete-frame horizontal mirror produced by
+        // the right-edge facing transform. Every other matrix keeps the
+        // established axis/general sampling and rounding path below.
+        if (width <= 0 ||
+            height <= 0 ||
+            ReferenceEquals(sourcePixels, outputPixels) ||
+            inverse.M11 != -1d ||
+            inverse.M12 != 0d ||
+            inverse.M21 != 0d ||
+            inverse.M22 != 1d ||
+            inverse.OffsetX != width ||
+            inverse.OffsetY != 0d)
+        {
+            return false;
+        }
+
+        var expectedLength = checked(width * height * 4);
+        var sourceWords = MemoryMarshal.Cast<byte, uint>(sourcePixels);
+        var outputWords = MemoryMarshal.Cast<byte, uint>(
+            outputPixels.AsSpan(0, expectedLength));
+        for (var destinationY = 0; destinationY < height; destinationY++)
+        {
+            var sourceRow = sourceWords.Slice(
+                destinationY * width,
+                width);
+            var outputRow = outputWords.Slice(destinationY * width, width);
+            for (var destinationX = 0; destinationX < width; destinationX++)
+            {
+                outputRow[destinationX] = sourceRow[
+                    width - 1 - destinationX];
+            }
+        }
+
+        return true;
     }
 
     private static void TransformAxisAlignedPremultipliedPixels(
@@ -9432,7 +9494,9 @@ public partial class MainWindow : Window
     private long GetSpritePageResidentBudgetBytes() =>
         _isEdgeRoaming || _edgeRoamPreloadRequested
             ? SpritePageRoamResidentBudgetBytes
-            : SpritePageResidentBudgetBytes;
+            : _workState != WorkState.Idle
+                ? SpritePageWorkResidentBudgetBytes
+                : SpritePageResidentBudgetBytes;
 
     private void TrimResidentSpritePagesToIdleTarget()
     {

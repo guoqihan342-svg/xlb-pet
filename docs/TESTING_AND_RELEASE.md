@@ -1,4 +1,4 @@
-# v1.0.72 测试与发布
+# v1.0.73 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -68,9 +68,9 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--deadline-only` | 1 分钟原地动作、10 分钟巡游和 20 秒忙碌重试截止 |
 | `--pet-size-only` | 尺寸滑块手势、连续缩放和待办布局 |
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
-| `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟和四种普通动作的绝对时间轴 |
+| `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟、四种普通动作的绝对时间轴、精确完整水平镜像 6 种尺寸及真实窗口矩阵的逐字节旧路径等价，以及非目标矩阵严格回退 |
 | `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
-| `--resident-cache-only` | 仅待机页常驻、`52/92/12 MiB` 预算、`8 MiB` LOH 门槛、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
+| `--resident-cache-only` | 仅待机页常驻、普通/打工/巡游/稳定空闲 `52/57/92/12 MiB` 预算、`8 MiB` LOH 门槛、normal / serious 的 idle+3 页热集、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
 | `--atlas-hash-only` | 图集页上限、Brotli payload 和像素哈希失败关闭 |
 | `--memory-profile` | 本地内存剖面输出；不是普通 pass/fail 快速测试 |
 
@@ -243,6 +243,23 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.73 发布验证
+
+以下数据是 `2026-08-12` 在同一 Windows / .NET 环境中取得的构建、定向等价测试、隔离 A/B 与完整自动化结果。源码提交、标签、EXE 大小、SHA-256、文件版本、ProductVersion、签名状态、GitHub Release 目标和独立回下载结果仍必须等真实发布后填写，当前不得据此声称已经发布。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 精确水平镜像契约 | 快路径只接受逆矩阵逐项严格等于 `[-1,0;0,1,width,0]` 的完整水平镜像；平移、缩放、分数偏移、旋转、alias、非正尺寸及其他矩阵均拒绝快路径并保持旧 axis/general 算法。6 种尺寸和真实 `GetPetVisualMatrix` 与旧路径逐字节一致；素材、像素、帧数、FPS、时序和输入语义不变 |
+| 镜像 A/B | 纯镜像中位约 `3.93 → 0.15 ms`；计入 `WritePixels` 的完整显示提交约 `4.49–4.57 → 0.202–0.218 ms`。该代码只在低频右侧边界交互触发，不将微基准外推为全局 CPU 显著下降 |
+| 工作热集边界 | normal / serious 各自需要固定 idle 页加 3 个工作页，精确为 `55,392,540 B`（`52.826 MiB`）；当前 manifest 在相邻容量 best-fit 规则下可达到的最坏热集为 `59,191,344 B`，低于工作专用 `57 MiB`。普通 `52 MiB`、巡游 `92 MiB`、稳定空闲 `12 MiB` 与 LOH `8 MiB` 门槛不变 |
+| 工作分配 A/B | 原 `52 MiB` 每 10 秒出现 `+12 / +13 allocation`，汇总托管分配为 `17.881 MiB/s`；`57 MiB` 预热后 normal / serious 两个循环均为 `+0 allocation / +0 reuse`，托管分配为 `0.0859 MiB/s`（`-99.52%`） |
+| resident 取舍 | 工作 active resident 从 baseline `37.17–39.67 MiB` 提高到 candidate 恒定 `52.83 MiB`。这是明确的空间换稳定：保留完整热集以消除逐圈淘汰、解码和 LOH 分配，不声称工作 resident 本身下降 |
+| 进程 A/B | 每组从第 `20–70 s` 取 `6` 个稳定样本。Private：baseline `308.61–425.75 MiB`、中位 `355.87 MiB`；candidate `253.86–282.27 MiB`、中位 `282.04 MiB`。Working Set：baseline `382.95–501.45 MiB`、中位 `432.96 MiB`；candidate `328.22–355.94 MiB`、中位 `355.29 MiB`。范围离散且属于跨运行总体 A/B，只记录观察，不把中位差写成固定节省 |
+| CPU 观察 | 同一串行跨运行采样为 `16.41% → 12.42%`；只作为减少解码抖动的方向性信号，不能隔离调度、机器负载等运行间变量，也不能声称稳定 CPU 降幅 |
+| 产品质量边界 | 动画素材、像素、画质、帧数、FPS、绝对时序、输入、Todo、定时任务、提醒及其他功能不变；不通过降清晰度、删帧、降帧率或改变交互换取指标 |
+| 完整自动化 | `DesktopPet` 与 `UiStateChecks` 的 Release 构建连续执行均为 `0 warning / 0 error`；8 个 pass/fail 专项 `--resident-cache-only`、`--work-mode-only`、`--clip-clock-only`、`--edge-dock-only`、`--todo-only`、`--roam-interaction-only`、`--pet-size-only`、`--reminder-only` 全部通过；`--memory-profile` 已完成剖面输出且数值契约满足，该入口不是 pass/fail 测试。完整 `UiStateChecks` 在最小测试夹具隔离修复后连续 2 轮均输出 `UI state checks passed.`。另有 fresh snore `10/10` 与 edge + deadline + snore `3/3` 隔离诊断通过，不替代完整套件 |
+| 源码与发布 | **待真实提交与发布后回填：功能提交、标签、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、Release target、附件 digest 和独立回下载复核** |
 
 ## v1.0.72 发布验证
 

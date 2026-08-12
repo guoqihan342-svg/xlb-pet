@@ -369,6 +369,8 @@ internal static partial class Program
                 {
                     RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                         () => AssertResidentSpritePageWarmupContract(window));
+                    RunCheck(nameof(AssertWorkSpritePageHotSetContract),
+                        () => AssertWorkSpritePageHotSetContract(window));
                     RunCheck(nameof(AssertSpritePagePrefetchIdleTrimDeferralContract),
                         () => AssertSpritePagePrefetchIdleTrimDeferralContract(window));
                     RunCheck(nameof(AssertIdleSpritePageTrimContract),
@@ -449,6 +451,8 @@ internal static partial class Program
 
                 RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                     () => AssertResidentSpritePageWarmupContract(window));
+                RunCheck(nameof(AssertWorkSpritePageHotSetContract),
+                    () => AssertWorkSpritePageHotSetContract(window));
                 RunCheck(nameof(AssertSpritePagePrefetchIdleTrimDeferralContract),
                     () => AssertSpritePagePrefetchIdleTrimDeferralContract(window));
                 RunCheck(nameof(AssertIdleSpritePageTrimContract),
@@ -3218,6 +3222,192 @@ internal static partial class Program
         AssertResidentSpriteCacheAccounting(window, "LRU压力测试清理");
     }
 
+    private static void AssertWorkSpritePageHotSetContract(MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        PrepareIdleSpriteCollectionBaseline(window);
+        ResetSpritePageCollectionTestState(window);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var pool = GetRawField(window, "_spritePageBufferPool")
+            ?? throw new InvalidOperationException(
+                "MainWindow 缺少 sprite 页像素复用池");
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
+        var ordinaryBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        var workBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageWorkResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+        var roamBudgetBytes = (long)(typeof(MainWindow).GetField(
+                "SpritePageRoamResidentBudgetBytes",
+                StaticFlags)!.GetValue(null) ?? 0L);
+
+        Assert(ordinaryBudgetBytes == 52L * 1024 * 1024 &&
+               workBudgetBytes == 57L * 1024 * 1024 &&
+               roamBudgetBytes == 92L * 1024 * 1024,
+            "工作热集只能新增57MiB专用预算；普通52MiB和绕屏92MiB必须保持不变");
+
+        var manifestPageByteCounts = GetDictionaryEntries(pageMap)
+            .Select(entry => (long)GetProperty<int>(
+                entry.Value!,
+                "UncompressedByteCount"))
+            .Distinct()
+            .ToArray();
+
+        long GetLargestReachableReusableCapacity(string pageName)
+        {
+            var requestedBytes = GetSpritePageByteCount(pageMap, pageName);
+            var maximumReusableBytes =
+                GetMaximumReusableSpritePageCapacity(requestedBytes);
+            return manifestPageByteCounts
+                .Where(candidateBytes =>
+                    candidateBytes >= requestedBytes &&
+                    candidateBytes <= maximumReusableBytes)
+                .Max();
+        }
+
+        foreach (var (clipFieldName, stage) in new[]
+                 {
+                     ("_workLoopClip", "普通打工循环"),
+                     ("_workSeriousLoopClip", "认真打工循环")
+                 })
+        {
+            SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
+            SetField(window, "_activeClip", null);
+            SetField(window, "_pendingSpriteFrame", null);
+            PrimeSpritePageForFrame(window, idleFrame);
+            Invoke(window, "ShowStableFrame", idleFrame);
+            Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+            SetField(window, "_workState", GetNestedEnum("WorkState", "Typing"));
+
+            var clip = GetField<object>(window, clipFieldName);
+            SetField(window, "_activeClip", clip);
+            var spriteFrames = GetClipFrames(clip).Cast<object>()
+                .Select(frame => GetProperty<object>(frame, "Image"))
+                .ToArray();
+            var workPageNames = spriteFrames
+                .Select(frame => GetSpriteFrameInfo(frame).PageName)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            Assert(workPageNames.Length == 3,
+                $"{stage}必须且只能由三张分页组成");
+
+            // Rent only creates exact manifest request sizes. Seed the pool
+            // with the largest actual manifest capacity that best-fit may
+            // return for each request. Repeating a capacity is reachable after
+            // separate historic decodes of the same page, while arbitrary
+            // values up to the theoretical envelope are not production states.
+            var orderedWorkPageNames = workPageNames
+                .OrderByDescending(pageName =>
+                    GetSpritePageByteCount(pageMap, pageName))
+                .ToArray();
+            var largestReachableCapacities = orderedWorkPageNames
+                .Select(GetLargestReachableReusableCapacity)
+                .ToArray();
+            var reachableBuffers = largestReachableCapacities
+                .Select(capacity => (byte[])Invoke(
+                    pool,
+                    "Rent",
+                    checked((int)capacity))!)
+                .ToArray();
+            foreach (var buffer in reachableBuffers)
+            {
+                Invoke(pool, "Return", buffer);
+            }
+
+            foreach (var pageName in orderedWorkPageNames)
+            {
+                LoadSpritePageForTest(window, pageName);
+            }
+
+            var expectedPageNames = workPageNames
+                .Append(idlePageName)
+                .ToHashSet(StringComparer.Ordinal);
+            var exactHotSetBytes = expectedPageNames.Sum(pageName =>
+                GetSpritePageByteCount(pageMap, pageName));
+            var worstCaseHotSetBytes =
+                GetSpritePageByteCount(pageMap, idlePageName) +
+                largestReachableCapacities.Sum();
+            var actualHotSetBytes = GetField<long>(
+                window,
+                "_residentSpritePageBytes");
+            var hasAdjacentCapacityReuse = GetDictionaryEntries(residentPages)
+                .Where(entry => workPageNames.Contains(
+                    (string)entry.Key,
+                    StringComparer.Ordinal))
+                .Any(entry => GetProperty<byte[]>(entry.Value!, "Pixels").LongLength >
+                              GetSpritePageByteCount(
+                                  pageMap,
+                                  (string)entry.Key));
+            Assert(exactHotSetBytes == 55_392_540L &&
+                   worstCaseHotSetBytes == 59_191_344L &&
+                   worstCaseHotSetBytes > ordinaryBudgetBytes &&
+                   worstCaseHotSetBytes <= workBudgetBytes &&
+                   actualHotSetBytes >= exactHotSetBytes &&
+                   actualHotSetBytes <= worstCaseHotSetBytes &&
+                   actualHotSetBytes <= workBudgetBytes &&
+                   hasAdjacentCapacityReuse &&
+                   expectedPageNames.SetEquals(
+                       GetDictionaryEntries(residentPages)
+                           .Select(entry => (string)entry.Key)) &&
+                   (long)(Invoke(window,
+                       "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                       workBudgetBytes,
+                $"{stage}必须在manifest可达best-fit历史下常驻idle加三张循环页：" +
+                $"actual={actualHotSetBytes}, exact={exactHotSetBytes}, " +
+                $"worst={worstCaseHotSetBytes}, budget={workBudgetBytes} bytes");
+
+            var allocationCount = GetProperty<long>(pool, "AllocationCount");
+            var reuseCount = GetProperty<long>(pool, "ReuseCount");
+            for (var cycle = 0; cycle < 2; cycle++)
+            {
+                foreach (var spriteFrame in spriteFrames)
+                {
+                    Invoke(window, "ShowStableFrame", spriteFrame);
+                    Assert(GetRawField(window, "_pendingSpriteFrame") is null,
+                        $"{stage}热循环不得请求冷页解码");
+                }
+            }
+
+            Assert(GetRawField(window, "_spritePagePrefetchTask") is null &&
+                   GetRawField(window, "_desiredSpritePageName") is null &&
+                   GetProperty<long>(pool, "AllocationCount") == allocationCount &&
+                   GetProperty<long>(pool, "ReuseCount") == reuseCount &&
+                   expectedPageNames.SetEquals(
+                       GetDictionaryEntries(residentPages)
+                           .Select(entry => (string)entry.Key)),
+                $"{stage}预热后连续两完整周期不得再分配、复用或解码分页");
+            AssertResidentSpriteCacheAccounting(window, $"{stage}完整热集");
+        }
+
+        SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
+        SetField(window, "_activeClip", null);
+        SetField(window, "_pendingSpriteFrame", null);
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        Invoke(window, "RequestIdleSpritePageTrim", false);
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
+        Assert((long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   ordinaryBudgetBytes &&
+               idleTrimTimer.IsEnabled &&
+               idleTrimTimer.Interval == TimeSpan.FromSeconds(20),
+            "退出打工后必须立即恢复普通52MiB预算并保留20秒idle宽限");
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+        Assert(GetField<long>(window, "_residentSpritePageBytes") ==
+                   ExpectedIdleSpriteResidentBytes &&
+               residentPages.Count == 1 &&
+               residentPages.Contains(idlePageName),
+            "打工热集的既有idle裁剪必须回到单页12MiB目标");
+        AssertResidentSpriteCacheAccounting(window, "打工热集退出裁剪");
+        ResetSpritePageCollectionTestState(window);
+    }
+
     private static void AssertSpritePagePrefetchIdleTrimDeferralContract(
         MainWindow window)
     {
@@ -4943,6 +5133,8 @@ internal static partial class Program
 
     private static void AssertSingleBufferPremultipliedBlendContract(MainWindow window)
     {
+        AssertExactHorizontalMirrorPixelTransformContract(window);
+
         const int expectedByteCount = RenderPixelWidth * RenderPixelHeight * 4;
         var displayPixels = GetField<byte[]>(window, "_displayFramePixels");
         var fromPixels = GetField<byte[]>(window, "_frameBlendFromPixels");
@@ -5096,6 +5288,211 @@ internal static partial class Program
         Console.WriteLine(
             $"[METRIC] axis-aligned full-frame bake=" +
             $"{transformStopwatch.Elapsed.TotalMilliseconds / transformIterations:F3}ms");
+    }
+
+    private static void AssertExactHorizontalMirrorPixelTransformContract(MainWindow window)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var random = new Random(0x51A7BEEF);
+        var mirrorMethod = typeof(MainWindow).GetMethod(
+            "TryTransformExactHorizontalMirror",
+            StaticFlags)!;
+        var axisOracle = typeof(MainWindow).GetMethod(
+            "TransformAxisAlignedPremultipliedPixels",
+            StaticFlags)!;
+
+        byte[] Pixels(int width, int height)
+        {
+            var pixels = new byte[checked(width * height * 4)];
+            for (var offset = 0; offset < pixels.Length; offset += 4)
+            {
+                var alpha = (byte)random.Next(byte.MaxValue + 1);
+                pixels[offset] = (byte)random.Next(alpha + 1);
+                pixels[offset + 1] = (byte)random.Next(alpha + 1);
+                pixels[offset + 2] = (byte)random.Next(alpha + 1);
+                pixels[offset + 3] = alpha;
+            }
+            return pixels;
+        }
+
+        bool TryMirror(
+            byte[] source,
+            byte[] output,
+            int width,
+            int height,
+            Matrix inverse) =>
+            (bool)mirrorMethod.Invoke(
+                null,
+                [source, output, width, height, inverse])!;
+
+        void RunAxisOracle(
+            byte[] source,
+            byte[] output,
+            int width,
+            int height,
+            Matrix inverse) =>
+            axisOracle.Invoke(null, [source, output, width, height, inverse]);
+
+        var sizes = new[]
+        {
+            (1, 1), (2, 1), (1, 2), (3, 5), (17, 19),
+            (RenderPixelWidth, RenderPixelHeight)
+        };
+        foreach (var (width, height) in sizes)
+        {
+            var source = Pixels(width, height);
+            var expected = new byte[source.Length];
+            var inverse = new Matrix(-1, 0, 0, 1, width, 0);
+            RunAxisOracle(source, expected, width, height, inverse);
+            var first = Enumerable.Repeat((byte)0x3C, source.Length).ToArray();
+            var second = Enumerable.Repeat((byte)0xC3, source.Length).ToArray();
+            Assert(TryMirror(source, first, width, height, inverse) &&
+                   TryMirror(source, second, width, height, inverse) &&
+                   first.AsSpan().SequenceEqual(expected) &&
+                   second.AsSpan().SequenceEqual(expected),
+                $"完整帧水平镜像必须逐字节复现旧轴算法并覆写每个uint：{width}x{height}");
+        }
+
+        var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
+        var roamRotate = GetField<RotateTransform>(window, "PetRoamRotate");
+        var petScale = GetField<ScaleTransform>(window, "PetScale");
+        var previousFacingScaleX = facingScale.ScaleX;
+        var previousFacingScaleY = facingScale.ScaleY;
+        var previousRoamAngle = roamRotate.Angle;
+        var previousPetScaleX = petScale.ScaleX;
+        var previousPetScaleY = petScale.ScaleY;
+        Matrix rightEdgeMatrix;
+        try
+        {
+            facingScale.ScaleX = -1;
+            facingScale.ScaleY = 1;
+            roamRotate.Angle = 0;
+            petScale.ScaleX = 1;
+            petScale.ScaleY = 1;
+            rightEdgeMatrix = (Matrix)Invoke(window, "GetPetVisualMatrix")!;
+        }
+        finally
+        {
+            facingScale.ScaleX = previousFacingScaleX;
+            facingScale.ScaleY = previousFacingScaleY;
+            roamRotate.Angle = previousRoamAngle;
+            petScale.ScaleX = previousPetScaleX;
+            petScale.ScaleY = previousPetScaleY;
+        }
+
+        var rightEdgeInverse = rightEdgeMatrix;
+        rightEdgeInverse.Invert();
+        Assert(rightEdgeInverse.M11 == -1d &&
+               rightEdgeInverse.M12 == 0d &&
+               rightEdgeInverse.M21 == 0d &&
+               rightEdgeInverse.M22 == 1d &&
+               rightEdgeInverse.OffsetX == RenderPixelWidth &&
+               rightEdgeInverse.OffsetY == 0d,
+            "真实右贴边矩阵必须精确落在水平镜像像素网格上");
+        var rightEdgeSource = Pixels(RenderPixelWidth, RenderPixelHeight);
+        var rightEdgeExpected = new byte[rightEdgeSource.Length];
+        var rightEdgeActual = new byte[rightEdgeSource.Length];
+        RunAxisOracle(
+            rightEdgeSource,
+            rightEdgeExpected,
+            RenderPixelWidth,
+            RenderPixelHeight,
+            rightEdgeInverse);
+        InvokeStatic(
+            typeof(MainWindow),
+            "TransformPremultipliedPixels",
+            rightEdgeSource,
+            rightEdgeActual,
+            RenderPixelWidth,
+            RenderPixelHeight,
+            rightEdgeMatrix);
+        Assert(rightEdgeActual.AsSpan().SequenceEqual(rightEdgeExpected),
+            "真实右贴边镜像必须逐字节等于旧双线性画面");
+
+        var sampleSource = Pixels(17, 19);
+        var tinyRotation = Matrix.Identity;
+        tinyRotation.Rotate(0.000_001);
+        var generalRotation = Matrix.Identity;
+        generalRotation.RotateAt(37.25, 8.5, 9.5);
+        var rejectedMatrices = new[]
+        {
+            ("identity", Matrix.Identity),
+            ("integer-translation", new Matrix(1, 0, 0, 1, 1, 0)),
+            ("vertical-mirror", new Matrix(1, 0, 0, -1, 0, 19)),
+            ("double-mirror", new Matrix(-1, 0, 0, -1, 17, 19)),
+            ("cropped-horizontal-mirror", new Matrix(-1, 0, 0, 1, 16, 0)),
+            ("shifted-horizontal-mirror", new Matrix(-1, 0, 0, 1, 17, 1)),
+            ("fractional-horizontal-mirror", new Matrix(-1, 0, 0, 1, 17.25, 0)),
+            ("fractional-scale", new Matrix(1.173, 0, 0, 0.817, -2.3, 1.7)),
+            ("tiny-rotation", tinyRotation),
+            ("general-rotation", generalRotation)
+        };
+        foreach (var (name, inverse) in rejectedMatrices)
+        {
+            var rejectedOutput = Enumerable.Repeat(
+                (byte)0x7E,
+                sampleSource.Length).ToArray();
+            var rejectedSnapshot = rejectedOutput.ToArray();
+            Assert(!TryMirror(sampleSource, rejectedOutput, 17, 19, inverse) &&
+                   rejectedOutput.AsSpan().SequenceEqual(rejectedSnapshot),
+                $"{name}不是完整帧水平镜像，不得命中特化或修改输出");
+        }
+
+        var longOutput = Enumerable.Repeat(
+            (byte)0x6D,
+            sampleSource.Length + 31).ToArray();
+        var longExpected = new byte[sampleSource.Length];
+        var sampleMirror = new Matrix(-1, 0, 0, 1, 17, 0);
+        RunAxisOracle(sampleSource, longExpected, 17, 19, sampleMirror);
+        Assert(TryMirror(sampleSource, longOutput, 17, 19, sampleMirror) &&
+               longOutput.AsSpan(0, sampleSource.Length)
+                   .SequenceEqual(longExpected) &&
+               longOutput.AsSpan(sampleSource.Length)
+                   .ToArray()
+                   .All(value => value == 0x6D),
+            "比完整帧更长的输出只能改写expectedLength，尾部guard必须保持不变");
+
+        var aliased = sampleSource.ToArray();
+        var aliasedSnapshot = aliased.ToArray();
+        Assert(!TryMirror(aliased, aliased, 17, 19, sampleMirror) &&
+               aliased.AsSpan().SequenceEqual(aliasedSnapshot),
+            "source/output同引用必须无修改地拒绝特化并严格回落");
+        var invalidDimensionsOutput = Enumerable.Repeat((byte)0x4D, 4).ToArray();
+        Assert(new[] { (Width: -1, Height: -1), (Width: 0, Height: 1), (Width: 1, Height: 0) }
+               .All(size =>
+                   !TryMirror(
+                        new byte[4],
+                        invalidDimensionsOutput,
+                        size.Width,
+                        size.Height,
+                        new Matrix(-1, 0, 0, 1, size.Width, 0))) &&
+               invalidDimensionsOutput.All(value => value == 0x4D),
+            "非正尺寸必须无修改地拒绝特化，不能让负宽高乘积伪装成合法长度");
+
+        var opaqueByteOrderSource = new byte[]
+        {
+            0x01, 0x23, 0x45, 0x67,
+            0x89, 0xAB, 0xCD, 0xEF
+        };
+        var opaqueByteOrderOutput = new byte[opaqueByteOrderSource.Length];
+        Assert(TryMirror(
+                   opaqueByteOrderSource,
+                   opaqueByteOrderOutput,
+                   2,
+                   1,
+                   new Matrix(-1, 0, 0, 1, 2, 0)) &&
+               opaqueByteOrderOutput.SequenceEqual(new byte[]
+               {
+                   0x89, 0xAB, 0xCD, 0xEF,
+                   0x01, 0x23, 0x45, 0x67
+               }),
+            "uint像素复制必须保留Pbgra每个字节的原始顺序");
+
+        stopwatch.Stop();
+        Console.WriteLine(
+            $"[METRIC] exact horizontal mirror: " +
+            $"sizes={sizes.Length}, right-edge=byte-equal, rejected={rejectedMatrices.Length}, " +
+            $"elapsed={stopwatch.Elapsed.TotalMilliseconds:F3}ms");
     }
 
     private static DictionaryEntry[] GetDictionaryEntries(IDictionary dictionary)
@@ -18946,6 +19343,9 @@ internal static partial class Program
         Assert(mainSource.Contains(
                    "private readonly SpritePageBufferPool _spritePageBufferPool = new()",
                    StringComparison.Ordinal) &&
+               mainSource.Split(
+                   "_spritePageBufferPool.Rent(",
+                   StringSplitOptions.None).Length == 2 &&
                decodeSource.Contains(
                    "_spritePageBufferPool.Rent(page.UncompressedByteCount)",
                    StringComparison.Ordinal) &&
@@ -18958,7 +19358,8 @@ internal static partial class Program
                decodeSource.Contains(
                    "ReturnSpritePageBuffer(decodedPixels)",
                    StringComparison.Ordinal),
-            "DecodeSpritePage必须从复用池Rent，并在取消、hash失败或解码异常时同步归还");
+            "MainWindow必须只用manifest的UncompressedByteCount调用一次分页池Rent；" +
+            "DecodeSpritePage在取消、hash失败或解码异常时必须同步归还");
         var prepareBeforeTask = startPrefetchSource.IndexOf(
             "PrepareSpritePageBufferForIncomingPage(pageName, page)",
             StringComparison.Ordinal);
@@ -19131,6 +19532,8 @@ internal static partial class Program
         var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
         var atlasBuilderSource = File.ReadAllText(
             FindWorkspaceFile("tools", "build_sprite_atlas.py"));
+        var atlasQaSource = File.ReadAllText(
+            FindWorkspaceFile("tools", "qa_sprite_atlas_motion.py"));
         var rendering = ExtractPrivateMethodSource(mainSource, "VisualClock_Rendering");
         var showStableFrame = ExtractPrivateMethodSource(mainSource, "ShowStableFrame");
         var discardSupersededPending = ExtractPrivateMethodSource(
@@ -19151,6 +19554,9 @@ internal static partial class Program
         var updateVisualClockSubscription = ExtractPrivateMethodSource(
             mainSource,
             "UpdateVisualClockSubscription");
+        var getSpritePageResidentBudgetBytes = ExtractPrivateMethodSource(
+            mainSource,
+            "GetSpritePageResidentBudgetBytes");
         var beginPetSizeGesture = ExtractPrivateMethodSource(
             mainSource,
             "TodoWindow_PetSizeAdjustmentStarted");
@@ -19196,6 +19602,12 @@ internal static partial class Program
         var writeDirectSpriteFrame = ExtractPrivateMethodSource(
             mainSource,
             "WriteDirectSpriteFrame");
+        var transformPremultipliedPixels = ExtractPrivateMethodSource(
+            mainSource,
+            "TransformPremultipliedPixels");
+        var tryTransformExactHorizontalMirror = ExtractPrivateMethodSource(
+            mainSource,
+            "TryTransformExactHorizontalMirror");
         var clearPixelBoundsDifference = ExtractPrivateMethodSource(
             mainSource,
             "ClearPixelBoundsDifference");
@@ -19355,6 +19767,22 @@ internal static partial class Program
                mainSource.Contains("TryPromotePrefetchedSpritePage", StringComparison.Ordinal) &&
                mainSource.Contains("_spritePageWarmupOrder", StringComparison.Ordinal),
             "运行时分页必须使用解码页常驻缓存、按需后台预取、代际取消和UI线程引用切换");
+        Assert(mainSource.Contains(
+                   "SpritePageWorkResidentBudgetBytes = 57L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "_isEdgeRoaming || _edgeRoamPreloadRequested",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "_workState != WorkState.Idle",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "SpritePageRoamResidentBudgetBytes",
+                   StringComparison.Ordinal) <
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "SpritePageWorkResidentBudgetBytes",
+                   StringComparison.Ordinal),
+            "分页预算必须仅在工作状态扩为57MiB，绕屏92MiB优先级和普通52MiB不得改变");
         Assert(residentPrefetchCheck >= 0 &&
                busyPrefetchCheck > residentPrefetchCheck &&
                duplicatePrefetchCheck > busyPrefetchCheck &&
@@ -20018,6 +20446,66 @@ internal static partial class Program
                 !method.Contains(".Where(", StringComparison.Ordinal) &&
                 !method.Contains(".ToArray(", StringComparison.Ordinal)),
             "每帧视觉热路径不得排队Dispatcher、写日志、同步I/O、启动Task或执行LINQ分配");
+        var exactTransformDispatch = transformPremultipliedPixels.IndexOf(
+            "TryTransformExactHorizontalMirror(",
+            StringComparison.Ordinal);
+        var epsilonAxisFallback = transformPremultipliedPixels.IndexOf(
+            "Math.Abs(inverse.M12)",
+            StringComparison.Ordinal);
+        Assert(exactTransformDispatch >= 0 &&
+               epsilonAxisFallback > exactTransformDispatch &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "width <= 0",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "height <= 0",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "ReferenceEquals(sourcePixels, outputPixels)",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "inverse.M11 != -1d",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "inverse.M12 != 0d",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "inverse.M21 != 0d",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "inverse.M22 != 1d",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "inverse.OffsetX != width",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "inverse.OffsetY != 0d",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "width - 1 - destinationX",
+                   StringComparison.Ordinal) &&
+               tryTransformExactHorizontalMirror.Contains(
+                   "MemoryMarshal.Cast<byte, uint>",
+                   StringComparison.Ordinal) &&
+               atlasQaSource.Contains(
+                   "Pbgra color channel exceeds alpha",
+                   StringComparison.Ordinal) &&
+               atlasQaSource.Contains(
+                   "reconstructed Pbgra color channel exceeds alpha",
+                   StringComparison.Ordinal) &&
+               !tryTransformExactHorizontalMirror.Contains(
+                   "Math.Abs(",
+                   StringComparison.Ordinal) &&
+               !tryTransformExactHorizontalMirror.Contains(
+                   "Array.Clear(",
+                   StringComparison.Ordinal) &&
+               !tryTransformExactHorizontalMirror.Contains(
+                   "new byte[",
+                   StringComparison.Ordinal),
+            "像素特化只能在逆矩阵严格为完整帧水平镜像[-1,0;0,1;width,0]时先行；" +
+            "不得接受平移、垂直/双翻、裁剪、旋转或分数变换，不得清空或分配帧缓冲；" +
+            "生产atlas QA必须保证Pbgra颜色通道不超过Alpha，" +
+            "其他矩阵必须回落既有双线性路径");
         Assert(renderingTerminalMethods.All(method =>
                    !method.Contains("=>", StringComparison.Ordinal) &&
                    !method.Contains("new Action", StringComparison.Ordinal) &&
@@ -24149,12 +24637,17 @@ internal static partial class Program
         SetField(window, "_workExitTargetFramePosition", double.PositiveInfinity);
         SetField(window, "_workFastUntilTimestamp", 0L);
         Invoke(window, "ClearDeferredActiveClipClock");
+        // Full-suite predecessors may leave roam/scale transforms or a visual
+        // clock subscription behind after this fixture clears their state.
+        // Reconcile both through production endpoints instead of test fields.
+        Invoke(window, "ResetPetVisualTransforms");
         Invoke(
             window,
             "ShowStableFrame",
             GetField<object>(window, "_idleFrame"));
         Invoke(window, "RefreshSnoreBubbleAnimationState");
         Invoke(window, "RefreshWorkModeButton");
+        Invoke(window, "UpdateVisualClockSubscription");
         // Full-suite predecessors may legitimately leave the roaming-sized
         // resident set warm. Once this fixture has restored the ordinary idle
         // state, converge it through the production LRU trim before arranging
