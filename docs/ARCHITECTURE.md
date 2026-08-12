@@ -114,6 +114,7 @@ Left/Top 最后对齐物理像素
 - `Rendering` 只在动画、移动或过渡活动时订阅；稳定待机不应维持空转回调。
 - 回调内禁止磁盘 I/O、页面解压和大对象逐帧分配。
 - 直接 `SpriteFrame` 发布必须继续把 old/new bounds 并集作为唯一 dirty 区，并保持每帧一次 `WritePixels`。由于 next bounds 会被新帧完整覆盖，发布前只清 previous bounds 与 next bounds 不重叠的至多四个矩形带；这只消除会被立即覆盖的清零写入，不改变提交区域、最终像素或绝对时间轴。正式 bounds 模型的清零流量为 `479.886 → 1.929 MiB`（`-99.60%`），计入像素复制后的模型流量下降 `33.24%`；隔离微基准为 `32.822 → 21.179 us/帧`（`-35.5%`）。
+- `v1.0.75` 只允许 `Typing` 的 normal / serious loop 复用已经显示的 direct 像素。强谓词同时要求 zero blend、无 active blend、当前 direct bounds 与当前逻辑帧可见 bounds 相等，并且前后帧的 page、source X/Y/Width/Height 与 destination X/Y 全部相同；判定必须在停止 blend 之前完成。命中时只跳过 `CopyFramePixels + WritePixels`，仍更新逻辑 frame/name/index、descriptor callback、枕头、呼噜、绝对时钟和预取。任何非 Typing、非 loop、非 zero blend、blend 中、direct provenance 缺失/不匹配或描述符差异都回到既有真实写入路径。normal / serious 的 96 帧作者序列各有 23 处相邻候选，每次最多避免 `656,844 B` 搬运，完整作者顺序圈最多 `14.408 MiB` 和 23 次 `WritePixels`；serious 的 2 倍速真实呈现会跳帧，23 不是实际命中保证。
 - `v1.0.73` 的像素快路径只接受右侧边缘所需的精确完整水平镜像：逆矩阵必须逐项等于 `[-1,0;0,1,width,0]`，输入输出不能别名，宽高必须为正。此时每行按 Pbgra32 `uint` 反向复制；平移、缩放、分数偏移、旋转和任何其他矩阵一律回落既有 axis/general 采样与舍入路径。6 种尺寸及真实 `GetPetVisualMatrix` 的输出已与旧路径逐字节比对；纯镜像约 `3.93 → 0.15 ms`，连同 `WritePixels` 的显示提交约 `4.49–4.57 → 0.202–0.218 ms`。它只缩短低频右侧边界交互的镜像准备时间，不能外推为全局 CPU 显著下降。
 
 动作全局倍速由 `MainWindow.xaml.cs` 的 `AnimationPlaybackSpeed` 代码常量控制，不提供持久化速度滑块。桌宠大小是用户设置，范围为 `75%～140%`。
@@ -140,6 +141,7 @@ Left/Top 最后对齐物理像素
 - 普通动画结束后继续保留既有 `20 秒`缓存宽限，避免连续点击反复解码；巡游则在完整逆播并发布稳定 idle 的 Rendering 安全点立即深裁，不等待普通宽限。精灵页缓冲新分配按真实解码字节申请；free 数组的 best-fit 仍受旧有相邻容量复用边界约束，只选择边界内能够满足请求的最小数组。全部绕屏页就绪后只丢弃 free decode arrays，resident 的正播与逆播帧均不动。常规、巡游、稳定空闲与 LOH 淘汰债务预算保持 `52 / 92 / 12 / 8 MiB`，图集、像素、帧率、时序以及待办、定时任务和其他动画状态机均不改变。
 - 上一条的 `52 MiB` 是非打工普通状态预算；`v1.0.73` 只在打工期间增加上述 `57 MiB` 例外。原 `52 MiB` 下 normal / serious 每 10 秒会出现 `+12 / +13` 次缓冲分配，约 `17.881 MiB/s` 托管分配；`57 MiB` 预热后两类循环均为 `+0 allocation / +0 reuse`、`0.0859 MiB/s`。代价是工作 active resident 从 `37.17–39.67 MiB` 提高为稳定 `52.83 MiB`，换取不再每圈淘汰、解码和制造 LOH 压力；素材、像素、帧、FPS、绝对时序、输入、Todo 与其他状态机不变。
 - `v1.0.74` 的自然 normal → serious → normal 契约首次只允许 4 次 serious 必要分页获取和 3 次 normal 必要分页获取；预热后连续两个 serious 循环不得再出现 allocation、reuse 或冷页 pending。serious-exit 完成并切回 normal 的同一调用内必须恢复 `57 MiB`，退出工作后恢复 `52 MiB`，稳定 idle 深裁后仅保留 `11,383,992 B` 固定页并低于 `12 MiB` 目标。
+- `v1.0.75` 不改变 resident、pool、LRU、预算或预取策略：normal 工作的精确热集仍为 `55,392,540 B`，相关稳态 resident / pool 均为 4 页。隔离观测中 Private / Working Set 没有持续增加，也不据此声称内存下降。
 - serious loop 右键退出时，唯一分页预取槽必须先服务 serious-exit：`PrefetchPendingWorkTransitionPages` 的通用 work-exit 分支在 active serious-enter / serious-loop 期间不得抢占该槽；实测 serious-loop 链中，中性缝上的 serious-exit 首帧必须从 resident 立即显示且不得 pending，进入 serious-exit 后再在该 clip 完整播放窗口内预热 work-exit。这一 guard 不改变 normal-loop 和 work-enter 的早预热，也不改变任何作者帧、时钟或输入语义。
 - delta-sub 页仍按相同 header、行 delta、destination 与 sprite descriptor 重建；完成 delta 应用后，以裁剪后的可见行通过 `Buffer.BlockCopy` 写入页图集。屏外部分必须保持透明，重复 sprite 必须逐字节一致，不同 sprite 区域仍禁止重叠，最终页仍执行清单哈希校验，所有截断、尾随、越界或不一致输入继续 fail-closed。隔离 A/B 的 warm 中位数为：`work-loop-part-02` `33.427 → 13.348 ms`（`-60.1%`），全部 16 个 delta 页总计 `1052.763 → 798.671 ms`（`-24.1%`）。该优化不改变 Assets、manifest、像素、帧数、FPS、动画时序或缓存预算，也不代表稳态内存下降。
 

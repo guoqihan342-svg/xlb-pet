@@ -2,6 +2,12 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.75
+
+- 仅在工作状态的 `Typing` normal / serious loop 中，当请求为 zero blend、没有 active blend、当前画面具有匹配的 direct provenance / bounds，且前后逻辑帧的 page、source rectangle 与 destination 完全相同时，跳过重复的 `CopyFramePixels + WritePixels`。逻辑 frame/name/index、descriptor callback、枕头、呼噜、绝对时钟和预取仍按原路径更新；其他 clip、状态、blend、bounds 或描述符一律继续真实提交。
+- normal 与 serious 作者序列各有 96 个逻辑帧，其中各 23 处相邻异名帧引用同一像素描述符。每次命中避免搬运 `656,844 B`；按作者顺序完整遍历一圈最多避免 `15,107,412 B`（`14.408 MiB`）和 23 次 `WritePixels`。这是静态候选上限，serious 在 2 倍速真实呈现时会跳帧，不能把 23 当作其每圈实际命中数。
+- 同机两轮交替、真实 `MainWindow` normal 稳态隔离 A/B 中，候选为 `8.5677% / 7.2135%`，基线为 `13.4635% / 12.4740%`；两轮合并均值为基线 `12.96875%` → 候选 `7.890625%`，绝对减少 `5.078125` 个百分点、相对减少 `39.1566%`。这些结果只说明该隔离 normal 场景，不外推为全局固定 CPU 降幅。resident 精确热集仍为 `55,392,540 B`，resident / pool 均保持 4 页，Private / Working Set 未见持续增加；本版不声称降低内存。
+
 ## v1.0.74
 
 - `v1.0.73` 的 `57 MiB` 可分别容纳 normal / serious 的 idle + 3 页稳态循环，但完整 serious 转换还需同时保留 serious-exit 页。本版只在 serious requested / enter / loop / exit 期间使用 `73 MiB` resident 预算：idle + 3 张 serious loop 页 + serious-exit 页精确为 `71,156,796 B`（`67.8604 MiB`），当前 manifest 在相邻容量 best-fit 边界内的最坏可达值为 `75,982,272 B`（`72.4623 MiB`），距 `73 MiB` 上限仍有 `563,776 B` 余量。normal 工作保持 `57 MiB`，普通、巡游、稳定空闲和 LOH 门槛保持 `52 / 92 / 12 / 8 MiB`，巡游 `92 MiB` 优先级最高。

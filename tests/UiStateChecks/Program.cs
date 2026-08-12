@@ -327,6 +327,9 @@ internal static partial class Program
                         nameof(AssertWorkModeClockAndInputContract),
                         () => AssertWorkModeClockAndInputContract(window));
                     RunCheck(
+                        nameof(AssertWorkSpritePixelReuseContract),
+                        () => AssertWorkSpritePixelReuseContract(window));
+                    RunCheck(
                         nameof(AssertWorkModeDragContinuationContract),
                         () => AssertWorkModeDragContinuationContract(window));
                     RunCheck(
@@ -538,6 +541,9 @@ internal static partial class Program
                 RunCheck(
                     nameof(AssertWorkModeClockAndInputContract),
                     () => AssertWorkModeClockAndInputContract(window));
+                RunCheck(
+                    nameof(AssertWorkSpritePixelReuseContract),
+                    () => AssertWorkSpritePixelReuseContract(window));
                 RunCheck(
                     nameof(AssertWorkModeDragContinuationContract),
                     () => AssertWorkModeDragContinuationContract(window));
@@ -22685,6 +22691,696 @@ internal static partial class Program
         return digests;
     }
 
+    private static void AssertWorkSpritePixelReuseContract(MainWindow window)
+    {
+        AssertWorkSpritePixelReuseSourceContract();
+        PrepareWorkModeIdleState(window);
+        try
+        {
+            var normalFrames = GetField<Array>(window, "_workLoopFrames");
+            var seriousFrames = GetField<Array>(window, "_workSeriousLoopFrames");
+            var normalClip = GetField<object>(window, "_workLoopClip");
+            var seriousClip = GetField<object>(window, "_workSeriousLoopClip");
+
+            AssertWorkLoopSameDescriptorReuse(
+                window,
+                normalFrames,
+                normalClip,
+                "normal");
+            AssertWorkLoopSameDescriptorReuse(
+                window,
+                seriousFrames,
+                seriousClip,
+                "serious");
+            AssertWorkSpritePixelReuseGuardMatrix(
+                window,
+                normalFrames,
+                seriousFrames,
+                normalClip);
+            AssertWorkSpritePixelReuseStopsPendingBlend(
+                window,
+                normalFrames,
+                normalClip);
+            AssertWorkSpritePixelReuseDefersFirstFrameClock(
+                window,
+                normalFrames,
+                normalClip);
+        }
+        finally
+        {
+            SetField(window, "_spriteFrameDescriptorPublishedForTesting", null);
+            Invoke(window, "StopFrameBlend", false);
+            PrepareWorkModeIdleState(window);
+        }
+    }
+
+    private static void AssertWorkSpritePixelReuseSourceContract()
+    {
+        var source = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var showStableFrame = ExtractPrivateMethodSource(source, "ShowStableFrame");
+        var canReuse = ExtractPrivateMethodSource(
+            source,
+            "CanReuseDisplayedSpritePixels");
+        var samePixels = ExtractPrivateMethodSource(
+            source,
+            "ReferencesSameSpritePixels");
+        var reuseIndex = showStableFrame.IndexOf(
+            "var canReuseDisplayedSpritePixels",
+            StringComparison.Ordinal);
+        var stopBlendIndex = showStableFrame.IndexOf(
+            "StopFrameBlend(snapToTarget: false)",
+            StringComparison.Ordinal);
+        var guardedWriteIndex = showStableFrame.IndexOf(
+            "WriteDirectSpriteFrame(frame)",
+            StringComparison.Ordinal);
+        var logicalTailIndex = showStableFrame.IndexOf(
+            "var pillowOpacity",
+            StringComparison.Ordinal);
+        Assert(reuseIndex >= 0 &&
+               stopBlendIndex > reuseIndex &&
+               guardedWriteIndex > stopBlendIndex &&
+               logicalTailIndex > guardedWriteIndex,
+            "Work identical-pixel reuse must capture its decision before stopping " +
+            "an in-flight blend, guard only the direct write, then continue into " +
+            "the unchanged logical-frame tail.");
+
+        var reuseRegion = showStableFrame[reuseIndex..logicalTailIndex];
+        Assert(canReuse.Contains(
+                   "_workState == WorkState.Typing",
+                   StringComparison.Ordinal) &&
+               canReuse.Contains(
+                   "IsWorkTypingLoopClip(_activeClip)",
+                   StringComparison.Ordinal) &&
+               canReuse.Contains(
+                   "requestedBlendDuration == TimeSpan.Zero",
+                   StringComparison.Ordinal) &&
+               canReuse.Contains("!_isFrameBlending", StringComparison.Ordinal) &&
+               canReuse.Contains(
+                   "_currentSpriteFrame is SpriteFrame displayedFrame",
+                   StringComparison.Ordinal) &&
+               canReuse.Contains(
+                   "_directDisplayFrameBounds is { } displayedBounds",
+                   StringComparison.Ordinal) &&
+               canReuse.Contains(
+                   "displayedBounds == GetVisibleFrameBounds(displayedFrame)",
+                   StringComparison.Ordinal) &&
+               canReuse.Contains(
+                   "ReferencesSameSpritePixels(displayedFrame, frame)",
+                   StringComparison.Ordinal) &&
+               reuseRegion.Contains(
+                   "CanReuseDisplayedSpritePixels(frame, requestedBlendDuration)",
+                   StringComparison.Ordinal) &&
+               reuseRegion.Contains(
+                   "if (!canReuseDisplayedSpritePixels)",
+                   StringComparison.Ordinal) &&
+               !reuseRegion.Contains("return;", StringComparison.Ordinal) &&
+               showStableFrame.Split(
+                   "WriteDirectSpriteFrame(frame)",
+                   StringSplitOptions.None).Length == 2,
+            "Pixel reuse must remain restricted to a zero-blend active typing " +
+            "loop whose current direct bounds are proven, and must not add an " +
+            "early return that bypasses descriptor, pillow, snore, or clock state.");
+        Assert(showStableFrame.IndexOf(
+                   "_currentSpriteFrame = frame",
+                   logicalTailIndex,
+                   StringComparison.Ordinal) > logicalTailIndex &&
+               showStableFrame.IndexOf(
+                   "_spriteFrameDescriptorPublishedForTesting?.Invoke",
+                   logicalTailIndex,
+                   StringComparison.Ordinal) > logicalTailIndex &&
+               showStableFrame.IndexOf(
+                   "RefreshSnoreBubbleAnimationState()",
+                   logicalTailIndex,
+                   StringComparison.Ordinal) > logicalTailIndex,
+            "A reused physical pose must still publish the new logical descriptor " +
+            "and refresh all name-sensitive companion visuals.");
+        Assert(samePixels.Contains(
+                   "string.Equals(first.PageName, second.PageName, StringComparison.Ordinal)",
+                   StringComparison.Ordinal) &&
+               samePixels.Contains("first.X == second.X", StringComparison.Ordinal) &&
+               samePixels.Contains("first.Y == second.Y", StringComparison.Ordinal) &&
+               samePixels.Contains("first.Width == second.Width", StringComparison.Ordinal) &&
+               samePixels.Contains("first.Height == second.Height", StringComparison.Ordinal) &&
+               samePixels.Contains(
+                   "first.DestinationX == second.DestinationX",
+                   StringComparison.Ordinal) &&
+               samePixels.Contains(
+                   "first.DestinationY == second.DestinationY",
+                   StringComparison.Ordinal) &&
+               !samePixels.Contains("first.Name", StringComparison.Ordinal) &&
+               !samePixels.Contains("second.Name", StringComparison.Ordinal),
+            "Physical-pixel identity must compare the atlas page, source rectangle, " +
+            "and destination exactly while deliberately allowing different logical names.");
+    }
+
+    private static void AssertWorkLoopSameDescriptorReuse(
+        MainWindow window,
+        Array frames,
+        object clip,
+        string sequence)
+    {
+        var duplicateTargetIndices = Enumerable.Range(1, frames.Length - 1)
+            .Where(index => ReferencesSameSpritePixelsForTest(
+                frames.GetValue(index - 1)!,
+                frames.GetValue(index)!))
+            .ToArray();
+        Assert(frames.Length == 96 && duplicateTargetIndices.Length == 23,
+            $"Work {sequence} must expose the reviewed 23 adjacent same-descriptor " +
+            $"transitions in its 96-frame authored loop, actual " +
+            $"{duplicateTargetIndices.Length}.");
+
+        var targetIndex = duplicateTargetIndices[0];
+        var sourceIndex = targetIndex - 1;
+        var sourceFrame = frames.GetValue(sourceIndex)!;
+        var targetFrame = frames.GetValue(targetIndex)!;
+        var sourceInfo = GetSpriteFrameInfo(sourceFrame);
+        var targetInfo = GetSpriteFrameInfo(targetFrame);
+        Assert(!string.Equals(sourceInfo.Name, targetInfo.Name, StringComparison.Ordinal),
+            $"Work {sequence} reuse fixture requires distinct logical frame names.");
+
+        PrepareDirectSpriteReuseFixture(
+            window,
+            sourceFrame,
+            targetFrame,
+            clip,
+            "Typing",
+            sourceIndex);
+        var physicalBeforeSentinel = CopyCurrentDisplayPixels(window);
+        var displayPixelOffset = GetDisplayPixelOffset(targetInfo);
+        var sourceSentinel = CreateXorPixel(
+            physicalBeforeSentinel.AsSpan(displayPixelOffset, 4),
+            0x5a);
+        var backplaneSentinel = CreateXorPixel(
+            physicalBeforeSentinel.AsSpan(displayPixelOffset, 4),
+            0xa5);
+        var sourceMutation = ReplaceLoadedSpriteSourcePixel(
+            window,
+            targetFrame,
+            sourceSentinel);
+        try
+        {
+            var bitmap = GetField<WriteableBitmap>(window, "_displayFrameBuffer");
+            bitmap.WritePixels(
+                new Int32Rect(targetInfo.DestinationX, targetInfo.DestinationY, 1, 1),
+                backplaneSentinel,
+                4,
+                0);
+            var physicalSentinelSnapshot = CopyCurrentDisplayPixels(window);
+            var managedSnapshot =
+                GetField<byte[]>(window, "_displayFramePixels").ToArray();
+            var publications = new List<(
+                string PageName,
+                string Name,
+                int Width,
+                int Height,
+                int DestinationX,
+                int DestinationY)>();
+            Action<string, string, int, int, int, int> observer =
+                (pageName, name, width, height, destinationX, destinationY) =>
+                    publications.Add((
+                        pageName,
+                        name,
+                        width,
+                        height,
+                        destinationX,
+                        destinationY));
+            SetField(window, "_spriteFrameDescriptorPublishedForTesting", observer);
+
+            var anchorTimestamp = Stopwatch.GetTimestamp();
+            SetField(window, "_workLoopAnchorFramePosition", (double)sourceIndex);
+            SetField(window, "_workLoopAnchorTimestamp", anchorTimestamp);
+            SetField(window, "_workLoopPlaybackRate", 1d);
+            var nextFrameTimestamp = checked(
+                anchorTimestamp +
+                (long)Math.Ceiling(Stopwatch.Frequency * 1.1d / 60d));
+            Invoke(window, "AdvanceWorkLoop", nextFrameTimestamp);
+
+            var currentFrame = GetRawField(window, "_currentSpriteFrame");
+            var physicalAfter = CopyCurrentDisplayPixels(window);
+            var managedAfter = GetField<byte[]>(window, "_displayFramePixels");
+            Assert(GetField<int>(window, "_activeFrameIndex") == targetIndex &&
+                   Equals(currentFrame, targetFrame) &&
+                   publications.Count == 1 &&
+                   string.Equals(
+                       publications[0].PageName,
+                       targetInfo.PageName,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       publications[0].Name,
+                       targetInfo.Name,
+                       StringComparison.Ordinal) &&
+                   publications[0].Width == targetInfo.Width &&
+                   publications[0].Height == targetInfo.Height &&
+                   publications[0].DestinationX == targetInfo.DestinationX &&
+                   publications[0].DestinationY == targetInfo.DestinationY,
+                $"Work {sequence} same-pixel hold must advance the logical index, " +
+                "current descriptor, and descriptor callback exactly once.");
+            Assert(physicalAfter.AsSpan().SequenceEqual(physicalSentinelSnapshot) &&
+                   managedAfter.AsSpan().SequenceEqual(managedSnapshot),
+                $"Work {sequence} same-pixel hold must leave every physical and " +
+                "managed display byte unchanged; the atlas/backplane sentinels " +
+                "prove CopyFramePixels and WritePixels were both skipped.");
+            Assert(GetRawField(window, "_directDisplayFrameBounds") is Int32Rect,
+                $"Work {sequence} same-pixel hold must preserve the proven direct bounds.");
+        }
+        finally
+        {
+            RestoreLoadedSpriteSourcePixel(sourceMutation);
+            try
+            {
+                SetField(window, "_spriteFrameDescriptorPublishedForTesting", null);
+            }
+            finally
+            {
+                Invoke(window, "WriteDirectSpriteFrame", targetFrame);
+            }
+        }
+    }
+
+    private static void AssertWorkSpritePixelReuseGuardMatrix(
+        MainWindow window,
+        Array normalFrames,
+        Array seriousFrames,
+        object normalClip)
+    {
+        var targetIndex = Enumerable.Range(1, normalFrames.Length - 1)
+            .First(index => ReferencesSameSpritePixelsForTest(
+                normalFrames.GetValue(index - 1)!,
+                normalFrames.GetValue(index)!));
+        var currentFrame = normalFrames.GetValue(targetIndex - 1)!;
+        var sameDescriptorFrame = normalFrames.GetValue(targetIndex)!;
+        var info = GetSpriteFrameInfo(sameDescriptorFrame);
+        var seriousPageFrame = seriousFrames.GetValue(targetIndex)!;
+        var seriousInfo = GetSpriteFrameInfo(seriousPageFrame);
+        Assert(!string.Equals(info.PageName, seriousInfo.PageName, StringComparison.Ordinal) &&
+               info.X == seriousInfo.X &&
+               info.Y == seriousInfo.Y &&
+               info.Width == seriousInfo.Width &&
+               info.Height == seriousInfo.Height &&
+               info.DestinationX == seriousInfo.DestinationX &&
+               info.DestinationY == seriousInfo.DestinationY,
+            "The PageName guard fixture must vary only the atlas page and logical name.");
+        Assert(!(bool)InvokeStatic(
+                   typeof(MainWindow),
+                   "ReferencesSameSpritePixels",
+                   sameDescriptorFrame,
+                   seriousPageFrame)!,
+            "An otherwise identical source/destination descriptor from another " +
+            "atlas page must be rejected without manufacturing an invalid mixed-page " +
+            "loaded-buffer fixture.");
+
+        var spritePages = GetField<IDictionary>(window, "_spritePages");
+        var currentPage = spritePages[info.PageName]
+            ?? throw new InvalidOperationException(
+                $"Missing work-loop atlas page {info.PageName}.");
+        var pageWidth = GetProperty<int>(currentPage, "Width");
+        var pageHeight = GetProperty<int>(currentPage, "Height");
+        var shiftedX = info.X + info.Width < pageWidth
+            ? info.X + 1
+            : info.X - 1;
+        var shiftedY = info.Y + info.Height < pageHeight
+            ? info.Y + 1
+            : info.Y - 1;
+        Assert(shiftedX >= 0 && shiftedX + info.Width <= pageWidth &&
+               shiftedY >= 0 && shiftedY + info.Height <= pageHeight,
+            "The X/Y guard fixtures must remain valid atlas rectangles.");
+        var shiftedXFrame = CreateSpriteFrameForTest(
+            sameDescriptorFrame,
+            x: shiftedX,
+            name: info.Name + "#reuse-x");
+        var shiftedYFrame = CreateSpriteFrameForTest(
+            sameDescriptorFrame,
+            y: shiftedY,
+            name: info.Name + "#reuse-y");
+        Assert(!(bool)InvokeStatic(
+                   typeof(MainWindow),
+                   "ReferencesSameSpritePixels",
+                   sameDescriptorFrame,
+                   shiftedXFrame)! &&
+               !(bool)InvokeStatic(
+                   typeof(MainWindow),
+                   "ReferencesSameSpritePixels",
+                   sameDescriptorFrame,
+                   shiftedYFrame)!,
+            "A valid one-pixel X or Y source shift must disable physical-pixel reuse. " +
+            "Exercise these axis guards through the production predicate without " +
+            "asking the physical writer to display synthetic neighboring atlas pixels.");
+
+        PrepareDirectSpriteReuseFixture(
+            window,
+            currentFrame,
+            sameDescriptorFrame,
+            normalClip,
+            "Typing",
+            targetIndex - 1);
+        Assert((bool)Invoke(
+                   window,
+                   "CanReuseDisplayedSpritePixels",
+                   sameDescriptorFrame,
+                   TimeSpan.Zero)! &&
+               !(bool)Invoke(
+                   window,
+                   "CanReuseDisplayedSpritePixels",
+                   sameDescriptorFrame,
+                   TimeSpan.FromTicks(1))!,
+            "The production reuse predicate must accept the proven zero-blend " +
+            "work hold and reject the same pixels for any positive blend duration.");
+
+        var workEnterClip = GetField<object>(window, "_workEnterClip");
+        var cases = new (
+            string Label,
+            object TargetFrame,
+            string WorkState,
+            object? ActiveClip,
+            TimeSpan BlendDuration,
+            string BoundsMode)[]
+        {
+            ("Width", CreateSpriteFrameForTest(
+                sameDescriptorFrame,
+                width: info.Width - 1,
+                name: info.Name + "#reuse-width"),
+                "Typing", normalClip, TimeSpan.Zero, "Valid"),
+            ("Height", CreateSpriteFrameForTest(
+                sameDescriptorFrame,
+                height: info.Height - 1,
+                name: info.Name + "#reuse-height"),
+                "Typing", normalClip, TimeSpan.Zero, "Valid"),
+            ("DestinationX", CreateSpriteFrameForTest(
+                sameDescriptorFrame,
+                destinationX: info.DestinationX + 1,
+                name: info.Name + "#reuse-destination-x"),
+                "Typing", normalClip, TimeSpan.Zero, "Valid"),
+            ("DestinationY", CreateSpriteFrameForTest(
+                sameDescriptorFrame,
+                destinationY: info.DestinationY + 1,
+                name: info.Name + "#reuse-destination-y"),
+                "Typing", normalClip, TimeSpan.Zero, "Valid"),
+            ("direct bounds null", sameDescriptorFrame,
+                "Typing", normalClip, TimeSpan.Zero, "Null"),
+            ("direct bounds mismatch", sameDescriptorFrame,
+                "Typing", normalClip, TimeSpan.Zero, "Mismatch"),
+            ("non-Typing state", sameDescriptorFrame,
+                "Idle", normalClip, TimeSpan.Zero, "Valid"),
+            ("non-loop clip", sameDescriptorFrame,
+                "Typing", workEnterClip, TimeSpan.Zero, "Valid")
+        };
+
+        foreach (var guardCase in cases)
+        {
+            try
+            {
+                AssertWorkSpritePixelReuseGuardForcesWrite(
+                    window,
+                    currentFrame,
+                    targetIndex - 1,
+                    guardCase.TargetFrame,
+                    guardCase.WorkState,
+                    guardCase.ActiveClip,
+                    guardCase.BlendDuration,
+                    guardCase.BoundsMode,
+                    guardCase.Label);
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    $"Sprite-pixel reuse guard case failed: {guardCase.Label}",
+                    exception);
+            }
+        }
+    }
+
+    private static void AssertWorkSpritePixelReuseGuardForcesWrite(
+        MainWindow window,
+        object currentFrame,
+        int currentFrameIndex,
+        object targetFrame,
+        string workState,
+        object? activeClip,
+        TimeSpan blendDuration,
+        string boundsMode,
+        string label)
+    {
+        PrepareDirectSpriteReuseFixture(
+            window,
+            currentFrame,
+            targetFrame,
+            activeClip,
+            workState,
+            currentFrameIndex);
+        switch (boundsMode)
+        {
+            case "Null":
+                SetField(window, "_directDisplayFrameBounds", null);
+                break;
+            case "Mismatch":
+                SetField(window, "_directDisplayFrameBounds", Int32Rect.Empty);
+                break;
+            case "Valid":
+                break;
+            default:
+                throw new InvalidOperationException(
+                    $"Unknown sprite-reuse bounds mode: {boundsMode}");
+        }
+
+        var targetInfo = GetSpriteFrameInfo(targetFrame);
+        var physicalBefore = CopyCurrentDisplayPixels(window);
+        var displayPixelOffset = GetDisplayPixelOffset(targetInfo);
+        var sourceSentinel = CreateXorPixel(
+            physicalBefore.AsSpan(displayPixelOffset, 4),
+            0x5a);
+        var sourceMutation = ReplaceLoadedSpriteSourcePixel(
+            window,
+            targetFrame,
+            sourceSentinel);
+        try
+        {
+            var expected = new byte[checked(RenderPixelWidth * RenderPixelHeight * 4)];
+            InvokeOverload(window, "CopyFramePixels", targetFrame, expected);
+            Assert(!physicalBefore.AsSpan().SequenceEqual(expected),
+                $"{label} guard fixture must make a real target write observable.");
+
+            SetField(window, "_nextFrameBlendDuration", blendDuration);
+            Invoke(window, "ShowStableFrame", targetFrame);
+            if (blendDuration > TimeSpan.Zero)
+            {
+                Assert(GetField<bool>(window, "_isFrameBlending"),
+                    "A positive requested duration must retain the existing blend path, " +
+                    "not enter identical-pixel direct reuse.");
+                var blendStartedTimestamp =
+                    GetField<long>(window, "_frameBlendStartedTimestamp");
+                Invoke(
+                    window,
+                    "UpdateFrameBlend",
+                    checked(blendStartedTimestamp + Stopwatch.Frequency),
+                    true);
+            }
+
+            var physicalAfter = CopyCurrentDisplayPixels(window);
+            var managedAfter = GetField<byte[]>(window, "_displayFramePixels");
+            Assert(physicalAfter.AsSpan().SequenceEqual(expected) &&
+                   managedAfter.AsSpan().SequenceEqual(expected) &&
+                   Equals(GetRawField(window, "_currentSpriteFrame"), targetFrame),
+                $"Changing {label} must force the established direct/blend writer " +
+                "and publish the complete target pixels.");
+        }
+        finally
+        {
+            RestoreLoadedSpriteSourcePixel(sourceMutation);
+            Invoke(window, "StopFrameBlend", false);
+            Invoke(window, "WriteDirectSpriteFrame", targetFrame);
+        }
+    }
+
+    private static void AssertWorkSpritePixelReuseStopsPendingBlend(
+        MainWindow window,
+        Array frames,
+        object clip)
+    {
+        var duplicateTargetIndex = Enumerable.Range(1, frames.Length - 1)
+            .First(index => ReferencesSameSpritePixelsForTest(
+                frames.GetValue(index - 1)!,
+                frames.GetValue(index)!));
+        var blendTarget = frames.GetValue(duplicateTargetIndex)!;
+        var blendTargetInfo = GetSpriteFrameInfo(blendTarget);
+        var directSourceIndex = Enumerable.Range(0, duplicateTargetIndex)
+            .First(index =>
+            {
+                var candidate = frames.GetValue(index)!;
+                var candidateInfo = GetSpriteFrameInfo(candidate);
+                return string.Equals(
+                           candidateInfo.PageName,
+                           blendTargetInfo.PageName,
+                           StringComparison.Ordinal) &&
+                       !ReferencesSameSpritePixelsForTest(candidate, blendTarget);
+            });
+        var directSource = frames.GetValue(directSourceIndex)!;
+        var finalTarget = CloneSpriteFrameWithName(
+            blendTarget,
+            blendTargetInfo.Name + "#post-blend-direct");
+        PrepareDirectSpriteReuseFixture(
+            window,
+            directSource,
+            blendTarget,
+            clip,
+            "Typing",
+            directSourceIndex);
+        var directPixels = CopyCurrentDisplayPixels(window);
+        var finalPixels = new byte[checked(RenderPixelWidth * RenderPixelHeight * 4)];
+        InvokeOverload(window, "CopyFramePixels", finalTarget, finalPixels);
+        Assert(!directPixels.AsSpan().SequenceEqual(finalPixels),
+            "The pre-Stop blend regression requires visibly different A and C pixels.");
+
+        // All production blend durations are zero and the three blend buffers are
+        // intentionally empty. Reproduce only the narrow state-machine window at
+        // issue here: B is already the logical target, but A is still the proven
+        // direct backplane and the blend flag has not yet been stopped.
+        SetField(window, "_currentSpriteFrame", blendTarget);
+        SetField(window, "_isFrameBlending", true);
+        Assert(GetField<bool>(window, "_isFrameBlending") &&
+               GetRawField(window, "_directDisplayFrameBounds") is Int32Rect &&
+               Equals(GetRawField(window, "_currentSpriteFrame"), blendTarget) &&
+               CopyCurrentDisplayPixels(window).AsSpan().SequenceEqual(directPixels),
+            "The pending-B state fixture must leave A's direct backplane and " +
+            "marker intact while advancing the logical target to B.");
+
+        SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "ShowStableFrame", finalTarget);
+        Assert(!GetField<bool>(window, "_isFrameBlending") &&
+               Equals(GetRawField(window, "_currentSpriteFrame"), finalTarget) &&
+               CopyCurrentDisplayPixels(window).AsSpan().SequenceEqual(finalPixels) &&
+               GetField<byte[]>(window, "_displayFramePixels")
+                   .AsSpan().SequenceEqual(finalPixels),
+            "A direct -> pending blend B -> zero-blend C handoff must read the " +
+            "blend flag before StopFrameBlend and physically publish C; retaining " +
+            "A would prove the stale-direct-marker bug has returned.");
+    }
+
+    private static void AssertWorkSpritePixelReuseDefersFirstFrameClock(
+        MainWindow window,
+        Array frames,
+        object clip)
+    {
+        var targetIndex = Enumerable.Range(1, frames.Length - 1)
+            .First(index => ReferencesSameSpritePixelsForTest(
+                frames.GetValue(index - 1)!,
+                frames.GetValue(index)!));
+        var targetFrame = frames.GetValue(targetIndex)!;
+        var targetInfo = GetSpriteFrameInfo(targetFrame);
+        var displayedAlias = CloneSpriteFrameWithName(
+            targetFrame,
+            targetInfo.Name + "#deferred-alias");
+        PrepareDirectSpriteReuseFixture(
+            window,
+            displayedAlias,
+            targetFrame,
+            activeClip: null,
+            workState: "Typing",
+            activeFrameIndex: -1);
+        SetField(window, "_workLoopAnchorFramePosition", (double)targetIndex);
+        SetField(window, "_workLoopAnchorTimestamp", 0L);
+        var physicalBefore = CopyCurrentDisplayPixels(window);
+        var displayPixelOffset = GetDisplayPixelOffset(targetInfo);
+        var backplaneSentinel = CreateXorPixel(
+            physicalBefore.AsSpan(displayPixelOffset, 4),
+            0xa5);
+        GetField<WriteableBitmap>(window, "_displayFrameBuffer").WritePixels(
+            new Int32Rect(targetInfo.DestinationX, targetInfo.DestinationY, 1, 1),
+            backplaneSentinel,
+            4,
+            0);
+        var physicalSentinelSnapshot = CopyCurrentDisplayPixels(window);
+        var publications = new List<string>();
+        Action<string, string, int, int, int, int> observer =
+            (_, name, _, _, _, _) => publications.Add(name);
+        SetField(window, "_spriteFrameDescriptorPublishedForTesting", observer);
+
+        try
+        {
+            Invoke(window, "StartWorkClipAt", clip, targetIndex);
+            Assert(ReferenceEquals(GetRawField(window, "_activeClip"), clip) &&
+                   GetField<int>(window, "_activeFrameIndex") == targetIndex &&
+                   Equals(GetRawField(window, "_currentSpriteFrame"), targetFrame) &&
+                   publications.SequenceEqual(new[] { targetInfo.Name }) &&
+                   GetField<long>(window, "_activeClipStartedTimestamp") == 0 &&
+                   GetField<long>(window, "_workLoopAnchorTimestamp") == 0 &&
+                   GetField<long>(window, "_activeFrameDeadlineTimestamp") ==
+                       long.MaxValue &&
+                   ReferenceEquals(
+                       GetRawField(window, "_deferredActiveClipClock"),
+                       clip) &&
+                   Equals(
+                       GetRawField(window, "_deferredActiveClipClockFrame"),
+                       targetFrame) &&
+                   CopyCurrentDisplayPixels(window).AsSpan()
+                       .SequenceEqual(physicalSentinelSnapshot),
+                "A same-pixel work clip first frame must publish its logical " +
+                "descriptor and sentinel deadline without rewriting the backplane " +
+                "or starting the absolute clock in the input turn.");
+
+            var firstPresentationTimestamp = Math.Max(1, Stopwatch.GetTimestamp());
+            Invoke(
+                window,
+                "TryStartDeferredActiveClipClockAt",
+                firstPresentationTimestamp);
+            Assert(GetField<long>(window, "_activeClipStartedTimestamp") ==
+                       firstPresentationTimestamp &&
+                   GetField<long>(window, "_workLoopAnchorTimestamp") ==
+                       firstPresentationTimestamp &&
+                   GetField<long>(window, "_activeFrameDeadlineTimestamp") ==
+                       long.MaxValue &&
+                   GetRawField(window, "_deferredActiveClipClock") is null,
+                "The reused first pose must start its work absolute clock only at " +
+                "the next presentation callback.");
+        }
+        finally
+        {
+            SetField(window, "_spriteFrameDescriptorPublishedForTesting", null);
+            Invoke(window, "WriteDirectSpriteFrame", targetFrame);
+        }
+    }
+
+    private static void PrepareDirectSpriteReuseFixture(
+        MainWindow window,
+        object currentFrame,
+        object targetFrame,
+        object? activeClip,
+        string workState,
+        int activeFrameIndex)
+    {
+        Invoke(window, "StopFrameBlend", false);
+        SetField(window, "_spriteFrameDescriptorPublishedForTesting", null);
+        SetField(window, "_activeClip", null);
+        SetField(window, "_activeFrameIndex", -1);
+        SetField(window, "_activeClipStartedTimestamp", 0L);
+        SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+        SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
+        SetField(window, "_workLoopAnchorTimestamp", 0L);
+        SetField(window, "_workLoopAnchorFramePosition", 0d);
+        SetField(window, "_workLoopPlaybackRate", 1d);
+        SetField(window, "_workFastUntilTimestamp", 0L);
+        SetField(window, "_workExitRequested", false);
+        SetField(window, "_workSeriousEnterRequested", false);
+        SetField(window, "_workSeriousExitRequested", false);
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_pendingSpriteFrameBlendDuration", TimeSpan.Zero);
+        SetField(window, "_failedSpritePageName", null);
+        Invoke(window, "ClearDeferredActiveClipClock");
+        PrimeSpritePageForFrame(window, currentFrame);
+        SetField(window, "_currentSpriteFrame", null);
+        SetField(window, "_directDisplayFrameBounds", null);
+        SetField(window, "_nextFrameBlendDuration", TimeSpan.Zero);
+        Invoke(window, "ShowStableFrame", currentFrame);
+        PrimeSpritePageForFrame(window, targetFrame);
+        SetField(window, "_workState", GetNestedEnum("WorkState", workState));
+        SetField(window, "_activeClip", activeClip);
+        SetField(window, "_activeFrameIndex", activeFrameIndex);
+        SetField(window, "_workLoopAnchorFramePosition", (double)activeFrameIndex);
+        Assert(Equals(GetRawField(window, "_currentSpriteFrame"), currentFrame) &&
+               GetRawField(window, "_directDisplayFrameBounds") is Int32Rect &&
+               !GetField<bool>(window, "_isFrameBlending"),
+            "Sprite-reuse fixture must begin from a proven direct current frame.");
+    }
+
     private static void AssertWorkTypingPresentationSampling(
         MainWindow window,
         Array frames,
@@ -24375,12 +25071,18 @@ internal static partial class Program
 
     private static string GetCurrentDisplayPixelDigest(MainWindow window)
     {
+        var pixels = CopyCurrentDisplayPixels(window);
+        return Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(pixels));
+    }
+
+    private static byte[] CopyCurrentDisplayPixels(MainWindow window)
+    {
         var bitmap = GetField<WriteableBitmap>(window, "_displayFrameBuffer");
         var stride = checked(bitmap.PixelWidth * 4);
         var pixels = new byte[checked(stride * bitmap.PixelHeight)];
         bitmap.CopyPixels(pixels, stride, offset: 0);
-        return Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(pixels));
+        return pixels;
     }
 
     private static void AssertCompletedTodoMovesToEndContract(MainWindow window)
@@ -25422,6 +26124,20 @@ internal static partial class Program
 
     private static object CloneSpriteFrameWithName(object frame, string name)
     {
+        return CreateSpriteFrameForTest(frame, name: name);
+    }
+
+    private static object CreateSpriteFrameForTest(
+        object frame,
+        int? x = null,
+        int? y = null,
+        int? width = null,
+        int? height = null,
+        int? destinationX = null,
+        int? destinationY = null,
+        string? pageName = null,
+        string? name = null)
+    {
         var info = GetSpriteFrameInfo(frame);
         return Activator.CreateInstance(
                    frame.GetType(),
@@ -25429,17 +26145,88 @@ internal static partial class Program
                    binder: null,
                    args:
                    [
-                       info.X,
-                       info.Y,
-                       info.Width,
-                       info.Height,
-                       info.DestinationX,
-                       info.DestinationY,
-                       info.PageName,
-                       name
+                       x ?? info.X,
+                       y ?? info.Y,
+                       width ?? info.Width,
+                       height ?? info.Height,
+                       destinationX ?? info.DestinationX,
+                       destinationY ?? info.DestinationY,
+                       pageName ?? info.PageName,
+                       name ?? info.Name
                    ],
                    culture: null)
                ?? throw new InvalidOperationException("无法克隆测试SpriteFrame");
+    }
+
+    private static bool ReferencesSameSpritePixelsForTest(
+        object first,
+        object second)
+    {
+        var firstInfo = GetSpriteFrameInfo(first);
+        var secondInfo = GetSpriteFrameInfo(second);
+        return string.Equals(
+                   firstInfo.PageName,
+                   secondInfo.PageName,
+                   StringComparison.Ordinal) &&
+               firstInfo.X == secondInfo.X &&
+               firstInfo.Y == secondInfo.Y &&
+               firstInfo.Width == secondInfo.Width &&
+               firstInfo.Height == secondInfo.Height &&
+               firstInfo.DestinationX == secondInfo.DestinationX &&
+               firstInfo.DestinationY == secondInfo.DestinationY;
+    }
+
+    private static int GetDisplayPixelOffset(SpriteFrameInfo frame)
+    {
+        Assert(frame.DestinationX >= 0 &&
+               frame.DestinationX < RenderPixelWidth &&
+               frame.DestinationY >= 0 &&
+               frame.DestinationY < RenderPixelHeight,
+            $"Sprite-reuse sentinel requires a visible top-left pixel: {frame.Name}");
+        return checked(
+            (frame.DestinationY * RenderPixelWidth + frame.DestinationX) * 4);
+    }
+
+    private static byte[] CreateXorPixel(ReadOnlySpan<byte> pixel, byte mask)
+    {
+        Assert(pixel.Length == 4, "A Pbgra32 sentinel must contain exactly four bytes.");
+        return
+        [
+            (byte)(pixel[0] ^ mask),
+            (byte)(pixel[1] ^ mask),
+            (byte)(pixel[2] ^ mask),
+            (byte)(pixel[3] ^ mask)
+        ];
+    }
+
+    private static (byte[] Buffer, int Offset, byte[] Original)
+        ReplaceLoadedSpriteSourcePixel(
+            MainWindow window,
+            object frame,
+            byte[] replacement)
+    {
+        Assert(replacement.Length == 4,
+            "A Pbgra32 source sentinel must contain exactly four bytes.");
+        var info = GetSpriteFrameInfo(frame);
+        Assert(string.Equals(
+                   GetRawField(window, "_loadedSpritePageName") as string,
+                   info.PageName,
+                   StringComparison.Ordinal),
+            $"Sprite-reuse source sentinel requires loaded page {info.PageName}.");
+        var pixels = GetField<byte[]>(window, "_spritePagePixels");
+        var stride = GetField<int>(window, "_loadedSpritePageStride");
+        var offset = checked(info.Y * stride + info.X * 4);
+        Assert(offset >= 0 && offset + 4 <= pixels.Length,
+            $"Sprite-reuse source sentinel is outside page {info.PageName}.");
+        var original = pixels.AsSpan(offset, 4).ToArray();
+        replacement.CopyTo(pixels, offset);
+        return (pixels, offset, original);
+    }
+
+    private static void RestoreLoadedSpriteSourcePixel(
+        (byte[] Buffer, int Offset, byte[] Original) mutation)
+    {
+        mutation.Original.CopyTo(mutation.Buffer, mutation.Offset);
     }
 
     private static void PrimeSpritePageForFrame(MainWindow window, object frame)

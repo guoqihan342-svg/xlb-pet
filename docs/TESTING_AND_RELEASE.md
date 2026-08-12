@@ -1,4 +1,4 @@
-# v1.0.74 测试与发布
+# v1.0.75 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -69,7 +69,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--pet-size-only` | 尺寸滑块手势、连续缩放和待办布局 |
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
 | `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟、四种普通动作的绝对时间轴、精确完整水平镜像 6 种尺寸及真实窗口矩阵的逐字节旧路径等价，以及非目标矩阵严格回退 |
-| `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
+| `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、normal / serious 各 23 处相邻同描述符候选的强谓词像素复用、逻辑发布与 deferred clock 不变、pre-Stop blend 状态防误复用、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
 | `--resident-cache-only` | 仅待机页常驻、普通/normal 工作/serious 工作/巡游/稳定空闲 `52/57/73/92/12 MiB` 预算、`8 MiB` LOH 门槛、normal 的 idle+3 页与 serious 的 idle+3 loop+serious-exit 热集、normal → serious → normal 自然往返、serious 右键退出的唯一预取槽顺序、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
 | `--atlas-hash-only` | 图集页上限、Brotli payload 和像素哈希失败关闭 |
 | `--memory-profile` | 本地内存剖面输出；不是普通 pass/fail 快速测试 |
@@ -244,6 +244,23 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.75 发布验证
+
+以下源码差异、构建、自动回归和同机隔离 A/B 于 `2026-08-13` 完成；正式 EXE、提交、标签、GitHub Release 与独立回下载证据待发布后回填。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 像素复用边界 | 仅 `Typing` normal / serious loop，在 zero blend、无 active blend、direct provenance / bounds 匹配且前后帧 page/source/destination 描述符完全相同时跳过 `CopyFramePixels + WritePixels`。逻辑 frame/name/index、descriptor callback、枕头、呼噜、绝对时钟和预取继续原路径；其他状态、clip、blend、bounds 或描述符差异均真实写入 |
+| 静态上限 | normal / serious 作者序列各 96 帧、各 23 处相邻重复候选；每次命中避免 `656,844 B`，完整作者顺序圈最多避免 `15,107,412 B`（`14.408 MiB`）及 23 次 `WritePixels`。serious 实际以 2 倍速呈现并会跳帧，23 不是其真实每圈命中数 |
+| normal CPU 隔离 A/B | 同机两轮交替的真实 `MainWindow` normal 稳定段：候选 `8.5677% / 7.2135%`，基线 `13.4635% / 12.4740%`；合并均值为基线 `12.96875%` → 候选 `7.890625%`，绝对减少 `5.078125` 个百分点、相对减少 `39.1566%`。仅代表该隔离场景，不声称全局固定 CPU 降幅 |
+| 内存与缓存 | 工作精确 resident 热集仍为 `55,392,540 B`；resident / pool 均保持 4 页，LRU 与预算不变，Private / Working Set 未见持续增加。本版不声称降低内存 |
+| 自动化与构建 | `DesktopPet` 与 `UiStateChecks` 两个 Release 构建均为 `0 warning / 0 error`；`--work-mode-only`、`--clip-clock-only`、`--resident-cache-only`、`--roam-interaction-only`、`--todo-only`、`--reminder-only`、`--edge-dock-only`、`--pet-size-only` 专项全部通过，完整 `UiStateChecks` 输出 `UI state checks passed.` |
+| 审计拒绝项 | action-limited prefetch 候选未进入版本功能：真实 WPF like-L2 仍只有 `2/3` cold boundary 通过，未满足质量零妥协门槛；当前预取行为保持不变 |
+| 产品质量边界 | Assets、manifest、像素、画质、帧数、FPS、动画与输入时序、Todo、定时任务、提醒、resident/pool/LRU 和预取语义不变；只消除已证明相同的重复显示提交 |
+| 源码与版本 | 源码版本 `v1.0.75`；功能提交、`FileVersion` 与 `ProductVersion` 待最终提交后回填 |
+| EXE | 待正式发布构建后回填大小、SHA-256 与 Authenticode 状态 |
+| GitHub Release | 待创建标签和 Release、上传附件并在独立目录回下载验真后回填 |
 
 ## v1.0.74 发布验证
 

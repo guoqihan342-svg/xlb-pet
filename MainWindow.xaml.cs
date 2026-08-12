@@ -7674,8 +7674,15 @@ public partial class MainWindow : Window
         }
         else
         {
+            // Capture the reuse decision before StopFrameBlend clears its state:
+            // a blend target is not necessarily the pixels currently on screen.
+            var canReuseDisplayedSpritePixels =
+                CanReuseDisplayedSpritePixels(frame, requestedBlendDuration);
             StopFrameBlend(snapToTarget: false);
-            WriteDirectSpriteFrame(frame);
+            if (!canReuseDisplayedSpritePixels)
+            {
+                WriteDirectSpriteFrame(frame);
+            }
         }
 
         // Visibility would invalidate layout from inside Rendering exactly when
@@ -7886,6 +7893,29 @@ public partial class MainWindow : Window
         WriteDisplayFrame(_displayFramePixels, dirtyBounds);
         _directDisplayFrameBounds = nextBounds;
     }
+
+    private bool CanReuseDisplayedSpritePixels(
+        SpriteFrame frame,
+        TimeSpan requestedBlendDuration) =>
+        _workState == WorkState.Typing &&
+        IsWorkTypingLoopClip(_activeClip) &&
+        requestedBlendDuration == TimeSpan.Zero &&
+        !_isFrameBlending &&
+        _currentSpriteFrame is SpriteFrame displayedFrame &&
+        _directDisplayFrameBounds is { } displayedBounds &&
+        displayedBounds == GetVisibleFrameBounds(displayedFrame) &&
+        ReferencesSameSpritePixels(displayedFrame, frame);
+
+    private static bool ReferencesSameSpritePixels(
+        SpriteFrame first,
+        SpriteFrame second) =>
+        string.Equals(first.PageName, second.PageName, StringComparison.Ordinal) &&
+        first.X == second.X &&
+        first.Y == second.Y &&
+        first.Width == second.Width &&
+        first.Height == second.Height &&
+        first.DestinationX == second.DestinationX &&
+        first.DestinationY == second.DestinationY;
 
     private static void ClearPixelBoundsDifference(
         byte[] pixels,
