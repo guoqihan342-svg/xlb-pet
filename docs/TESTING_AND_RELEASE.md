@@ -246,7 +246,7 @@ git status --short --ignored
 
 ## v1.0.73 发布验证
 
-以下数据是 `2026-08-12` 在同一 Windows / .NET 环境中取得的构建、定向等价测试、隔离 A/B 与完整自动化结果。源码提交、标签、EXE 大小、SHA-256、文件版本、ProductVersion、签名状态、GitHub Release 目标和独立回下载结果仍必须等真实发布后填写，当前不得据此声称已经发布。
+以下构建、定向等价测试、隔离 A/B 与完整自动化结果于 `2026-08-12` 在同一 Windows / .NET 环境中取得；功能提交、Git 标签、GitHub Release 与独立回下载验真于 `2026-08-13` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
@@ -259,7 +259,9 @@ git status --short --ignored
 | CPU 观察 | 同一串行跨运行采样为 `16.41% → 12.42%`；只作为减少解码抖动的方向性信号，不能隔离调度、机器负载等运行间变量，也不能声称稳定 CPU 降幅 |
 | 产品质量边界 | 动画素材、像素、画质、帧数、FPS、绝对时序、输入、Todo、定时任务、提醒及其他功能不变；不通过降清晰度、删帧、降帧率或改变交互换取指标 |
 | 完整自动化 | `DesktopPet` 与 `UiStateChecks` 的 Release 构建连续执行均为 `0 warning / 0 error`；8 个 pass/fail 专项 `--resident-cache-only`、`--work-mode-only`、`--clip-clock-only`、`--edge-dock-only`、`--todo-only`、`--roam-interaction-only`、`--pet-size-only`、`--reminder-only` 全部通过；`--memory-profile` 已完成剖面输出且数值契约满足，该入口不是 pass/fail 测试。完整 `UiStateChecks` 在最小测试夹具隔离修复后连续 2 轮均输出 `UI state checks passed.`。另有 fresh snore `10/10` 与 edge + deadline + snore `3/3` 隔离诊断通过，不替代完整套件 |
-| 源码与发布 | **待真实提交与发布后回填：功能提交、标签、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、Release target、附件 digest 和独立回下载复核** |
+| 源码与版本 | 功能提交 `011bb136d4d833cd997ef7249e0d59d7dca8852d`；`FileVersion=1.0.73.0`，`ProductVersion=1.0.73+011bb136d4d833cd997ef7249e0d59d7dca8852d` |
+| EXE | 单文件框架依赖 EXE 为 `93,347,974` bytes，SHA-256 `9476E8B95855B09FB4B0BDFFBC504A7C7E151AF5CCB3C5CA3BC96F11F17BB4FD`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.73`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.73) 为非 Draft、非 prerelease；标签与 Release target 均指向功能提交，且只有一个 `LubanDesktopPet.exe` 附件。附件元数据 size 为 `93,347,974`、digest 为 `sha256:9476e8b95855b09fb4b0bdffbc504a7c7e151af5ccb3c5ca3bc96f11f17bb4fd`；独立新目录回下载后的大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致。验真过程未运行附件，也未停止或替换用户正在运行的 `v1.0.69` |
 
 ## v1.0.72 发布验证
 
