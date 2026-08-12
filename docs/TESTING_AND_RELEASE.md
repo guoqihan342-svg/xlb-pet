@@ -247,7 +247,7 @@ git status --short --ignored
 
 ## v1.0.74 发布验证
 
-以下结果于 `2026-08-13` 在同一 Windows / .NET SDK `8.0.418` 环境取得。当前只记录源码差异、本地回归和语义终审；功能提交、Git 标签、EXE、哈希、文件版本、签名状态、GitHub Release 与独立回下载结果必须等真实发布后回填，不得据此声称已经发布。
+以下源码差异、本地回归、语义终审、真实发布与独立回下载验证于 `2026-08-13` 在同一 Windows / .NET SDK `8.0.418` 环境完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
@@ -257,7 +257,9 @@ git status --short --ignored
 | serious 右键顺序 | serious loop 到中性缝前保留 serious-exit resident，work-exit 不得成为 desired / prefetch 或增加分页获取；中性缝上的 serious-exit 首帧立即显示、无 pending，随后在 serious-exit 播放窗口内预热 work-exit，并无冷页停顿地进入 work-exit。normal loop 和 work-enter 中途退出的早预热保持不变 |
 | 产品质量边界 | 本轮只改动 resident 预算选择和分页预取顺序；动画 Assets、manifest、像素、画质、帧数、FPS、绝对时序、输入、Todo、定时任务、提醒和其他状态机不变。serious resident 在该短时状态内有意提高，不将本轮表述为常驻内存下降或固定 CPU 降幅 |
 | 自动化与终审 | `DesktopPet` 与 `UiStateChecks` 的 Release 构建均为 `0 warning / 0 error`；强化后 `--resident-cache-only` 通过，完整 `UiStateChecks` 输出 `UI state checks passed.`。独立只读语义终审通过，确认动态预算优先级、serious 右键 guard 边界和 normal / work-enter 旧行为保留 |
-| 源码与发布 | **待真实提交与发布后回填：功能提交、标签、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、Release target、附件 size / digest 和独立回下载复核** |
+| 源码与版本 | 功能提交 `b33af9875f8d8e2b6703db82ec2d83f59fce3db2`；`FileVersion=1.0.74.0`，`ProductVersion=1.0.74+b33af9875f8d8e2b6703db82ec2d83f59fce3db2` |
+| EXE | 单文件框架依赖 EXE 为 `93,348,486` bytes，SHA-256 `83B409F77D537C87695FAC3418AD8735E4FA610A6A0298555DAC2F3A3BFB913B`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.74`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.74) 为非 Draft、非 prerelease；标签与 Release target 均指向功能提交，且只有一个 `LubanDesktopPet.exe` 附件。附件元数据 size 为 `93,348,486`、digest 为 `sha256:83b409f77d537c87695fac3418ad8735e4fa610a6a0298555dac2f3a3bfb913b`；独立新目录回下载后的大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致。验真过程未运行附件，也未停止或替换用户正在运行的 `v1.0.69` |
 
 ## v1.0.73 发布验证
 
