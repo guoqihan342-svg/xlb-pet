@@ -246,16 +246,17 @@ git status --short --ignored
 
 ## v1.0.70 发布验证
 
-以下源码验证于 `2026-08-12` 完成；最终发布提交、EXE 字节数与 SHA-256、Git 标签及 GitHub Release 证据尚待正式发布后回填，本节不预填或推测这些值。
+以下结果于 `2026-08-12` 在 .NET SDK `8.0.418` 环境完成。Release 附件已在独立目录重新下载复核；为避免中断用户正在运行的 `v1.0.69`，本次没有停止进程或替换用户路径 EXE。
 
 | 项目 | 实测结果 |
 | --- | --- |
-| 源码与版本 | 项目版本已更新为 `1.0.70`；最终发布提交、文件产品版本与 Release 目标待发布后回填 |
+| 源码与版本 | 功能提交 `03322f7ff92fbd252c08c40c75113d7966cd4ce3`；文件版本 `1.0.70.0`，产品版本 `1.0.70+03322f7ff92fbd252c08c40c75113d7966cd4ce3` |
 | 缓冲与缓存语义 | 精灵页缓冲新分配按真实解码字节申请；free 数组继续在旧有相邻容量复用边界内 best-fit 选择最小足够数组；全部绕屏页就绪后只丢弃 free decode arrays，resident 正播与逆播帧不动；预算保持常规 `52 MiB`、巡游 `92 MiB`、稳定空闲 `12 MiB`、LOH 淘汰债务 `8 MiB`，图集、像素、帧率和时序不变 |
 | 自动化与构建 | DesktopPet 与 UiStateChecks 的 Release 构建均为 `0` 警告、`0` 错误；完整 UiStateChecks 输出 `UI state checks passed.` |
 | resident / managed 剖面 | 同一 `--memory-profile` baseline → candidate：idle resident `11.00 → 10.86 MiB`；active reaction resident `49.00 → 47.77 MiB`、managed `57.12 → 55.37 MiB`；all reactions resident `48.00 → 46.38 MiB`、managed `53.13 → 51.53 MiB`；active roam resident `82.00 → 79.53 MiB`、managed `87.14 → 84.70 MiB` |
 | 进程 Private | 三轮巡游 Private 中位数 baseline → candidate 为 `209.43 → 208.08 MiB`；这是小幅实测下降，不声称内存减半 |
-| EXE 与 GitHub Release | 待正式发布后回填 EXE 字节数、SHA-256、Authenticode 状态、提交/标签/Release 目标、附件 digest 与独立回下载复核结果 |
+| EXE | framework-dependent 单文件 EXE 为 `93,346,438` 字节，SHA-256 `F27257B3EE7525770D5C753B09ADDCBA679C15BFB6F1F8737A3749F0702F221E`，Authenticode 状态 `NotSigned`；隔离发布目录只包含这一个文件，本次未替换用户路径 EXE |
+| GitHub Release | 已发布 [v1.0.70](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.70)，非草稿、非预发布；标签与 Release 均指向功能提交 `03322f7ff92fbd252c08c40c75113d7966cd4ce3`，附件大小为 `93,346,438` 字节，digest 为 `sha256:f27257b3ee7525770d5c753b09addcba679c15bfb6f1f8737a3749f0702f221e`，独立回下载的字节数、SHA-256、文件版本和产品版本与本地候选完全一致 |
 
 ## v1.0.69 发布验证
 
