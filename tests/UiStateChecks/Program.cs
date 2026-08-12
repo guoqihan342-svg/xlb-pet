@@ -42,6 +42,16 @@ internal static partial class Program
     private const long ExpectedSeriousWorkSpritePageBudgetBytes =
         73L * 1024L * 1024L;
     private const long ExpectedRoamSpritePageBudgetBytes = 92L * 1024L * 1024L;
+    private const long ExpectedCryReactionSpritePageBudgetBytes =
+        99L * 1024L * 1024L;
+    private const long ExpectedCuteReactionSpritePageBudgetBytes =
+        83L * 1024L * 1024L;
+    private const long ExpectedLikeReactionSpritePageBudgetBytes =
+        109L * 1024L * 1024L;
+    private const long ExpectedEatReactionSpritePageBudgetBytes =
+        97L * 1024L * 1024L;
+    private const long ExpectedReminderPreloadAllowanceBytes =
+        12L * 1024L * 1024L;
     private const long ExpectedIdleSpritePageTargetBytes = 12L * 1024L * 1024L;
     private const long ExpectedSpritePageCollectionThresholdBytes = 8L * 1024L * 1024L;
     private const long ExpectedIdleSpriteResidentBytes = 11_383_992L;
@@ -375,6 +385,8 @@ internal static partial class Program
                 {
                     RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                         () => AssertResidentSpritePageWarmupContract(window));
+                    RunCheck(nameof(AssertReactionSpritePageHotSetContract),
+                        () => AssertReactionSpritePageHotSetContract(window));
                     RunCheck(nameof(AssertWorkSpritePageHotSetContract),
                         () => AssertWorkSpritePageHotSetContract(window));
                     RunCheck(nameof(AssertSeriousWorkExitPrefetchOrderingContract),
@@ -459,6 +471,8 @@ internal static partial class Program
 
                 RunCheck(nameof(AssertResidentSpritePageWarmupContract),
                     () => AssertResidentSpritePageWarmupContract(window));
+                RunCheck(nameof(AssertReactionSpritePageHotSetContract),
+                    () => AssertReactionSpritePageHotSetContract(window));
                 RunCheck(nameof(AssertWorkSpritePageHotSetContract),
                     () => AssertWorkSpritePageHotSetContract(window));
                 RunCheck(nameof(AssertSeriousWorkExitPrefetchOrderingContract),
@@ -2011,18 +2025,45 @@ internal static partial class Program
         PrimeSpritePageForFrame(window, idleFrame);
         Invoke(window, "ShowStableFrame", idleFrame);
 
+        var profiledReactionPageLoadUpperBound = 0;
+        var profileAllocationsBeforeAllReactions = GetProperty<long>(
+            GetRawField(window, "_spritePageBufferPool")!,
+            "AllocationCount");
+        var profileReusesBeforeAllReactions = GetProperty<long>(
+            GetRawField(window, "_spritePageBufferPool")!,
+            "ReuseCount");
         foreach (var clip in GetField<Array>(window, "_reactionClips")
                      .Cast<object>())
         {
             SetField(window, "_activeClip", clip);
-            foreach (var pageName in GetClipFrames(clip)
+            var clipPageNames = GetClipFrames(clip)
                          .Cast<object>()
                          .Select(frame => GetProperty<object>(frame, "Image"))
                          .Select(frame => GetSpriteFrameInfo(frame).PageName)
-                         .Distinct(StringComparer.Ordinal))
+                         .Distinct(StringComparer.Ordinal)
+                         .ToArray();
+            var clipAttemptsBefore = GetProperty<long>(
+                                         GetRawField(window, "_spritePageBufferPool")!,
+                                         "AllocationCount") +
+                                    GetProperty<long>(
+                                         GetRawField(window, "_spritePageBufferPool")!,
+                                         "ReuseCount");
+            profiledReactionPageLoadUpperBound = checked(
+                profiledReactionPageLoadUpperBound + clipPageNames.Length);
+            foreach (var pageName in clipPageNames)
             {
                 LoadSpritePageForMemoryProfile(window, pageName);
             }
+
+            var clipAttemptsAfter = GetProperty<long>(
+                                        GetRawField(window, "_spritePageBufferPool")!,
+                                        "AllocationCount") +
+                                    GetProperty<long>(
+                                        GetRawField(window, "_spritePageBufferPool")!,
+                                        "ReuseCount");
+            Assert(clipAttemptsAfter - clipAttemptsBefore <= clipPageNames.Length,
+                $"{GetProperty<string>(clip, "ActionName")}完整热集每个distinct页" +
+                "最多只允许一次首次加载，不得在同一动作内循环重解码");
 
             SetField(window, "_activeClip", null);
             PrimeSpritePageForFrame(window, idleFrame);
@@ -2034,9 +2075,21 @@ internal static partial class Program
         var profiledPool = GetRawField(window, "_spritePageBufferPool")
             ?? throw new InvalidOperationException(
                 "MainWindow 缺少 sprite 页像素复用池");
-        Assert(GetProperty<long>(profiledPool, "AllocationCount") <= 25 &&
-               GetProperty<long>(profiledPool, "ReuseCount") >= 13,
-            "四种普通动作依次覆盖时最多只允许比旧分桶基线多一次分配，并必须保留best-fit复用，不能退回逐页LOH重分配");
+        var profileAllocationsAfterAllReactions = GetProperty<long>(
+            profiledPool,
+            "AllocationCount");
+        var profileReusesAfterAllReactions = GetProperty<long>(
+            profiledPool,
+            "ReuseCount");
+        Assert((profileAllocationsAfterAllReactions -
+                profileAllocationsBeforeAllReactions) +
+               (profileReusesAfterAllReactions -
+                profileReusesBeforeAllReactions) <=
+                   profiledReactionPageLoadUpperBound &&
+               profileReusesAfterAllReactions >
+                   profileReusesBeforeAllReactions,
+            "四种普通动作依次覆盖时每个distinct页最多首次加载一次，并必须实际保留" +
+            "best-fit复用；不得退回动作内部循环LOH重分配");
 
         SetField(window, "_edgeRoamPreloadRequested", true);
         var roamPageNames = new[]
@@ -3170,10 +3223,10 @@ internal static partial class Program
         Assert(observedLruEviction,
             "52MiB普通活动压力必须实际触发一次可观察的LRU驱逐");
 
-        // A complete click clip is intentionally larger than the ordinary
-        // rolling budget. Only the currently displayed, pending and next
-        // decoding pages remain protected; merely belonging to the active clip
-        // must not pin every forward/reverse page.
+        // A click reaction now temporarily selects a manifest-sized budget for
+        // its complete wake/action/reverse page set. The pages are still normal
+        // LRU entries rather than permanently pinned, but while this exact clip
+        // is active the complete set must fit without churn.
         var activeClip = GetField<Array>(window, "_reactionClips")
             .Cast<object>()
             .MaxBy(clip => GetClipPageNames(clip)
@@ -3191,9 +3244,12 @@ internal static partial class Program
         Invoke(window, "TrimResidentSpritePagesToBudget", (object?)null);
         Assert(expectedPinnedPageNames.All(residentPages.Contains) &&
                residentPages.Contains(currentPageName) &&
-               activeClipPages.Any(pageName => !residentPages.Contains(pageName)),
-            "普通活动必须保留固定热页与当前页，但完整active clip必须按LRU滚动而非全部固定");
-        AssertResidentSpriteCacheAccounting(window, "active clip滚动页保护");
+               activeClipPages.All(residentPages.Contains) &&
+               (long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   ExpectedLikeReactionSpritePageBudgetBytes,
+            "最大like reaction活动期间必须完整常驻真实clip页，并只把idle保留为永久pinned");
+        AssertResidentSpriteCacheAccounting(window, "active reaction完整热集");
 
         var pendingPageName = pageNames
             .Where(name => !expectedPinnedPageNames.Contains(name) &&
@@ -3446,6 +3502,9 @@ internal static partial class Program
 
         SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
         SetField(window, "_activeClip", null);
+        SetField(window, "_activeFrameIndex", -1);
+        SetField(window, "_activeClipStartedTimestamp", 0L);
+        SetField(window, "_activeFrameDeadlineTimestamp", 0L);
         SetField(window, "_pendingSpriteFrame", null);
         PrimeSpritePageForFrame(window, idleFrame);
         Invoke(window, "ShowStableFrame", idleFrame);
@@ -3467,6 +3526,624 @@ internal static partial class Program
             "打工热集的既有idle裁剪必须回到单页12MiB目标");
         AssertResidentSpriteCacheAccounting(window, "打工热集退出裁剪");
         ResetSpritePageCollectionTestState(window);
+    }
+
+    private static void AssertReactionSpritePageHotSetContract(MainWindow window)
+    {
+        WaitForSpritePagePrefetchToSettle(window);
+        PrepareWorkModeIdleState(window);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        ResetSpritePageCollectionTestState(window);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var residentPages = GetField<IDictionary>(window, "_residentSpritePages");
+        var pool = GetRawField(window, "_spritePageBufferPool")
+            ?? throw new InvalidOperationException(
+                "MainWindow 缺少 sprite 页像素复用池");
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
+        var reactionClips = GetField<Array>(window, "_reactionClips")
+            .Cast<object>()
+            .ToArray();
+        var expectedBudgets = new Dictionary<string, long>(
+            StringComparer.Ordinal)
+        {
+            ["cry"] = ExpectedCryReactionSpritePageBudgetBytes,
+            ["cute"] = ExpectedCuteReactionSpritePageBudgetBytes,
+            ["like"] = ExpectedLikeReactionSpritePageBudgetBytes,
+            ["eat"] = ExpectedEatReactionSpritePageBudgetBytes
+        };
+        var expectedExactBytes = new Dictionary<string, long>(
+            StringComparer.Ordinal)
+        {
+            ["cry"] = 94_532_760L,
+            ["cute"] = 78_544_904L,
+            ["like"] = 105_765_068L,
+            ["eat"] = 93_782_372L
+        };
+        var expectedWorstBytes = new Dictionary<string, long>(
+            StringComparer.Ordinal)
+        {
+            ["cry"] = 103_218_468L,
+            ["cute"] = 86_249_088L,
+            ["like"] = 113_916_820L,
+            ["eat"] = 101_535_272L
+        };
+        var manifestPageByteCounts = GetDictionaryEntries(pageMap)
+            .Select(entry => (long)GetProperty<int>(
+                entry.Value!,
+                "UncompressedByteCount"))
+            .Distinct()
+            .ToArray();
+
+        long GetLargestReachableReusableCapacity(string pageName)
+        {
+            var requestedBytes = GetSpritePageByteCount(pageMap, pageName);
+            var maximumReusableBytes =
+                GetMaximumReusableSpritePageCapacity(requestedBytes);
+            return manifestPageByteCounts
+                .Where(candidateBytes =>
+                    candidateBytes >= requestedBytes &&
+                    candidateBytes <= maximumReusableBytes)
+                .Max();
+        }
+
+        Assert(reactionClips.Length == 4 &&
+               reactionClips.Select(clip => GetProperty<string>(
+                       clip,
+                       "ActionName"))
+                   .ToHashSet(StringComparer.Ordinal)
+                   .SetEquals(expectedBudgets.Keys),
+            "反应预算回归必须且只能覆盖 cry/cute/like/eat 四个真实clip");
+        Assert(GetProperty<long>(pool, "HardBudgetBytes") ==
+                   ExpectedRoamSpritePageBudgetBytes,
+            "pool hard target必须保持92MiB；较大的反应resident集合允许全部rented超过它，" +
+            "不得为保留free缓冲而抬高全局上限");
+
+        AssertReactionSpritePageBudgetSelectorContract(
+            window,
+            reactionClips,
+            expectedBudgets);
+
+        foreach (var clip in reactionClips)
+        {
+            var actionName = GetProperty<string>(clip, "ActionName");
+            var budgetBytes = expectedBudgets[actionName];
+            PrepareReactionSpriteHotSetForTest(
+                window,
+                clip,
+                manifestPageByteCounts,
+                GetLargestReachableReusableCapacity);
+
+            var spriteFrames = GetClipFrames(clip)
+                .Cast<object>()
+                .Select(frame => GetProperty<object>(frame, "Image"))
+                .ToArray();
+            var reactionPageNames = spriteFrames
+                .Select(frame => GetSpriteFrameInfo(frame).PageName)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            var expectedPageNames = reactionPageNames
+                .Append(idlePageName)
+                .ToHashSet(StringComparer.Ordinal);
+            var exactBytes = expectedPageNames.Sum(pageName =>
+                GetSpritePageByteCount(pageMap, pageName));
+            var worstBytes = GetSpritePageByteCount(pageMap, idlePageName) +
+                             reactionPageNames
+                                 .Where(pageName => !string.Equals(
+                                     pageName,
+                                     idlePageName,
+                                     StringComparison.Ordinal))
+                                 .Sum(GetLargestReachableReusableCapacity);
+            var actualBytes = GetField<long>(
+                window,
+                "_residentSpritePageBytes");
+
+            Assert(exactBytes == expectedExactBytes[actionName] &&
+                   worstBytes == expectedWorstBytes[actionName] &&
+                   worstBytes <= budgetBytes &&
+                   actualBytes >= exactBytes &&
+                   actualBytes <= worstBytes &&
+                   actualBytes <= budgetBytes &&
+                   expectedPageNames.SetEquals(
+                       GetDictionaryEntries(residentPages)
+                           .Select(entry => (string)entry.Key)) &&
+                   (long)(Invoke(window,
+                       "GetSpritePageResidentBudgetBytes") ?? 0L) == budgetBytes,
+                $"{actionName}必须按真实clip distinct页和manifest可达best-fit容量" +
+                $"完整常驻：actual={actualBytes}, exact={exactBytes}, " +
+                $"worst={worstBytes}, budget={budgetBytes}");
+            Assert(GetProperty<long>(pool, "FreeBytes") == 0 &&
+                   GetProperty<long>(pool, "AllocatedBytes") ==
+                       GetProperty<long>(pool, "RentedBytes") &&
+                   GetProperty<long>(pool, "RentedBytes") == actualBytes,
+                $"{actionName}完整热集必须全部由resident rented缓冲持有，" +
+                "不得靠抬高92MiB free-retention target掩盖容量");
+
+            var allocationCount = GetProperty<long>(pool, "AllocationCount");
+            var reuseCount = GetProperty<long>(pool, "ReuseCount");
+            for (var cycle = 0; cycle < 2; cycle++)
+            {
+                foreach (var spriteFrame in spriteFrames)
+                {
+                    Invoke(window, "ShowStableFrame", spriteFrame);
+                    Assert(GetRawField(window, "_pendingSpriteFrame") is null,
+                        $"{actionName}热集两圈不得产生冷页pending");
+                }
+            }
+
+            Assert(GetRawField(window, "_spritePagePrefetchTask") is null &&
+                   GetRawField(window, "_desiredSpritePageName") is null &&
+                   GetProperty<long>(pool, "AllocationCount") == allocationCount &&
+                   GetProperty<long>(pool, "ReuseCount") == reuseCount &&
+                   expectedPageNames.SetEquals(
+                       GetDictionaryEntries(residentPages)
+                           .Select(entry => (string)entry.Key)),
+                $"{actionName}完整热集连续两圈必须0新alloc/0 reuse/0 pending");
+            AssertResidentSpriteCacheAccounting(window, $"{actionName}反应热集");
+
+            Invoke(window, "CompleteActiveClipAt", clip, Stopwatch.GetTimestamp());
+            AssertReactionSpritePageExitBudget(
+                window,
+                $"{actionName}自然完成",
+                expectIdleTimer: true);
+            AssertReactionSpriteIdleDeepTrim(window, $"{actionName}自然完成");
+        }
+
+        AssertReactionSpritePageInterruptionContract(
+            window,
+            reactionClips,
+            manifestPageByteCounts,
+            GetLargestReachableReusableCapacity);
+
+        PrepareWorkModeIdleState(window);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        ResetSpritePageCollectionTestState(window);
+        AssertResidentSpriteCacheAccounting(window, "反应热集测试最终清理");
+    }
+
+    private static void AssertReactionSpritePageBudgetSelectorContract(
+        MainWindow window,
+        object[] reactionClips,
+        IReadOnlyDictionary<string, long> expectedBudgets)
+    {
+        var ordinaryBudget = ExpectedResidentSpritePageBudgetBytes;
+        var getBudget = () => (long)(Invoke(
+            window,
+            "GetSpritePageResidentBudgetBytes") ?? 0L);
+
+        PrepareWorkModeIdleState(window);
+        Assert(getBudget() == ordinaryBudget,
+            "无active状态必须选择普通52MiB预算");
+
+        foreach (var clip in reactionClips)
+        {
+            var actionName = GetProperty<string>(clip, "ActionName");
+            SetField(window, "_activeClip", clip);
+            Assert((long)(Invoke(
+                       window,
+                       "GetReactionSpritePageResidentBudgetBytes",
+                       clip) ?? 0L) == expectedBudgets[actionName] &&
+                   (bool)(Invoke(window, "IsReactionClip", clip) ?? false) &&
+                   getBudget() == expectedBudgets[actionName],
+                $"{actionName}必须按引用身份选择专属预算");
+
+            SetField(window, "_edgeRoamPreloadRequested", true);
+            Assert(getBudget() == ExpectedRoamSpritePageBudgetBytes,
+                $"roam preload 92MiB必须优先于{actionName}反应预算");
+            SetField(window, "_edgeRoamPreloadRequested", false);
+            SetField(window, "_isEdgeRoaming", true);
+            Assert(getBudget() == ExpectedRoamSpritePageBudgetBytes,
+                $"active roam 92MiB必须优先于{actionName}反应预算");
+            SetField(window, "_isEdgeRoaming", false);
+
+            SetField(window, "_workState", GetNestedEnum("WorkState", "Typing"));
+            Assert(getBudget() == ExpectedWorkSpritePageBudgetBytes,
+                $"normal work 57MiB必须优先于{actionName}反应预算");
+            SetField(window, "_workSeriousEnterRequested", true);
+            Assert(getBudget() == ExpectedSeriousWorkSpritePageBudgetBytes,
+                $"serious work 73MiB必须优先于{actionName}反应预算");
+            SetField(window, "_workSeriousEnterRequested", false);
+            SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
+
+            SetField(window, "_upcomingReminderPreloadPageName", "synthetic-reminder");
+            Assert(getBudget() == checked(
+                       expectedBudgets[actionName] +
+                       ExpectedReminderPreloadAllowanceBytes),
+                $"提醒预载与{actionName}重叠时必须只增加精确12MiB allowance");
+            SetField(window, "_upcomingReminderPreloadPageName", null);
+
+            SetField(window, "_sessionInactive", true);
+            Assert(getBudget() == expectedBudgets[actionName],
+                $"锁屏必须保留{actionName}逻辑clip及其热集预算，避免解锁后反向路径冷停");
+            SetField(window, "_sessionInactive", false);
+        }
+
+        Assert(expectedBudgets["cry"] + ExpectedReminderPreloadAllowanceBytes ==
+                   111L * 1024L * 1024L &&
+               expectedBudgets["cute"] + ExpectedReminderPreloadAllowanceBytes ==
+                   95L * 1024L * 1024L &&
+               expectedBudgets["like"] + ExpectedReminderPreloadAllowanceBytes ==
+                   121L * 1024L * 1024L &&
+               expectedBudgets["eat"] + ExpectedReminderPreloadAllowanceBytes ==
+                   109L * 1024L * 1024L,
+            "提醒重叠预算矩阵必须精确为111/95/121/109MiB");
+
+        var firstClip = reactionClips[0];
+        var equalButDistinctClip = Activator.CreateInstance(
+            firstClip.GetType(),
+            InstanceFlags,
+            binder: null,
+            args:
+            [
+                GetProperty<string>(firstClip, "Message"),
+                GetProperty<string>(firstClip, "ActionName"),
+                GetClipFrames(firstClip),
+                GetProperty<int>(firstClip, "ActionFrameIndex")
+            ],
+            culture: CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException("无法构造等值非同一reaction clip");
+        SetField(window, "_activeClip", equalButDistinctClip);
+        Assert(!(bool)(Invoke(
+                   window,
+                   "IsReactionClip",
+                   equalButDistinctClip) ?? true) &&
+               (long)(Invoke(
+                   window,
+                   "GetReactionSpritePageResidentBudgetBytes",
+                   equalButDistinctClip) ?? -1L) == 0 &&
+               getBudget() == ordinaryBudget,
+            "AnimationClip是record但reaction selector必须使用ReferenceEquals，" +
+            "等值非同一对象不得误拿83-109MiB预算");
+
+        foreach (var nonReactionField in new[]
+                 {
+                     "_todoEnterClip",
+                     "_reminderEnterClip",
+                     "_workEnterClip"
+                 })
+        {
+            var nonReactionClip = GetField<object>(window, nonReactionField);
+            SetField(window, "_activeClip", nonReactionClip);
+            Assert(!(bool)(Invoke(
+                       window,
+                       "IsReactionClip",
+                       nonReactionClip) ?? true) &&
+                   getBudget() == ordinaryBudget,
+                $"{nonReactionField}不得被reaction selector误纳");
+        }
+
+        SetField(window, "_activeClip", null);
+    }
+
+    private static void PrepareReactionSpriteHotSetForTest(
+        MainWindow window,
+        object clip,
+        long[] manifestPageByteCounts,
+        Func<string, long> getLargestReachableReusableCapacity)
+    {
+        _ = manifestPageByteCounts;
+        PrepareWorkModeIdleState(window);
+        Invoke(window, "TrimResidentSpritePagesToIdleTarget");
+        ResetSpritePageCollectionTestState(window);
+        SetField(window, "_activeClip", clip);
+
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+        var idlePageName = GetSpriteFrameInfo(
+            GetField<object>(window, "_idleFrame")).PageName;
+        var pageNames = GetClipPageNames(clip)
+            .Where(pageName => !string.Equals(
+                pageName,
+                idlePageName,
+                StringComparison.Ordinal))
+            .OrderByDescending(pageName =>
+                GetSpritePageByteCount(pageMap, pageName))
+            .ToArray();
+
+        // Seed one real manifest-sized historical buffer per page. Production
+        // best-fit can only return capacities that exist in this manifest;
+        // arbitrary values inside the theoretical 1MiB envelope are unreachable.
+        var seededBuffers = pageNames
+            .Select(pageName => (byte[])Invoke(
+                GetRawField(window, "_spritePageBufferPool")!,
+                "Rent",
+                checked((int)getLargestReachableReusableCapacity(pageName)))!)
+            .ToArray();
+        foreach (var buffer in seededBuffers)
+        {
+            Invoke(GetRawField(window, "_spritePageBufferPool")!, "Return", buffer);
+        }
+
+        foreach (var pageName in pageNames)
+        {
+            LoadSpritePageForTest(window, pageName);
+        }
+
+        Assert(GetRawField(window, "_spritePagePrefetchTask") is null &&
+               GetRawField(window, "_desiredSpritePageName") is null &&
+               GetRawField(window, "_pendingSpriteFrame") is null,
+            $"{GetProperty<string>(clip, "ActionName")}热集准备必须完全同步收敛");
+    }
+
+    private static void AssertReactionSpritePageExitBudget(
+        MainWindow window,
+        string stage,
+        bool expectIdleTimer)
+    {
+        var pool = GetRawField(window, "_spritePageBufferPool")!;
+        var residentBytes = GetField<long>(window, "_residentSpritePageBytes");
+        var residentPixelBuffers = GetDictionaryEntries(
+                GetField<IDictionary>(window, "_residentSpritePages"))
+            .Select(entry => GetProperty<byte[]>(entry.Value!, "Pixels"))
+            .ToArray();
+        long poolAllocatedBytes;
+        long poolRentedBytes;
+        long poolFreeBytes;
+        byte[][] trackedRentedBuffers;
+        lock (GetRawField(pool, "_syncRoot")!)
+        {
+            poolAllocatedBytes = GetField<long>(pool, "_allocatedBytes");
+            poolRentedBytes = GetField<long>(pool, "_rentedBytes");
+            poolFreeBytes = GetField<long>(pool, "_freeBytes");
+            trackedRentedBuffers = GetDictionaryEntries(
+                    GetField<IDictionary>(pool, "_bufferStates"))
+                .Where(entry => string.Equals(
+                    entry.Value?.ToString(),
+                    "Rented",
+                    StringComparison.Ordinal))
+                .Select(entry => (byte[])entry.Key)
+                .ToArray();
+        }
+
+        var unmatchedRentedBuffers = trackedRentedBuffers
+            .Where(buffer => !residentPixelBuffers.Any(
+                residentBuffer => ReferenceEquals(residentBuffer, buffer)))
+            .ToArray();
+        var residentBuffersMissingRentedOwnership = residentPixelBuffers
+            .Where(buffer => !trackedRentedBuffers.Any(
+                trackedBuffer => ReferenceEquals(trackedBuffer, buffer)))
+            .ToArray();
+        var prefetchTask = GetRawField(window, "_spritePagePrefetchTask") as Task;
+        var prefetchPageName = GetRawField(
+            window,
+            "_spritePagePrefetchPageName") as string;
+        var desiredPageName = GetRawField(
+            window,
+            "_desiredSpritePageName") as string;
+        var prefetchCancellation = GetRawField(
+            window,
+            "_spritePagePrefetchCancellation");
+        var activeClip = GetRawField(window, "_activeClip");
+        var hasPreciselyOwnedInFlightBuffer = unmatchedRentedBuffers.Length == 1 &&
+            prefetchTask is not null &&
+            prefetchCancellation is not null &&
+            prefetchPageName is not null &&
+            string.Equals(
+                desiredPageName,
+                prefetchPageName,
+                StringComparison.Ordinal) &&
+            activeClip is not null &&
+            GetClipPageNames(activeClip).Contains(prefetchPageName) &&
+            unmatchedRentedBuffers[0].LongLength >=
+                GetSpritePageByteCount(
+                    GetField<IDictionary>(window, "_spritePages"),
+                    prefetchPageName) &&
+            unmatchedRentedBuffers[0].LongLength <=
+                GetMaximumReusableSpritePageCapacity(
+                    GetSpritePageByteCount(
+                        GetField<IDictionary>(window, "_spritePages"),
+                        prefetchPageName));
+        var rentedOwnershipIsExact = unmatchedRentedBuffers.Length == 0
+            ? residentBuffersMissingRentedOwnership.Length == 0 &&
+              poolRentedBytes == residentBytes
+            : hasPreciselyOwnedInFlightBuffer &&
+              residentBuffersMissingRentedOwnership.Length == 0 &&
+              poolRentedBytes == checked(
+                  residentBytes + unmatchedRentedBuffers[0].LongLength);
+        var poolTargetWithOwnedInFlightBuffer = checked(
+            ExpectedResidentSpritePageBudgetBytes +
+            (hasPreciselyOwnedInFlightBuffer
+                ? unmatchedRentedBuffers[0].LongLength
+                : 0L));
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
+
+        Assert((long)(Invoke(window,
+                   "GetSpritePageResidentBudgetBytes") ?? 0L) ==
+                   ExpectedResidentSpritePageBudgetBytes &&
+               residentBytes <= ExpectedResidentSpritePageBudgetBytes &&
+               poolAllocatedBytes == poolRentedBytes + poolFreeBytes &&
+               rentedOwnershipIsExact &&
+               poolAllocatedBytes <= poolTargetWithOwnedInFlightBuffer &&
+               (!expectIdleTimer ||
+                idleTrimTimer.IsEnabled &&
+                idleTrimTimer.Interval == TimeSpan.FromSeconds(20)),
+            $"{stage}必须由生产退出路径同步恢复52MiB resident/pool总预算，" +
+            $"最多只允许一个由当前active clip具体prefetch task持有的在途缓冲，" +
+            $"并保留20秒deep-trim宽限：" +
+            $"resident={residentBytes}, " +
+            $"pool={poolAllocatedBytes}/{poolRentedBytes}/{poolFreeBytes}, " +
+            $"unmatched={string.Join(',', unmatchedRentedBuffers.Select(buffer => buffer.LongLength))}, " +
+            $"residentWithoutRented={string.Join(',', residentBuffersMissingRentedOwnership.Select(buffer => buffer.LongLength))}, " +
+            $"task={prefetchTask is not null}, cancellation={prefetchCancellation is not null}, " +
+            $"prefetch={prefetchPageName}, desired={desiredPageName}");
+        AssertResidentSpriteCacheAccounting(window, $"{stage}即时52MiB");
+    }
+
+    private static void AssertReactionSpriteIdleDeepTrim(
+        MainWindow window,
+        string stage)
+    {
+        var idleFrame = GetField<object>(window, "_idleFrame");
+        var idlePageName = GetSpriteFrameInfo(idleFrame).PageName;
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        SetField(window, "_activeClip", null);
+        SetField(window, "_activeFrameIndex", -1);
+        SetField(window, "_activeClipStartedTimestamp", 0L);
+        SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+        SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
+        SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
+        GetField<TodoWindow>(window, "_todoWindow").Hide();
+        GetField<Popup>(window, "BubblePopup").IsOpen = false;
+        SetField(window, "_sessionInactive", false);
+        SetField(window, "_isReminderActive", false);
+        SetField(window, "_isPillowBreathing", false);
+        SetField(window, "_dragInteractionActive", false);
+        SetField(window, "_pointerDown", false);
+        SetField(window, "_isPetSizeTransitioning", false);
+        SetField(window, "_isPetSizePreviewSessionActive", false);
+        SetField(window, "_isPetSizeAdjustmentActive", false);
+        SetField(window, "_petSizeTargetUpdatePending", false);
+        SetField(window, "_petSizeCommitPending", false);
+        SetField(window, "_isFrameBlending", false);
+        SetField(window, "_edgeRoamPreloadRequested", false);
+        SetField(window, "_isEdgeRoaming", false);
+        SetField(window, "_pendingSpriteFrame", null);
+        SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_renderDeferredSpritePageName", null);
+        SetField(window, "_renderDeferredSpritePageFailureName", null);
+        SetField(window, "_renderDeferredSpritePageCancellation", false);
+        SetField(window, "_residentSpritePageTrimPending", false);
+        SetField(window, "_upcomingReminderPreloadPageName", null);
+        Invoke(window, "ClearDeferredActiveClipClock");
+        Invoke(window, "RequestIdleSpritePageTrim", false);
+        Invoke(window, "SpritePageIdleTrimTimer_Tick", null, EventArgs.Empty);
+
+        var pool = GetRawField(window, "_spritePageBufferPool")!;
+        Assert(GetField<long>(window, "_residentSpritePageBytes") ==
+                   ExpectedIdleSpriteResidentBytes &&
+               GetField<IDictionary>(window, "_residentSpritePages").Count == 1 &&
+               GetField<IDictionary>(window, "_residentSpritePages")
+                   .Contains(idlePageName) &&
+               GetProperty<long>(pool, "AllocatedBytes") ==
+                   ExpectedIdleSpriteResidentBytes &&
+               GetProperty<long>(pool, "RentedBytes") ==
+                   ExpectedIdleSpriteResidentBytes &&
+               GetProperty<long>(pool, "FreeBytes") == 0,
+            $"{stage}在20秒idle tick后必须回到单idle页12MiB目标");
+        AssertResidentSpriteCacheAccounting(window, $"{stage}深裁剪");
+        ResetSpritePageCollectionTestState(window);
+    }
+
+    private static void AssertReactionSpritePageInterruptionContract(
+        MainWindow window,
+        object[] reactionClips,
+        long[] manifestPageByteCounts,
+        Func<string, long> getLargestReachableReusableCapacity)
+    {
+        var pageMap = GetField<IDictionary>(window, "_spritePages");
+
+        void Prepare(object clip) => PrepareReactionSpriteHotSetForTest(
+            window,
+            clip,
+            manifestPageByteCounts,
+            getLargestReachableReusableCapacity);
+
+        // Edge ownership replaces the foreground reaction. Prime its authored
+        // rest page so this test measures only the exit trim, never decode IO.
+        var edgeClip = reactionClips[2];
+        Prepare(edgeClip);
+        var edgeRestFrame = GetField<Array>(window, "_edgeLeftFrames")
+            .GetValue(GetField<Array>(window, "_edgeLeftFrames").Length - 1)!;
+        PrimeSpritePageForFrame(window, edgeRestFrame);
+        Assert((bool)(Invoke(
+                   window,
+                   "EnterEdgePeekCore",
+                   GetNestedEnum("EdgeDock", "Left"),
+                   TimeSpan.Zero) ?? false),
+            "reaction抢占夹具必须从热edge rest页同步进入Left探头");
+        Assert(GetRawField(window, "_activeClip") is null &&
+               string.Equals(
+                   GetRawField(window, "_edgeDock")?.ToString(),
+                   "Left",
+                   StringComparison.Ordinal),
+            "EnterEdgePeekCore必须清除被抢占reaction并接管edge状态");
+        AssertReactionSpritePageExitBudget(
+            window,
+            "EnterEdgePeekCore抢占",
+            expectIdleTimer: false);
+        Invoke(window, "ExitEdgePeek", false, true);
+        AssertReactionSpriteIdleDeepTrim(window, "EnterEdgePeekCore抢占退出");
+
+        // Todo and reminder already own immediate resident trims. Keep these
+        // adjacent to the new edge/natural paths so future selector changes
+        // cannot accidentally make their non-reaction clips inherit 109MiB.
+        var todoClip = reactionClips[0];
+        Prepare(todoClip);
+        var todoEnterClip = GetField<object>(window, "_todoEnterClip");
+        var todoStartFrame = GetProperty<object>(
+            GetClipFrames(todoEnterClip).GetValue(0)!,
+            "Image");
+        PrimeSpritePageForFrame(window, todoStartFrame);
+        Invoke(window, "EnterTodoVisualState");
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   todoEnterClip),
+            "Todo抢占reaction后必须由todo-enter clip接管");
+        AssertReactionSpritePageExitBudget(
+            window,
+            "Todo抢占",
+            expectIdleTimer: true);
+
+        var reminderClip = reactionClips[1];
+        Prepare(reminderClip);
+        var reminderEnterClip = GetField<object>(window, "_reminderEnterClip");
+        var reminderStartFrame = GetProperty<object>(
+            GetClipFrames(reminderEnterClip).GetValue(0)!,
+            "Image");
+        PrimeSpritePageForFrame(window, reminderStartFrame);
+        SetField(window, "_isReminderActive", true);
+        Invoke(window, "EnterReminderVisualState");
+        Assert(ReferenceEquals(
+                   GetRawField(window, "_activeClip"),
+                   reminderEnterClip),
+            "Reminder抢占reaction后必须由reminder-enter clip接管");
+        AssertReactionSpritePageExitBudget(
+            window,
+            "Reminder抢占",
+            expectIdleTimer: false);
+        SetField(window, "_isReminderActive", false);
+
+        // A deferred cold-page failure clears its logical reaction before the
+        // handler's existing terminal TrimResidentSpritePagesToBudget call.
+        var failureClip = reactionClips[3];
+        Prepare(failureClip);
+        var failureAnimationFrame = GetClipFrames(failureClip).Cast<object>()
+            .First(frame => !string.Equals(
+                GetSpriteFrameInfo(GetProperty<object>(frame, "Image")).PageName,
+                GetSpriteFrameInfo(GetField<object>(window, "_idleFrame")).PageName,
+                StringComparison.Ordinal));
+        var failureSpriteFrame = GetProperty<object>(
+            failureAnimationFrame,
+            "Image");
+        var failurePageName = GetSpriteFrameInfo(failureSpriteFrame).PageName;
+        SetField(window, "_pendingSpriteFrame", failureSpriteFrame);
+        SetField(window, "_deferredActiveClipClock", failureClip);
+        SetField(window, "_deferredActiveClipClockFrame", failureSpriteFrame);
+        SetField(window, "_deferredActiveClipClockFrameIndex", 0);
+        SetField(
+            window,
+            "_deferredActiveClipClockHoldDuration",
+            GetProperty<TimeSpan>(failureAnimationFrame, "HoldDuration"));
+        Invoke(
+            window,
+            "HandleSpritePagePrefetchFailure",
+            failurePageName,
+            "synthetic reaction hot-set failure");
+        Assert(GetRawField(window, "_activeClip") is null &&
+               GetRawField(window, "_deferredActiveClipClock") is null &&
+               GetRawField(window, "_pendingSpriteFrame") is null,
+            "cold-page failure必须清除reaction/pending/deferred clock");
+        AssertReactionSpritePageExitBudget(
+            window,
+            "cold-page failure",
+            expectIdleTimer: true);
+        SetField(window, "_failedSpritePageName", null);
+
+        Assert(pageMap.Count > 0,
+            "reaction interruption fixture必须继续使用真实manifest");
     }
 
     private static void AssertSeriousWorkTransitionHotSetContract(
@@ -20247,6 +20924,16 @@ internal static partial class Program
         var getSpritePageResidentBudgetBytes = ExtractPrivateMethodSource(
             mainSource,
             "GetSpritePageResidentBudgetBytes");
+        var getReactionSpritePageResidentBudgetBytes =
+            ExtractPrivateMethodSource(
+                mainSource,
+                "GetReactionSpritePageResidentBudgetBytes");
+        var isReactionClip = ExtractPrivateMethodSource(
+            mainSource,
+            "IsReactionClip");
+        var tryStartReaction = ExtractPrivateMethodSource(
+            mainSource,
+            "TryStartReaction");
         var beginPetSizeGesture = ExtractPrivateMethodSource(
             mainSource,
             "TodoWindow_PetSizeAdjustmentStarted");
@@ -20495,9 +21182,88 @@ internal static partial class Program
                    StringComparison.Ordinal) <
                getSpritePageResidentBudgetBytes.IndexOf(
                    "SpritePageWorkResidentBudgetBytes",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "SpritePageWorkResidentBudgetBytes",
+                   StringComparison.Ordinal) <
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "GetReactionSpritePageResidentBudgetBytes(_activeClip)",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "GetReactionSpritePageResidentBudgetBytes(_activeClip)",
+                   StringComparison.Ordinal) <
+               getSpritePageResidentBudgetBytes.IndexOf(
+                   "return SpritePageResidentBudgetBytes;",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "_upcomingReminderPreloadPageName is not null",
+                   StringComparison.Ordinal) &&
+               getSpritePageResidentBudgetBytes.Contains(
+                   "SpritePageReminderPreloadAllowanceBytes",
                    StringComparison.Ordinal),
-            "分页预算必须保持绕屏92MiB最高优先级，认真状态短暂73MiB，" +
-            "普通打工57MiB和普通52MiB；requested/enter/loop/exit均不得漏选");
+            "分页预算必须保持roam92 > work73/57 > reaction99/83/109/97 > " +
+            "ordinary52的selector顺序，并只在提醒页真实预载期间增加12MiB allowance");
+        Assert(mainSource.Contains(
+                   "SpritePageCryReactionResidentBudgetBytes =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "99L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageCuteReactionResidentBudgetBytes =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "83L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageLikeReactionResidentBudgetBytes =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "109L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageEatReactionResidentBudgetBytes =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "97L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "SpritePageReminderPreloadAllowanceBytes =",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "12L * 1024 * 1024",
+                   StringComparison.Ordinal) &&
+               getReactionSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(clip, _reactionClips[0])",
+                   StringComparison.Ordinal) &&
+               getReactionSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(clip, _reactionClips[1])",
+                   StringComparison.Ordinal) &&
+               getReactionSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(clip, _reactionClips[2])",
+                   StringComparison.Ordinal) &&
+               getReactionSpritePageResidentBudgetBytes.Contains(
+                   "ReferenceEquals(clip, _reactionClips[3])",
+                   StringComparison.Ordinal) &&
+               isReactionClip.Contains(
+                   "GetReactionSpritePageResidentBudgetBytes(clip) > 0",
+                   StringComparison.Ordinal),
+            "reaction selector必须逐个ReferenceEquals真实四clip，不能用record值相等、" +
+            "activeClip非空或bubble模式扩大预算");
+        Assert(tryStartReaction.Contains(
+                   "if (_edgeRoamPreloadRequested)",
+                   StringComparison.Ordinal) &&
+               tryStartReaction.Contains(
+                   "_edgeRoamPreloadRequested = false;",
+                   StringComparison.Ordinal) &&
+               tryStartReaction.Contains(
+                   "CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);",
+                   StringComparison.Ordinal) &&
+               !tryStartReaction.Contains(
+                   "ScheduleNextEdgeRoam(",
+                   StringComparison.Ordinal),
+            "reaction接管两秒roam预载时必须只取消未显示预取，保留既有due/cadence，" +
+            "不能把十分钟计划改成busy retry");
         Assert(residentPrefetchCheck >= 0 &&
                busyPrefetchCheck > residentPrefetchCheck &&
                duplicatePrefetchCheck > busyPrefetchCheck &&
@@ -20813,6 +21579,24 @@ internal static partial class Program
                     StringComparison.Ordinal) &&
                 completeActiveClipAt.Contains(
                     "RequestIdleSpritePageTrim();",
+                    StringComparison.Ordinal) &&
+                completeActiveClipAt.Contains(
+                    "var completedReaction = IsReactionClip(clip);",
+                    StringComparison.Ordinal) &&
+                completeActiveClipAt.IndexOf(
+                    "RequestResidentSpritePageTrim();",
+                    StringComparison.Ordinal) >
+                completeActiveClipAt.IndexOf(
+                    "if (completedReaction)",
+                    StringComparison.Ordinal) &&
+                enterEdgePeek.Contains(
+                    "var interruptedReaction = IsReactionClip(_activeClip);",
+                    StringComparison.Ordinal) &&
+                enterEdgePeek.IndexOf(
+                    "RequestResidentSpritePageTrim();",
+                    StringComparison.Ordinal) >
+                enterEdgePeek.IndexOf(
+                    "if (interruptedReaction)",
                     StringComparison.Ordinal) &&
                 !prefetchDispatchTick.Contains(
                    "TrimResidentSpritePagesToIdleTarget()",
@@ -26017,9 +26801,11 @@ internal static partial class Program
         SetField(window, "_spriteFrameDescriptorPublishedForTesting", null);
         SetField(window, "_pendingSpriteFrame", null);
         SetField(window, "_desiredSpritePageName", null);
+        SetField(window, "_spritePagePrefetchPageName", null);
         SetField(window, "_renderDeferredSpritePageName", null);
         SetField(window, "_renderDeferredSpritePageFailureName", null);
         SetField(window, "_renderDeferredSpritePageCancellation", false);
+        SetField(window, "_upcomingReminderPreloadPageName", null);
         SetField(window, "_isEdgeRoaming", false);
         SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
         SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));

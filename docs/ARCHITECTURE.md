@@ -10,6 +10,10 @@
 - 动画画质优先；内存通过分页、LRU 和缓冲池控制，不靠降低源图分辨率换取占用下降。
 - 待办、定时任务和设置分别持久化；定时任务加载失败时进入禁止覆盖保护。
 
+`v1.0.76` 的分页 resident 选择按状态所有权分层：绕屏或绕屏预载保持 `92 MiB` 优先，normal / serious 工作分别为 `57 / 73 MiB`；四种完整 reaction clip（wake → action / loop → reverse wake）分别为 `99 / 83 / 109 / 97 MiB`，若到点提醒页同时预载则再增加 `12 MiB`；其他活动为 `52 MiB`。reaction 自然结束或被 edge、Todo、Reminder、分页失败接管后立即按新所有者收敛到 `52 MiB`，随后完全空闲仍等待 `20 秒`再深裁到唯一 idle 页的 `12 MiB` 目标，短期 busy 继续每 `5 秒`重试。会话 inactive 不清除仍在播放的 reaction 热集，恢复后不会让逆播返回变冷。
+
+缓冲池的 `92 MiB` hard budget 只控制 free 数组保留量，不是 resident 的硬失败上限：resident 与唯一后台 decode 的 rented 数组都不能为满足该数值而失效；数组归还时才丢弃多余 free 存储并重新收敛。reaction clip 内部页面前瞻顺序保持不变；仅点击抢占尚未显示的绕屏预载时取消旧所有者的不可见 decode，并保留原始到期时间，不能用动作播放重排熊猫巡游节奏。上述预算不改变图集内容、帧像素或动画时钟。
+
 ## 2. 进程与窗口
 
 ```text

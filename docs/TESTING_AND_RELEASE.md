@@ -1,4 +1,4 @@
-# v1.0.75 测试与发布
+# v1.0.76 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -70,7 +70,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
 | `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟、四种普通动作的绝对时间轴、精确完整水平镜像 6 种尺寸及真实窗口矩阵的逐字节旧路径等价，以及非目标矩阵严格回退 |
 | `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、normal / serious 各 23 处相邻同描述符候选的强谓词像素复用、逻辑发布与 deferred clock 不变、pre-Stop blend 状态防误复用、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
-| `--resident-cache-only` | 仅待机页常驻、普通/normal 工作/serious 工作/巡游/稳定空闲 `52/57/73/92/12 MiB` 预算、`8 MiB` LOH 门槛、normal 的 idle+3 页与 serious 的 idle+3 loop+serious-exit 热集、normal → serious → normal 自然往返、serious 右键退出的唯一预取槽顺序、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
+| `--resident-cache-only` | 仅待机页常驻、普通/normal 工作/serious 工作/巡游/稳定空闲 `52/57/73/92/12 MiB` 预算、四种完整 reaction clip `99/83/109/97 MiB` 短时预算与提醒重叠 `+12 MiB`、`8 MiB` LOH 门槛、normal/serious/reaction 完整热集、reaction 自然完成与 edge/Todo/Reminder/failure 接管立即回 `52 MiB`、锁屏保持 active reaction、normal → serious → normal 自然往返、serious 右键退出的唯一预取槽顺序、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
 | `--atlas-hash-only` | 图集页上限、Brotli payload 和像素哈希失败关闭 |
 | `--memory-profile` | 本地内存剖面输出；不是普通 pass/fail 快速测试 |
 
@@ -203,6 +203,7 @@ if ($exe.Length -ge 100MB) {
 
 - EXE 能启动，进程响应，通知区域图标出现，第二次启动不会产生第二个实例。
 - 四种点击动作都能从待机连续起身并返回；连续有效点击随机选择且不能重复上一个成功动作，自动随机袋只含这四种动作与一次待机并保持状态独立。许愿星、旧蝴蝶对白与资源、失败的 144 帧星星方案、打哈欠、普通“让我认真想一想……”和“嗨～我在这里！”挥手不得再出现；右键打开任务面板仍须完整进入并保持 Todo 专用托腮思考姿势；稳定待机只有一个半透明泡泡。
+- 四种 reaction 的完整 wake / action / loop / reverse 路径不得出现冷页 pending；自然完成以及 edge、Todo、Reminder 或分页失败接管后必须立即恢复新状态的普通 `52 MiB` resident 目标，稳定空闲 `20 秒`后再回唯一 idle 页。锁屏期间不得丢弃尚未完成的 reaction 热集；点击接管绕屏预载时不得改变原熊猫巡游到期节奏。
 - 打工从 Entering、普通/认真打字、认真进出或 Exiting 拖到左、右、下边缘时，热页和冷页 descriptor 序列都只能是“当前工作帧 → 目标 edge-rest”；不得播放普通 `work-exit`，也不得出现 idle 页、枕头、待机帧、尺寸包络或锚点跳变。目标页失败才回退 idle，顶部和未命中拖放保持工作状态。
 - 主桌宠、任务、提醒、确认和两个编辑窗口的真实 HWND 均含 `WS_EX_TOOLWINDOW`、清除 `WS_EX_APPWINDOW`、不设置 `WS_EX_NOACTIVATE` 且 `ShowInTaskbar=false`；人工按 `Alt+Tab` 时不得出现透明框或任何辅助窗口，输入法、焦点和编辑仍须正常。
 - 完全待机时可点击人物视觉左上角的萌太阳进入电脑场景；按住待机人物拖动时，太阳必须与人物保持相同的 HWND 屏幕位移和相对位置，但在释放前禁用点击与命中，普通位置释放后恢复可点，左、右、下边缘仍隐藏。进入打工后用 420 ms 绝对时间轴原位交叉切换为萌月亮；退出请求必须在一个刷新周期内开始反向，中途反转从当前混合状态连续折返，总透明度保持 `1.00–1.05`，59/60/120/144 Hz 同一绝对时间结果一致，250 ms UI 阻塞后直接定位且不补播。人物镜像时图标仍保持屏幕左上和正向，不得出现文字胶囊。普通 96 帧循环必须在 1.6 秒内显示 8 次不等间隔四指落键；工作中单击严格保持活动帧、相位、倍速与认真期限，双击立即连续切到 2 倍速并完整保持至少 4 秒认真状态；点击月亮后平滑回到稳定待机。
@@ -244,6 +245,20 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.76 发布验证
+
+以下源码差异、构建、自动回归与受控真实 WPF 对照于 `2026-08-13` 完成；真实提交、标签、EXE 和 GitHub Release 证据待发布后回填。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 动态 reaction 热集 | 完整 wake / action / loop / reverse clip 的 resident 上限分别为 cry `99 MiB`、cute `83 MiB`、like `109 MiB`、eat `97 MiB`；提醒页同时预载时 `+12 MiB`。roam/preload `92 MiB` 与 work `57/73 MiB` 状态优先，其他状态 `52 MiB`，稳定 idle `20 秒`后深裁至 `12 MiB` |
+| 退出与所有权 | natural、edge、Todo、Reminder 与 page failure 均立即按新状态收敛 `52 MiB`；pool `92 MiB` hard budget 仍只约束 free storage。锁屏保留 active reaction；点击接管 roam preload 只取消不可见 decode 并保留 due cadence |
+| 真实 WPF 对照 | 候选 10/10 轮 cold pending 为 0，原 `52 MiB` 基线 10/10 轮均出现；四动作两轮均值的分页获取下降 `88.4%–91.6%`、managed allocation 下降 `66.9%–76.9%`、进程 CPU 下降 `54.0%–72.5%`。这些结果只适用于受控动作场景，不外推为全局固定降幅，也不声称所有 Rendering 最大间隔下降 |
+| 内存剖面 | startup idle resident/private/working 为 `10.86/138.52/197.55 MiB`；active cry reaction 为 `90.15/219.23/299.92 MiB`；依次完成全部 reaction 后为 `46.38/173.95/283.36 MiB`；active roam 为 `79.53/208.43/337.73 MiB`；trimmed idle 为 `10.86/139.11/269.07 MiB`。Working Set 受文件缓存与系统压力影响，仅作同次剖面观察；reaction resident 是有意的短时换稳定，不声称稳态内存下降 |
+| 自动化与构建 | `DesktopPet` 与 `UiStateChecks` Release 构建均为 `0 warning / 0 error`；`--resident-cache-only`、`--clip-clock-only`、`--deadline-only`、`--edge-dock-only`、`--roam-interaction-only`、`--todo-only`、`--reminder-only`、`--work-mode-only`、`--pet-size-only` 均通过，`--memory-profile` 完成且数值契约满足；完整 `UiStateChecks` 连续两轮输出 `UI state checks passed.` |
+| 产品质量边界 | Assets、manifest、像素、画质、帧数、FPS、作者绝对时间线、输入、Todo、定时任务与提醒业务不变；reaction clip 内部页面前瞻顺序和动作选择不变，仅点击抢占尚未显示的 roam preload 时取消旧所有者 decode，原 roam due cadence 不变 |
+| 源码与发布 | 待真实发布后回填：功能提交、tag/Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest 与独立回下载复核 |
 
 ## v1.0.75 发布验证
 

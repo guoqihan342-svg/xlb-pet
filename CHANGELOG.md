@@ -2,6 +2,12 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.76
+
+- 四种点击/自动动作在完整作者序列（起身、动作、循环、逆播返回）期间分别使用 `99 / 83 / 109 / 97 MiB` 的短时 resident 上限；到点提醒预载与动作重叠时额外保留 `12 MiB`。绕屏/预载 `92 MiB` 与工作 `57 / 73 MiB` 状态仍先取得所有权，普通状态保持 `52 MiB`；自然结束、边缘、Todo、提醒或分页失败接管后立即恢复 `52 MiB`，完全空闲保留原 `20 秒`宽限再深裁至 `12 MiB`。
+- 受控真实 WPF 对照中，候选 10/10 轮没有冷页 pending，而原 `52 MiB` 基线 10/10 轮均出现；四动作两轮均值的分页获取减少 `88.4%–91.6%`、托管分配减少 `66.9%–76.9%`、进程 CPU 减少 `54.0%–72.5%`。这些数字只描述该动作隔离场景；动作期间 resident 有意短时提高，不声称稳态内存、全局固定 CPU 或每个 Rendering 最大间隔都下降。
+- `SpritePageBufferPool` 的 `92 MiB` hard budget 仍只是 free 缓冲保留目标，不会驱逐正在解码或 resident 的页面。锁屏继续保留正在播放的动作热集；点击接管尚未显示的绕屏预载时只取消该解码并保留原绕屏到期节奏。Assets、manifest、像素、画质、帧数、FPS、作者绝对时间线、输入、Todo、定时任务和提醒业务均不改变。
+
 ## v1.0.75
 
 - 仅在工作状态的 `Typing` normal / serious loop 中，当请求为 zero blend、没有 active blend、当前画面具有匹配的 direct provenance / bounds，且前后逻辑帧的 page、source rectangle 与 destination 完全相同时，跳过重复的 `CopyFramePixels + WritePixels`。逻辑 frame/name/index、descriptor callback、枕头、呼噜、绝对时钟和预取仍按原路径更新；其他 clip、状态、blend、bounds 或描述符一律继续真实提交。

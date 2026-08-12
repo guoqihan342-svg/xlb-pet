@@ -14,13 +14,14 @@ namespace LubanDesktopPet;
 /// those two owner states. Rented and free buffers both count toward
 /// <see cref="AllocatedBytes"/>.
 ///
-/// The budget is a retention target rather than a reason for an animation to
-/// fail. Before allocating, the pool discards free buffers until the request
-/// fits when possible. If rented buffers already consume too much of the
-/// budget, one necessary page allocation is still allowed. Returning buffers
-/// automatically discards free storage until the pool converges to the budget
-/// again. With the application's single background page decoder, this limits
-/// the unavoidable transient excess to one page.
+/// The hard budget is a free-storage retention target rather than a reason for
+/// an animation to fail. Before allocating, the pool discards free buffers
+/// until the request fits when possible. Rented buffers can include a larger
+/// state-specific resident set and are never invalidated to enforce this
+/// target; returning them discards newly free storage until the pool converges
+/// again. With the application's single background page decoder, an ordinary
+/// state whose resident ceiling is at or below this target can exceed it by at
+/// most one indispensable in-flight page.
 ///
 /// Buffers are never cleared here because sprite decoding completely
 /// overwrites the requested array. This type is intended for page

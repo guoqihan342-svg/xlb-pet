@@ -106,6 +106,24 @@ public partial class MainWindow : Window
     // room for idle + loop + exit; ordinary work stays on the 57 MiB budget.
     private const long SpritePageSeriousWorkResidentBudgetBytes =
         73L * 1024 * 1024;
+    // A reaction traverses wake, action/loop and the authored reverse path.
+    // Keep each clip's complete distinct page set only for its short lifetime.
+    // These current-manifest ceilings include the largest compatible best-fit
+    // buffers that can be reused for every page, not just exact page lengths.
+    private const long SpritePageCryReactionResidentBudgetBytes =
+        99L * 1024 * 1024;
+    private const long SpritePageCuteReactionResidentBudgetBytes =
+        83L * 1024 * 1024;
+    private const long SpritePageLikeReactionResidentBudgetBytes =
+        109L * 1024 * 1024;
+    private const long SpritePageEatReactionResidentBudgetBytes =
+        97L * 1024 * 1024;
+    // The scheduler may warm the first reminder page during the final two
+    // seconds of a reaction. Its current-manifest maximum compatible capacity
+    // is exactly 12 MiB; keep that urgent page without evicting a reverse-path
+    // reaction page that is about to be reused.
+    private const long SpritePageReminderPreloadAllowanceBytes =
+        12L * 1024 * 1024;
     // The higher roaming ceiling holds its complete active page set plus the
     // bounded best-fit reuse margin, then releases back to the idle target.
     private const long SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024;
@@ -5074,6 +5092,7 @@ public partial class MainWindow : Window
             HideTodoWindowVisual();
         }
 
+        var interruptedReaction = IsReactionClip(_activeClip);
         if (_activeClip is { } activeClip)
         {
             _activeClip = null;
@@ -5088,6 +5107,13 @@ public partial class MainWindow : Window
         }
 
         RequestIdleSpritePageTrim();
+        if (interruptedReaction)
+        {
+            // The edge pose has become the owner. Release the reaction-only
+            // ceiling now; RequestResidentSpritePageTrim safely defers LRU
+            // mutation when this handoff happens inside Rendering.
+            RequestResidentSpritePageTrim();
+        }
         // Match the established v1.0.57 docking cadence: every supported edge
         // first settles on the authored rest pose, then begins the peek cycle.
         _edgePeekFrameIndex = restFrameIndex;
@@ -5489,6 +5515,18 @@ public partial class MainWindow : Window
             _isEdgeRoaming)
         {
             return false;
+        }
+
+        if (_edgeRoamPreloadRequested)
+        {
+            // A direct click can arrive during the two-second background roam
+            // lead-in. It owns the foreground now: cancel only the not-yet-
+            // visible roam decode so the two page sets cannot repeatedly
+            // preempt one another. Preserve the original roam deadline: once
+            // the reaction finishes, the existing automatic wake path resumes
+            // preload immediately instead of shifting the ten-minute cadence.
+            _edgeRoamPreloadRequested = false;
+            CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
         }
 
         StopPillowBreathing();
@@ -7476,6 +7514,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        var completedReaction = IsReactionClip(clip);
         _activeClip = null;
         _activeFrameIndex = -1;
         _activeClipStartedTimestamp = 0;
@@ -7492,6 +7531,14 @@ public partial class MainWindow : Window
             ShowStableFrame(_idleFrame);
         }
         RequestIdleSpritePageTrim();
+        if (completedReaction)
+        {
+            // Reaction pages are useful only until the authored reverse path
+            // reaches idle. Converge immediately to the ordinary 52 MiB
+            // ceiling, while preserving the existing 20-second idle grace
+            // period that later deep-trims to the pinned idle page.
+            RequestResidentSpritePageTrim();
+        }
         RestartAutomaticCountdown();
         ScheduleUnpinnedPetSizePreviewCommit();
         UpdateVisualClockSubscription();
@@ -9528,18 +9575,69 @@ public partial class MainWindow : Window
         TrimSpritePageBufferPoolToTarget(targetBytes);
     }
 
-    private long GetSpritePageResidentBudgetBytes() =>
-        _isEdgeRoaming || _edgeRoamPreloadRequested
-            ? SpritePageRoamResidentBudgetBytes
-            : _workState != WorkState.Idle
-                ? _workSeriousEnterRequested ||
-                  _workSeriousExitRequested ||
-                  ReferenceEquals(_activeClip, _workSeriousEnterClip) ||
-                  ReferenceEquals(_activeClip, _workSeriousLoopClip) ||
-                  ReferenceEquals(_activeClip, _workSeriousExitClip)
-                    ? SpritePageSeriousWorkResidentBudgetBytes
-                    : SpritePageWorkResidentBudgetBytes
-                : SpritePageResidentBudgetBytes;
+    private long GetSpritePageResidentBudgetBytes()
+    {
+        // Roaming/preload keeps its established priority so an already-ready
+        // reverse boarding path is never evicted by a coincident click.
+        if (_isEdgeRoaming || _edgeRoamPreloadRequested)
+        {
+            return SpritePageRoamResidentBudgetBytes;
+        }
+
+        if (_workState != WorkState.Idle)
+        {
+            return _workSeriousEnterRequested ||
+                   _workSeriousExitRequested ||
+                   ReferenceEquals(_activeClip, _workSeriousEnterClip) ||
+                   ReferenceEquals(_activeClip, _workSeriousLoopClip) ||
+                   ReferenceEquals(_activeClip, _workSeriousExitClip)
+                ? SpritePageSeriousWorkResidentBudgetBytes
+                : SpritePageWorkResidentBudgetBytes;
+        }
+
+        var reactionBudgetBytes =
+            GetReactionSpritePageResidentBudgetBytes(_activeClip);
+        if (reactionBudgetBytes <= 0)
+        {
+            return SpritePageResidentBudgetBytes;
+        }
+
+        return _upcomingReminderPreloadPageName is not null
+            ? checked(
+                reactionBudgetBytes +
+                SpritePageReminderPreloadAllowanceBytes)
+            : reactionBudgetBytes;
+    }
+
+    private long GetReactionSpritePageResidentBudgetBytes(AnimationClip? clip)
+    {
+        if (clip is null)
+        {
+            return 0;
+        }
+
+        if (ReferenceEquals(clip, _reactionClips[0]))
+        {
+            return SpritePageCryReactionResidentBudgetBytes;
+        }
+
+        if (ReferenceEquals(clip, _reactionClips[1]))
+        {
+            return SpritePageCuteReactionResidentBudgetBytes;
+        }
+
+        if (ReferenceEquals(clip, _reactionClips[2]))
+        {
+            return SpritePageLikeReactionResidentBudgetBytes;
+        }
+
+        return ReferenceEquals(clip, _reactionClips[3])
+            ? SpritePageEatReactionResidentBudgetBytes
+            : 0;
+    }
+
+    private bool IsReactionClip(AnimationClip? clip) =>
+        GetReactionSpritePageResidentBudgetBytes(clip) > 0;
 
     private void TrimResidentSpritePagesToIdleTarget()
     {
