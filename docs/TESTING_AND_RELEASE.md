@@ -248,7 +248,7 @@ git status --short --ignored
 
 ## v1.0.77 发布验证
 
-以下源码差异、Release 构建、定向回归、完整 WPF 契约与受控 reminder A/B 于 `2026-08-14` 完成；真实提交、标签、EXE 和 GitHub Release 证据待发布后回填。
+以下源码差异、Release 构建、定向回归、完整 WPF 契约、受控 reminder A/B、真实发布与独立回下载验证于 `2026-08-14` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
@@ -258,7 +258,9 @@ git status --short --ignored
 | reminder 内存 | 完整热集 exact `33,652,536 B`，当前 manifest best-fit worst `37,583,616 B`，`36 MiB` 余量 `165,120 B`。受控三轮中 resident/pool `47.06 → 33.90 MiB`、managed `65.24 → 52.08 MiB`、Private `186.88 → 173.76 MiB`、Working Set `246.23 → 233.19 MiB`；预热后两圈 `+0 allocation / +0 reuse / 0 pending` |
 | 自动化与构建 | `DesktopPet` 与 `UiStateChecks` Release 构建为 `0 warning / 0 error`；`--todo-cut-only`、`--todo-layout-only`、`--scheduled-editor-only`、`--todo-only`、`--reminder-only`、`--resident-cache-only`、`--roam-interaction-only`、`--edge-dock-only`、`--pet-size-only`、`--work-mode-only`、`--clip-clock-only`、`--reaction-random-only`、`--deadline-only` 均通过；完整 `UiStateChecks` 连续两轮输出 `UI state checks passed.` |
 | 产品质量边界 | 不改 Assets、manifest、像素、画质、帧数、FPS、作者绝对时间线、动作选择、任务存储或提醒语义；DPI 失败路径安全跳过吸附，不从混合几何启动动画。内存数字仅代表受控 reminder 场景，Working Set 仍受系统压力影响 |
-| 源码与发布 | 待真实发布后回填：功能提交、tag/Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest 与独立回下载复核 |
+| 源码与版本 | 功能提交 `d0f3cc7c139f31a501a4433f30763c6b59577adf`；远端 `main`、annotated `v1.0.77` tag 剥离提交与 Release target 均精确指向该提交。`FileVersion=1.0.77.0`，`ProductVersion=1.0.77+d0f3cc7c139f31a501a4433f30763c6b59577adf` |
+| EXE | 单文件框架依赖 EXE 为 `93,362,310` bytes，SHA-256 `39BC0031CADC56E83B0D09AA39A16F4064229CDEA0F547B8D30F580F8A81E205`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.77`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.77) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `93,362,310`、digest `sha256:39bc0031cadc56e83b0d09aa39a16f4064229cdea0f547b8d30f580f8a81e205`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件，也未停止或替换任何桌宠进程 |
 
 ## v1.0.76 发布验证
 
