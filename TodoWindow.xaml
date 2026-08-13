@@ -3311,8 +3311,9 @@
                Opened="TaskFullTextPopup_Opened"
                Closed="TaskFullTextPopup_Closed">
             <Border x:Name="TaskFullTextPopupChrome"
-                    Width="320"
-                    MaxHeight="228"
+                    Width="360"
+                    MinHeight="160"
+                    MaxHeight="280"
                     Padding="11,9,11,10"
                     Background="#FFFFF8F1"
                     BorderBrush="#EF9465"
@@ -3341,8 +3342,8 @@
                                Text="完整内容 · 可选择复制" />
                     <TextBox x:Name="TaskFullTextPreviewTextBox"
                              Grid.Row="1"
-                             MinHeight="40"
-                             MaxHeight="170"
+                             MinHeight="64"
+                             MaxHeight="218"
                              Padding="7,5"
                              Background="#FFFFFCF8"
                              BorderBrush="#F1C19E"

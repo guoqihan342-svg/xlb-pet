@@ -2,6 +2,13 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.77
+
+- 待办主窗、待办修改窗和定时修改窗统一接管 Copy / Cut：右键、`Ctrl+X` 与 `Shift+Delete` 都先同步写入剪贴板，写入失败时严格保留原文和选区。Copy 的后台重试最多 6 次且受真实墙钟 `300 ms` 截止约束；跨窗口 generation 与系统 clipboard sequence 会淘汰旧请求，窗口隐藏/关闭也会取消 pending，避免迟到内容覆盖用户的新剪贴板。两个循环次数输入框另只接受 ASCII `0-9` 粘贴，普通正文 Paste 不受影响。
+- 混合 DPI 拖拽改用不可变窗口内抓点和 Win32 物理坐标；`WM_NCHITTEST` 优先读取完整 32 位虚拟桌面光标，跨屏 `DpiChanged` 通过 generation 保护的 `Loaded → ContextIdle` 稳定阶段校正。松手发生在 DPI 过渡中时最多同代重试 3 次，成功后才做边缘吸附，持续失败则安全跳过吸附并完整清理，不重启动画、工作状态或帧时钟。Todo、提醒和气泡在主窗 DPI 几何稳定后统一刷新。
+- 待办长文悬停预览的首选尺寸从 `320 × 228 DIP` 放大到 `360 × 280 DIP`，正文区域为 `64–218 DIP`；窗口会按目标显示器工作区缩小并保留 `16 DIP` 安全边距，支持负坐标副屏和窄工作区。文本右键菜单打开期间不会触发 `220 ms` 自动关闭，也不会折叠待复制选区。
+- 活跃提醒从普通 `52 MiB` 改用覆盖完整 enter / hold / reverse-exit 页集的 `36 MiB` resident 预算；精确热集为 `33,652,536 B`，当前 manifest 在相邻容量 best-fit 规则下最坏为 `37,583,616 B`，距上限 `165,120 B`。受控三轮中 resident / pool、managed、Private、Working Set 中位数均约减少 `13 MiB`，预热后两圈为 `+0 allocation / +0 reuse / 0 pending`；绕屏、工作、reaction 优先级及素材、像素、帧、FPS、绝对时序和业务功能不变。
+
 ## v1.0.76
 
 - 四种点击/自动动作在完整作者序列（起身、动作、循环、逆播返回）期间分别使用 `99 / 83 / 109 / 97 MiB` 的短时 resident 上限；到点提醒预载与动作重叠时额外保留 `12 MiB`。绕屏/预载 `92 MiB` 与工作 `57 / 73 MiB` 状态仍先取得所有权，普通状态保持 `52 MiB`；自然结束、边缘、Todo、提醒或分页失败接管后立即恢复 `52 MiB`，完全空闲保留原 `20 秒`宽限再深裁至 `12 MiB`。

@@ -1,5 +1,6 @@
 using System;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 
@@ -11,6 +12,9 @@ public partial class TaskTextEditWindow : Window
     private const double TargetEditorHeight = 414;
 
     private readonly Action _positionBesideOwnerAction;
+    private readonly ClipboardCopyRetry _clipboardCopyRetry;
+    private readonly CommandBinding _copyCommandBinding;
+    private readonly CommandBinding _cutCommandBinding;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private Window? _positionOwner;
     private bool _editorSizeInitialized;
@@ -25,6 +29,21 @@ public partial class TaskTextEditWindow : Window
         InitializeComponent();
         WindowChromeAppearance.ExcludeFromAltTab(this);
         _positionBesideOwnerAction = PositionBesideOwner;
+        _clipboardCopyRetry = new ClipboardCopyRetry(Dispatcher);
+        _copyCommandBinding = new CommandBinding(
+            ApplicationCommands.Copy);
+        _copyCommandBinding.PreviewCanExecute +=
+            CopyCommand_CanExecute;
+        _copyCommandBinding.PreviewExecuted +=
+            CopyCommand_Executed;
+        CommandBindings.Add(_copyCommandBinding);
+        _cutCommandBinding = new CommandBinding(
+            ApplicationCommands.Cut);
+        _cutCommandBinding.PreviewCanExecute +=
+            CutCommand_CanExecute;
+        _cutCommandBinding.PreviewExecuted +=
+            CutCommand_Executed;
+        CommandBindings.Add(_cutCommandBinding);
         _positionCache = new OwnedWindowPositioner.PositionCache(this);
         EditorTitleText.Text = title;
         Title = title;
@@ -313,11 +332,111 @@ public partial class TaskTextEditWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (TryExecuteClipboardShortcut(e))
+        {
+            return;
+        }
+
         if (e.Key == Key.Escape && !_isImeComposing)
         {
             CloseWithoutSaving();
             e.Handled = true;
         }
+    }
+
+    private bool TryExecuteClipboardShortcut(KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers != ModifierKeys.Control ||
+            Keyboard.FocusedElement is not TextBox textBox)
+        {
+            return false;
+        }
+
+        var command = GetEffectiveShortcutKey(e) switch
+        {
+            Key.C => ApplicationCommands.Copy,
+            Key.X => ApplicationCommands.Cut,
+            _ => null
+        };
+        if (command is null || !command.CanExecute(null, textBox))
+        {
+            return false;
+        }
+
+        e.Handled = true;
+        command.Execute(null, textBox);
+        return true;
+    }
+
+    private static Key GetEffectiveShortcutKey(KeyEventArgs e) =>
+        e.Key switch
+        {
+            Key.ImeProcessed => e.ImeProcessedKey,
+            Key.System => e.SystemKey,
+            _ => e.Key
+        };
+
+    private void CopyCommand_CanExecute(
+        object sender,
+        CanExecuteRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        e.CanExecute = textBox.SelectionLength > 0;
+        e.Handled = true;
+    }
+
+    private void CopyCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        var text = textBox.SelectionLength > 0
+            ? textBox.SelectedText
+            : null;
+        if (!string.IsNullOrEmpty(text))
+        {
+            _clipboardCopyRetry.Copy(text);
+        }
+
+        e.Handled = true;
+    }
+
+    private static void CutCommand_CanExecute(
+        object sender,
+        CanExecuteRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        e.CanExecute = TextClipboardCommands.CanCut(textBox);
+        e.Handled = true;
+    }
+
+    private static void CutCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _ = TextClipboardCommands.TryCutSelectedText(textBox);
     }
 
     private bool CommitAndClose(bool openAdvancedEditor)
@@ -378,6 +497,17 @@ public partial class TaskTextEditWindow : Window
     private void TaskTextEditWindow_Closed(object? sender, EventArgs e)
     {
         DetachPositionOwner();
+        _clipboardCopyRetry.Dispose();
+        CommandBindings.Remove(_copyCommandBinding);
+        _copyCommandBinding.PreviewCanExecute -=
+            CopyCommand_CanExecute;
+        _copyCommandBinding.PreviewExecuted -=
+            CopyCommand_Executed;
+        CommandBindings.Remove(_cutCommandBinding);
+        _cutCommandBinding.PreviewCanExecute -=
+            CutCommand_CanExecute;
+        _cutCommandBinding.PreviewExecuted -=
+            CutCommand_Executed;
         TextCompositionManager.RemovePreviewTextInputStartHandler(
             EditorTextBox,
             EditorTextBox_PreviewTextInputStart);

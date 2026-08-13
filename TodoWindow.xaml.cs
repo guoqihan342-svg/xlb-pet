@@ -20,6 +20,12 @@ public partial class TodoWindow : Window
     internal const double DefaultWindowWidth = 292;
     internal const double DefaultWindowHeight = 414;
     private const double TaskFullTextPopupGap = 12;
+    private const double TaskFullTextPopupPreferredWidth = 360;
+    private const double TaskFullTextPopupPreferredMaxHeight = 280;
+    private const double TaskFullTextPopupPreferredMinHeight = 160;
+    private const double TaskFullTextPopupPreferredTextMinHeight = 64;
+    private const double TaskFullTextPopupChromeOverhead = 62;
+    private const double TaskFullTextPopupWorkAreaInset = 16;
     private static readonly Brush TodoDropIndicatorBrush =
         CreateTodoDropIndicatorBrush();
     private static readonly string[] ScheduledHourOptions =
@@ -119,8 +125,12 @@ public partial class TodoWindow : Window
     private readonly Action _finishTodoEditAfterOutsideClickAction;
     private readonly Action _focusInputAction;
     private readonly Action _focusSelectedPageInputAfterTabAction;
-    private readonly Action _retryClipboardCopyAction;
     private readonly Action _finishScheduledPickerInternalCommitAction;
+    private readonly ClipboardCopyRetry _clipboardCopyRetry;
+    private readonly CommandBinding _cutCommandBinding;
+    private readonly CommandBinding _taskFullTextPreviewCopyCommandBinding;
+    private readonly ContextMenuEventHandler _textBoxContextMenuOpeningHandler;
+    private readonly ContextMenuEventHandler _textBoxContextMenuClosingHandler;
     private readonly DispatcherTimer _taskFullTextCloseTimer;
     private TextBox? _imeCompositionOwner;
     private TextBox? _editingTodoTextBox;
@@ -137,8 +147,6 @@ public partial class TodoWindow : Window
     private bool _todoDropTargetInsertAfter;
     private ScrollViewer? _todoScrollViewer;
     private long _lastTodoAutoScrollTimestamp;
-    private string? _pendingClipboardCopyText;
-    private bool _clipboardCopyRetryQueued;
     private ScheduledTaskItem? _editingScheduledTask;
     private DateTimeOffset _editingScheduledOriginalDueAt;
     private TimeSpan? _editingScheduledOriginalRepeatInterval;
@@ -164,9 +172,12 @@ public partial class TodoWindow : Window
     private ComboBox? _activeScheduledTimePart;
     private long _scheduledPickerInteractionGeneration;
     private FrameworkElement? _taskFullTextOwner;
+    private Rect _taskFullTextPlacementWorkArea = Rect.Empty;
+    private Rect _taskFullTextPlacementTargetBounds = Rect.Empty;
     private TaskFullTextTheme _activeTaskFullTextTheme =
         TodoTaskFullTextTheme;
     private bool _isTaskFullTextPopupOpen;
+    private bool _isTextContextMenuOpen;
     private TextBox? _taskRowSelectionTextBox;
     private int _taskRowSelectionAnchor;
     private int _taskRowSelectionVisibleEnd;
@@ -196,9 +207,28 @@ public partial class TodoWindow : Window
         _focusInputAction = FocusInputCore;
         _focusSelectedPageInputAfterTabAction =
             FocusSelectedPageInputAfterTabChange;
-        _retryClipboardCopyAction = RetryClipboardCopy;
         _finishScheduledPickerInternalCommitAction =
             FinishScheduledPickerInternalCommit;
+        _clipboardCopyRetry = new ClipboardCopyRetry(Dispatcher);
+        _cutCommandBinding = new CommandBinding(
+            ApplicationCommands.Cut);
+        _cutCommandBinding.PreviewCanExecute +=
+            CutCommand_CanExecute;
+        _cutCommandBinding.PreviewExecuted +=
+            CutCommand_Executed;
+        CommandBindings.Add(_cutCommandBinding);
+        _taskFullTextPreviewCopyCommandBinding = new CommandBinding(
+            ApplicationCommands.Copy);
+        _taskFullTextPreviewCopyCommandBinding.PreviewCanExecute +=
+            CopyCommand_CanExecute;
+        _taskFullTextPreviewCopyCommandBinding.PreviewExecuted +=
+            CopyCommand_Executed;
+        TaskFullTextPreviewTextBox.CommandBindings.Add(
+            _taskFullTextPreviewCopyCommandBinding);
+        _textBoxContextMenuOpeningHandler =
+            TextBoxContextMenu_Opening;
+        _textBoxContextMenuClosingHandler =
+            TextBoxContextMenu_Closing;
         _taskFullTextCloseTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(220)
@@ -232,6 +262,9 @@ public partial class TodoWindow : Window
             TodoInput_PreviewTextInputUpdate);
         ScheduledTaskInput.PreviewTextInput += TodoInput_PreviewTextInputCommitted;
         ScheduledTaskInput.LostKeyboardFocus += TodoInput_LostKeyboardFocus;
+        DataObject.AddPastingHandler(
+            ScheduledRepeatCountInput,
+            ScheduledRepeatInput_Pasting);
         PetSizeSlider.PreviewMouseLeftButtonDown += PetSizeSlider_PreviewMouseLeftButtonDown;
         PetSizeSlider.AddHandler(
             Mouse.PreviewMouseUpEvent,
@@ -245,6 +278,22 @@ public partial class TodoWindow : Window
         AddHandler(
             Mouse.PreviewMouseDownEvent,
             new MouseButtonEventHandler(TodoWindow_PreviewMouseDown),
+            handledEventsToo: true);
+        AddHandler(
+            ContextMenuService.ContextMenuOpeningEvent,
+            _textBoxContextMenuOpeningHandler,
+            handledEventsToo: true);
+        AddHandler(
+            ContextMenuService.ContextMenuClosingEvent,
+            _textBoxContextMenuClosingHandler,
+            handledEventsToo: true);
+        TaskFullTextPreviewTextBox.AddHandler(
+            ContextMenuService.ContextMenuOpeningEvent,
+            _textBoxContextMenuOpeningHandler,
+            handledEventsToo: true);
+        TaskFullTextPreviewTextBox.AddHandler(
+            ContextMenuService.ContextMenuClosingEvent,
+            _textBoxContextMenuClosingHandler,
             handledEventsToo: true);
         PreviewKeyDown += TodoWindow_PreviewKeyDown;
         Deactivated += TodoWindow_TransientPopupDeactivated;
@@ -318,6 +367,7 @@ public partial class TodoWindow : Window
         _isScheduledDatePickerPopupOpen ||
         _isScheduledTimePickerPopupOpen ||
         _isTaskFullTextPopupOpen ||
+        _isTextContextMenuOpen ||
         _isDeleteConfirmationOpen ||
         _taskTextEditWindow?.IsVisible == true ||
         _scheduledTaskEditWindow?.IsVisible == true ||
@@ -523,13 +573,8 @@ public partial class TodoWindow : Window
 
     private void CopyCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        if (Keyboard.FocusedElement is not TextBox textBox)
-        {
-            e.CanExecute = false;
-            return;
-        }
-
-        if (!IsCopySource(textBox))
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
         {
             return;
         }
@@ -540,19 +585,52 @@ public partial class TodoWindow : Window
 
     private void CopyCommand_Executed(object sender, ExecutedRoutedEventArgs e)
     {
-        if (Keyboard.FocusedElement is not TextBox textBox)
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
         {
             return;
         }
 
         var text = GetCopyText(textBox);
-        if (string.IsNullOrEmpty(text))
+        if (!string.IsNullOrEmpty(text))
+        {
+            _clipboardCopyRetry.Copy(text);
+        }
+
+        e.Handled = true;
+    }
+
+    private void CutCommand_CanExecute(
+        object sender,
+        CanExecuteRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
         {
             return;
         }
 
-        CopyTextToClipboard(text);
+        e.CanExecute =
+            IsEditableTextSource(textBox) &&
+            TextClipboardCommands.CanCut(textBox);
         e.Handled = true;
+    }
+
+    private void CutCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null || !IsEditableTextSource(textBox))
+        {
+            return;
+        }
+
+        // Always consume a recognized Cut, including clipboard-busy failure.
+        // Falling through to WPF's native handler could delete the selection
+        // after our fail-closed clipboard write has failed.
+        e.Handled = true;
+        _ = TryCutSelectedText(textBox);
     }
 
     private void TodoWindow_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -574,12 +652,18 @@ public partial class TodoWindow : Window
         if (effectiveKey == Key.X &&
             Keyboard.Modifiers == ModifierKeys.Control &&
             Keyboard.FocusedElement is TextBox cutTextBox &&
-            IsEditableTextSource(cutTextBox) &&
-            cutTextBox.SelectionLength > 0)
+            IsEditableTextSource(cutTextBox))
         {
-            e.Handled = true;
-            TryCutSelectedText(cutTextBox);
-            return;
+            if (ApplicationCommands.Cut.CanExecute(
+                    parameter: null,
+                    cutTextBox))
+            {
+                e.Handled = true;
+                ApplicationCommands.Cut.Execute(
+                    parameter: null,
+                    cutTextBox);
+                return;
+            }
         }
 
         // TextBox's built-in Copy command disables itself when the selection
@@ -595,14 +679,17 @@ public partial class TodoWindow : Window
             return;
         }
 
-        var text = GetCopyText(textBox);
-        if (string.IsNullOrEmpty(text))
+        if (!ApplicationCommands.Copy.CanExecute(
+                parameter: null,
+                textBox))
         {
             return;
         }
 
-        CopyTextToClipboard(text);
         e.Handled = true;
+        ApplicationCommands.Copy.Execute(
+            parameter: null,
+            textBox);
     }
 
     private static Key GetEffectiveShortcutKey(KeyEventArgs e) =>
@@ -615,85 +702,17 @@ public partial class TodoWindow : Window
 
     private bool TryCutSelectedText(TextBox textBox)
     {
-        if (textBox.IsReadOnly ||
-            textBox.SelectionLength <= 0 ||
-            !IsEditableTextSource(textBox))
-        {
-            return false;
-        }
-
-        var selectionStart = textBox.SelectionStart;
-        var selectionLength = textBox.SelectionLength;
-        var textSnapshot = textBox.Text;
-        var selectedText = textBox.SelectedText;
-        if (selectedText.Length == 0)
-        {
-            return false;
-        }
-
-        _pendingClipboardCopyText = null;
-
-        // WPF's routed Cut command can intermittently lose the selection that
-        // begins at index zero while TSF focus state settles. Capture the
-        // selection before touching the clipboard, then remove exactly that
-        // range and restore a deterministic caret position.
-        if (!TryCopyTextToClipboard(selectedText))
-        {
-            // Match WPF's fail-closed Cut behavior: if another process owns
-            // the clipboard, preserve both the text and its selection. A
-            // deferred deletion could otherwise target a selection that TSF
-            // has already changed.
-            return false;
-        }
-
-        return RemovePendingCutSelection(
-            textBox,
-            textSnapshot,
-            selectionStart,
-            selectionLength,
-            selectedText,
-            requireSelectionMatch: false);
+        return IsEditableTextSource(textBox) &&
+               TextClipboardCommands.TryCutSelectedText(textBox);
     }
 
-    private static bool RemovePendingCutSelection(
-        TextBox textBox,
-        string textSnapshot,
-        int selectionStart,
-        int selectionLength,
-        string selectedText,
-        bool requireSelectionMatch)
-    {
-        if (textBox.IsReadOnly ||
-            !string.Equals(textBox.Text, textSnapshot, StringComparison.Ordinal) ||
-            selectionStart < 0 ||
-            selectionLength <= 0 ||
-            selectionStart > textSnapshot.Length - selectionLength ||
-            !string.Equals(
-                textSnapshot.Substring(selectionStart, selectionLength),
-                selectedText,
-                StringComparison.Ordinal) ||
-            (requireSelectionMatch &&
-              (textBox.SelectionStart != selectionStart ||
-               textBox.SelectionLength != selectionLength)))
-        {
-            return false;
-        }
-
-        textBox.Select(selectionStart, selectionLength);
-        textBox.SelectedText = string.Empty;
-        textBox.Select(selectionStart, 0);
-        return true;
-    }
-
-    private bool IsEditableTextSource(TextBox textBox) =>
-        ReferenceEquals(textBox, TodoInput) ||
-        ReferenceEquals(textBox, ScheduledTaskInput) ||
-        ReferenceEquals(textBox, _editingTodoTextBox);
+    private static bool IsEditableTextSource(TextBox textBox) =>
+        textBox.IsEnabled && !textBox.IsReadOnly;
 
     private bool IsCopySource(TextBox textBox) =>
         ReferenceEquals(textBox, TodoInput) ||
         ReferenceEquals(textBox, ScheduledTaskInput) ||
-        (textBox.DataContext is TodoItem or ScheduledTaskItem);
+        textBox.SelectionLength > 0;
 
     private bool CanCopyFromTextBox(TextBox textBox) =>
         !string.IsNullOrEmpty(GetCopyText(textBox));
@@ -708,69 +727,9 @@ public partial class TodoWindow : Window
                 : textBox.Text;
         }
 
-        return (textBox.DataContext is TodoItem or ScheduledTaskItem) &&
-               textBox.SelectionLength > 0
+        return textBox.SelectionLength > 0
             ? textBox.SelectedText
             : null;
-    }
-
-    private void CopyTextToClipboard(string text)
-    {
-        if (TryCopyTextToClipboard(text))
-        {
-            return;
-        }
-
-        _pendingClipboardCopyText = text;
-        QueueClipboardRetry();
-    }
-
-    private bool TryCopyTextToClipboard(string text)
-    {
-        try
-        {
-            Clipboard.SetDataObject(text, true);
-            _pendingClipboardCopyText = null;
-            return true;
-        }
-        catch (ExternalException)
-        {
-            return false;
-        }
-    }
-
-    private void QueueClipboardRetry()
-    {
-        if (_clipboardCopyRetryQueued)
-        {
-            return;
-        }
-
-        _clipboardCopyRetryQueued = true;
-        Dispatcher.BeginInvoke(
-            DispatcherPriority.Background,
-            _retryClipboardCopyAction);
-    }
-
-    private void RetryClipboardCopy()
-    {
-        _clipboardCopyRetryQueued = false;
-        var text = _pendingClipboardCopyText;
-        _pendingClipboardCopyText = null;
-        if (string.IsNullOrEmpty(text))
-        {
-            return;
-        }
-
-        try
-        {
-            Clipboard.SetDataObject(text, true);
-        }
-        catch (ExternalException)
-        {
-            // The clipboard can be held briefly by another process. One
-            // deferred retry keeps Ctrl+C responsive without a blocking loop.
-        }
     }
 
     public void SetEdgeRoamingEnabled(bool enabled)
@@ -933,6 +892,8 @@ public partial class TodoWindow : Window
             return;
         }
 
+        _clipboardCopyRetry.Cancel();
+        _isTextContextMenuOpen = false;
         CloseTaskFullTextPreview();
         CloseOwnedEditorsWithoutSaving();
         CloseScheduledPickers();
@@ -956,16 +917,43 @@ public partial class TodoWindow : Window
 
         _editorInterruptedByReminder = null;
         _isReminderInterruptionActive = false;
+        _clipboardCopyRetry.Dispose();
         _taskFullTextCloseTimer.Stop();
         _taskFullTextCloseTimer.Tick -=
             TaskFullTextCloseTimer_Tick;
+        DataObject.RemovePastingHandler(
+            ScheduledRepeatCountInput,
+            ScheduledRepeatInput_Pasting);
+        RemoveHandler(
+            ContextMenuService.ContextMenuOpeningEvent,
+            _textBoxContextMenuOpeningHandler);
+        RemoveHandler(
+            ContextMenuService.ContextMenuClosingEvent,
+            _textBoxContextMenuClosingHandler);
+        TaskFullTextPreviewTextBox.RemoveHandler(
+            ContextMenuService.ContextMenuOpeningEvent,
+            _textBoxContextMenuOpeningHandler);
+        TaskFullTextPreviewTextBox.RemoveHandler(
+            ContextMenuService.ContextMenuClosingEvent,
+            _textBoxContextMenuClosingHandler);
+        CommandBindings.Remove(_cutCommandBinding);
+        _cutCommandBinding.PreviewCanExecute -=
+            CutCommand_CanExecute;
+        _cutCommandBinding.PreviewExecuted -=
+            CutCommand_Executed;
+        TaskFullTextPreviewTextBox.CommandBindings.Remove(
+            _taskFullTextPreviewCopyCommandBinding);
+        _taskFullTextPreviewCopyCommandBinding.PreviewCanExecute -=
+            CopyCommand_CanExecute;
+        _taskFullTextPreviewCopyCommandBinding.PreviewExecuted -=
+            CopyCommand_Executed;
         _taskTextEditWindow = null;
         _scheduledTaskEditWindow = null;
-        _pendingClipboardCopyText = null;
         _outsideTodoEditCommitPending = false;
         _outsideTodoEditCommitQueued = false;
         _isScheduledDatePickerPopupOpen = false;
         _isScheduledTimePickerPopupOpen = false;
+        _isTextContextMenuOpen = false;
         if (_petSizeAdjustmentActive)
         {
             EndPetSizeAdjustment();
@@ -1084,6 +1072,7 @@ public partial class TodoWindow : Window
         }
 
         _taskFullTextOwner = owner;
+        ConfigureTaskFullTextPopupLayout(owner);
         TaskFullTextPopup.PlacementTarget = owner;
         TaskFullTextPreviewTextBox.DataContext = owner.Tag;
         TaskFullTextPreviewTextBox.Text = text;
@@ -1274,24 +1263,163 @@ public partial class TodoWindow : Window
                  contentHost.ViewportWidth + layoutTolerance));
     }
 
-    private static CustomPopupPlacement[] PlaceTaskFullTextPopup(
+    private void ConfigureTaskFullTextPopupLayout(FrameworkElement owner)
+    {
+        var workArea = MonitorWorkArea.GetForVisual(this, owner);
+        var usableWidth = Math.Max(
+            1,
+            workArea.Width - (TaskFullTextPopupWorkAreaInset * 2));
+        var usableHeight = Math.Max(
+            1,
+            workArea.Height - (TaskFullTextPopupWorkAreaInset * 2));
+        var popupWidth = Math.Min(
+            TaskFullTextPopupPreferredWidth,
+            usableWidth);
+        var popupMaxHeight = Math.Min(
+            TaskFullTextPopupPreferredMaxHeight,
+            usableHeight);
+        var popupMinHeight = Math.Min(
+            TaskFullTextPopupPreferredMinHeight,
+            popupMaxHeight);
+        var textMaxHeight = Math.Max(
+            1,
+            popupMaxHeight - TaskFullTextPopupChromeOverhead);
+
+        TaskFullTextPopupChrome.Width = popupWidth;
+        TaskFullTextPopupChrome.MaxHeight = popupMaxHeight;
+        TaskFullTextPopupChrome.MinHeight = popupMinHeight;
+        TaskFullTextPreviewTextBox.MaxHeight = textMaxHeight;
+        TaskFullTextPreviewTextBox.MinHeight = Math.Min(
+            TaskFullTextPopupPreferredTextMinHeight,
+            textMaxHeight);
+
+        _taskFullTextPlacementWorkArea = workArea;
+        _taskFullTextPlacementTargetBounds =
+            TryGetTaskFullTextTargetBounds(owner, out var targetBounds)
+                ? targetBounds
+                : Rect.Empty;
+    }
+
+    private bool TryGetTaskFullTextTargetBounds(
+        FrameworkElement owner,
+        out Rect targetBounds)
+    {
+        targetBounds = Rect.Empty;
+        if (!owner.IsLoaded ||
+            owner.ActualWidth <= 0 ||
+            owner.ActualHeight <= 0 ||
+            !double.IsFinite(Left) ||
+            !double.IsFinite(Top))
+        {
+            return false;
+        }
+
+        try
+        {
+            var physicalTopLeft = owner.PointToScreen(new Point());
+            var physicalBottomRight = owner.PointToScreen(
+                new Point(owner.ActualWidth, owner.ActualHeight));
+            var localTopLeft = PointFromScreen(physicalTopLeft);
+            var localBottomRight = PointFromScreen(physicalBottomRight);
+            var left = Left + Math.Min(localTopLeft.X, localBottomRight.X);
+            var top = Top + Math.Min(localTopLeft.Y, localBottomRight.Y);
+            var right = Left + Math.Max(localTopLeft.X, localBottomRight.X);
+            var bottom = Top + Math.Max(localTopLeft.Y, localBottomRight.Y);
+            if (!double.IsFinite(left) ||
+                !double.IsFinite(top) ||
+                !double.IsFinite(right) ||
+                !double.IsFinite(bottom) ||
+                right <= left ||
+                bottom <= top)
+            {
+                return false;
+            }
+
+            targetBounds = new Rect(
+                left,
+                top,
+                right - left,
+                bottom - top);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private CustomPopupPlacement[] PlaceTaskFullTextPopup(
         Size popupSize,
         Size targetSize,
         Point offset)
     {
         var verticalOffset = Math.Round(
             (targetSize.Height - popupSize.Height) / 2);
+        var workArea = _taskFullTextPlacementWorkArea;
+        var targetBounds = _taskFullTextPlacementTargetBounds;
+        if (workArea.IsEmpty ||
+            targetBounds.IsEmpty ||
+            popupSize.Width <= 0 ||
+            popupSize.Height <= 0)
+        {
+            return
+            [
+                new CustomPopupPlacement(
+                    new Point(
+                        -popupSize.Width - TaskFullTextPopupGap + offset.X,
+                        verticalOffset + offset.Y),
+                    PopupPrimaryAxis.Vertical),
+                new CustomPopupPlacement(
+                    new Point(
+                        targetSize.Width + TaskFullTextPopupGap + offset.X,
+                        verticalOffset + offset.Y),
+                    PopupPrimaryAxis.Vertical)
+            ];
+        }
+
+        var minimumLeft = workArea.Left + TaskFullTextPopupWorkAreaInset;
+        var maximumLeft = Math.Max(
+            minimumLeft,
+            workArea.Right -
+            TaskFullTextPopupWorkAreaInset -
+            popupSize.Width);
+        var minimumTop = workArea.Top + TaskFullTextPopupWorkAreaInset;
+        var maximumTop = Math.Max(
+            minimumTop,
+            workArea.Bottom -
+            TaskFullTextPopupWorkAreaInset -
+            popupSize.Height);
+        var leftCandidate =
+            targetBounds.Left - TaskFullTextPopupGap - popupSize.Width;
+        var rightCandidate =
+            targetBounds.Right + TaskFullTextPopupGap;
+        var leftFits = leftCandidate >= minimumLeft &&
+                       leftCandidate <= maximumLeft;
+        var rightFits = rightCandidate >= minimumLeft &&
+                        rightCandidate <= maximumLeft;
+        var preferredLeft = leftFits
+            ? leftCandidate
+            : rightFits
+                ? rightCandidate
+                : targetBounds.Left - workArea.Left >=
+                  workArea.Right - targetBounds.Right
+                    ? leftCandidate
+                    : rightCandidate;
+        var clampedLeft = Math.Clamp(
+            preferredLeft,
+            minimumLeft,
+            maximumLeft);
+        var clampedTop = Math.Clamp(
+            targetBounds.Top +
+            ((targetBounds.Height - popupSize.Height) / 2),
+            minimumTop,
+            maximumTop);
         return
         [
             new CustomPopupPlacement(
                 new Point(
-                    -popupSize.Width - TaskFullTextPopupGap + offset.X,
-                    verticalOffset + offset.Y),
-                PopupPrimaryAxis.Vertical),
-            new CustomPopupPlacement(
-                new Point(
-                    targetSize.Width + TaskFullTextPopupGap + offset.X,
-                    verticalOffset + offset.Y),
+                    clampedLeft - targetBounds.Left + offset.X,
+                    clampedTop - targetBounds.Top + offset.Y),
                 PopupPrimaryAxis.Vertical)
         ];
     }
@@ -1558,6 +1686,45 @@ public partial class TodoWindow : Window
         ScheduleTaskFullTextPreviewClose();
     }
 
+    private void TextBoxContextMenu_Opening(
+        object sender,
+        ContextMenuEventArgs e)
+    {
+        if (TextClipboardCommands.ResolveTextBox(sender, e) is null)
+        {
+            return;
+        }
+
+        _isTextContextMenuOpen = true;
+        _taskFullTextCloseTimer.Stop();
+    }
+
+    private void TextBoxContextMenu_Closing(
+        object sender,
+        ContextMenuEventArgs e)
+    {
+        if (!_isTextContextMenuOpen &&
+            TextClipboardCommands.ResolveTextBox(sender, e) is null)
+        {
+            return;
+        }
+
+        var wasOpen = _isTextContextMenuOpen;
+        _isTextContextMenuOpen = false;
+        if (TaskFullTextPopup.IsOpen)
+        {
+            // Give the pointer the same grace window it receives when leaving
+            // the preview normally; closing a context menu must not clear the
+            // selected text underneath the command click.
+            ScheduleTaskFullTextPreviewClose();
+        }
+
+        if (wasOpen && !IsTransientPopupOpen)
+        {
+            TransientInteractionCompleted?.Invoke();
+        }
+    }
+
     private void ScheduleTaskFullTextPreviewClose()
     {
         if (!TaskFullTextPopup.IsOpen)
@@ -1574,7 +1741,8 @@ public partial class TodoWindow : Window
         EventArgs e)
     {
         _taskFullTextCloseTimer.Stop();
-        if (_taskFullTextOwner?.IsMouseOver == true ||
+        if (_isTextContextMenuOpen ||
+            _taskFullTextOwner?.IsMouseOver == true ||
             TaskFullTextPopup.Child is UIElement
             {
                 IsMouseOver: true
@@ -1590,6 +1758,8 @@ public partial class TodoWindow : Window
     {
         _taskFullTextCloseTimer.Stop();
         _taskFullTextOwner = null;
+        _taskFullTextPlacementWorkArea = Rect.Empty;
+        _taskFullTextPlacementTargetBounds = Rect.Empty;
         var wasTransientOpen =
             _isTaskFullTextPopupOpen ||
             TaskFullTextPopup.IsOpen;
@@ -1629,6 +1799,8 @@ public partial class TodoWindow : Window
         var wasTransientOpen = _isTaskFullTextPopupOpen;
         _isTaskFullTextPopupOpen = false;
         _taskFullTextOwner = null;
+        _taskFullTextPlacementWorkArea = Rect.Empty;
+        _taskFullTextPlacementTargetBounds = Rect.Empty;
         ReleaseTaskFullTextPreviewContent();
         if (wasTransientOpen && !IsTransientPopupOpen)
         {
@@ -3101,7 +3273,21 @@ public partial class TodoWindow : Window
         object sender,
         TextCompositionEventArgs e)
     {
-        e.Handled = e.Text.Any(character => !char.IsDigit(character));
+        e.Handled = e.Text.Any(
+            character => character is < '0' or > '9');
+    }
+
+    private void ScheduledRepeatInput_Pasting(
+        object sender,
+        DataObjectPastingEventArgs e)
+    {
+        if (TextClipboardCommands.IsAsciiDigitsPaste(e))
+        {
+            return;
+        }
+
+        e.CancelCommand();
+        SetScheduledTaskValidation("循环间隔只能输入 0-9");
     }
 
     private void ScheduledRepeatUnitComboBox_SelectionChanged(

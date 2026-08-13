@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private const double ScreenEdgeMargin = 12;
     private const double EdgeContactTolerance = 1;
     private const double EdgeDockActivationDistance = 12;
+    private const int DirectDragDpiReconcileMaximumRetryCount = 3;
     // Code-only roaming tuning. Position is evaluated from the absolute visual
     // clock on every monitor refresh; these values do not create a UI slider.
     private const double EdgeRoamBaseSpeedDipsPerSecond = 160;
@@ -124,6 +125,13 @@ public partial class MainWindow : Window
     // reaction page that is about to be reused.
     private const long SpritePageReminderPreloadAllowanceBytes =
         12L * 1024 * 1024;
+    // An active reminder traverses two enter pages, two hold pages and the
+    // authored reverse enter path. Together with the pinned idle page, that
+    // complete set is 33,652,536 exact bytes and at most 37,583,616 bytes when
+    // every page reuses the largest compatible capacity reachable from the
+    // current manifest. Keep it only from enter through hold and exit.
+    private const long SpritePageReminderResidentBudgetBytes =
+        36L * 1024 * 1024;
     // The higher roaming ceiling holds its complete active page set plus the
     // bounded best-fit reuse margin, then releases back to the idle target.
     private const long SpritePageRoamResidentBudgetBytes = 92L * 1024 * 1024;
@@ -335,11 +343,20 @@ public partial class MainWindow : Window
     // production gesture path.
     private Func<Point?>? _pointerScreenPointProviderForTesting = null;
     private Point _latestDragScreenPosition;
+    // Captured once per gesture. Unlike _pointerDownPosition, this point is
+    // never rebased after native moves, so a settled per-monitor DPI layout can
+    // put the exact authored grab point back under the physical cursor.
+    private Point _directDragGrabPointInWindowDips;
+    private bool _directDragGrabPointValid;
     private Vector _dragPointerOffsetFromWindowInPhysicalPixels;
     private double _dragContactTopOffsetInPhysicalPixels;
     private bool _directDragPhysicalGeometryReady;
     private bool _directDragTopClamped;
     private double _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+    private Rect _directDragTopClampPhysicalWorkArea = Rect.Empty;
+    private bool _directDragReleasePendingAfterDpi;
+    private Point _directDragPendingReleaseScreenPosition;
+    private int _directDragDpiReconcileRetryCount;
     private bool _pointerDown;
     private bool _dragStarted;
     private bool _dragInteractionActive;
@@ -487,6 +504,9 @@ public partial class MainWindow : Window
     private bool _userPreferenceChangedSubscribed;
     private bool _sessionInactive;
     private int _systemRecoveryQueued;
+    private int _mainWindowDpiGeneration;
+    private bool _mainWindowDpiReconcilePending;
+    private bool _ownedWindowPositionDirtyAfterDpi;
     private bool _suppressClickReactionAfterRoamInterruption;
     private bool _isReminderActive;
     private bool _isReminderPresentationDismissed;
@@ -1564,10 +1584,22 @@ public partial class MainWindow : Window
 
         try
         {
-            var packedPoint = longParameter.ToInt64();
-            var screenPoint = new Point(
-                unchecked((short)(packedPoint & 0xFFFF)),
-                unchecked((short)((packedPoint >> 16) & 0xFFFF)));
+            Point screenPoint;
+            if (GetCursorPos(out var cursorPoint))
+            {
+                // WM_NCHITTEST packs each coordinate into a signed 16-bit
+                // field. A wide or tall virtual desktop can legitimately
+                // exceed that range, while GetCursorPos preserves the complete
+                // 32-bit physical screen coordinate.
+                screenPoint = new Point(cursorPoint.X, cursorPoint.Y);
+            }
+            else
+            {
+                var packedPoint = longParameter.ToInt64();
+                screenPoint = new Point(
+                    unchecked((short)(packedPoint & 0xFFFF)),
+                    unchecked((short)((packedPoint >> 16) & 0xFFFF)));
+            }
             // Hit-test the transformed sprite rather than the unrotated
             // Viewbox. During vertical roaming the rotated character can
             // extend beyond the Viewbox's layout rectangle; those visible
@@ -1654,6 +1686,15 @@ public partial class MainWindow : Window
             _petSizeLogicalAnchor = null;
         }
 
+        if (_mainWindowDpiReconcilePending)
+        {
+            // WM_DPICHANGED can produce more than one intermediate native move
+            // before WPF's new-DPI layout is available. Do not position owned
+            // HWNDs or popups from that mixed geometry.
+            _ownedWindowPositionDirtyAfterDpi = true;
+            return;
+        }
+
         if (_todoWindow.IsVisible)
         {
             if (_isApplyingPetSizeLayout)
@@ -1697,13 +1738,180 @@ public partial class MainWindow : Window
 
     private void MainWindow_DpiChanged(object sender, DpiChangedEventArgs e)
     {
+        var generation = unchecked(++_mainWindowDpiGeneration);
+        _directDragDpiReconcileRetryCount = 0;
+        _mainWindowDpiReconcilePending = true;
+        _ownedWindowPositionDirtyAfterDpi = true;
         _todoWindowPositionCache.InvalidateGeometry();
-        QueueTodoWindowPositionUpdate();
+        QueueMainWindowDpiReconciliation(generation);
+    }
+
+    private void QueueMainWindowDpiReconciliation(int generation)
+    {
+        if (_isClosing ||
+            Dispatcher.HasShutdownStarted ||
+            Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        try
+        {
+            // This callback is queued from Window.DpiChanged before HwndSource
+            // queues its own Loaded layout pass. The second, lower-priority hop
+            // therefore runs only after that WPF work and any resulting native
+            // suggested-rectangle move have drained.
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Loaded,
+                new Action(() =>
+                {
+                    if (_isClosing ||
+                        generation != _mainWindowDpiGeneration)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        Dispatcher.BeginInvoke(
+                            DispatcherPriority.ContextIdle,
+                            new Action(() =>
+                                ReconcileMainWindowAfterDpiChange(generation)));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // The dispatcher is already shutting down.
+                    }
+                }));
+        }
+        catch (InvalidOperationException)
+        {
+            // The dispatcher is already shutting down.
+        }
+    }
+
+    private void ReconcileMainWindowAfterDpiChange(int generation)
+    {
+        if (_isClosing || generation != _mainWindowDpiGeneration)
+        {
+            return;
+        }
+
+        UpdateLayout();
+        if (generation != _mainWindowDpiGeneration)
+        {
+            return;
+        }
+
+        if ((_dragInteractionActive && _dragStarted) ||
+            _directDragReleasePendingAfterDpi)
+        {
+            var pointerScreenPosition = _directDragReleasePendingAfterDpi
+                ? _directDragPendingReleaseScreenPosition
+                : TryGetPointerScreenPoint(out var currentPointer)
+                    ? currentPointer
+                    : _latestDragScreenPosition;
+            var dragReconciled =
+                ReconcileDirectPetDragAfterDpi(pointerScreenPosition);
+            if (generation != _mainWindowDpiGeneration)
+            {
+                // The one bounded physical correction crossed another DPI
+                // boundary. Its newer generation owns the next reconciliation.
+                return;
+            }
+
+            if (_directDragReleasePendingAfterDpi && !dragReconciled)
+            {
+                if (_directDragDpiReconcileRetryCount <
+                    DirectDragDpiReconcileMaximumRetryCount)
+                {
+                    _directDragDpiReconcileRetryCount++;
+                    QueueDirectDragDpiReconciliationRetry(generation);
+                    return;
+                }
+
+                // Fail closed after bounded native retries. The actual HWND
+                // position remains usable; skipping edge docking is safer than
+                // starting an animation from stale mixed-DPI geometry.
+                _directDragReleasePendingAfterDpi = false;
+                FinishDirectPetDragCompletion();
+            }
+        }
+
+        if (_directDragReleasePendingAfterDpi)
+        {
+            try
+            {
+                UpdateEdgeDockAfterDrag();
+            }
+            finally
+            {
+                _directDragReleasePendingAfterDpi = false;
+                FinishDirectPetDragCompletion();
+            }
+        }
+
+        if (generation != _mainWindowDpiGeneration)
+        {
+            return;
+        }
+
+        _mainWindowDpiReconcilePending = false;
+        RefreshOwnedWindowPositionsAfterDpiReconciliation();
+    }
+
+    private void QueueDirectDragDpiReconciliationRetry(int generation)
+    {
+        if (_isClosing ||
+            generation != _mainWindowDpiGeneration ||
+            Dispatcher.HasShutdownStarted ||
+            Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.ContextIdle,
+                new Action(() =>
+                    ReconcileMainWindowAfterDpiChange(generation)));
+        }
+        catch (InvalidOperationException)
+        {
+            // Shutdown owns final cleanup.
+        }
+    }
+
+    private void RefreshOwnedWindowPositionsAfterDpiReconciliation()
+    {
+        if (!_ownedWindowPositionDirtyAfterDpi || _isClosing)
+        {
+            return;
+        }
+
+        _ownedWindowPositionDirtyAfterDpi = false;
+        _todoWindowPositionCache.InvalidateGeometry();
+        if (_todoWindow.IsVisible)
+        {
+            UpdateTodoWindowPosition();
+        }
+
         RefreshReminderWindowPosition();
-        if (BubblePopup.IsOpen && _bubbleMode == BubbleMode.Cute)
+        if (!BubblePopup.IsOpen)
+        {
+            return;
+        }
+
+        if (_bubbleMode == BubbleMode.Cute)
         {
             UpdateCuteBubblePlacementAndTail();
         }
+
+        var horizontalOffset = BubblePopup.HorizontalOffset;
+        BubblePopup.HorizontalOffset = horizontalOffset + 0.01;
+        BubblePopup.HorizontalOffset = horizontalOffset;
+        QueueCuteBubbleTailReconciliation();
     }
 
     private void TodoWindow_DpiChanged(object sender, DpiChangedEventArgs e)
@@ -2382,11 +2590,17 @@ public partial class MainWindow : Window
         _pointerDownScreenPosition = default;
         _pointerDownPixelsPerDip = new Vector(1d, 1d);
         _latestDragScreenPosition = default;
+        _directDragGrabPointInWindowDips = default;
+        _directDragGrabPointValid = false;
         _dragPointerOffsetFromWindowInPhysicalPixels = default;
         _dragContactTopOffsetInPhysicalPixels = 0;
         _directDragPhysicalGeometryReady = false;
         _directDragTopClamped = false;
         _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        _directDragTopClampPhysicalWorkArea = Rect.Empty;
+        _directDragReleasePendingAfterDpi = false;
+        _directDragPendingReleaseScreenPosition = default;
+        _directDragDpiReconcileRetryCount = 0;
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
         _workPointerClickCount = 0;
@@ -2406,6 +2620,14 @@ public partial class MainWindow : Window
     {
         if (e.ChangedButton != MouseButton.Left)
         {
+            return;
+        }
+
+        if (_directDragReleasePendingAfterDpi)
+        {
+            // The previous release owns its drag context until the new-DPI
+            // layout performs the deferred edge decision.
+            e.Handled = true;
             return;
         }
 
@@ -2431,6 +2653,10 @@ public partial class MainWindow : Window
         var interruptedRoam = _isEdgeRoaming;
         _pointerDownPixelsPerDip = GetPointerPixelsPerDip();
         _pointerDownPosition = e.GetPosition(this);
+        _directDragGrabPointInWindowDips = _pointerDownPosition;
+        _directDragGrabPointValid =
+            double.IsFinite(_directDragGrabPointInWindowDips.X) &&
+            double.IsFinite(_directDragGrabPointInWindowDips.Y);
         _pointerDownScreenPosition = GetPointerScreenPointOrFallback(
             _pointerDownPosition,
             new Point(double.NaN, double.NaN),
@@ -2450,6 +2676,7 @@ public partial class MainWindow : Window
         _directDragPhysicalGeometryReady = false;
         _directDragTopClamped = false;
         _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        _directDragTopClampPhysicalWorkArea = Rect.Empty;
         if (!PetHost.CaptureMouse())
         {
             _pointerDown = false;
@@ -2457,6 +2684,8 @@ public partial class MainWindow : Window
             _dragInteractionActive = false;
             _dragPreservesWorkMode = false;
             _pointerDownPixelsPerDip = new Vector(1d, 1d);
+            _directDragGrabPointInWindowDips = default;
+            _directDragGrabPointValid = false;
             _edgeDockDragContext = null;
             _suppressClickReactionAfterRoamInterruption = false;
             _workPointerClickCount = 0;
@@ -2697,6 +2926,8 @@ public partial class MainWindow : Window
         _pointerDown = false;
         _dragInteractionActive = false;
         _pointerDownPixelsPerDip = new Vector(1d, 1d);
+        _directDragGrabPointInWindowDips = default;
+        _directDragGrabPointValid = false;
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
         _workPointerClickCount = 0;
@@ -2750,6 +2981,9 @@ public partial class MainWindow : Window
         _directDragPhysicalGeometryReady = false;
         _directDragTopClamped = false;
         _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        _directDragTopClampPhysicalWorkArea = Rect.Empty;
+        _directDragGrabPointInWindowDips = default;
+        _directDragGrabPointValid = false;
         _edgeDockDragContext = null;
         _suppressClickReactionAfterRoamInterruption = false;
         _workPointerClickCount = 0;
@@ -2760,13 +2994,22 @@ public partial class MainWindow : Window
 
     private bool TryPrepareDirectPetDragGeometry(
         Rect startWindowBounds,
-        EdgeDock dragOriginDock)
+        EdgeDock dragOriginDock) =>
+        TryPrepareDirectPetDragGeometryAtPointer(
+            startWindowBounds,
+            dragOriginDock,
+            _pointerDownScreenPosition);
+
+    private bool TryPrepareDirectPetDragGeometryAtPointer(
+        Rect startWindowBounds,
+        EdgeDock dragOriginDock,
+        Point pointerScreenPosition)
     {
         if (!OwnedWindowPositioner.TryGetPhysicalBounds(
                 this,
                 out var physicalWindowBounds) ||
-            !double.IsFinite(_pointerDownScreenPosition.X) ||
-            !double.IsFinite(_pointerDownScreenPosition.Y))
+            !double.IsFinite(pointerScreenPosition.X) ||
+            !double.IsFinite(pointerScreenPosition.Y))
         {
             return false;
         }
@@ -2783,8 +3026,8 @@ public partial class MainWindow : Window
         }
 
         _dragPointerOffsetFromWindowInPhysicalPixels = new Vector(
-            _pointerDownScreenPosition.X - physicalWindowBounds.Left,
-            _pointerDownScreenPosition.Y - physicalWindowBounds.Top);
+            pointerScreenPosition.X - physicalWindowBounds.Left,
+            pointerScreenPosition.Y - physicalWindowBounds.Top);
         _dragContactTopOffsetInPhysicalPixels =
             contactTopScreenPoint.Y - physicalWindowBounds.Top;
         return double.IsFinite(
@@ -2798,6 +3041,40 @@ public partial class MainWindow : Window
         Point currentLocalPosition,
         Point currentScreenPosition)
     {
+        if (!_directDragPhysicalGeometryReady &&
+            double.IsFinite(currentScreenPosition.X) &&
+            double.IsFinite(currentScreenPosition.Y))
+        {
+            // A native failure is treated as transient. Rebase against the
+            // actual HWND and current cursor on the next input event instead of
+            // leaving the rest of this gesture permanently in the DIP path.
+            var currentWindowBounds = GetPetViewboxBoundsInScreenDips();
+            var pointerAtCurrentWindowPosition = currentScreenPosition;
+            if (_directDragGrabPointValid)
+            {
+                try
+                {
+                    var currentGrabScreenPosition = PointToScreen(
+                        _directDragGrabPointInWindowDips);
+                    if (double.IsFinite(currentGrabScreenPosition.X) &&
+                        double.IsFinite(currentGrabScreenPosition.Y))
+                    {
+                        pointerAtCurrentWindowPosition =
+                            currentGrabScreenPosition;
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // Rebase to the authoritative cursor below.
+                }
+            }
+            _directDragPhysicalGeometryReady =
+                TryPrepareDirectPetDragGeometryAtPointer(
+                    currentWindowBounds,
+                    _edgeDockDragContext?.OriginDock ?? EdgeDock.None,
+                    pointerAtCurrentWindowPosition);
+        }
+
         if (_directDragPhysicalGeometryReady &&
             double.IsFinite(currentScreenPosition.X) &&
             double.IsFinite(currentScreenPosition.Y))
@@ -2828,6 +3105,13 @@ public partial class MainWindow : Window
             var hasPhysicalWorkArea = MonitorWorkArea.TryGetPhysicalWorkAreaAt(
                 currentScreenPosition,
                 out var physicalWorkArea);
+            var topClampWorkAreaChanged =
+                _directDragTopClamped &&
+                (!hasPhysicalWorkArea ||
+                 _directDragTopClampPhysicalWorkArea.IsEmpty ||
+                 !AreEquivalentWorkAreas(
+                     _directDragTopClampPhysicalWorkArea,
+                     physicalWorkArea));
             var unclampedTop = Math.Round(
                 currentScreenPosition.Y -
                 _dragPointerOffsetFromWindowInPhysicalPixels.Y,
@@ -2842,12 +3126,13 @@ public partial class MainWindow : Window
                     currentScreenPosition.Y <=
                     _directDragTopClampPointerYInPhysicalPixels + 0.5);
             if (_directDragTopClamped &&
-                (!hasPhysicalWorkArea ||
+                (topClampWorkAreaChanged ||
                  currentScreenPosition.Y >
-                 _directDragTopClampPointerYInPhysicalPixels + 0.5))
+                  _directDragTopClampPointerYInPhysicalPixels + 0.5))
             {
                 _directDragTopClamped = false;
                 _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+                _directDragTopClampPhysicalWorkArea = Rect.Empty;
                 targetPosition = CalculateDirectPetDragPosition(
                     currentScreenPosition,
                     _dragPointerOffsetFromWindowInPhysicalPixels,
@@ -2872,6 +3157,9 @@ public partial class MainWindow : Window
                     _directDragTopClamped = true;
                     _directDragTopClampPointerYInPhysicalPixels =
                         currentScreenPosition.Y;
+                    _directDragTopClampPhysicalWorkArea = hasPhysicalWorkArea
+                        ? physicalWorkArea
+                        : Rect.Empty;
                 }
 
                 if (OwnedWindowPositioner.TryGetPhysicalBounds(
@@ -2943,15 +3231,26 @@ public partial class MainWindow : Window
     private void CompleteDirectPetDrag(bool updateEdgeDock)
     {
         var hadActiveDrag = _dragStarted;
+        var deferEdgeDockForDpi =
+            hadActiveDrag &&
+            updateEdgeDock &&
+            _mainWindowDpiReconcilePending;
         _pointerDown = false;
         _dragStarted = false;
         _dragInteractionActive = false;
         _directDragPhysicalGeometryReady = false;
-        _directDragTopClamped = false;
-        _directDragTopClampPointerYInPhysicalPixels = double.NaN;
         if (PetHost.IsMouseCaptured)
         {
             PetHost.ReleaseMouseCapture();
+        }
+
+        if (deferEdgeDockForDpi)
+        {
+            _directDragReleasePendingAfterDpi = true;
+            _directDragPendingReleaseScreenPosition =
+                _latestDragScreenPosition;
+            _directDragDpiReconcileRetryCount = 0;
+            return;
         }
 
         try
@@ -2963,15 +3262,150 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _pointerDownPixelsPerDip = new Vector(1d, 1d);
             _edgeDockDragContext = null;
-            _dragPreservesWorkMode = false;
-            _suppressClickReactionAfterRoamInterruption = false;
-            _workPointerClickCount = 0;
-            RestartAutomaticCountdown();
-            RefreshWorkModeButton();
-            RefreshSnoreBubbleAnimationState();
+            FinishDirectPetDragCompletion();
         }
+    }
+
+    private void FinishDirectPetDragCompletion()
+    {
+        _pointerDownPixelsPerDip = new Vector(1d, 1d);
+        _directDragGrabPointInWindowDips = default;
+        _directDragGrabPointValid = false;
+        _directDragPhysicalGeometryReady = false;
+        _directDragTopClamped = false;
+        _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+        _directDragTopClampPhysicalWorkArea = Rect.Empty;
+        _directDragReleasePendingAfterDpi = false;
+        _directDragPendingReleaseScreenPosition = default;
+        _directDragDpiReconcileRetryCount = 0;
+        _edgeDockDragContext = null;
+        _dragPreservesWorkMode = false;
+        _suppressClickReactionAfterRoamInterruption = false;
+        _workPointerClickCount = 0;
+        RestartAutomaticCountdown();
+        RefreshWorkModeButton();
+        RefreshSnoreBubbleAnimationState();
+    }
+
+    private bool ReconcileDirectPetDragAfterDpi(
+        Point pointerScreenPosition)
+    {
+        _directDragPhysicalGeometryReady = false;
+        if (!_directDragGrabPointValid ||
+            !double.IsFinite(pointerScreenPosition.X) ||
+            !double.IsFinite(pointerScreenPosition.Y) ||
+            !OwnedWindowPositioner.TryGetPhysicalBounds(
+                this,
+                out var physicalWindowBounds))
+        {
+            return false;
+        }
+
+        Point actualGrabScreenPosition;
+        try
+        {
+            actualGrabScreenPosition = PointToScreen(
+                _directDragGrabPointInWindowDips);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+
+        if (!double.IsFinite(actualGrabScreenPosition.X) ||
+            !double.IsFinite(actualGrabScreenPosition.Y))
+        {
+            return false;
+        }
+
+        var targetLeft = physicalWindowBounds.Left +
+                         pointerScreenPosition.X -
+                         actualGrabScreenPosition.X;
+        var targetTop = physicalWindowBounds.Top +
+                        pointerScreenPosition.Y -
+                        actualGrabScreenPosition.Y;
+        var currentViewboxBounds = GetPetViewboxBoundsInScreenDips();
+        var currentContactBounds = GetDragReleaseContactBounds(
+            currentViewboxBounds,
+            _edgeDockDragContext?.OriginDock ?? EdgeDock.None);
+        var contactTopScreenPoint = GetScreenPointOrFallback(
+            new Point(0, currentContactBounds.Top - Top),
+            new Point(double.NaN, double.NaN));
+        if (double.IsFinite(contactTopScreenPoint.Y))
+        {
+            _dragContactTopOffsetInPhysicalPixels =
+                contactTopScreenPoint.Y - physicalWindowBounds.Top;
+        }
+
+        var hasPhysicalWorkArea = MonitorWorkArea.TryGetPhysicalWorkAreaAt(
+            pointerScreenPosition,
+            out var physicalWorkArea);
+        var clampWorkAreaChanged =
+            _directDragTopClamped &&
+            (!hasPhysicalWorkArea ||
+             _directDragTopClampPhysicalWorkArea.IsEmpty ||
+             !AreEquivalentWorkAreas(
+                 _directDragTopClampPhysicalWorkArea,
+                 physicalWorkArea));
+        var keepTopContactPinned =
+            _directDragTopClamped &&
+            !clampWorkAreaChanged &&
+            pointerScreenPosition.Y <=
+            _directDragTopClampPointerYInPhysicalPixels + 0.5;
+        if (_directDragTopClamped && !keepTopContactPinned)
+        {
+            _directDragTopClamped = false;
+            _directDragTopClampPointerYInPhysicalPixels = double.NaN;
+            _directDragTopClampPhysicalWorkArea = Rect.Empty;
+        }
+
+        if (hasPhysicalWorkArea &&
+            double.IsFinite(_dragContactTopOffsetInPhysicalPixels))
+        {
+            var topContactWindowPosition =
+                physicalWorkArea.Top -
+                _dragContactTopOffsetInPhysicalPixels;
+            var unclampedTop = targetTop;
+            targetTop = keepTopContactPinned
+                ? topContactWindowPosition
+                : Math.Max(targetTop, topContactWindowPosition);
+            if (!_directDragTopClamped && targetTop > unclampedTop)
+            {
+                _directDragTopClamped = true;
+                _directDragTopClampPointerYInPhysicalPixels =
+                    pointerScreenPosition.Y;
+                _directDragTopClampPhysicalWorkArea = physicalWorkArea;
+            }
+        }
+
+        targetLeft = Math.Round(targetLeft, MidpointRounding.AwayFromZero);
+        targetTop = Math.Round(targetTop, MidpointRounding.AwayFromZero);
+        if (targetLeft < int.MinValue || targetLeft > int.MaxValue ||
+            targetTop < int.MinValue || targetTop > int.MaxValue)
+        {
+            return false;
+        }
+
+        if ((Math.Abs(targetLeft - physicalWindowBounds.Left) > 1 ||
+             Math.Abs(targetTop - physicalWindowBounds.Top) > 1) &&
+            !OwnedWindowPositioner.TrySetPhysicalPosition(
+                this,
+                checked((int)targetLeft),
+                checked((int)targetTop)))
+        {
+            // Exactly one physical correction is allowed for this DPI
+            // generation. A correction that crosses another boundary raises a
+            // newer generation; the caller abandons this one immediately.
+            return false;
+        }
+
+        _directDragPhysicalGeometryReady =
+            TryPrepareDirectPetDragGeometryAtPointer(
+                GetPetViewboxBoundsInScreenDips(),
+                _edgeDockDragContext?.OriginDock ?? EdgeDock.None,
+                pointerScreenPosition);
+        return true;
     }
 
     private static Point CalculateDirectPetDragPosition(
@@ -9597,16 +10031,24 @@ public partial class MainWindow : Window
 
         var reactionBudgetBytes =
             GetReactionSpritePageResidentBudgetBytes(_activeClip);
-        if (reactionBudgetBytes <= 0)
+        if (reactionBudgetBytes > 0)
         {
-            return SpritePageResidentBudgetBytes;
+            return _upcomingReminderPreloadPageName is not null
+                ? checked(
+                    reactionBudgetBytes +
+                    SpritePageReminderPreloadAllowanceBytes)
+                : reactionBudgetBytes;
         }
 
-        return _upcomingReminderPreloadPageName is not null
-            ? checked(
-                reactionBudgetBytes +
-                SpritePageReminderPreloadAllowanceBytes)
-            : reactionBudgetBytes;
+        if (_isReminderActive ||
+            ReferenceEquals(_activeClip, _reminderEnterClip) ||
+            ReferenceEquals(_activeClip, _reminderHoldClip) ||
+            ReferenceEquals(_activeClip, _reminderExitClip))
+        {
+            return SpritePageReminderResidentBudgetBytes;
+        }
+
+        return SpritePageResidentBudgetBytes;
     }
 
     private long GetReactionSpritePageResidentBudgetBytes(AnimationClip? clip)

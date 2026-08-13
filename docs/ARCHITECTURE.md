@@ -12,6 +12,8 @@
 
 `v1.0.76` 的分页 resident 选择按状态所有权分层：绕屏或绕屏预载保持 `92 MiB` 优先，normal / serious 工作分别为 `57 / 73 MiB`；四种完整 reaction clip（wake → action / loop → reverse wake）分别为 `99 / 83 / 109 / 97 MiB`，若到点提醒页同时预载则再增加 `12 MiB`；其他活动为 `52 MiB`。reaction 自然结束或被 edge、Todo、Reminder、分页失败接管后立即按新所有者收敛到 `52 MiB`，随后完全空闲仍等待 `20 秒`再深裁到唯一 idle 页的 `12 MiB` 目标，短期 busy 继续每 `5 秒`重试。会话 inactive 不清除仍在播放的 reaction 热集，恢复后不会让逆播返回变冷。
 
+`v1.0.77` 在上述所有权之后再细分 active reminder：`_isReminderActive` 或 enter / hold / exit clip 使用 `36 MiB`，完整页集精确为 `33,652,536 B`，当前 manifest 可达 best-fit 最坏为 `37,583,616 B`，低于上限 `165,120 B`；退出后恢复普通 `52 MiB`，完全空闲仍按既有 `20 秒 → 12 MiB` 深裁。roam `92 MiB`、work `57/73 MiB` 和 reaction `99/83/109/97 MiB` 的优先级均在 reminder 之前，状态重叠不会驱逐高优先级热页。
+
 缓冲池的 `92 MiB` hard budget 只控制 free 数组保留量，不是 resident 的硬失败上限：resident 与唯一后台 decode 的 rented 数组都不能为满足该数值而失效；数组归还时才丢弃多余 free 存储并重新收敛。reaction clip 内部页面前瞻顺序保持不变；仅点击抢占尚未显示的绕屏预载时取消旧所有者的不可见 decode，并保留原始到期时间，不能用动作播放重排熊猫巡游节奏。上述预算不改变图集内容、帧像素或动画时钟。
 
 ## 2. 进程与窗口
@@ -138,6 +140,7 @@ Left/Top 最后对齐物理像素
 - 打工状态 resident 预算：`57 MiB`。normal / serious 循环的固定 idle 页与 3 个活动页精确需要 `55,392,540 B`（`52.826 MiB`）；当前清单在相邻容量 best-fit 复用边界内的最坏热集为 `59,191,344 B`，仍低于 `57 MiB`。预算只在非 Idle 工作状态生效，退出后恢复常规/空闲裁剪。
 - `v1.0.74` 在上述工作预算之上只为 serious requested / enter / loop / exit 增加 `73 MiB` 短时例外。idle + 3 张 serious loop 页 + serious-exit 页精确需要 `71,156,796 B`（`67.8604 MiB`）；当前 manifest 在相邻容量 best-fit 规则下的最坏可达热集为 `75,982,272 B`（`72.4623 MiB`），低于 `76,546,048 B` 的上限并留有 `563,776 B` 余量。普通 normal 工作仍使用 `57 MiB`；绕屏 active / preload 的 `92 MiB` 判定在 serious 之前，保持最高优先级。
 - 熊猫巡游期间预算：`92 MiB`。
+- 活跃提醒期间预算：`36 MiB`。固定 idle 页、两张 enter 页和两张 hold 页同时覆盖 reverse-exit，精确为 `33,652,536 B`；相邻容量 best-fit 的当前 manifest 最坏可达值为 `37,583,616 B`。自然确认/退出后立即恢复普通 `52 MiB`，随后仍按空闲宽限深裁。
 - 稳定空闲收敛目标：`12 MiB`；只永久固定完整待机页，第一张起身续页改为按需预取，不保留无关空闲桶。
 - 左、右、下边缘探头仅在静止保持段允许空闲收缩；运动段仍禁止回收，并保护完整边缘序列页。
 - 单页解码上限：`24 MiB`；像素缓冲池总上限：`92 MiB`；空闲 LOH 淘汰债务达到 `8 MiB` 后才可在安全门禁内请求整理。
@@ -159,6 +162,8 @@ Left/Top 最后对齐物理像素
 - 每次跨屏或 DPI 变化后重新取得当前显示器工作区，不能复用主屏比例。
 - 拖动接触判定使用当前帧可见像素，而不是固定透明包络。
 - 按住鼠标期间以光标物理坐标选择显示器，并用 `GetWindowRect + SetWindowPos` 直接移动 HWND；固定透明包络可以越过工作区顶边，当前帧可见顶边不得越过 `rcWork.Top`。
+- 窗口内抓点在一次拖拽期间保持不可变；跨屏 `DpiChanged` 以 generation 淘汰旧回调，等待 WPF 的 `Loaded → ContextIdle` 布局稳定后再按真实 `GetWindowRect` 与物理光标校正。松手位于过渡期时保留拖拽上下文，同代最多重试 3 次；失败时不从混合 DPI 几何启动吸附或动画。
+- `WM_NCHITTEST` 优先使用 `GetCursorPos` 的完整 32 位虚拟桌面坐标，仅在原生读取失败时回退消息中的 16 位坐标，因此超宽/超高及负坐标桌面不会被截断。DPI 过渡期间 owned window 只标记 dirty，主窗稳定后再统一更新 Todo、提醒和气泡位置。
 - 顶部夹紧后重新锚定抓取点，向下一个物理像素就应立即离开；该限制只约束普通位置，不创建顶部吸附状态。
 - 共享显示器接缝不是外部屏幕边界，不应误触发侧边吸附。
 - 系统恢复不能只修复当时可见的 owned window；隐藏 `TodoWindow` 也要先恢复 `292×414 DIP` 逻辑尺寸。再次显示时以锚点当前 DPI 重算目标像素宽高，并在同一次原生提交中修正位置和尺寸；尺寸已经正确的常规跟随仍走只移动快路径。
@@ -172,6 +177,8 @@ TodoWindow / 编辑窗口
       ├─ AppSettingsStore ──────── settings.json
       └─ StartupRegistration ───── HKCU ...\Run
 ```
+
+文字编辑窗口的 Copy / Cut 由共享 `ClipboardCopyRetry` 与 `TextClipboardCommands` 接管。Cut 必须在同步剪贴板写入成功后才删除选区；Copy 的第一次尝试加 5 次 Dispatcher retry 同时受绝对 `300 ms` 截止约束。跨窗口 generation、系统 clipboard sequence、Hide / Closed 清理共同淘汰旧请求；普通 Paste 继续交给 WPF，仅循环次数框额外拒绝非 ASCII `0-9`。
 
 JSON 文件采用临时文件替换，避免正常保存过程中留下半写文件。循环定时任务保存下一次触发时间、重复规则和每日免打扰时间段；重启后根据持久化状态继续计算。新增表单展开免打扰行后，定时任务列表所在星号行必须按新增的 `32 DIP` 真实收缩，列表自身不设置反向撑高的最小高度并由宿主裁剪；内部 `ScrollViewer` 继续持有滚动范围，保证最后一项可完整滚入。错过的批次进入漏提醒统计，但提醒窗口每页最多加载 5 条，避免无限叠高。
 

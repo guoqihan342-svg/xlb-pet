@@ -1,4 +1,4 @@
-# v1.0.76 测试与发布
+# v1.0.77 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -53,8 +53,8 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 
 | 参数 | 主要范围 |
 | --- | --- |
-| `--todo-layout-only` | 待办布局、主题、输入法、修改、拖拽、悬停像素和滚动 |
-| `--todo-cut-only` | `Ctrl+X`、剪贴板占用和 IME 键转换 |
+| `--todo-layout-only` | 待办布局、主题、输入法、修改、拖拽、`360 × 280 DIP` 长文预览、负坐标/窄屏工作区夹紧、右键菜单 transient 生命周期、悬停像素和滚动 |
+| `--todo-cut-only` | 三个窗口的 Copy / Cut 路由、`Ctrl+X` / `Shift+Delete` / 右键、剪贴板占用 fail-closed、全局 generation、外部 sequence、绝对 `300 ms` 截止、隐藏取消及 ASCII 数字粘贴 |
 | `--todo-only` | Owned Window、箭头、多屏、隐藏面板半尺寸/离屏恢复、待办完成自动移底、取消完成保留位置、拖拽排序、定时选项卡、免打扰展开后的列表真实收缩与末项滚动，以及尾部提示在固定面板和最小宽度修改窗中的完整排版 |
 | `--todo-arrow-only` | 气泡箭头在多屏/DPI/换边时指向人物 |
 | `--scheduled-editor-only` | 定时任务新增与修改组件 |
@@ -64,13 +64,13 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--edge-dock-only` | `12 DIP` 磁吸、快速越界、顶部可拖达但不吸附、左/右/下 `rest-first` 吸附、48 帧侧边支撑手臂像素接触、完整短弯前臂，以及待办/定时面板自动关闭与迟到回调防重开 |
 | `--pet-drag-preview` | 显示可由 Computer Use 识别的真实 WPF 拖动窗口；标题实时给出人物可见顶边、工作区顶边和物理像素误差 |
 | `--roam-source-only` | 绕屏状态机、路线、朝向、原地退场、延迟打开待办、负坐标副屏和资源契约 |
-| `--roam-interaction-only` | 真实 WPF 状态下的巡游左键逆播退场、Win32 真实光标采样与失败时保持末次可信点、按下时 DPI 对应的屏幕物理坐标拖动阈值、窗口局部坐标漂移不误触拖动、真实拖动接管、禁止追加点击动作，以及右键退场后只打开一次默认待办页 |
+| `--roam-interaction-only` | 真实 WPF 状态下的巡游交互，以及混合 DPI 拖拽的 32 位光标、不可变抓点、generation 失效、Loaded→ContextIdle 稳定校正、顶部 clamp 工作区切换、松手最多 3 次重试和失败关闭契约 |
 | `--deadline-only` | 1 分钟原地动作、10 分钟巡游和 20 秒忙碌重试截止 |
 | `--pet-size-only` | 尺寸滑块手势、连续缩放和待办布局 |
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
 | `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟、四种普通动作的绝对时间轴、精确完整水平镜像 6 种尺寸及真实窗口矩阵的逐字节旧路径等价，以及非目标矩阵严格回退 |
 | `--work-mode-only` | `48/96/96/24` 序列、普通 1.6 秒、65 张独特循环位图、9 个精确中性接缝、normal / serious 各 23 处相邻同描述符候选的强谓词像素复用、逻辑发布与 deferred clock 不变、pre-Stop blend 状态防误复用、单击严格无操作、双击认真表情、太阳/月亮 420 ms 绝对时钟双向切换、待机拖动时太阳跟随但不可命中、边缘仍隐藏，以及打工拖动命中左/右/下时跳过普通退出与 idle 的热页/冷页原子交接 |
-| `--resident-cache-only` | 仅待机页常驻、普通/normal 工作/serious 工作/巡游/稳定空闲 `52/57/73/92/12 MiB` 预算、四种完整 reaction clip `99/83/109/97 MiB` 短时预算与提醒重叠 `+12 MiB`、`8 MiB` LOH 门槛、normal/serious/reaction 完整热集、reaction 自然完成与 edge/Todo/Reminder/failure 接管立即回 `52 MiB`、锁屏保持 active reaction、normal → serious → normal 自然往返、serious 右键退出的唯一预取槽顺序、按真实解码字节新分配、旧有相邻容量边界内的 best-fit free 复用、普通动作 `20 秒`缓存宽限、长期阻塞时停止 idle-trim `5 秒`空轮询并在退出后按 `20 秒`重排、短期阻塞 `5 秒` watchdog、全部绕屏页就绪后只丢弃 free decode arrays、resident 正/逆播帧保护，以及分页预热、淘汰、迟到结果和退出清理 |
+| `--resident-cache-only` | 仅待机页常驻、普通/active reminder/normal 工作/serious 工作/巡游/稳定空闲 `52/36/57/73/92/12 MiB` 预算、四种完整 reaction clip `99/83/109/97 MiB` 短时预算与提醒重叠 `+12 MiB`、`8 MiB` LOH 门槛；提醒完整 enter/hold/reverse-exit 热集、normal/serious/reaction 热集及全部既有淘汰、预取、迟到结果和退出清理契约 |
 | `--atlas-hash-only` | 图集页上限、Brotli payload 和像素哈希失败关闭 |
 | `--memory-profile` | 本地内存剖面输出；不是普通 pass/fail 快速测试 |
 
@@ -245,6 +245,20 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.77 发布验证
+
+以下源码差异、Release 构建、定向回归、完整 WPF 契约与受控 reminder A/B 于 `2026-08-14` 完成；真实提交、标签、EXE 和 GitHub Release 证据待发布后回填。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 剪贴板 | 三窗口 Copy / Cut、占用 fail-closed、最新跨窗口请求胜出、外部 sequence 淘汰、绝对 `300 ms` 截止、Hide/Closed 取消与 ASCII 数字粘贴均由 `--todo-cut-only` 覆盖；普通正文 Paste 不绑定、不改写 |
+| 多屏与 DPI | `GetCursorPos` 保留 32 位虚拟桌面坐标；不可变抓点、generation 失效、`Loaded → ContextIdle`、物理工作区 clamp 与最多 3 次松手重试由 `--roam-interaction-only` 覆盖。当前机器没有可用于最终验收的混合 DPI 双屏，因此发布说明只把自动化和单屏 WPF 回归列为已验证，混合 DPI 实机矩阵仍需人工冒烟 |
+| 长文预览 | 首选 `360 × 280 DIP`，正文 `64–218 DIP`；负坐标工作区、`300 × 200 DIP` 窄区缩放、四边 `16 DIP` inset、左优先/右回退、关闭释放和右键菜单 `220 ms` 生命周期均通过 `--todo-layout-only` |
+| reminder 内存 | 完整热集 exact `33,652,536 B`，当前 manifest best-fit worst `37,583,616 B`，`36 MiB` 余量 `165,120 B`。受控三轮中 resident/pool `47.06 → 33.90 MiB`、managed `65.24 → 52.08 MiB`、Private `186.88 → 173.76 MiB`、Working Set `246.23 → 233.19 MiB`；预热后两圈 `+0 allocation / +0 reuse / 0 pending` |
+| 自动化与构建 | `DesktopPet` 与 `UiStateChecks` Release 构建为 `0 warning / 0 error`；`--todo-cut-only`、`--todo-layout-only`、`--scheduled-editor-only`、`--todo-only`、`--reminder-only`、`--resident-cache-only`、`--roam-interaction-only`、`--edge-dock-only`、`--pet-size-only`、`--work-mode-only`、`--clip-clock-only`、`--reaction-random-only`、`--deadline-only` 均通过；完整 `UiStateChecks` 连续两轮输出 `UI state checks passed.` |
+| 产品质量边界 | 不改 Assets、manifest、像素、画质、帧数、FPS、作者绝对时间线、动作选择、任务存储或提醒语义；DPI 失败路径安全跳过吸附，不从混合几何启动动画。内存数字仅代表受控 reminder 场景，Working Set 仍受系统压力影响 |
+| 源码与发布 | 待真实发布后回填：功能提交、tag/Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest 与独立回下载复核 |
 
 ## v1.0.76 发布验证
 

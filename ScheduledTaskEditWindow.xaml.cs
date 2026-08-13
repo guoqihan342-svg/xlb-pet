@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -27,8 +26,6 @@ public partial class ScheduledTaskEditWindow : Window
         CreateClockPartOptions(60);
     private static readonly string[] RepeatUnitOptions =
         ["分钟", "小时", "天"];
-    private static readonly Regex DigitsOnlyRegex =
-        new(@"^\d+$", RegexOptions.CultureInvariant);
 
     private readonly ScheduledTaskItem _item;
     private readonly DateTimeOffset _originalDueAt;
@@ -37,6 +34,9 @@ public partial class ScheduledTaskEditWindow : Window
     private readonly ScheduledQuietHours? _originalQuietHours;
     private readonly Action _closePickersAfterDeactivationAction;
     private readonly Action _positionBesideOwnerAction;
+    private readonly ClipboardCopyRetry _clipboardCopyRetry;
+    private readonly CommandBinding _copyCommandBinding;
+    private readonly CommandBinding _cutCommandBinding;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
     private Window? _positionOwner;
     private bool _editorSizeInitialized;
@@ -70,6 +70,21 @@ public partial class ScheduledTaskEditWindow : Window
         _closePickersAfterDeactivationAction =
             ClosePickersAfterDeactivation;
         _positionBesideOwnerAction = PositionBesideOwner;
+        _clipboardCopyRetry = new ClipboardCopyRetry(Dispatcher);
+        _copyCommandBinding = new CommandBinding(
+            ApplicationCommands.Copy);
+        _copyCommandBinding.PreviewCanExecute +=
+            CopyCommand_CanExecute;
+        _copyCommandBinding.PreviewExecuted +=
+            CopyCommand_Executed;
+        CommandBindings.Add(_copyCommandBinding);
+        _cutCommandBinding = new CommandBinding(
+            ApplicationCommands.Cut);
+        _cutCommandBinding.PreviewCanExecute +=
+            CutCommand_CanExecute;
+        _cutCommandBinding.PreviewExecuted +=
+            CutCommand_Executed;
+        CommandBindings.Add(_cutCommandBinding);
         _positionCache = new OwnedWindowPositioner.PositionCache(this);
 
         _initializing = true;
@@ -109,6 +124,9 @@ public partial class ScheduledTaskEditWindow : Window
             TaskTextBox_PreviewTextInputUpdate);
         TaskTextBox.PreviewTextInput +=
             TaskTextBox_PreviewTextInputCommitted;
+        DataObject.AddPastingHandler(
+            RepeatCountTextBox,
+            RepeatCountTextBox_Pasting);
         Activated += ScheduledTaskEditWindow_Activated;
         Deactivated += ScheduledTaskEditWindow_Deactivated;
         Closed += ScheduledTaskEditWindow_Closed;
@@ -469,6 +487,11 @@ public partial class ScheduledTaskEditWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (TryExecuteClipboardShortcut(e))
+        {
+            return;
+        }
+
         if (e.Key == Key.Escape && !_isImeComposing)
         {
             if (ScheduledTimePickerPopup.IsOpen ||
@@ -492,6 +515,101 @@ public partial class ScheduledTaskEditWindow : Window
             CloseWithoutSaving();
             e.Handled = true;
         }
+    }
+
+    private bool TryExecuteClipboardShortcut(KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers != ModifierKeys.Control ||
+            Keyboard.FocusedElement is not TextBox textBox)
+        {
+            return false;
+        }
+
+        var command = GetEffectiveShortcutKey(e) switch
+        {
+            Key.C => ApplicationCommands.Copy,
+            Key.X => ApplicationCommands.Cut,
+            _ => null
+        };
+        if (command is null || !command.CanExecute(null, textBox))
+        {
+            return false;
+        }
+
+        e.Handled = true;
+        command.Execute(null, textBox);
+        return true;
+    }
+
+    private static Key GetEffectiveShortcutKey(KeyEventArgs e) =>
+        e.Key switch
+        {
+            Key.ImeProcessed => e.ImeProcessedKey,
+            Key.System => e.SystemKey,
+            _ => e.Key
+        };
+
+    private void CopyCommand_CanExecute(
+        object sender,
+        CanExecuteRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        e.CanExecute = textBox.SelectionLength > 0;
+        e.Handled = true;
+    }
+
+    private void CopyCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        var text = textBox.SelectionLength > 0
+            ? textBox.SelectedText
+            : null;
+        if (!string.IsNullOrEmpty(text))
+        {
+            _clipboardCopyRetry.Copy(text);
+        }
+
+        e.Handled = true;
+    }
+
+    private static void CutCommand_CanExecute(
+        object sender,
+        CanExecuteRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        e.CanExecute = TextClipboardCommands.CanCut(textBox);
+        e.Handled = true;
+    }
+
+    private static void CutCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        var textBox = TextClipboardCommands.ResolveTextBox(sender, e);
+        if (textBox is null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _ = TextClipboardCommands.TryCutSelectedText(textBox);
     }
 
     private void TaskTextBox_PreviewTextInputStart(
@@ -628,7 +746,21 @@ public partial class ScheduledTaskEditWindow : Window
         object sender,
         TextCompositionEventArgs e)
     {
-        e.Handled = !DigitsOnlyRegex.IsMatch(e.Text);
+        e.Handled = e.Text.Any(
+            character => character is < '0' or > '9');
+    }
+
+    private void RepeatCountTextBox_Pasting(
+        object sender,
+        DataObjectPastingEventArgs e)
+    {
+        if (TextClipboardCommands.IsAsciiDigitsPaste(e))
+        {
+            return;
+        }
+
+        e.CancelCommand();
+        SetValidation("循环间隔只能输入 0-9");
     }
 
     private void DueDatePicker_SelectedDateChanged(
@@ -1752,6 +1884,20 @@ public partial class ScheduledTaskEditWindow : Window
         EventArgs e)
     {
         DetachPositionOwner();
+        _clipboardCopyRetry.Dispose();
+        CommandBindings.Remove(_copyCommandBinding);
+        _copyCommandBinding.PreviewCanExecute -=
+            CopyCommand_CanExecute;
+        _copyCommandBinding.PreviewExecuted -=
+            CopyCommand_Executed;
+        CommandBindings.Remove(_cutCommandBinding);
+        _cutCommandBinding.PreviewCanExecute -=
+            CutCommand_CanExecute;
+        _cutCommandBinding.PreviewExecuted -=
+            CutCommand_Executed;
+        DataObject.RemovePastingHandler(
+            RepeatCountTextBox,
+            RepeatCountTextBox_Pasting);
         TextCompositionManager.RemovePreviewTextInputStartHandler(
             TaskTextBox,
             TaskTextBox_PreviewTextInputStart);
