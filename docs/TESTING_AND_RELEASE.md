@@ -248,7 +248,7 @@ git status --short --ignored
 
 ## v1.0.78 发布验证
 
-本版把循环任务免打扰从“结束后汇总”修正为“静默 occurrence 永不补发”。真实发布证据待最终自动化、提交和附件验真后回填。
+本版把循环任务免打扰从“结束后汇总”修正为“静默 occurrence 永不补发”。源码、自动化、真实发布与独立回下载验真于 `2026-08-14` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
@@ -256,7 +256,9 @@ git status --short --ignored
 | 运行时回归 | `--reminder-only` 覆盖 `China Standard Time` 跨午夜 `22:00–07:00`、RepeatRule、真实 timer tick、多周期与同 instant 幂等、end 边界、同秒 one-shot、quiet 前未确认提醒，以及离线跨越“非静默→静默→非静默”后只保留两侧 occurrence；`TodoStoreChecks` 保留同日/跨午夜 `[start,end)` 纯时间边界 |
 | 兼容边界 | 单次任务不使用免打扰；免打扰外漏提醒、每页 5 条/最多 100 条、循环时区、NextOrdinal、确认数量推进及任务 JSON 格式不变 |
 | 自动化与构建 | `DesktopPet`、`TodoStoreChecks`、`UiStateChecks` Release 构建均为 `0 warning / 0 error`；`TodoStoreChecks`、`--reminder-only`、`--resident-cache-only`、`--scheduled-editor-only`、`--deadline-only` 均通过；最终同一代码快照的完整 `UiStateChecks` 连续 2 轮通过 |
-| 源码与发布 | 待真实发布后回填：功能提交、tag/Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest 与独立回下载复核 |
+| 源码与版本 | 功能提交 `384f616054e24767fdf98bd368c4c69fa63b0860`；远端 `main`、annotated `v1.0.78` tag 剥离提交与 Release target 在发布时均精确指向该提交。`FileVersion=1.0.78.0`，`ProductVersion=1.0.78+384f616054e24767fdf98bd368c4c69fa63b0860` |
+| EXE | 单文件框架依赖 EXE 为 `93,362,822` bytes，SHA-256 `6778A668F9D26ABAE4F0E11383FF9A7A3DCE93930E9A777AAB4612EB0690E50E`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.78`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.78) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `93,362,822`、digest `sha256:6778a668f9d26abae4f0e11383ff9a7a3dce93930e9a777aab4612eb0690e50e`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件，也未停止或替换任何桌宠进程，用户定时任务 JSON 未被测试改写 |
 
 ## v1.0.77 发布验证
 
