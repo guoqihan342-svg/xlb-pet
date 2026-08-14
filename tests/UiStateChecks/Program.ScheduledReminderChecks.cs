@@ -1306,9 +1306,26 @@ internal static partial class Program
                           task.RepeatRule.NextOrdinal &&
                       ScheduledRepeatSchedule.TryGetOccurrence(
                           persisted.RepeatRule,
-                          persisted.RepeatRule.NextOrdinal,
-                          out var persistedOccurrence) &&
-                      persistedOccurrence == persisted.DueAt;
+                           persisted.RepeatRule.NextOrdinal,
+                           out var persistedOccurrence) &&
+                       persistedOccurrence == persisted.DueAt;
+            var nextDueAtIsQuiet =
+                ScheduledQuietHoursSchedule.IsQuietAt(
+                    task.QuietHours,
+                    expectedNextDueAt);
+            var displayProjectionIsConsistent = nextDueAtIsQuiet
+                ? task.DueAtDisplayText.Contains(
+                      "该时段不提醒",
+                      StringComparison.Ordinal) &&
+                  !task.DueAtDisplayText.Contains(
+                      "下次",
+                      StringComparison.Ordinal)
+                : task.DueAtDisplayText.Contains(
+                      "下次",
+                      StringComparison.Ordinal) &&
+                  !task.DueAtDisplayText.Contains(
+                      "该时段不提醒",
+                      StringComparison.Ordinal);
             Assert(GetRawField(window, "_activeReminder") is null &&
                    !GetField<bool>(window, "_isReminderActive") &&
                    activeBatch.Count == 0 &&
@@ -1323,6 +1340,7 @@ internal static partial class Program
                        "_isTransientPetSizeOverride") &&
                    reminderWindow?.IsVisible != true &&
                    task.DueAt == expectedNextDueAt &&
+                   displayProjectionIsConsistent &&
                    persisted.DueAt == expectedNextDueAt &&
                    persisted.QuietHours == task.QuietHours &&
                    persistedRuleIsConsistent &&
@@ -1442,7 +1460,13 @@ internal static partial class Program
                    activeBatch.SequenceEqual([crossMidnight]) &&
                    visibleOccurrences.Count == 1 &&
                    observedCounts[crossMidnight.Id] is 1L &&
-                   crossMidnight.DueAt == quietEnd,
+                   crossMidnight.DueAt == quietEnd &&
+                   crossMidnight.DueAtDisplayText.Contains(
+                       "下次",
+                       StringComparison.Ordinal) &&
+                   !crossMidnight.DueAtDisplayText.Contains(
+                       "该时段不提醒",
+                       StringComparison.Ordinal),
                 "The end boundary is exclusive: only the exact 07:00 " +
                 "occurrence may appear, never the skipped quiet backlog.");
             Invoke(window, "AcknowledgeActiveReminder");

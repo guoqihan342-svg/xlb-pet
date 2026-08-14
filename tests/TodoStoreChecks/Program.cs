@@ -1362,6 +1362,65 @@ static void CheckScheduledQuietHours(string tempDirectory)
         overnightDisplay.Contains("07:00:00", StringComparison.Ordinal),
         "The overnight display text must retain both exact wall-clock times.");
 
+    var suppressedDisplayItem = new ScheduledTaskItem
+    {
+        Text = "Quiet occurrence display projection",
+        DueAt = atOvernightStart.AddHours(1),
+        CreatedAt = atOvernightStart.AddDays(-1),
+        RepeatInterval = TimeSpan.FromHours(1),
+        QuietHours = normalizedOvernight
+    };
+    var suppressedLocalDueAtText =
+        $"{suppressedDisplayItem.DueAt.ToLocalTime():M月d日 HH:mm:ss}";
+    Assert(
+        suppressedDisplayItem.DueAtDisplayText.Contains(
+            "该时段不提醒",
+            StringComparison.Ordinal) &&
+        !suppressedDisplayItem.DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal) &&
+        !suppressedDisplayItem.DueAtDisplayText.Contains(
+            suppressedLocalDueAtText,
+            StringComparison.Ordinal),
+        "A recurring occurrence inside quiet hours must not appear in the " +
+        "task row as a pending next reminder.");
+
+    var endBoundaryDisplayItem = new ScheduledTaskItem
+    {
+        Text = "Quiet end-boundary display projection",
+        DueAt = atOvernightEnd,
+        CreatedAt = atOvernightStart.AddDays(-1),
+        RepeatInterval = TimeSpan.FromHours(1),
+        QuietHours = normalizedOvernight
+    };
+    var endBoundaryLocalDueAtText =
+        $"{endBoundaryDisplayItem.DueAt.ToLocalTime():M月d日 HH:mm:ss}";
+    Assert(
+        endBoundaryDisplayItem.DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal) &&
+        endBoundaryDisplayItem.DueAtDisplayText.Contains(
+            endBoundaryLocalDueAtText,
+            StringComparison.Ordinal) &&
+        !endBoundaryDisplayItem.DueAtDisplayText.Contains(
+            "该时段不提醒",
+            StringComparison.Ordinal),
+        "The end-exclusive boundary must remain a real next reminder.");
+
+    suppressedDisplayItem.QuietHours = null;
+    Assert(
+        suppressedDisplayItem.DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal) &&
+        suppressedDisplayItem.DueAtDisplayText.Contains(
+            suppressedLocalDueAtText,
+            StringComparison.Ordinal) &&
+        !suppressedDisplayItem.DueAtDisplayText.Contains(
+            "该时段不提醒",
+            StringComparison.Ordinal),
+        "Disabling quiet hours before a future occurrence must immediately " +
+        "restore the authored next-reminder projection.");
+
     Assert(
         ScheduledQuietHoursSchedule.Normalize(new ScheduledQuietHours
         {
@@ -1648,6 +1707,52 @@ static void CheckScheduledQuietHoursDst(
             out var secondResolvedFallEnd) &&
         secondResolvedFallEnd == fallEnd,
         "Both real instants in a fall-back ambiguous hour must share one wall-clock quiet interval.");
+
+    var firstFallDisplayItem = new ScheduledTaskItem
+    {
+        Text = "First fall-back quiet projection",
+        DueAt = firstAmbiguousInstant,
+        CreatedAt = firstAmbiguousInstant.AddDays(-1),
+        RepeatInterval = TimeSpan.FromHours(1),
+        QuietHours = fallQuiet
+    };
+    var secondFallDisplayItem = new ScheduledTaskItem
+    {
+        Text = "Second fall-back quiet projection",
+        DueAt = secondAmbiguousInstant,
+        CreatedAt = secondAmbiguousInstant.AddDays(-1),
+        RepeatInterval = TimeSpan.FromHours(1),
+        QuietHours = fallQuiet
+    };
+    var fallEndDisplayItem = new ScheduledTaskItem
+    {
+        Text = "Fall-back end-boundary projection",
+        DueAt = fallEnd,
+        CreatedAt = fallEnd.AddDays(-1),
+        RepeatInterval = TimeSpan.FromHours(1),
+        QuietHours = fallQuiet
+    };
+    Assert(
+        firstFallDisplayItem.DueAtDisplayText.Contains(
+            "该时段不提醒",
+            StringComparison.Ordinal) &&
+        !firstFallDisplayItem.DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal) &&
+        secondFallDisplayItem.DueAtDisplayText.Contains(
+            "该时段不提醒",
+            StringComparison.Ordinal) &&
+        !secondFallDisplayItem.DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal) &&
+        fallEndDisplayItem.DueAtDisplayText.Contains(
+            "下次",
+            StringComparison.Ordinal) &&
+        !fallEndDisplayItem.DueAtDisplayText.Contains(
+            "该时段不提醒",
+            StringComparison.Ordinal),
+        "Both fall-back 01:45 instants must project as quiet while the " +
+        "end-exclusive 02:30 boundary remains a next reminder.");
 }
 
 static TimeZoneInfo? FindAvailableTimeZone(params string[] identifiers)

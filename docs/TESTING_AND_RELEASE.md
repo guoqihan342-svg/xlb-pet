@@ -1,4 +1,4 @@
-# v1.0.77 测试与发布
+# v1.0.79 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -57,7 +57,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--todo-cut-only` | 三个窗口的 Copy / Cut 路由、`Ctrl+X` / `Shift+Delete` / 右键、剪贴板占用 fail-closed、全局 generation、外部 sequence、绝对 `300 ms` 截止、隐藏取消及 ASCII 数字粘贴 |
 | `--todo-only` | Owned Window、箭头、多屏、隐藏面板半尺寸/离屏恢复、待办完成自动移底、取消完成保留位置、拖拽排序、定时选项卡、免打扰展开后的列表真实收缩与末项滚动，以及尾部提示在固定面板和最小宽度修改窗中的完整排版 |
 | `--todo-arrow-only` | 气泡箭头在多屏/DPI/换边时指向人物 |
-| `--scheduled-editor-only` | 定时任务新增与修改组件 |
+| `--scheduled-editor-only` | 定时任务新增与修改组件，以及免打扰 occurrence 在真实任务行和 ToolTip 中的显示投影、关闭免打扰后的绑定刷新与 end-exclusive 边界 |
 | `--reminder-only` | 提醒堆叠、分页、关闭语义；免打扰区间内零弹窗且不补发、区间外旧提醒在 end 后恢复、同秒 one-shot 正常，以及离线跨静默窗只保留两侧非静默 occurrence |
 | `--startup-only` | 当前用户开机自启、原生托盘、Dispatcher 合并打开、前台所有权、外点关闭、通知区焦点归还、显式锚点和物理坐标/DIP 往返契约 |
 | `--alt-tab-only` | 六个正式 WPF 窗口的真实 HWND 扩展样式；必须含 `WS_EX_TOOLWINDOW`、不含 `WS_EX_APPWINDOW`/`WS_EX_NOACTIVATE` 且不进入 Alt+Tab 候选集合，同时保持输入与焦点能力 |
@@ -213,7 +213,7 @@ if ($exe.Length -ge 100MB) {
 - 打工期间不启动自动动作、呼噜或绕屏；拖动过程应继续当前动画与绝对相位。松手命中左、右或下外边缘时，必须锁定目标边缘并完全跳过普通 `work-exit`、枕头和 idle：热页在同一渲染提交中从当前工作描述符原子切到 edge-rest，冷页冻结当前工作描述符直至 edge-rest resident；目标页失败才允许安全回到 idle。顶部及双屏内部接缝不触发边缘交接，右键和定时提醒接管时不得留下迟到请求。
 - 右键打开和收起面板、快速拖动大小滑块时不闪帧、不抖动、不改变人物比例。隐藏任务面板被模拟成半尺寸并移到屏外后，系统恢复仍须保持隐藏；再次右键打开必须按人物所在屏幕的当前 DPI 原子恢复 `292×414 DIP` 完整尺寸，并完全落在该屏工作区内。
 - 待办新增、`Ctrl+C / Ctrl+X / Ctrl+V`、F2 修改、拖拽排序和长文本全文窗正常；勾选中间项后该项移至末尾、其他项顺序不变，取消完成不自动上移，重启后顺序保持；普通/完成项悬停都应显示浅蓝填充与完整蓝色圆角框，相邻行不得出现上下横线。
-- 定时任务日期/秒级时间、循环、免打扰、修改、每页 5 条提醒和确认语义正常；免打扰内必须保持零提醒 UI/零喇叭动画且结束后不补发，区间外旧提醒在 end 后恢复、同秒 one-shot 正常；展开循环的免打扰行后，任务列表应按新增行的真实高度收缩，滚动范围保持，最后一项可完整滚入可见区域；“可跨夜”在固定任务面板和最小宽度修改窗中均完整显示，无裁剪或省略。
+- 定时任务日期/秒级时间、循环、免打扰、修改、每页 5 条提醒和确认语义正常；免打扰内必须保持零提醒 UI/零喇叭动画且结束后不补发，区间外旧提醒在 end 后恢复、同秒 one-shot 正常。循环任务规则行仍应保留，但下一 occurrence 位于免打扰时只能显示“该时段不提醒”，不能显示“下次”或该静默时间；关闭免打扰及到达 end 同秒后，现有 WPF 行和 ToolTip 必须通过生产 remove/insert 路径恢复真实“下次”时间，读取文案本身不得推进 `DueAt` / `NextOrdinal`。展开循环的免打扰行后，任务列表应按新增行的真实高度收缩，滚动范围保持，最后一项可完整滚入可见区域；“可跨夜”在固定任务面板和最小宽度修改窗中均完整显示，无裁剪或省略。
 - 左、右、下边缘探头正常；在 75%、100%、125%、140% 大小下，人物可见像素可在一个物理像素内拖到工作区顶沿，但顶部中央不吸附、不探头。
 - 默认熊猫巡游可以被点击、拖动、右键和提醒抢占；静止左键以 Win32 `GetCursorPos` 的真实屏幕光标及按下时 DPI 判定，原生采样短暂失败时保持末次可信点，不受退场时窗口局部坐标漂移影响，完整逆播回到待机且不追加卖萌动作；真实物理位移超过阈值时拖动仍立即接管。全部绕屏页就绪后必须只丢弃 free decode arrays，resident 正播和逆播帧保持不动；受控 active roam resident 应从 baseline `82.00 MiB` 降至 candidate `79.53 MiB`，另测 idle resident 为 `11.00 → 10.86 MiB`。普通动作 `20 秒`缓存宽限、`52 / 92 / 12 / 8 MiB` 预算、图集、像素、帧率、时序和全部素材帧不变。右键只打开一次默认待办页，退出时无回跳、翻转或闪帧，竖边方向旋转正确。
 - 负坐标副屏、100%/125%/150% DPI、任务栏避让和显示器热插拔正常。
@@ -245,6 +245,17 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.79 发布验证
+
+本版修正定时任务列表把未来静默 occurrence 误写成“下次提醒”的显示问题。显示层、调度游标、真实 WPF 绑定与发布证据按下表验证；功能提交和 Release 字段待真实发布后回填。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 面板语义 | 循环任务规则仍保留在“定时任务”列表中供修改或删除；若当前 `DueAt` 位于免打扰 `[start,end)`，行内和 ToolTip 只显示“该时段不提醒”，不显示“下次”或静默 occurrence 的具体时间。该行是任务规则，不是提醒历史 |
+| 数据边界 | `DueAtDisplayText` 是只读投影，不推进 `DueAt` / `NextOrdinal`，不保存 JSON；在 occurrence 发生前关闭免打扰会恢复原计划时间，end 同秒继续按排他边界显示为真实“下次” |
+| 自动化与构建 | `DesktopPet`、`TodoStoreChecks`、`UiStateChecks` Release 构建均为 `0 warning / 0 error`；`TodoStoreChecks`、`--scheduled-editor-only`、`--reminder-only`、`--todo-only` 均通过，完整 `UiStateChecks` 在同一最终代码快照连续 2 轮通过。覆盖真实 ListBoxItem/TextBlock/ToolTip、remove/insert 刷新、跨午夜、夏令时回拨和 getter 纯函数 |
+| 源码与发布 | 待真实发布后回填：功能提交、tag/Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest 与独立回下载复核 |
 
 ## v1.0.78 发布验证
 

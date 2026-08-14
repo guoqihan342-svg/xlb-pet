@@ -59,10 +59,29 @@ public sealed class ScheduledTaskItem
             }
 
             var quietHoursText = QuietHoursDisplayText;
-            return quietHoursText.Length == 0
-                ? $"{RepeatDisplayText} · 下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}"
-                : $"{RepeatDisplayText} · {quietHoursText} · " +
-                  $"下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}";
+            if (quietHoursText.Length == 0)
+            {
+                return $"{RepeatDisplayText} · " +
+                       $"下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}";
+            }
+
+            var normalizedQuietHours =
+                ScheduledQuietHoursSchedule.Normalize(QuietHours);
+            if (ScheduledQuietHoursSchedule.IsQuietAt(
+                    normalizedQuietHours,
+                    DueAt))
+            {
+                // DueAt remains the authored recurrence cursor until that
+                // instant is processed. Do not present a future quiet
+                // occurrence as a pending "next reminder": advancing it here
+                // would lose the occurrence if the user disables quiet hours
+                // before it arrives.
+                return $"{RepeatDisplayText} · {quietHoursText} · " +
+                       "该时段不提醒";
+            }
+
+            return $"{RepeatDisplayText} · {quietHoursText} · " +
+                   $"下次 {DueAt.ToLocalTime():M月d日 HH:mm:ss}";
         }
     }
 

@@ -1092,6 +1092,164 @@ internal static partial class Program
                        "_isTaskFullTextPopupOpen") is false &&
                    !todoWindow.IsTransientPopupOpen,
                 "关闭定时任务全文窗后必须同步释放长文本、行容器和 transient 状态，不能阻塞后续外点收起");
+            var quietDisplayTimeZone =
+                TimeZoneInfo.FindSystemTimeZoneById("China Standard Time");
+            var quietDisplayAnchorLocal = new DateTime(
+                2034,
+                6,
+                12,
+                23,
+                0,
+                0,
+                DateTimeKind.Unspecified);
+            Assert(
+                ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Hour,
+                    1,
+                    quietDisplayAnchorLocal,
+                    quietDisplayTimeZone,
+                    out var quietDisplayRule,
+                    out var quietDisplayDueAt) &&
+                quietDisplayRule is not null,
+                "免打扰面板投影测试必须先创建有效的每小时规则");
+            var requiredQuietDisplayRule = quietDisplayRule ??
+                throw new InvalidOperationException(
+                    "有效的免打扰面板投影规则不得为空");
+            var quietDisplayItem = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "46000000-0000-0000-0000-000000000001"),
+                Text = "面板不应把静默 occurrence 当成下次提醒",
+                DueAt = quietDisplayDueAt,
+                CreatedAt = quietDisplayDueAt.AddDays(-1),
+                RepeatInterval = TimeSpan.FromHours(1),
+                RepeatRule = requiredQuietDisplayRule,
+                QuietHours = new ScheduledQuietHours
+                {
+                    Start = TimeSpan.FromHours(22),
+                    End = TimeSpan.FromHours(7),
+                    TimeZoneId = "China Standard Time"
+                }
+            };
+            var originalQuietDisplayDueAt = quietDisplayItem.DueAt;
+            var originalQuietDisplayOrdinal =
+                quietDisplayItem.RepeatRule.NextOrdinal;
+            var firstQuietProjection = quietDisplayItem.DueAtDisplayText;
+            var secondQuietProjection = quietDisplayItem.DueAtDisplayText;
+            Assert(firstQuietProjection == secondQuietProjection &&
+                   quietDisplayItem.DueAt == originalQuietDisplayDueAt &&
+                   quietDisplayItem.RepeatRule.NextOrdinal ==
+                       originalQuietDisplayOrdinal,
+                "读取免打扰显示投影必须是纯函数，不得提前推进 DueAt 或 NextOrdinal");
+            scheduledTasks.Add(quietDisplayItem);
+            scheduledList.ScrollIntoView(quietDisplayItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var quietDisplayContainer =
+                scheduledList.ItemContainerGenerator.ContainerFromItem(
+                    quietDisplayItem) as ListBoxItem
+                ?? throw new InvalidOperationException(
+                    "免打扰显示投影没有生成定时任务行");
+            var quietDisplayText =
+                FindVisualDescendants<TextBlock>(quietDisplayContainer)
+                    .Single(textBlock =>
+                        textBlock.Text ==
+                        quietDisplayItem.DueAtDisplayText);
+            Assert(quietDisplayText.Text.Contains(
+                       "该时段不提醒",
+                       StringComparison.Ordinal) &&
+                   Equals(
+                       quietDisplayText.ToolTip,
+                       quietDisplayItem.DueAtDisplayText) &&
+                   !quietDisplayText.Text.Contains(
+                       "下次",
+                       StringComparison.Ordinal) &&
+                   !quietDisplayText.Text.Contains(
+                       $"{quietDisplayItem.DueAt.ToLocalTime():M月d日 HH:mm:ss}",
+                       StringComparison.Ordinal),
+                "定时任务面板不得把免打扰时段内的未来 occurrence 标成待提醒记录");
+
+            Assert(scheduledTasks.Remove(quietDisplayItem),
+                "关闭免打扰前必须先按生产路径移除原任务行");
+            quietDisplayItem.QuietHours = null;
+            scheduledTasks.Add(quietDisplayItem);
+            scheduledList.ScrollIntoView(quietDisplayItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var restoredQuietDisplayContainer =
+                scheduledList.ItemContainerGenerator.ContainerFromItem(
+                    quietDisplayItem) as ListBoxItem
+                ?? throw new InvalidOperationException(
+                    "关闭免打扰后没有重建定时任务行");
+            var restoredQuietDisplayText =
+                FindVisualDescendants<TextBlock>(
+                        restoredQuietDisplayContainer)
+                    .Single(textBlock =>
+                        textBlock.Text ==
+                        quietDisplayItem.DueAtDisplayText);
+            var restoredDueAtText =
+                $"{originalQuietDisplayDueAt.ToLocalTime():M月d日 HH:mm:ss}";
+            Assert(restoredQuietDisplayText.Text.Contains(
+                       "下次",
+                       StringComparison.Ordinal) &&
+                   restoredQuietDisplayText.Text.Contains(
+                       restoredDueAtText,
+                       StringComparison.Ordinal) &&
+                   !restoredQuietDisplayText.Text.Contains(
+                       "该时段不提醒",
+                       StringComparison.Ordinal) &&
+                   Equals(
+                       restoredQuietDisplayText.ToolTip,
+                       quietDisplayItem.DueAtDisplayText) &&
+                   quietDisplayItem.DueAt == originalQuietDisplayDueAt &&
+                   quietDisplayItem.RepeatRule?.NextOrdinal ==
+                       originalQuietDisplayOrdinal,
+                "关闭免打扰后必须通过 remove/insert 立即恢复原 occurrence 的下次提醒文案，且不得改动游标");
+
+            Assert(scheduledTasks.Remove(quietDisplayItem),
+                "验证 end 边界前必须移除旧的绑定行");
+            quietDisplayItem.QuietHours = new ScheduledQuietHours
+            {
+                Start = TimeSpan.FromHours(22),
+                End = TimeSpan.FromHours(7),
+                TimeZoneId = "China Standard Time"
+            };
+            quietDisplayItem.DueAt = new DateTimeOffset(
+                2034,
+                6,
+                13,
+                7,
+                0,
+                0,
+                TimeSpan.FromHours(8));
+            quietDisplayItem.RepeatRule = requiredQuietDisplayRule with
+            {
+                NextOrdinal = checked(originalQuietDisplayOrdinal + 8)
+            };
+            scheduledTasks.Add(quietDisplayItem);
+            scheduledList.ScrollIntoView(quietDisplayItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var endBoundaryContainer =
+                scheduledList.ItemContainerGenerator.ContainerFromItem(
+                    quietDisplayItem) as ListBoxItem
+                ?? throw new InvalidOperationException(
+                    "免打扰 end 边界没有生成重建后的任务行");
+            var endBoundaryDisplayText =
+                FindVisualDescendants<TextBlock>(endBoundaryContainer)
+                    .Single(textBlock =>
+                        textBlock.Text ==
+                        quietDisplayItem.DueAtDisplayText);
+            Assert(endBoundaryDisplayText.Text.Contains(
+                       "下次",
+                       StringComparison.Ordinal) &&
+                   endBoundaryDisplayText.Text.Contains(
+                       $"{quietDisplayItem.DueAt.ToLocalTime():M月d日 HH:mm:ss}",
+                       StringComparison.Ordinal) &&
+                   !endBoundaryDisplayText.Text.Contains(
+                       "该时段不提醒",
+                       StringComparison.Ordinal) &&
+                   Equals(
+                       endBoundaryDisplayText.ToolTip,
+                       quietDisplayItem.DueAtDisplayText),
+                "免打扰 end 同秒必须重新显示为真实的下次提醒");
             scheduledTasks.Clear();
             PumpDispatcher(TimeSpan.FromMilliseconds(20));
             todoWindow.ShowDefaultTab();
