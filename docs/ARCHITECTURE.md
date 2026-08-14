@@ -178,7 +178,7 @@ TodoWindow / 编辑窗口
       └─ StartupRegistration ───── HKCU ...\Run
 ```
 
-文字编辑窗口的 Copy / Cut 由共享 `ClipboardCopyRetry` 与 `TextClipboardCommands` 接管。Cut 必须在同步剪贴板写入成功后才删除选区；Copy 的第一次尝试加 5 次 Dispatcher retry 同时受绝对 `300 ms` 截止约束。跨窗口 generation、系统 clipboard sequence、Hide / Closed 清理共同淘汰旧请求；普通 Paste 继续交给 WPF，仅循环次数框额外拒绝非 ASCII `0-9`。
+文字编辑窗口的 Copy / Cut 由共享 `ClipboardCopyRetry` 与 `TextClipboardCommands` 接管。三个窗口在根 `PreviewExecuted` 路由先于 TextBox 类命令处理选区 Copy / Cut；Todo 无选区 `Ctrl+C` 由根 `PreviewKeyDown` 直接进入同一 Copy helper，避免 TextBox 的无选区门禁在窗口 binding 执行前短路。Copy 先在 clipboard lock 外准备 `GMEM_MOVEABLE` Unicode 缓冲，再以所属窗口的有效 HWND 打开剪贴板；持有同一个 native lock 时依次复核全局 generation 与系统 sequence、调用 `EmptyClipboard`，最后用 `SetClipboardData(CF_UNICODETEXT)` 转移缓冲所有权，禁止退回“先探测、关闭、再经 OLE 二次打开”的 TOCTOU 路径。第一次尝试加 5 次 Dispatcher retry 的名义累计退避为 `240 ms`，同时受绝对 `300 ms` 截止约束；Hide / Closed 只清理本实例 pending，不能误伤另一窗口更新的 generation。Cut 必须同步写入成功，并再次确认 TextBox 仍启用、可编辑、绑定同一对象，且正文、选区起点、长度和选中文字逐项未变后才删除；IME 组合或重入变化时退化为只复制。普通 Paste 继续交给 WPF，仅循环次数框按实际 `FormatToApply`、关闭自动格式转换后额外拒绝非 ASCII `0-9`。
 
 JSON 文件采用临时文件替换，避免正常保存过程中留下半写文件。循环定时任务保存下一次触发时间、重复规则和每日免打扰时间段；重启后根据持久化状态继续计算。调度前只在当前队头 `DueAt` 自身落入免打扰时推进：用该 occurrence 所属区间的 `min(now, end - 1 tick)` 跳过一个连续静默前缀并立即落盘，遇到第一条非静默 occurrence 必须停止。展示端按原有最多 `100` 条的批次边界向前扫描，并在首个静默 occurrence 前停止；用户确认非静默前缀后，再由同一规则跨过随后静默段。因此区间外旧提醒不会被整段 cutoff 误删，区间内 occurrence 也不会在 quiet end、解锁或重启后补发，恰好位于 end 的 occurrence 仍可入队。定时任务列表展示的是任务规则而非提醒历史；当持久化 `DueAt` 本身落入免打扰时，`DueAtDisplayText` 只投影为“该时段不提醒”，不得推进 `DueAt` / `NextOrdinal` 或显示静默 occurrence 的具体时间。新增表单展开免打扰行后，定时任务列表所在星号行必须按新增的 `32 DIP` 真实收缩，列表自身不设置反向撑高的最小高度并由宿主裁剪；内部 `ScrollViewer` 继续持有滚动范围，保证最后一项可完整滚入。免打扰外错过的批次进入漏提醒统计，但提醒窗口每页最多加载 5 条，避免无限叠高。
 

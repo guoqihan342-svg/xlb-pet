@@ -35,6 +35,8 @@ public partial class ScheduledTaskEditWindow : Window
     private readonly Action _closePickersAfterDeactivationAction;
     private readonly Action _positionBesideOwnerAction;
     private readonly ClipboardCopyRetry _clipboardCopyRetry;
+    private readonly ExecutedRoutedEventHandler
+        _clipboardCommandPreviewExecutedHandler;
     private readonly CommandBinding _copyCommandBinding;
     private readonly CommandBinding _cutCommandBinding;
     private readonly OwnedWindowPositioner.PositionCache _positionCache;
@@ -70,7 +72,13 @@ public partial class ScheduledTaskEditWindow : Window
         _closePickersAfterDeactivationAction =
             ClosePickersAfterDeactivation;
         _positionBesideOwnerAction = PositionBesideOwner;
-        _clipboardCopyRetry = new ClipboardCopyRetry(Dispatcher);
+        _clipboardCopyRetry = new ClipboardCopyRetry(this);
+        _clipboardCommandPreviewExecutedHandler =
+            ClipboardCommand_PreviewExecuted;
+        AddHandler(
+            CommandManager.PreviewExecutedEvent,
+            _clipboardCommandPreviewExecutedHandler,
+            handledEventsToo: true);
         _copyCommandBinding = new CommandBinding(
             ApplicationCommands.Copy);
         _copyCommandBinding.PreviewCanExecute +=
@@ -584,7 +592,26 @@ public partial class ScheduledTaskEditWindow : Window
         e.Handled = true;
     }
 
-    private static void CutCommand_CanExecute(
+    private void ClipboardCommand_PreviewExecuted(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        if (e.Handled)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(e.Command, ApplicationCommands.Copy))
+        {
+            CopyCommand_Executed(sender, e);
+        }
+        else if (ReferenceEquals(e.Command, ApplicationCommands.Cut))
+        {
+            CutCommand_Executed(sender, e);
+        }
+    }
+
+    private void CutCommand_CanExecute(
         object sender,
         CanExecuteRoutedEventArgs e)
     {
@@ -594,11 +621,13 @@ public partial class ScheduledTaskEditWindow : Window
             return;
         }
 
-        e.CanExecute = TextClipboardCommands.CanCut(textBox);
+        e.CanExecute =
+            !_isImeComposing &&
+            TextClipboardCommands.CanCut(textBox);
         e.Handled = true;
     }
 
-    private static void CutCommand_Executed(
+    private void CutCommand_Executed(
         object sender,
         ExecutedRoutedEventArgs e)
     {
@@ -609,7 +638,10 @@ public partial class ScheduledTaskEditWindow : Window
         }
 
         e.Handled = true;
-        _ = TextClipboardCommands.TryCutSelectedText(textBox);
+        _ = !_isImeComposing &&
+            TextClipboardCommands.TryCutSelectedText(
+                textBox,
+                _clipboardCopyRetry);
     }
 
     private void TaskTextBox_PreviewTextInputStart(
@@ -1885,6 +1917,9 @@ public partial class ScheduledTaskEditWindow : Window
     {
         DetachPositionOwner();
         _clipboardCopyRetry.Dispose();
+        RemoveHandler(
+            CommandManager.PreviewExecutedEvent,
+            _clipboardCommandPreviewExecutedHandler);
         CommandBindings.Remove(_copyCommandBinding);
         _copyCommandBinding.PreviewCanExecute -=
             CopyCommand_CanExecute;

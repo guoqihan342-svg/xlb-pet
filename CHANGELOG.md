@@ -2,6 +2,12 @@
 
 本文记录自 `v1.0.26` 起的重要变化，按版本倒序排列。未列出的版本不代表不存在；GitHub Release 是否已经发布请以 [Releases 页面](https://github.com/guoqihan342-svg/xlb-pet/releases) 为准。
 
+## v1.0.80
+
+- 修复 Copy 重试在“检查 clipboard sequence”与真正写入之间仍可能被外部程序或另一窗口插队的竞态。文本现在先写入 `GMEM_MOVEABLE` 缓冲，再由有效窗口 HWND 在同一个 Win32 clipboard lock 内复核全局 generation 与 sequence，随后原子完成 `EmptyClipboard + SetClipboardData(CF_UNICODETEXT)`；旧请求不能在检查后覆盖更新内容。
+- 三个编辑窗口在根 `PreviewExecuted` 路由先于 TextBox 类命令接管 Copy / Cut，Todo 无选区 `Ctrl+C` 直接进入共享 Copy helper，不再被 TextBox 的无选区门禁短路。Cut 同步写入成功后还会逐项核对输入框仍启用、可编辑、绑定同一数据对象，且正文、选区起点、长度和选中文字完全未变；输入法组合或 OLE / TSF 重入造成任一变化时只保留复制结果，不删除旧范围。剪贴板占用失败仍由 Routed Cut handler 消费，不回落到原生误删。
+- 循环次数粘贴改为只校验 WPF 实际选择的 `FormatToApply`，不再用另一可转换格式掩盖将要粘入的非数字文本；普通正文继续使用 WPF 原生 Paste。5 段名义退避调整为累计 `240 ms`，在绝对 `300 ms` 截止尚未到达时允许执行第 6 次尝试，Hide / Closed 仍取消各自 pending 请求。
+
 ## v1.0.79
 
 - 修复循环任务的下一次发生时间仍位于每日免打扰区间时，定时任务列表继续把它显示成“下次提醒”、看起来像提醒面板仍有待提醒记录的问题。任务规则行现在保留在列表中供修改或删除，但改为显示“该时段不提醒”，不再展示这次静默 occurrence 的具体时间。

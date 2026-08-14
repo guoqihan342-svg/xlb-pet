@@ -16817,6 +16817,9 @@ internal static partial class Program
             var scheduledRepeatInput = GetField<TextBox>(
                 todoWindow,
                 "ScheduledRepeatCountInput");
+            var scheduledRepeatToggle = GetField<CheckBox>(
+                todoWindow,
+                "ScheduledRepeatToggle");
             var scheduledValidation = GetField<TextBlock>(
                 todoWindow,
                 "ScheduledTaskValidationText");
@@ -16826,6 +16829,9 @@ internal static partial class Program
             var clipboardRetryType = typeof(TodoWindow).Assembly.GetType(
                 "LubanDesktopPet.ClipboardCopyRetry",
                 throwOnError: true)!;
+            var todoRetry = GetRawField(
+                todoWindow,
+                "_clipboardCopyRetry")!;
             var resolveTextBox = clipboardCommandsType
                 .GetMethods(StaticFlags)
                 .Single(method =>
@@ -16837,25 +16843,32 @@ internal static partial class Program
             var maximumRetryWindow = (int)(clipboardRetryType.GetField(
                     "MaximumRetryWindowMilliseconds",
                     StaticFlags)?.GetRawConstantValue() ?? 0);
-            ExecutedRoutedEventArgs CreateCommandEvent(
-                ICommand command,
-                TextBox source)
-            {
-                var args = (ExecutedRoutedEventArgs)(Activator.CreateInstance(
-                    typeof(ExecutedRoutedEventArgs),
-                    InstanceFlags,
-                    binder: null,
-                    args: [command, null],
-                    culture: CultureInfo.InvariantCulture) ??
-                    throw new InvalidOperationException(
-                        "无法构造统一剪贴板命令测试事件"));
-                args.RoutedEvent = CommandManager.PreviewExecutedEvent;
-                args.Source = source;
-                return args;
-            }
-
             Assert(maximumAttemptCount == 6 && maximumRetryWindow == 300,
                 "复制重试必须严格限制为立即一次加五次退避、总窗口300ms，不能阻塞UI或无限常驻");
+            var getRetryDelay = clipboardRetryType.GetMethod(
+                    "GetRetryDelay",
+                    StaticFlags)
+                ?? throw new InvalidOperationException(
+                    "找不到 ClipboardCopyRetry.GetRetryDelay");
+            var cumulativeRetryDelay = TimeSpan.Zero;
+            var retryDelays = new List<TimeSpan>();
+            for (var retryIndex = 0;
+                 retryIndex < maximumAttemptCount - 1;
+                 retryIndex++)
+            {
+                var retryDelay = (TimeSpan)(getRetryDelay.Invoke(
+                        null,
+                        [retryIndex]) ?? TimeSpan.MaxValue);
+                retryDelays.Add(retryDelay);
+                cumulativeRetryDelay += retryDelay;
+            }
+
+            Assert(retryDelays.Count == maximumAttemptCount - 1 &&
+                   retryDelays.All(delay => delay > TimeSpan.Zero) &&
+                   cumulativeRetryDelay <
+                   TimeSpan.FromMilliseconds(maximumRetryWindow),
+                "五段正退避累计必须严格小于300ms墙钟上限，为第六次尝试和Dispatcher抖动保留余量：" +
+                $"actual={cumulativeRetryDelay.TotalMilliseconds:F0}ms");
             Assert(todoWindow.CommandBindings.Cast<CommandBinding>().Any(binding =>
                        ReferenceEquals(binding.Command, ApplicationCommands.Cut)),
                 "TodoWindow 必须以窗口级 ApplicationCommands.Cut 统一 Ctrl+X、Shift+Delete 和右键剪切");
@@ -16866,15 +16879,29 @@ internal static partial class Program
             Keyboard.Focus(input);
             Assert(ApplicationCommands.Copy.CanExecute(null, input),
                 "TodoInput 无选区但有文本时统一 Copy 命令必须可执行");
-            Invoke(
-                todoWindow,
-                "CopyCommand_Executed",
-                input,
-                CreateCommandEvent(ApplicationCommands.Copy, input));
+            Assert((bool)(Invoke(
+                       todoWindow,
+                       "TryHandleCopyShortcut",
+                       Key.C,
+                       ModifierKeys.Control,
+                       input) ?? false) &&
+                   !(bool)(Invoke(
+                       todoWindow,
+                       "TryHandleCopyShortcut",
+                       Key.C,
+                       ModifierKeys.None,
+                       input) ?? true),
+                "TodoInput无选区复制必须由真实PreviewKeyDown复用的按键/修饰键/焦点门禁处理，不能绕回会被TextBox短路的Copy Execute");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
-            Assert(ReadClipboardTextWithRetry() == input.Text &&
+            var noSelectionClipboardText = ReadClipboardTextWithRetry();
+            Assert(noSelectionClipboardText == input.Text &&
                    input.SelectionLength == 0,
-                "TodoInput 无选区 Copy 必须复制全文且不改变选区");
+                "TodoInput 无选区 Ctrl+C 生产路径必须复制全文且不改变选区：" +
+                $"clipboard={noSelectionClipboardText}, text={input.Text}, " +
+                $"selection={input.SelectionStart}/{input.SelectionLength}, " +
+                $"focused={ReferenceEquals(Keyboard.FocusedElement, input)}, " +
+                $"pending={GetRawField(todoRetry, "_pendingText")}, " +
+                $"attempts={GetField<int>(todoRetry, "_attemptCount")}");
 
             scheduledInput.Text = "定时输入框选区复制";
             scheduledInput.Select(2, 5);
@@ -16913,18 +16940,73 @@ internal static partial class Program
             input.Select(0, 1);
             using (HoldClipboardOpenForTest())
             {
-                var busyCutResult = (bool)(Invoke(
-                            todoWindow,
-                            "TryCutSelectedText",
-                            input) ?? true);
-                Assert(!busyCutResult &&
-                       input.Text == "甲乙丙" &&
+                Assert(ApplicationCommands.Cut.CanExecute(null, input),
+                    "剪贴板占用前真实 Routed Cut 必须仍可进入统一 fail-closed handler");
+                ApplicationCommands.Cut.Execute(null, input);
+                Assert(input.Text == "甲乙丙" &&
                        input.SelectionStart == 0 &&
                        input.SelectionLength == 1,
-                    "剪贴板被占用时 Cut 必须fail-closed，原文和选区都不得变化，也不得排队延迟删除：" +
-                    $"result={busyCutResult}, text={input.Text}, " +
+                    "剪贴板被占用时真实 Routed Cut 必须被统一 handler 消费并fail-closed，" +
+                    "不能回落到WPF原生删除：" +
+                    $"text={input.Text}, " +
                     $"selection={input.SelectionStart}/{input.SelectionLength}");
             }
+
+            var tryDeleteCutSelection = clipboardCommandsType.GetMethod(
+                    "TryDeleteCutSelection",
+                    StaticFlags)
+                ?? throw new InvalidOperationException(
+                    "找不到 TextClipboardCommands.TryDeleteCutSelection");
+            var originalDataContext = new object();
+            input.DataContext = originalDataContext;
+            input.Text = "甲乙丙";
+            input.Select(0, 1);
+            input.Select(1, 1);
+            var movedSelectionDelete = (bool)(tryDeleteCutSelection.Invoke(
+                    null,
+                    [
+                        input,
+                        originalDataContext,
+                        0,
+                        1,
+                        "甲乙丙",
+                        "甲"
+                    ]) ?? true);
+            Assert(!movedSelectionDelete &&
+                   input.Text == "甲乙丙" &&
+                   input.SelectionStart == 1 &&
+                   input.SelectionLength == 1,
+                "同步剪贴板写入若发生TSF/OLE重入并移动选区，Cut必须退化为Copy且绝不能删除旧范围");
+            input.Select(0, 1);
+            input.DataContext = new object();
+            var reboundDelete = (bool)(tryDeleteCutSelection.Invoke(
+                    null,
+                    [
+                        input,
+                        originalDataContext,
+                        0,
+                        1,
+                        "甲乙丙",
+                        "甲"
+                    ]) ?? true);
+            Assert(!reboundDelete && input.Text == "甲乙丙",
+                "虚拟化TextBox若在剪贴板调用期间重绑到另一任务，即使正文相同也不得删除新任务内容");
+            input.DataContext = null;
+            input.Select(0, 1);
+            input.IsEnabled = false;
+            var disabledDelete = (bool)(tryDeleteCutSelection.Invoke(
+                    null,
+                    [
+                        input,
+                        null,
+                        0,
+                        1,
+                        "甲乙丙",
+                        "甲"
+                    ]) ?? true);
+            input.IsEnabled = true;
+            Assert(!disabledDelete && input.Text == "甲乙丙",
+                "剪贴板调用期间输入框若被禁用，Cut必须只保留复制结果并停止删除");
 
             var item = new TodoItem { Text = "只读行甲乙丙" };
             todoWindow.Todos = new ObservableCollection<TodoItem> { item };
@@ -16987,24 +17069,12 @@ internal static partial class Program
                    taskEditor.CommandBindings.Cast<CommandBinding>().Any(binding =>
                        ReferenceEquals(binding.Command, ApplicationCommands.Cut)),
                 "待办独立编辑窗必须同时接入统一 Copy/Cut CommandBinding");
-            Invoke(
-                taskEditor,
-                "CopyCommand_Executed",
-                taskEditorText,
-                CreateCommandEvent(
-                    ApplicationCommands.Copy,
-                    taskEditorText));
+            ApplicationCommands.Copy.Execute(null, taskEditorText);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(ReadClipboardTextWithRetry() == taskEditorSelection,
-                "待办独立编辑窗 Copy 必须走统一路径");
+                "待办独立编辑窗真实 Routed Copy 必须走统一路径");
             taskEditorText.Select(4, 2);
-            InvokeStatic(
-                typeof(TaskTextEditWindow),
-                "CutCommand_Executed",
-                taskEditorText,
-                CreateCommandEvent(
-                    ApplicationCommands.Cut,
-                    taskEditorText));
+            ApplicationCommands.Cut.Execute(null, taskEditorText);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(!taskEditorText.Text.Contains(
                        taskEditorSelection,
@@ -17012,6 +17082,11 @@ internal static partial class Program
                     ReadClipboardTextWithRetry() == taskEditorSelection,
                 "待办独立编辑窗 Cut 必须走同步fail-closed统一路径：" +
                 $"text={taskEditorText.Text}, selection={taskEditorSelection}, " +
+                $"currentSelection={taskEditorText.SelectionStart}/" +
+                $"{taskEditorText.SelectionLength}/'{taskEditorText.SelectedText}', " +
+                $"enabled={taskEditorText.IsEnabled}, " +
+                $"readOnly={taskEditorText.IsReadOnly}, " +
+                $"dataContext={taskEditorText.DataContext?.GetHashCode()}, " +
                 $"clipboard={ReadClipboardTextWithRetry()}");
 
             var dueAt = DateTimeOffset.Now.AddHours(1);
@@ -17035,6 +17110,9 @@ internal static partial class Program
             var scheduledEditorRepeat = GetField<TextBox>(
                 scheduledEditor,
                 "RepeatCountTextBox");
+            var scheduledEditorRepeatToggle = GetField<CheckBox>(
+                scheduledEditor,
+                "RepeatToggle");
             var scheduledEditorValidation = GetField<TextBlock>(
                 scheduledEditor,
                 "ValidationText");
@@ -17047,13 +17125,12 @@ internal static partial class Program
                    scheduledEditor.CommandBindings.Cast<CommandBinding>().Any(binding =>
                        ReferenceEquals(binding.Command, ApplicationCommands.Cut)),
                 "定时任务独立编辑窗必须同时接入统一 Copy/Cut CommandBinding");
-            InvokeStatic(
-                typeof(ScheduledTaskEditWindow),
-                "CutCommand_Executed",
-                scheduledEditorText,
-                CreateCommandEvent(
-                    ApplicationCommands.Cut,
-                    scheduledEditorText));
+            ApplicationCommands.Copy.Execute(null, scheduledEditorText);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(ReadClipboardTextWithRetry() == scheduledEditorSelection,
+                "定时任务独立编辑窗真实 Routed Copy 必须走统一路径");
+            scheduledEditorText.Select(4, 2);
+            ApplicationCommands.Cut.Execute(null, scheduledEditorText);
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(!scheduledEditorText.Text.Contains(
                        scheduledEditorSelection,
@@ -17061,10 +17138,96 @@ internal static partial class Program
                    ReadClipboardTextWithRetry() == scheduledEditorSelection,
                 "定时任务独立编辑窗 Cut 必须与主窗共用同步fail-closed路径");
 
-            var todoRetry = GetRawField(todoWindow, "_clipboardCopyRetry")!;
             var taskEditorRetry = GetRawField(
                 taskEditor,
                 "_clipboardCopyRetry")!;
+            var scheduledEditorRetry = GetRawField(
+                scheduledEditor,
+                "_clipboardCopyRetry")!;
+
+            input.Text = "输入法组合剪切";
+            input.Select(0, 1);
+            Invoke(todoWindow, "SetImeComposing", true);
+            taskEditorText.Text = "输入法组合剪切";
+            taskEditorText.Select(0, 1);
+            SetField(taskEditor, "_isImeComposing", true);
+            scheduledEditorText.Text = "输入法组合剪切";
+            scheduledEditorText.Select(0, 1);
+            SetField(scheduledEditor, "_isImeComposing", true);
+            Assert(!ApplicationCommands.Cut.CanExecute(null, input) &&
+                   !ApplicationCommands.Cut.CanExecute(
+                       null,
+                       taskEditorText) &&
+                   !ApplicationCommands.Cut.CanExecute(
+                       null,
+                       scheduledEditorText),
+                "三个可编辑窗口在IME组合期间都必须禁用Routed Cut，不能删除尚未提交的TSF候选文本");
+            Invoke(todoWindow, "SetImeComposing", false);
+            SetField(taskEditor, "_isImeComposing", false);
+            SetField(scheduledEditor, "_isImeComposing", false);
+
+            taskEditorText.Text = "待办编辑占用复制";
+            taskEditorText.Select(4, 4);
+            var busyRoutedCopyText = taskEditorText.SelectedText;
+            WriteClipboardTextWithRetry("busy-routed-copy-baseline");
+            using (HoldClipboardOpenForTest())
+            {
+                ApplicationCommands.Copy.Execute(null, taskEditorText);
+                Assert(string.Equals(
+                           GetRawField(taskEditorRetry, "_pendingText") as
+                               string,
+                           busyRoutedCopyText,
+                           StringComparison.Ordinal) &&
+                       GetField<int>(taskEditorRetry, "_attemptCount") == 1 &&
+                       GetRawField(taskEditorRetry, "_retryTimer") is
+                           DispatcherTimer { IsEnabled: true },
+                    "待办编辑窗真实 Routed Copy 遇到剪贴板占用时必须进入统一有界重试器，不能由WPF原生Copy假绿");
+            }
+            PumpDispatcher(TimeSpan.FromMilliseconds(380));
+            Assert(ReadClipboardTextWithRetry() == busyRoutedCopyText &&
+                   GetRawField(taskEditorRetry, "_pendingText") is null,
+                "待办编辑窗Routed Copy在剪贴板释放后必须由统一重试器写入选区且完成清理");
+
+            WriteClipboardTextWithRetry("atomic-sequence-baseline");
+            Invoke(todoRetry, "Copy", "atomic-sequence-current");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var staleGeneration = (long)(clipboardRetryType.GetField(
+                        "s_latestRequestGeneration",
+                        StaticFlags)?.GetValue(null) ?? 0L);
+            var staleSequence = GetClipboardSequenceNumber();
+            var isLatestRequest = clipboardRetryType.GetMethod(
+                    "IsLatestRequest",
+                    StaticFlags)
+                ?? throw new InvalidOperationException(
+                    "找不到 ClipboardCopyRetry.IsLatestRequest");
+            Assert(staleGeneration != 0 &&
+                   (bool)(isLatestRequest.Invoke(
+                       null,
+                       [staleGeneration]) ?? false),
+                "stale-sequence夹具开始前必须先证明generation仍是当前请求，避免被generation门禁提前拒绝而假绿");
+            var ownerHandle = GetField<IntPtr>(todoRetry, "_ownerHandle");
+            WriteClipboardTextWithRetry("external-after-sequence-check");
+            var externalSequence = GetClipboardSequenceNumber();
+            Assert(externalSequence != staleSequence,
+                "外部内容夹具必须真实推进clipboard sequence，才能证明同一native lock内的sequence复核拒绝旧提交");
+            var atomicWrite = clipboardRetryType.GetMethod(
+                    "TryWriteClipboardText",
+                    InstanceFlags)
+                ?? throw new InvalidOperationException(
+                    "找不到 ClipboardCopyRetry.TryWriteClipboardText");
+            var staleWriteResult = atomicWrite.Invoke(
+                todoRetry,
+                [
+                    "must-not-win-after-sequence-change",
+                    ownerHandle,
+                    staleGeneration,
+                    staleSequence
+                ]);
+            Assert(staleWriteResult?.ToString() == "Superseded" &&
+                   ReadClipboardTextWithRetry() ==
+                   "external-after-sequence-check",
+                "原子剪贴板事务必须在持有同一native lock后复核sequence，外部新内容不得被旧请求覆盖");
+
             WriteClipboardTextWithRetry("sequence-baseline");
             using (HoldClipboardOpenForTest())
             {
@@ -17090,6 +17253,35 @@ internal static partial class Program
             Assert(ReadClipboardTextWithRetry() == "external-owner-value",
                 "失败Copy之后若剪贴板sequence被外部内容推进，旧重试必须永久失效，不能覆盖用户的新内容");
 
+            WriteClipboardTextWithRetry("sixth-attempt-baseline");
+            using (HoldClipboardOpenForTest())
+            {
+                Invoke(todoRetry, "Copy", "sixth-attempt-success");
+                for (var failedRetry = 0;
+                     failedRetry < maximumAttemptCount - 2;
+                     failedRetry++)
+                {
+                    Invoke(
+                        todoRetry,
+                        "RetryTimer_Tick",
+                        null,
+                        EventArgs.Empty);
+                }
+
+                Assert(GetField<int>(todoRetry, "_attemptCount") == 5,
+                    "剪贴板持续占用时必须完成初始写入加四次有界重试，并为最终第六次保留一次机会");
+            }
+            Invoke(
+                todoRetry,
+                "RetryTimer_Tick",
+                null,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            Assert(ReadClipboardTextWithRetry() == "sixth-attempt-success" &&
+                   GetRawField(todoRetry, "_pendingText") is null &&
+                   GetField<int>(todoRetry, "_attemptCount") == 0,
+                "前五次写入均遇到占用、剪贴板在300ms截止前释放时，第六次尝试必须仍有机会成功");
+
             WriteClipboardTextWithRetry("deadline-baseline");
             using (HoldClipboardOpenForTest())
             {
@@ -17105,14 +17297,17 @@ internal static partial class Program
                    GetField<long>(todoRetry, "_retryDeadlineTimestamp") == 0,
                 "Dispatcher若延迟到绝对300ms截止之后才执行Tick，旧Copy必须直接作废，不能把累计Interval误当墙钟上限");
 
-            DataObjectPastingEventArgs CreatePasteArgs(string text)
+            DataObjectPastingEventArgs CreatePasteArgs(
+                string text,
+                string? format = null)
             {
+                format ??= DataFormats.UnicodeText;
                 var dataObject = new DataObject();
-                dataObject.SetData(DataFormats.UnicodeText, text);
+                dataObject.SetData(format, text, autoConvert: false);
                 return new DataObjectPastingEventArgs(
                     dataObject,
                     isDragDrop: false,
-                    DataFormats.UnicodeText);
+                    format);
             }
 
             var pasteCases = new[]
@@ -17164,6 +17359,124 @@ internal static partial class Program
                 }
             }
 
+            var conflictingFormats = new DataObject();
+            conflictingFormats.SetData(
+                DataFormats.UnicodeText,
+                "123",
+                autoConvert: false);
+            conflictingFormats.SetData(
+                DataFormats.Text,
+                "abc",
+                autoConvert: false);
+            var selectedPlainTextArgs = new DataObjectPastingEventArgs(
+                conflictingFormats,
+                isDragDrop: false,
+                DataFormats.Text);
+            var selectedUnicodeArgs = new DataObjectPastingEventArgs(
+                conflictingFormats,
+                isDragDrop: false,
+                DataFormats.UnicodeText);
+            Assert(!(bool)(isAsciiDigitsPaste.Invoke(
+                       null,
+                       [selectedPlainTextArgs]) ?? true) &&
+                   (bool)(isAsciiDigitsPaste.Invoke(
+                       null,
+                       [selectedUnicodeArgs]) ?? false),
+                "数字框必须校验WPF真正选择的FormatToApply，不能用另一可转换格式的数字掩盖实际将粘入的非数字文本");
+
+            void ExecuteNativePaste(
+                TextBox target,
+                string clipboardText)
+            {
+                WriteClipboardTextWithRetry(clipboardText);
+                target.Focus();
+                Keyboard.Focus(target);
+                Assert(ApplicationCommands.Paste.CanExecute(null, target),
+                    $"{target.Name}必须保留WPF原生Paste命令");
+                ApplicationCommands.Paste.Execute(null, target);
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            }
+
+            input.Text = "甲乙";
+            input.Select(1, 1);
+            ExecuteNativePaste(input, "普通粘贴");
+            Assert(input.Text == "甲普通粘贴",
+                "Todo正文输入必须保留真实Ctrl+V/右键Paste的原生选区替换能力");
+            taskEditorText.Text = "甲乙";
+            taskEditorText.Select(1, 1);
+            ExecuteNativePaste(taskEditorText, "待办编辑粘贴");
+            Assert(taskEditorText.Text == "甲待办编辑粘贴",
+                "待办独立编辑窗必须保留真实原生Paste");
+            scheduledEditorText.Text = "甲乙";
+            scheduledEditorText.Select(1, 1);
+            ExecuteNativePaste(scheduledEditorText, "定时编辑粘贴");
+            Assert(scheduledEditorText.Text == "甲定时编辑粘贴",
+                "定时任务独立编辑窗必须保留真实原生Paste");
+
+            Invoke(todoWindow, "SelectTaskPage", true, false);
+            scheduledRepeatToggle.IsChecked = true;
+            scheduledEditorRepeatToggle.IsChecked = true;
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            foreach (var pasteCase in pasteCases)
+            {
+                scheduledRepeatInput.Text = "7";
+                scheduledRepeatInput.Select(0, 1);
+                ExecuteNativePaste(
+                    scheduledRepeatInput,
+                    pasteCase.Text);
+                scheduledEditorRepeat.Text = "9";
+                scheduledEditorRepeat.Select(0, 1);
+                ExecuteNativePaste(
+                    scheduledEditorRepeat,
+                    pasteCase.Text);
+                var expectedTodoText = pasteCase.Allowed
+                    ? pasteCase.Text
+                    : "7";
+                var expectedEditorText = pasteCase.Allowed
+                    ? pasteCase.Text
+                    : "9";
+                Assert(scheduledRepeatInput.Text == expectedTodoText &&
+                       scheduledEditorRepeat.Text == expectedEditorText,
+                    $"真实WPF Paste必须在两个次数框一致{(pasteCase.Allowed ? "接受" : "拒绝")}{pasteCase.Stage}：" +
+                    $"todo={scheduledRepeatInput.Text}, editor={scheduledEditorRepeat.Text}");
+            }
+
+            WriteClipboardTextWithRetry("cross-window-close-baseline");
+            using (HoldClipboardOpenForTest())
+            {
+                Invoke(taskEditorRetry, "Copy", "closed-old-window-A");
+                Invoke(todoRetry, "Copy", "surviving-new-window-B");
+                taskEditor.CloseWithoutSaving();
+                taskEditor = null;
+            }
+            PumpDispatcher(TimeSpan.FromMilliseconds(380));
+            Assert(ReadClipboardTextWithRetry() == "surviving-new-window-B" &&
+                   GetField<bool>(taskEditorRetry, "_disposed") &&
+                   GetRawField(taskEditorRetry, "_pendingText") is null &&
+                   (GetRawField(taskEditorRetry, "_retryTimer") is not
+                        DispatcherTimer closedTaskEditorTimer ||
+                    !closedTaskEditorTimer.IsEnabled),
+                "关闭旧窗口A只能取消A自身pending Copy，不能清掉另一窗口更新的全局generation B");
+
+            WriteClipboardTextWithRetry("closed-editor-baseline");
+            using (HoldClipboardOpenForTest())
+            {
+                Invoke(
+                    scheduledEditorRetry,
+                    "Copy",
+                    "closed-editor-stale-copy");
+                scheduledEditor.CloseWithoutSaving();
+                scheduledEditor = null;
+            }
+            PumpDispatcher(TimeSpan.FromMilliseconds(380));
+            Assert(ReadClipboardTextWithRetry() == "closed-editor-baseline" &&
+                   GetField<bool>(scheduledEditorRetry, "_disposed") &&
+                   GetRawField(scheduledEditorRetry, "_pendingText") is null &&
+                   (GetRawField(scheduledEditorRetry, "_retryTimer") is not
+                        DispatcherTimer closedEditorTimer ||
+                    !closedEditorTimer.IsEnabled),
+                "独立编辑窗关闭必须停止自身pending Copy和timer，关闭后绝不能回写剪贴板");
+
             WriteClipboardTextWithRetry("cancel-baseline");
             using (HoldClipboardOpenForTest())
             {
@@ -17177,6 +17490,23 @@ internal static partial class Program
                         DispatcherTimer retryTimer ||
                     !retryTimer.IsEnabled),
                 "TodoWindow 隐藏必须取消pending Copy，不能在窗口消失后回写剪贴板");
+
+            todoWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            WriteClipboardTextWithRetry("todo-close-baseline");
+            using (HoldClipboardOpenForTest())
+            {
+                Invoke(todoRetry, "Copy", "closed-todo-stale-copy");
+                todoWindow.CloseForApplication();
+            }
+            PumpDispatcher(TimeSpan.FromMilliseconds(380));
+            Assert(ReadClipboardTextWithRetry() == "todo-close-baseline" &&
+                   GetField<bool>(todoRetry, "_disposed") &&
+                   GetRawField(todoRetry, "_pendingText") is null &&
+                   (GetRawField(todoRetry, "_retryTimer") is not
+                        DispatcherTimer closedTodoTimer ||
+                    !closedTodoTimer.IsEnabled),
+                "TodoWindow 应用关闭必须Dispose重试器并停止自身pending Copy，不能在Closed后回写剪贴板");
         }
         finally
         {
@@ -17623,6 +17953,9 @@ internal static partial class Program
             var previewCopySource = ExtractPrivateMethodSource(
                 todoSource,
                 "TodoWindow_PreviewKeyDown");
+            var copyShortcutSource = ExtractPrivateMethodSource(
+                todoSource,
+                "TryHandleCopyShortcut");
             var getCopyTextSource = ExtractPrivateMethodSource(todoSource, "GetCopyText");
             var queueSizeSource = ExtractPrivateMethodSource(
                 todoSource,
@@ -17674,23 +18007,29 @@ internal static partial class Program
                         "var effectiveKey = GetEffectiveShortcutKey(e)",
                         StringComparison.Ordinal) &&
                     previewCopySource.Contains(
-                        "effectiveKey != Key.C",
+                        "TryHandleCopyShortcut(",
                         StringComparison.Ordinal) &&
-                   previewCopySource.Contains(
-                       "Keyboard.Modifiers & ModifierKeys.Control",
-                       StringComparison.Ordinal) &&
-                    previewCopySource.Contains(
-                        "Keyboard.FocusedElement is not TextBox textBox",
-                        StringComparison.Ordinal) &&
-                    previewCopySource.Contains("!IsCopySource(textBox)", StringComparison.Ordinal) &&
-                    previewCopySource.Contains(
-                        "ApplicationCommands.Copy.CanExecute(",
-                        StringComparison.Ordinal) &&
-                    previewCopySource.Contains(
+                    !previewCopySource.Contains(
                         "ApplicationCommands.Copy.Execute(",
                         StringComparison.Ordinal) &&
+                    copyShortcutSource.Contains(
+                        "effectiveKey == Key.C",
+                        StringComparison.Ordinal) &&
+                    copyShortcutSource.Contains(
+                        "modifiers & ModifierKeys.Control",
+                        StringComparison.Ordinal) &&
+                    copyShortcutSource.Contains(
+                        "focusedElement is TextBox textBox",
+                        StringComparison.Ordinal) &&
+                    copyShortcutSource.Contains(
+                        "IsCopySource(textBox)",
+                        StringComparison.Ordinal) &&
+                    copyShortcutSource.Contains(
+                        "TryCopyTextFromTextBox(textBox)",
+                        StringComparison.Ordinal) &&
                     previewCopySource.Contains("e.Handled = true", StringComparison.Ordinal),
-                "TodoWindow PreviewKeyDown 必须仅拦截焦点复制源的 Ctrl+C，并转入统一Copy命令路径");
+                "TodoWindow PreviewKeyDown 必须仅拦截焦点复制源的 Ctrl+C，并直接进入统一Copy helper，" +
+                "不能重新调用会被TextBox无选区门禁短路的Copy Execute");
             Assert(getCopyTextSource.Contains(
                        "ReferenceEquals(textBox, TodoInput)",
                        StringComparison.Ordinal) &&
@@ -22924,6 +23263,15 @@ internal static partial class Program
         var todoSource = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs"));
         var clipboardSource = File.ReadAllText(
             FindWorkspaceFile("ClipboardCopyRetry.cs"));
+        var atomicClipboardWriteSource = ExtractPrivateMethodSource(
+            clipboardSource,
+            "TryWriteClipboardText");
+        var todoPreviewKeyDownSource = ExtractPrivateMethodSource(
+            todoSource,
+            "TodoWindow_PreviewKeyDown");
+        var todoCopyShortcutSource = ExtractPrivateMethodSource(
+            todoSource,
+            "TryHandleCopyShortcut");
         Assert(!todoSource.Contains("_petSizeRenderingHandler", StringComparison.Ordinal) &&
                !todoSource.Contains("CompositionTarget.Rendering", StringComparison.Ordinal) &&
                !todoSource.Contains("PetSizeScale_Rendering", StringComparison.Ordinal) &&
@@ -22931,12 +23279,46 @@ internal static partial class Program
                todoSource.Contains("_focusInputAction", StringComparison.Ordinal) &&
                todoSource.Contains("_clipboardCopyRetry", StringComparison.Ordinal) &&
                !todoSource.Contains("_retryClipboardCopyAction", StringComparison.Ordinal) &&
-               clipboardSource.Contains("Clipboard.SetDataObject(text, true)", StringComparison.Ordinal) &&
-               clipboardSource.Contains("catch (ExternalException)", StringComparison.Ordinal) &&
-               clipboardSource.Contains("GetRemainingRetryWindow()", StringComparison.Ordinal) &&
-               todoSource.Contains("if (IsKeyboardFocusWithin)", StringComparison.Ordinal) &&
+               clipboardSource.Contains("OpenClipboard(ownerHandle)", StringComparison.Ordinal) &&
+               clipboardSource.Contains("GetClipboardSequenceNumber() != expectedSequence", StringComparison.Ordinal) &&
+               clipboardSource.Contains("EmptyClipboard()", StringComparison.Ordinal) &&
+               clipboardSource.Contains("SetClipboardData(", StringComparison.Ordinal) &&
+               clipboardSource.Contains("GlobalMemoryMoveable", StringComparison.Ordinal) &&
+               !clipboardSource.Contains("Clipboard.SetDataObject(text, true)", StringComparison.Ordinal) &&
+                clipboardSource.Contains("GetRemainingRetryWindow()", StringComparison.Ordinal) &&
+                todoPreviewKeyDownSource.Contains(
+                    "TryHandleCopyShortcut(",
+                    StringComparison.Ordinal) &&
+                !todoPreviewKeyDownSource.Contains(
+                    "ApplicationCommands.Copy.Execute",
+                    StringComparison.Ordinal) &&
+                todoCopyShortcutSource.Contains(
+                    "TryCopyTextFromTextBox(textBox)",
+                    StringComparison.Ordinal) &&
+                todoSource.Contains("if (IsKeyboardFocusWithin)", StringComparison.Ordinal) &&
                todoSource.Contains("if (!IsVisible || _hasClosed)", StringComparison.Ordinal),
-            "TodoWindow不得拥有尺寸Rendering订阅；剪贴板重试必须由有界共享helper管理，延迟聚焦不得在收起后复活或抢走选区");
+            "TodoWindow不得拥有尺寸Rendering订阅；无选区Ctrl+C必须在根PreviewKeyDown直接进入统一Copy helper，" +
+            "不能重新调用会被TextBox类命令短路的Copy Execute；剪贴板重试必须有界，延迟聚焦不得在收起后复活或抢走选区");
+        var nativeOpenIndex = atomicClipboardWriteSource.IndexOf(
+            "OpenClipboard(ownerHandle)",
+            StringComparison.Ordinal);
+        var sequenceGuardIndex = atomicClipboardWriteSource.IndexOf(
+            "GetClipboardSequenceNumber() != expectedSequence",
+            StringComparison.Ordinal);
+        var emptyClipboardIndex = atomicClipboardWriteSource.IndexOf(
+            "EmptyClipboard()",
+            StringComparison.Ordinal);
+        var setClipboardDataIndex = atomicClipboardWriteSource.IndexOf(
+            "SetClipboardData(",
+            StringComparison.Ordinal);
+        Assert(nativeOpenIndex >= 0 &&
+               nativeOpenIndex < sequenceGuardIndex &&
+               sequenceGuardIndex < emptyClipboardIndex &&
+               emptyClipboardIndex < setClipboardDataIndex &&
+               !atomicClipboardWriteSource.Contains(
+                   "OpenClipboard(IntPtr.Zero)",
+                   StringComparison.Ordinal),
+            "复制必须用有效owner HWND在同一个native clipboard lock内完成sequence复核、Empty与CF_UNICODETEXT提交，不能保留检查后再写的TOCTOU窗口");
 
         var mainXaml = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml"));
         var petSizeViewboxStart = mainXaml.IndexOf(
@@ -28169,7 +28551,7 @@ internal static partial class Program
             catch (ExternalException exception)
             {
                 lastFailure = exception;
-                Thread.Sleep(10);
+                PumpDispatcher(TimeSpan.FromMilliseconds(10));
             }
         }
 
@@ -28180,25 +28562,139 @@ internal static partial class Program
 
     private static void WriteClipboardTextWithRetry(string text)
     {
-        var deadline = Stopwatch.StartNew();
-        ExternalException? lastFailure = null;
-        while (deadline.Elapsed < TimeSpan.FromSeconds(2))
+        const uint clipboardFormatUnicodeText = 13;
+        const uint globalMemoryMoveable = 0x0002;
+        const uint globalMemoryZeroInit = 0x0040;
+        var clipboardOwnerWindow = CreateWindowEx(
+            0,
+            "STATIC",
+            "UiStateChecks clipboard writer",
+            0,
+            0,
+            0,
+            0,
+            0,
+            new IntPtr(-3),
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero);
+        if (clipboardOwnerWindow == IntPtr.Zero)
         {
-            try
-            {
-                Clipboard.SetDataObject(text, true);
-                return;
-            }
-            catch (ExternalException exception)
-            {
-                lastFailure = exception;
-                Thread.Sleep(10);
-            }
+            throw new InvalidOperationException(
+                $"测试无法创建剪贴板writer HWND，Win32={Marshal.GetLastWin32Error()}");
         }
 
-        throw new InvalidOperationException(
-            "测试在2秒内无法写入剪贴板",
-            lastFailure);
+        var byteCount = checked((nuint)(text.Length + 1) * sizeof(char));
+        var clipboardMemory = GlobalAlloc(
+            globalMemoryMoveable | globalMemoryZeroInit,
+            byteCount);
+        if (clipboardMemory == IntPtr.Zero)
+        {
+            _ = DestroyWindow(clipboardOwnerWindow);
+            throw new InvalidOperationException(
+                $"测试无法分配剪贴板缓冲，Win32={Marshal.GetLastWin32Error()}");
+        }
+
+        var deadline = Stopwatch.StartNew();
+        Exception? lastFailure = null;
+        try
+        {
+            var buffer = GlobalLock(clipboardMemory);
+            if (buffer == IntPtr.Zero)
+            {
+                throw new InvalidOperationException(
+                    $"测试无法锁定剪贴板缓冲，Win32={Marshal.GetLastWin32Error()}");
+            }
+
+            try
+            {
+                if (text.Length > 0)
+                {
+                    Marshal.Copy(
+                        text.ToCharArray(),
+                        0,
+                        buffer,
+                        text.Length);
+                }
+
+                Marshal.WriteInt16(
+                    buffer,
+                    checked(text.Length * sizeof(char)),
+                    0);
+            }
+            finally
+            {
+                _ = GlobalUnlock(clipboardMemory);
+            }
+
+            while (deadline.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                if (!OpenClipboard(clipboardOwnerWindow))
+                {
+                    lastFailure = new InvalidOperationException(
+                        $"OpenClipboard失败，Win32={Marshal.GetLastWin32Error()}");
+                    PumpDispatcher(TimeSpan.FromMilliseconds(10));
+                    continue;
+                }
+
+                var writeSucceeded = false;
+                try
+                {
+                    if (!EmptyClipboard())
+                    {
+                        lastFailure = new InvalidOperationException(
+                            $"EmptyClipboard失败，Win32={Marshal.GetLastWin32Error()}");
+                    }
+                    else if (SetClipboardData(
+                                 clipboardFormatUnicodeText,
+                                 clipboardMemory) == IntPtr.Zero)
+                    {
+                        lastFailure = new InvalidOperationException(
+                            $"SetClipboardData失败，Win32={Marshal.GetLastWin32Error()}");
+                    }
+                    else
+                    {
+                        clipboardMemory = IntPtr.Zero;
+                        writeSucceeded = true;
+                    }
+                }
+                finally
+                {
+                    if (!CloseClipboard())
+                    {
+                        throw new InvalidOperationException(
+                            $"测试writer无法关闭剪贴板，Win32={Marshal.GetLastWin32Error()}");
+                    }
+                }
+
+                if (writeSucceeded)
+                {
+                    return;
+                }
+
+                PumpDispatcher(TimeSpan.FromMilliseconds(10));
+            }
+
+            var openClipboardWindow = GetOpenClipboardWindow();
+            _ = GetWindowThreadProcessId(
+                openClipboardWindow,
+                out var openClipboardProcessId);
+            throw new InvalidOperationException(
+                "测试在2秒内无法写入剪贴板：" +
+                $"owner=0x{openClipboardWindow.ToInt64():X}, " +
+                $"ownerPid={openClipboardProcessId}, " +
+                $"currentPid={Environment.ProcessId}",
+                lastFailure);
+        }
+        finally
+        {
+            if (clipboardMemory != IntPtr.Zero)
+            {
+                _ = GlobalFree(clipboardMemory);
+            }
+
+            _ = DestroyWindow(clipboardOwnerWindow);
+        }
     }
 
     private static IDisposable HoldClipboardOpenForTest()
@@ -28310,6 +28806,39 @@ internal static partial class Program
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetClipboardData(
+        uint format,
+        IntPtr memory);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetOpenClipboardWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(
+        IntPtr windowHandle,
+        out uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalAlloc(uint flags, nuint bytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalLock(IntPtr memory);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalUnlock(IntPtr memory);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalFree(IntPtr memory);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateWindowEx(

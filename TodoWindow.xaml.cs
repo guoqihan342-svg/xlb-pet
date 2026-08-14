@@ -127,6 +127,8 @@ public partial class TodoWindow : Window
     private readonly Action _focusSelectedPageInputAfterTabAction;
     private readonly Action _finishScheduledPickerInternalCommitAction;
     private readonly ClipboardCopyRetry _clipboardCopyRetry;
+    private readonly ExecutedRoutedEventHandler
+        _clipboardCommandPreviewExecutedHandler;
     private readonly CommandBinding _cutCommandBinding;
     private readonly CommandBinding _taskFullTextPreviewCopyCommandBinding;
     private readonly ContextMenuEventHandler _textBoxContextMenuOpeningHandler;
@@ -209,7 +211,13 @@ public partial class TodoWindow : Window
             FocusSelectedPageInputAfterTabChange;
         _finishScheduledPickerInternalCommitAction =
             FinishScheduledPickerInternalCommit;
-        _clipboardCopyRetry = new ClipboardCopyRetry(Dispatcher);
+        _clipboardCopyRetry = new ClipboardCopyRetry(this);
+        _clipboardCommandPreviewExecutedHandler =
+            ClipboardCommand_PreviewExecuted;
+        AddHandler(
+            CommandManager.PreviewExecutedEvent,
+            _clipboardCommandPreviewExecutedHandler,
+            handledEventsToo: true);
         _cutCommandBinding = new CommandBinding(
             ApplicationCommands.Cut);
         _cutCommandBinding.PreviewCanExecute +=
@@ -591,13 +599,28 @@ public partial class TodoWindow : Window
             return;
         }
 
-        var text = GetCopyText(textBox);
-        if (!string.IsNullOrEmpty(text))
-        {
-            _clipboardCopyRetry.Copy(text);
-        }
+        _ = TryCopyTextFromTextBox(textBox);
 
         e.Handled = true;
+    }
+
+    private void ClipboardCommand_PreviewExecuted(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        if (e.Handled)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(e.Command, ApplicationCommands.Copy))
+        {
+            CopyCommand_Executed(sender, e);
+        }
+        else if (ReferenceEquals(e.Command, ApplicationCommands.Cut))
+        {
+            CutCommand_Executed(sender, e);
+        }
     }
 
     private void CutCommand_CanExecute(
@@ -611,6 +634,7 @@ public partial class TodoWindow : Window
         }
 
         e.CanExecute =
+            !IsImeComposing &&
             IsEditableTextSource(textBox) &&
             TextClipboardCommands.CanCut(textBox);
         e.Handled = true;
@@ -666,30 +690,20 @@ public partial class TodoWindow : Window
             }
         }
 
-        // TextBox's built-in Copy command disables itself when the selection
-        // is empty before a parent CommandBinding can reliably replace that
-        // behavior. Intercept the physical shortcut at the owned-window root:
-        // input copies its full value without a selection, while read-only
-        // rows still require an explicit text selection.
-        if (effectiveKey != Key.C ||
-            (Keyboard.Modifiers & ModifierKeys.Control) == 0 ||
-            Keyboard.FocusedElement is not TextBox textBox ||
-            !IsCopySource(textBox))
-        {
-            return;
-        }
-
-        if (!ApplicationCommands.Copy.CanExecute(
-                parameter: null,
-                textBox))
+        // TextBox's class-level Copy command short-circuits when its selection
+        // is empty before a parent CommandBinding can execute. Handle the
+        // physical shortcut at the window root instead: the two authored
+        // inputs copy their full value without a selection, while read-only
+        // rows still require an explicit selection.
+        if (!TryHandleCopyShortcut(
+                effectiveKey,
+                Keyboard.Modifiers,
+                Keyboard.FocusedElement))
         {
             return;
         }
 
         e.Handled = true;
-        ApplicationCommands.Copy.Execute(
-            parameter: null,
-            textBox);
     }
 
     private static Key GetEffectiveShortcutKey(KeyEventArgs e) =>
@@ -703,7 +717,10 @@ public partial class TodoWindow : Window
     private bool TryCutSelectedText(TextBox textBox)
     {
         return IsEditableTextSource(textBox) &&
-               TextClipboardCommands.TryCutSelectedText(textBox);
+               !IsImeComposing &&
+               TextClipboardCommands.TryCutSelectedText(
+                   textBox,
+                   _clipboardCopyRetry);
     }
 
     private static bool IsEditableTextSource(TextBox textBox) =>
@@ -716,6 +733,30 @@ public partial class TodoWindow : Window
 
     private bool CanCopyFromTextBox(TextBox textBox) =>
         !string.IsNullOrEmpty(GetCopyText(textBox));
+
+    private bool TryHandleCopyShortcut(
+        Key effectiveKey,
+        ModifierKeys modifiers,
+        IInputElement? focusedElement)
+    {
+        return effectiveKey == Key.C &&
+               (modifiers & ModifierKeys.Control) != 0 &&
+               focusedElement is TextBox textBox &&
+               IsCopySource(textBox) &&
+               TryCopyTextFromTextBox(textBox);
+    }
+
+    private bool TryCopyTextFromTextBox(TextBox textBox)
+    {
+        var text = GetCopyText(textBox);
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        _clipboardCopyRetry.Copy(text);
+        return true;
+    }
 
     private string? GetCopyText(TextBox textBox)
     {
@@ -918,6 +959,9 @@ public partial class TodoWindow : Window
         _editorInterruptedByReminder = null;
         _isReminderInterruptionActive = false;
         _clipboardCopyRetry.Dispose();
+        RemoveHandler(
+            CommandManager.PreviewExecutedEvent,
+            _clipboardCommandPreviewExecutedHandler);
         _taskFullTextCloseTimer.Stop();
         _taskFullTextCloseTimer.Tick -=
             TaskFullTextCloseTimer_Tick;
