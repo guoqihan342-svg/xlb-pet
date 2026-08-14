@@ -248,14 +248,16 @@ git status --short --ignored
 
 ## v1.0.79 发布验证
 
-本版修正定时任务列表把未来静默 occurrence 误写成“下次提醒”的显示问题。显示层、调度游标、真实 WPF 绑定与发布证据按下表验证；功能提交和 Release 字段待真实发布后回填。
+本版修正定时任务列表把未来静默 occurrence 误写成“下次提醒”的显示问题。显示层、调度游标、真实 WPF 绑定、正式发布与独立回下载验真于 `2026-08-14` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
 | 面板语义 | 循环任务规则仍保留在“定时任务”列表中供修改或删除；若当前 `DueAt` 位于免打扰 `[start,end)`，行内和 ToolTip 只显示“该时段不提醒”，不显示“下次”或静默 occurrence 的具体时间。该行是任务规则，不是提醒历史 |
 | 数据边界 | `DueAtDisplayText` 是只读投影，不推进 `DueAt` / `NextOrdinal`，不保存 JSON；在 occurrence 发生前关闭免打扰会恢复原计划时间，end 同秒继续按排他边界显示为真实“下次” |
 | 自动化与构建 | `DesktopPet`、`TodoStoreChecks`、`UiStateChecks` Release 构建均为 `0 warning / 0 error`；`TodoStoreChecks`、`--scheduled-editor-only`、`--reminder-only`、`--todo-only` 均通过，完整 `UiStateChecks` 在同一最终代码快照连续 2 轮通过。覆盖真实 ListBoxItem/TextBlock/ToolTip、remove/insert 刷新、跨午夜、夏令时回拨和 getter 纯函数 |
-| 源码与发布 | 待真实发布后回填：功能提交、tag/Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest 与独立回下载复核 |
+| 源码与版本 | 功能提交 `c30efc0aaddb41ad3fb63a9dec8d24339ea58ae0`；远端 `main`、annotated `v1.0.79` tag 剥离提交与 Release target 在发布时均精确指向该提交。`FileVersion=1.0.79.0`，`ProductVersion=1.0.79+c30efc0aaddb41ad3fb63a9dec8d24339ea58ae0` |
+| EXE | 单文件框架依赖 EXE 为 `93,363,334` bytes，SHA-256 `02BFBADA9401F23E70CBD898E659E592B031339FA660837D3E48221DC62E5DE3`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.79`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.79) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `93,363,334`、digest `sha256:02bfbada9401f23e70cbd898e659e592b031339fa660837d3e48221dc62e5de3`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件，也未停止或替换任何桌宠进程，用户定时任务 JSON 未被测试改写 |
 
 ## v1.0.78 发布验证
 
