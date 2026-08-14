@@ -1200,45 +1200,29 @@ internal static partial class Program
                 window,
                 "_scheduledTasks");
         var reminderQueue =
-            GetField<Queue<ScheduledTaskItem>>(
-                window,
-                "_reminderQueue");
+            GetField<Queue<ScheduledTaskItem>>(window, "_reminderQueue");
         var queuedReminderIds =
-            GetField<HashSet<Guid>>(
-                window,
-                "_queuedReminderIds");
+            GetField<HashSet<Guid>>(window, "_queuedReminderIds");
         var activeBatch =
             GetField<List<ScheduledTaskItem>>(
                 window,
                 "_activeReminderBatch");
         var visibleOccurrences =
-            (IList)GetRawField(
-                window,
-                "_visibleReminderOccurrences")!;
+            (IList)GetRawField(window, "_visibleReminderOccurrences")!;
         var observedCounts =
             (IDictionary)GetRawField(
                 window,
                 "_presentedReminderOccurrenceCounts")!;
         var scheduledStore =
-            GetField<ScheduledTaskStore>(
-                window,
-                "_scheduledTaskStore");
+            GetField<ScheduledTaskStore>(window, "_scheduledTaskStore");
         var scheduledTimer =
-            GetField<DispatcherTimer>(
-                window,
-                "_scheduledTaskTimer");
+            GetField<DispatcherTimer>(window, "_scheduledTaskTimer");
         var automaticTimer =
-            GetField<DispatcherTimer>(
-                window,
-                "_automaticTimer");
+            GetField<DispatcherTimer>(window, "_automaticTimer");
         var reminderSizeTimer =
             GetField<DispatcherTimer>(
                 window,
                 "_reminderSizeCommitTimer");
-        var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
-        var scheduledInput = GetField<TextBox>(
-            todoWindow,
-            "ScheduledTaskInput");
         var originalNowProvider =
             GetField<Func<DateTimeOffset>>(window, "_nowProvider");
         var originalAutomaticEnabled =
@@ -1247,10 +1231,20 @@ internal static partial class Program
         var originalHitTestVisible = window.IsHitTestVisible;
         var now = DateTimeOffset.Now;
         Func<DateTimeOffset> controlledNow = () => now;
+        var timeZone = TimeZoneInfo.FindSystemTimeZoneById(
+            "China Standard Time");
+
+        static DateTimeOffset ResolveLocal(
+            TimeZoneInfo zone,
+            DateTime local) =>
+            new(
+                DateTime.SpecifyKind(local, DateTimeKind.Unspecified),
+                zone.GetUtcOffset(local));
 
         void ResetReminderState()
         {
             scheduledTimer.Stop();
+            reminderSizeTimer.Stop();
             scheduledTasks.Clear();
             reminderQueue.Clear();
             queuedReminderIds.Clear();
@@ -1265,6 +1259,8 @@ internal static partial class Program
                 false);
             SetField(window, "_totalReminderOccurrenceCount", 0L);
             SetField(window, "_upcomingReminderPreloadPageName", null);
+            SetField(window, "_isTransientPetSizeOverride", false);
+            SetField(window, "_isRestoringReminderSize", false);
             if (GetRawField(window, "_reminderWindow") is
                 ReminderWindow existingReminder)
             {
@@ -1275,9 +1271,68 @@ internal static partial class Program
             Invoke(
                 window,
                 "SetBubbleMode",
-                GetNestedEnum("BubbleMode", "Todo"));
+                GetNestedEnum("BubbleMode", "None"));
+            Invoke(window, "StopVisualClock");
+            SetField(window, "_activeClip", null);
+            SetField(window, "_activeFrameIndex", -1);
+            SetField(window, "_activeClipStartedTimestamp", 0L);
+            SetField(window, "_activeFrameDeadlineTimestamp", 0L);
+            Invoke(window, "ClearDeferredActiveClipClock");
+            Invoke(window, "ResetPetVisualTransforms");
+            Invoke(
+                window,
+                "ApplyPetSizeScale",
+                originalScale,
+                false,
+                false);
             Assert(scheduledStore.Save(scheduledTasks),
-                "免打扰运行时回归必须能够清空旧定时任务");
+                "The quiet-hours fixture must reset its isolated store.");
+        }
+
+        void AssertSilentState(
+            ScheduledTaskItem task,
+            DateTimeOffset expectedNextDueAt,
+            DateTimeOffset expectedQuietEnd,
+            string stage)
+        {
+            var persisted = scheduledStore.Load().Single(
+                item => item.Id == task.Id);
+            var reminderWindow =
+                (ReminderWindow?)GetRawField(window, "_reminderWindow");
+            var persistedRuleIsConsistent =
+                task.RepeatRule is null
+                    ? persisted.RepeatRule is null
+                    : persisted.RepeatRule?.NextOrdinal ==
+                          task.RepeatRule.NextOrdinal &&
+                      ScheduledRepeatSchedule.TryGetOccurrence(
+                          persisted.RepeatRule,
+                          persisted.RepeatRule.NextOrdinal,
+                          out var persistedOccurrence) &&
+                      persistedOccurrence == persisted.DueAt;
+            Assert(GetRawField(window, "_activeReminder") is null &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   activeBatch.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts.Count == 0 &&
+                   GetField<object>(window, "_bubbleMode").ToString() !=
+                       "Reminder" &&
+                   !GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   reminderWindow?.IsVisible != true &&
+                   task.DueAt == expectedNextDueAt &&
+                   persisted.DueAt == expectedNextDueAt &&
+                   persisted.QuietHours == task.QuietHours &&
+                   persistedRuleIsConsistent &&
+                   (DateTimeOffset)Invoke(
+                       window,
+                       "FindNextReminderDueAt",
+                       now)! == expectedQuietEnd &&
+                   scheduledTimer.IsEnabled,
+                $"{stage}: quiet recurring occurrences must be skipped " +
+                "without UI, animation, queue state, or later replay.");
         }
 
         try
@@ -1291,307 +1346,420 @@ internal static partial class Program
             ResetReminderState();
 
             var quietStartLocal = new DateTime(
-                2032,
+                2034,
                 6,
                 12,
                 22,
                 0,
                 0,
                 DateTimeKind.Unspecified);
-            var quietEndLocal = quietStartLocal.AddHours(1);
-            var quietStart = new DateTimeOffset(
-                quietStartLocal,
-                TimeZoneInfo.Local.GetUtcOffset(quietStartLocal));
-            var quietEnd = new DateTimeOffset(
-                quietEndLocal,
-                TimeZoneInfo.Local.GetUtcOffset(quietEndLocal));
+            var quietEndLocal = quietStartLocal.AddHours(9);
+            var quietStart = ResolveLocal(timeZone, quietStartLocal);
+            var quietEnd = ResolveLocal(timeZone, quietEndLocal);
+            Assert(
+                ScheduledRepeatSchedule.TryCreate(
+                    ScheduledRepeatUnit.Hour,
+                    1,
+                    quietStartLocal,
+                    timeZone,
+                    out var repeatRule,
+                    out var firstDueAt) &&
+                repeatRule is not null &&
+                firstDueAt == quietStart,
+                "The cross-midnight quiet-hours fixture needs a valid rule.");
             var quietHours = new ScheduledQuietHours
             {
                 Start = TimeSpan.FromHours(22),
-                End = TimeSpan.FromHours(23),
-                TimeZoneId = TimeZoneInfo.Local.Id
+                End = TimeSpan.FromHours(7),
+                TimeZoneId = timeZone.Id
             };
-            now = quietStart.AddMinutes(30);
-            var quietRecurring = new ScheduledTaskItem
+            var crossMidnight = new ScheduledTaskItem
             {
                 Id = Guid.Parse(
-                    "44000000-0000-0000-0000-000000000001"),
-                Text = "安静时段内积累的循环提醒",
-                DueAt = quietStart,
+                    "44000000-0000-0000-0000-000000000101"),
+                Text = "cross-midnight quiet recurring reminder",
+                DueAt = firstDueAt,
                 CreatedAt = quietStart.AddDays(-1),
-                RepeatInterval = TimeSpan.FromMinutes(10),
+                RepeatInterval = TimeSpan.FromHours(1),
+                RepeatRule = repeatRule,
                 QuietHours = quietHours
             };
-            var normalDuringQuiet = new ScheduledTaskItem
-            {
-                Id = Guid.Parse(
-                    "44000000-0000-0000-0000-000000000002"),
-                Text = "免打扰不应挡住其他任务",
-                DueAt = now,
-                CreatedAt = now.AddMinutes(-1)
-            };
-            Invoke(
-                window,
-                "InsertScheduledTaskSorted",
-                quietRecurring);
-            Invoke(
-                window,
-                "InsertScheduledTaskSorted",
-                normalDuringQuiet);
+            Invoke(window, "InsertScheduledTaskSorted", crossMidnight);
             Assert(scheduledStore.Save(scheduledTasks),
-                "免打扰任务与普通任务必须先持久化");
+                "The cross-midnight task must be persisted first.");
 
-            Invoke(window, "ProcessScheduledTasksAt", now);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            var reminderWindow =
-                (ReminderWindow?)GetRawField(
+            var quietProbes = new[]
+            {
+                (Local: quietStartLocal, Next: quietStartLocal.AddHours(1)),
+                (Local: quietStartLocal.AddHours(1),
+                    Next: quietStartLocal.AddHours(2)),
+                (Local: quietStartLocal.AddHours(2),
+                    Next: quietStartLocal.AddHours(3)),
+                (Local: quietStartLocal.AddHours(4),
+                    Next: quietStartLocal.AddHours(5)),
+                (Local: quietEndLocal.AddTicks(-TimeSpan.TicksPerSecond),
+                    Next: quietEndLocal)
+            };
+            foreach (var probe in quietProbes)
+            {
+                now = ResolveLocal(timeZone, probe.Local);
+                Invoke(
                     window,
-                    "_reminderWindow")
-                ?? throw new InvalidOperationException(
-                    "普通任务到点后必须创建提醒窗口");
-            var reminderContent = GetField<TextBox>(
-                reminderWindow,
-                "ReminderContentTextBox");
-            var reminderTitle = GetField<TextBlock>(
-                reminderWindow,
-                "ReminderTitleText");
-            var reminderPagingPanel = GetField<Border>(
-                reminderWindow,
-                "ReminderPagingPanel");
-            var reminderPreviousPageButton = GetField<Button>(
-                reminderWindow,
-                "ReminderPreviousPageButton");
-            var reminderPageText = GetField<TextBlock>(
-                reminderWindow,
-                "ReminderPageText");
-            var reminderNextPageButton = GetField<Button>(
-                reminderWindow,
-                "ReminderNextPageButton");
+                    "ScheduledTaskTimer_Tick",
+                    null,
+                    EventArgs.Empty);
+                PumpDispatcher(TimeSpan.FromMilliseconds(20));
+                AssertSilentState(
+                    crossMidnight,
+                    ResolveLocal(timeZone, probe.Next),
+                    quietEnd,
+                    $"quiet probe {probe.Local:yyyy-MM-dd HH:mm:ss}");
+
+                var dueBeforeDuplicateTick = crossMidnight.DueAt;
+                Invoke(
+                    window,
+                    "ScheduledTaskTimer_Tick",
+                    null,
+                    EventArgs.Empty);
+                Assert(crossMidnight.DueAt == dueBeforeDuplicateTick &&
+                       GetRawField(window, "_activeReminder") is null,
+                    "Repeating the same quiet tick must be idempotent.");
+            }
+
+            now = quietEnd;
+            Invoke(
+                window,
+                "ScheduledTaskTimer_Tick",
+                null,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(
                            window,
                            "_activeReminder"),
-                       normalDuringQuiet) &&
-                   activeBatch.SequenceEqual([normalDuringQuiet]) &&
-                   !queuedReminderIds.Contains(quietRecurring.Id) &&
-                   quietRecurring.DueAt == quietStart &&
+                       crossMidnight) &&
                    GetField<bool>(window, "_isReminderActive") &&
-                   reminderWindow.IsVisible &&
-                   reminderContent.Text.Contains(
-                       normalDuringQuiet.Text,
-                       StringComparison.Ordinal) &&
-                   !reminderContent.Text.Contains(
-                       quietRecurring.Text,
-                       StringComparison.Ordinal),
-                "免打扰期间不得弹出、放大或推进静默任务，但同一时刻的普通任务仍须正常提醒");
-
+                   activeBatch.SequenceEqual([crossMidnight]) &&
+                   visibleOccurrences.Count == 1 &&
+                   observedCounts[crossMidnight.Id] is 1L &&
+                   crossMidnight.DueAt == quietEnd,
+                "The end boundary is exclusive: only the exact 07:00 " +
+                "occurrence may appear, never the skipped quiet backlog.");
             Invoke(window, "AcknowledgeActiveReminder");
-            var nextQuietWake =
+            var nextAfterAcknowledge = quietEnd.AddHours(1);
+            var persistedAfterAcknowledge = scheduledStore.Load().Single();
+            Assert(crossMidnight.DueAt == nextAfterAcknowledge &&
+                   crossMidnight.RepeatRule?.NextOrdinal == 10 &&
+                   crossMidnight.QuietHours == quietHours &&
+                   persistedAfterAcknowledge.DueAt ==
+                       nextAfterAcknowledge &&
+                   persistedAfterAcknowledge.RepeatRule?.NextOrdinal == 10 &&
+                   persistedAfterAcknowledge.QuietHours == quietHours,
+                "Acknowledging the end-boundary occurrence must continue " +
+                "from the authored recurrence anchor and retain quiet hours.");
+
+            ResetReminderState();
+            var boundaryStartLocal = new DateTime(
+                2034,
+                6,
+                13,
+                22,
+                0,
+                0,
+                DateTimeKind.Unspecified);
+            var boundaryEndLocal = boundaryStartLocal.AddHours(1);
+            var boundaryStart = ResolveLocal(timeZone, boundaryStartLocal);
+            var boundaryEnd = ResolveLocal(timeZone, boundaryEndLocal);
+            var preQuietDueAt = boundaryStart.AddMinutes(-10);
+            var boundaryQuietHours = new ScheduledQuietHours
+            {
+                Start = TimeSpan.FromHours(22),
+                End = TimeSpan.FromHours(23),
+                TimeZoneId = timeZone.Id
+            };
+            var preQuietActive = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000102"),
+                Text = "unacknowledged reminder before quiet hours",
+                DueAt = preQuietDueAt,
+                CreatedAt = preQuietDueAt.AddDays(-1),
+                RepeatInterval = TimeSpan.FromMinutes(30),
+                QuietHours = boundaryQuietHours
+            };
+            Invoke(window, "InsertScheduledTaskSorted", preQuietActive);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "The pre-quiet legacy task must be persisted first.");
+            now = preQuietDueAt;
+            Invoke(window, "ProcessScheduledTasksAt", now);
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       preQuietActive) &&
+                   visibleOccurrences.Count == 1 &&
+                   observedCounts[preQuietActive.Id] is 1L,
+                "A recurring occurrence before quiet hours must initially " +
+                "remain visible.");
+
+            var normalAtQuietStart = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000103"),
+                Text = "one-shot reminder at the quiet boundary",
+                DueAt = boundaryStart,
+                CreatedAt = boundaryStart.AddMinutes(-1)
+            };
+            Invoke(window, "InsertScheduledTaskSorted", normalAtQuietStart);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "The mixed quiet-boundary tasks must be persisted first.");
+            now = boundaryStart;
+            Invoke(
+                window,
+                "ScheduledTaskTimer_Tick",
+                null,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var mixedReminderWindow =
+                (ReminderWindow?)GetRawField(window, "_reminderWindow");
+            var mixedReminderContent = mixedReminderWindow is null
+                ? null
+                : GetField<TextBox>(
+                    mixedReminderWindow,
+                    "ReminderContentTextBox");
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       normalAtQuietStart) &&
+                   activeBatch.SequenceEqual([normalAtQuietStart]) &&
+                   observedCounts[preQuietActive.Id] is 1L &&
+                   visibleOccurrences.Count == 1 &&
+                   mixedReminderWindow?.IsVisible == true &&
+                   mixedReminderContent?.Text.Contains(
+                       normalAtQuietStart.Text,
+                       StringComparison.Ordinal) == true &&
+                   mixedReminderContent.Text.Contains(
+                       preQuietActive.Text,
+                       StringComparison.Ordinal) == false,
+                "Quiet hours must suspend the older recurring reminder while " +
+                "a same-instant one-shot reminder remains fully visible.");
+            Invoke(window, "AcknowledgeActiveReminder");
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            if (GetRawField(window, "_activeClip") is { } reminderExitClip)
+            {
+                Invoke(
+                    window,
+                    "CompleteActiveClipAt",
+                    reminderExitClip,
+                    Stopwatch.GetTimestamp());
+            }
+
+            CompleteCurrentPetSizeTransitionForReminderTest(window);
+            Invoke(
+                window,
+                "ReminderSizeCommitTimer_Tick",
+                null,
+                EventArgs.Empty);
+            Assert(GetRawField(window, "_activeReminder") is null &&
+                   !GetField<bool>(window, "_isReminderActive") &&
+                   activeBatch.Count == 0 &&
+                   reminderQueue.Count == 0 &&
+                   queuedReminderIds.Count == 0 &&
+                   visibleOccurrences.Count == 0 &&
+                   observedCounts[preQuietActive.Id] is 1L &&
+                   GetField<object>(window, "_bubbleMode").ToString() !=
+                       "Reminder" &&
+                   !GetField<bool>(
+                       window,
+                       "_isTransientPetSizeOverride") &&
+                   mixedReminderWindow?.IsVisible != true &&
+                   preQuietActive.DueAt == preQuietDueAt,
+                "After acknowledging the one-shot reminder, the pre-quiet " +
+                "backlog must stay preserved but completely hidden. " +
+                $"active={GetRawField(window, "_activeReminder") is not null}, " +
+                $"reminderActive={GetField<bool>(window, "_isReminderActive")}, " +
+                $"batch={activeBatch.Count}, queue={reminderQueue.Count}, " +
+                $"queued={queuedReminderIds.Count}, visible={visibleOccurrences.Count}, " +
+                $"observed={observedCounts.Count}/" +
+                $"{observedCounts[preQuietActive.Id]}, " +
+                $"bubble={GetField<object>(window, "_bubbleMode")}, " +
+                $"transient={GetField<bool>(window, "_isTransientPetSizeOverride")}, " +
+                $"windowVisible={mixedReminderWindow?.IsVisible}, " +
+                $"due={preQuietActive.DueAt:O}");
+
+            now = boundaryEnd;
+            Invoke(
+                window,
+                "ScheduledTaskTimer_Tick",
+                null,
+                EventArgs.Empty);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(ReferenceEquals(
+                       GetField<ScheduledTaskItem>(
+                           window,
+                           "_activeReminder"),
+                       preQuietActive) &&
+                   visibleOccurrences.Count == 1 &&
+                   observedCounts[preQuietActive.Id] is 1L &&
+                   GetProperty<DateTimeOffset>(
+                       visibleOccurrences[0]!,
+                       "DueAt") == preQuietDueAt,
+                "At the quiet end, the older non-quiet reminder must return " +
+                "without either quiet occurrence being replayed.");
+            var wakeWhilePreQuietReminderIsUnacknowledged =
                 (DateTimeOffset)Invoke(
                     window,
                     "FindNextReminderDueAt",
                     now)!;
-            var quietPersistedBeforeEnd =
-                scheduledStore.Load().Single();
-            Assert(scheduledTasks.SequenceEqual([quietRecurring]) &&
-                   quietRecurring.DueAt == quietStart &&
-                   quietRecurring.QuietHours == quietHours &&
-                   quietPersistedBeforeEnd.DueAt == quietStart &&
-                   quietPersistedBeforeEnd.QuietHours == quietHours &&
-                   GetRawField(window, "_activeReminder") is null &&
-                   !GetField<bool>(window, "_isReminderActive") &&
-                   nextQuietWake == quietEnd &&
-                   scheduledTimer.IsEnabled,
-                "静默任务必须保留原DueAt和循环锚点，定时器只唤醒到免打扰结束而不能忙轮询");
-
-            now = quietEnd;
-            Invoke(window, "ProcessScheduledTasksAt", now);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
-            Assert(ReferenceEquals(
-                       GetField<ScheduledTaskItem>(
-                           window,
-                           "_activeReminder"),
-                       quietRecurring) &&
-                   GetField<bool>(window, "_isReminderActive") &&
-                   reminderWindow.IsVisible &&
-                   visibleOccurrences.Count == 7 &&
-                   reminderTitle.Text == "7 次提醒待确认" &&
-                   reminderContent.Text.Split(
-                        quietRecurring.Text,
-                        StringSplitOptions.None).Length - 1 == 5 &&
-                   reminderPagingPanel.Visibility ==
-                       Visibility.Visible &&
-                   reminderPageText.Text.Contains(
-                       "1 / 2",
-                       StringComparison.Ordinal) &&
-                   !reminderPreviousPageButton.IsEnabled &&
-                   reminderNextPageButton.IsEnabled,
-                "免打扰结束时必须从原锚点累计7次漏提醒且第一页严格显示5条，" +
-                "不能丢失、快速补播或把分页后的总数误写成5条");
-
-            reminderNextPageButton.RaiseEvent(
-                new RoutedEventArgs(Button.ClickEvent));
-            Assert(reminderContent.Text.Split(
-                       quietRecurring.Text,
-                       StringSplitOptions.None).Length - 1 == 2 &&
-                   reminderPageText.Text.Contains(
-                       "2 / 2",
-                       StringComparison.Ordinal) &&
-                   reminderPreviousPageButton.IsEnabled &&
-                   !reminderNextPageButton.IsEnabled &&
-                   visibleOccurrences.Count == 7,
-                "7次免打扰汇总提醒的第二页必须只显示剩余2条，翻页不能改变累计occurrence");
-
+            Assert(wakeWhilePreQuietReminderIsUnacknowledged ==
+                       boundaryStart.AddDays(1) &&
+                   wakeWhilePreQuietReminderIsUnacknowledged > now &&
+                   scheduledTimer.Interval > TimeSpan.FromMilliseconds(1),
+                "A past quiet occurrence blocked behind the restored reminder " +
+                "must not create a one-millisecond dispatcher retry loop.");
             Invoke(window, "AcknowledgeActiveReminder");
-            var expectedQuietNextDueAt = quietEnd.AddMinutes(10);
-            var quietPersistedAfterAcknowledge =
-                scheduledStore.Load().Single();
-            Assert(quietRecurring.DueAt == expectedQuietNextDueAt &&
-                   quietRecurring.QuietHours == quietHours &&
-                   quietPersistedAfterAcknowledge.DueAt ==
-                       expectedQuietNextDueAt &&
-                   quietPersistedAfterAcknowledge.QuietHours == quietHours,
-                "确认静默期汇总提醒后必须推进到首个未来周期，并继续持久化免打扰配置");
+            var expectedAfterQuietPrefix = boundaryEnd.AddMinutes(20);
+            var persistedAfterQuietPrefix = scheduledStore.Load().Single();
+            Assert(preQuietActive.DueAt == expectedAfterQuietPrefix &&
+                   persistedAfterQuietPrefix.DueAt ==
+                       expectedAfterQuietPrefix &&
+                   persistedAfterQuietPrefix.QuietHours ==
+                       boundaryQuietHours &&
+                   GetRawField(window, "_activeReminder") is null,
+                "Acknowledging the pre-quiet reminder must skip the 22:20 and " +
+                "22:50 occurrences and continue at 23:20.");
 
             ResetReminderState();
-            var boundaryQuietStartLocal = new DateTime(
-                2032,
-                6,
-                13,
-                22,
-                40,
-                0,
-                DateTimeKind.Unspecified);
-            var boundaryQuietEndLocal = new DateTime(
-                2032,
-                6,
-                13,
-                23,
-                0,
-                0,
-                DateTimeKind.Unspecified);
-            var boundaryQuietStart = new DateTimeOffset(
-                boundaryQuietStartLocal,
-                TimeZoneInfo.Local.GetUtcOffset(boundaryQuietStartLocal));
-            var boundaryQuietEnd = new DateTimeOffset(
-                boundaryQuietEndLocal,
-                TimeZoneInfo.Local.GetUtcOffset(boundaryQuietEndLocal));
-            var visibleBeforeQuiet = new ScheduledTaskItem
+            var offlineAcrossQuiet = new ScheduledTaskItem
             {
                 Id = Guid.Parse(
-                    "44000000-0000-0000-0000-000000000003"),
-                Text = "边界前已经显示但尚未确认",
-                DueAt = boundaryQuietStart.AddMinutes(-10),
-                CreatedAt = boundaryQuietStart.AddDays(-1),
+                    "44000000-0000-0000-0000-000000000104"),
+                Text = "offline across non-quiet and quiet occurrences",
+                DueAt = preQuietDueAt,
+                CreatedAt = preQuietDueAt.AddDays(-1),
                 RepeatInterval = TimeSpan.FromMinutes(30),
                 QuietHours = new ScheduledQuietHours
                 {
-                    Start = new TimeSpan(22, 40, 0),
-                    End = TimeSpan.FromHours(23),
-                    TimeZoneId = TimeZoneInfo.Local.Id
+                    Start = TimeSpan.FromHours(22),
+                    End = TimeSpan.FromHours(7),
+                    TimeZoneId = timeZone.Id
                 }
             };
-            now = boundaryQuietStart.AddMinutes(-5);
-            Invoke(
-                window,
-                "InsertScheduledTaskSorted",
-                visibleBeforeQuiet);
+            Invoke(window, "InsertScheduledTaskSorted", offlineAcrossQuiet);
             Assert(scheduledStore.Save(scheduledTasks),
-                "边界前可见提醒必须先持久化");
-            Invoke(window, "ProcessScheduledTasksAt", now);
-            CompleteCurrentPetSizeTransitionForReminderTest(window);
-            Assert(GetField<bool>(window, "_isReminderActive") &&
-                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
-                   visibleOccurrences.Count == 1,
-                "进入免打扰前必须先建立一个已展示未确认的提醒");
-
-            var normalAtQuietBoundary = new ScheduledTaskItem
-            {
-                Id = Guid.Parse(
-                    "44000000-0000-0000-0000-000000000004"),
-                Text = "静默边界同秒的普通提醒",
-                DueAt = boundaryQuietStart,
-                CreatedAt = boundaryQuietStart.AddMinutes(-1)
-            };
-            Invoke(
-                window,
-                "InsertScheduledTaskSorted",
-                normalAtQuietBoundary);
-            scheduledInput.Text = "免打扰边界仍要保留的定时任务草稿";
-            now = boundaryQuietStart;
-            Invoke(window, "ProcessScheduledTasksAt", now);
+                "The offline mixed-prefix task must be persisted first.");
+            now = ResolveLocal(
+                timeZone,
+                boundaryStartLocal.Date.AddDays(1).AddHours(8));
+            Invoke(window, "ProcessSystemTimeChanged");
             PumpDispatcher(TimeSpan.FromMilliseconds(30));
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(
                            window,
                            "_activeReminder"),
-                       normalAtQuietBoundary) &&
-                   activeBatch.SequenceEqual([normalAtQuietBoundary]) &&
-                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
+                       offlineAcrossQuiet) &&
                    visibleOccurrences.Count == 1 &&
-                   !reminderContent.Text.Contains(
-                       visibleBeforeQuiet.Text,
-                       StringComparison.Ordinal) &&
-                   GetField<bool>(window, "_isReminderActive") &&
-                   !GetField<bool>(window, "_isRestoringReminderSize") &&
-                   GetField<object>(window, "_bubbleMode").ToString() ==
-                       "Reminder" &&
-                   scheduledInput.Text ==
-                       "免打扰边界仍要保留的定时任务草稿",
-                "静默边界若同秒还有普通任务，必须原位无闪切换提醒并保留旧未确认计数与编辑草稿");
-
-            var frozenQuietDueAt = visibleBeforeQuiet.DueAt;
-            var frozenQuietInterval = visibleBeforeQuiet.RepeatInterval;
-            var frozenQuietHours = visibleBeforeQuiet.QuietHours;
-            Invoke(
-                window,
-                "TodoWindow_ScheduledTaskEditRequested",
-                visibleBeforeQuiet,
-                "不允许覆盖静默中的待确认提醒",
-                boundaryQuietEnd.AddHours(1),
-                null,
-                null,
-                null);
-            var frozenQuietPersisted = scheduledStore.Load().Single(
-                item => item.Id == visibleBeforeQuiet.Id);
-            Assert(visibleBeforeQuiet.Text ==
-                       "边界前已经显示但尚未确认" &&
-                   visibleBeforeQuiet.DueAt == frozenQuietDueAt &&
-                   visibleBeforeQuiet.RepeatInterval ==
-                       frozenQuietInterval &&
-                   visibleBeforeQuiet.QuietHours == frozenQuietHours &&
-                   frozenQuietPersisted.Text == visibleBeforeQuiet.Text &&
-                   frozenQuietPersisted.DueAt == frozenQuietDueAt &&
-                   frozenQuietPersisted.RepeatInterval ==
-                       frozenQuietInterval &&
-                   frozenQuietPersisted.QuietHours == frozenQuietHours &&
-                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
-                   !queuedReminderIds.Contains(visibleBeforeQuiet.Id),
-                "静默中已展示未确认的任务必须冻结修改，避免旧提醒计数与新时间或新循环规则冲突");
-
+                   GetProperty<DateTimeOffset>(
+                       visibleOccurrences[0]!,
+                       "DueAt") == preQuietDueAt &&
+                   offlineAcrossQuiet.DueAt == preQuietDueAt,
+                "Recovery after a full quiet interval must first preserve the " +
+                "older non-quiet occurrence instead of dropping it.");
+            var offlineWakeWhileOldReminderIsUnacknowledged =
+                (DateTimeOffset)Invoke(
+                    window,
+                    "FindNextReminderDueAt",
+                    now)!;
+            Assert(offlineWakeWhileOldReminderIsUnacknowledged ==
+                       boundaryStart.AddDays(1) &&
+                   offlineWakeWhileOldReminderIsUnacknowledged > now &&
+                   scheduledTimer.Interval > TimeSpan.FromMilliseconds(1),
+                "Offline recovery must not busy-loop on the old quiet prefix " +
+                "while the non-quiet head awaits acknowledgement.");
+            Invoke(window, "ProcessSystemTimeChanged");
+            Assert(visibleOccurrences.Count == 1 &&
+                   offlineAcrossQuiet.DueAt == preQuietDueAt,
+                "Repeated recovery at the same instant must be idempotent.");
             Invoke(window, "AcknowledgeActiveReminder");
-            Assert(scheduledTasks.SequenceEqual([visibleBeforeQuiet]) &&
-                   observedCounts.Contains(visibleBeforeQuiet.Id) &&
-                   visibleBeforeQuiet.DueAt ==
-                       boundaryQuietStart.AddMinutes(-10),
-                "确认普通任务不得顺带确认或丢掉正在静默的旧提醒");
+            PumpDispatcher(TimeSpan.FromMilliseconds(30));
+            var expectedPostQuietOccurrences = new[]
+            {
+                boundaryStart.AddHours(9).AddMinutes(20),
+                boundaryStart.AddHours(9).AddMinutes(50)
+            };
+            var actualPostQuietOccurrences = visibleOccurrences
+                .Cast<object>()
+                .Select(occurrence => GetProperty<DateTimeOffset>(
+                    occurrence,
+                    "DueAt"))
+                .ToArray();
+            Assert(actualPostQuietOccurrences.SequenceEqual(
+                       expectedPostQuietOccurrences) &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 2,
+                "After confirming the pre-quiet backlog, recovery must skip " +
+                "all 22:00-07:00 occurrences and show only 07:20 and 07:50.");
+            Invoke(window, "AcknowledgeActiveReminder");
+            var nextAfterOfflineRecovery =
+                boundaryStart.AddHours(10).AddMinutes(20);
+            Assert(offlineAcrossQuiet.DueAt == nextAfterOfflineRecovery &&
+                   scheduledStore.Load().Single().DueAt ==
+                       nextAfterOfflineRecovery,
+                "Confirming the post-quiet backlog must resume the authored " +
+                "30-minute sequence at 08:20.");
 
-            now = boundaryQuietEnd;
+            ResetReminderState();
+            var cappedBacklogDueAt = ResolveLocal(
+                timeZone,
+                boundaryStartLocal.Date.AddDays(2).AddHours(19));
+            var ordinaryBacklog = new ScheduledTaskItem
+            {
+                Id = Guid.Parse(
+                    "44000000-0000-0000-0000-000000000105"),
+                Text = "ordinary large recurring backlog",
+                DueAt = cappedBacklogDueAt,
+                CreatedAt = cappedBacklogDueAt.AddDays(-1),
+                RepeatInterval = TimeSpan.FromMinutes(1),
+                QuietHours = new ScheduledQuietHours
+                {
+                    Start = TimeSpan.FromHours(22),
+                    End = TimeSpan.FromHours(23),
+                    TimeZoneId = timeZone.Id
+                }
+            };
+            Invoke(window, "InsertScheduledTaskSorted", ordinaryBacklog);
+            Assert(scheduledStore.Save(scheduledTasks),
+                "The ordinary large-backlog task must be persisted first.");
+            now = cappedBacklogDueAt.AddMinutes(120);
             Invoke(window, "ProcessScheduledTasksAt", now);
-            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var cappedBacklogWake =
+                (DateTimeOffset)Invoke(
+                    window,
+                    "FindNextReminderDueAt",
+                    now)!;
             Assert(ReferenceEquals(
                        GetField<ScheduledTaskItem>(
                            window,
                            "_activeReminder"),
-                       visibleBeforeQuiet) &&
-                   GetField<bool>(window, "_isReminderActive") &&
-                   visibleOccurrences.Count == 2 &&
-                   reminderTitle.Text == "2 次提醒待确认" &&
-                   reminderContent.Text.Split(
-                       visibleBeforeQuiet.Text,
-                       StringSplitOptions.None).Length - 1 == 2,
-                "免打扰结束后必须恢复边界前未确认记录，并合并静默期间新增的下一次提醒");
+                       ordinaryBacklog) &&
+                   GetField<long>(
+                       window,
+                       "_totalReminderOccurrenceCount") == 100 &&
+                   cappedBacklogWake == cappedBacklogDueAt.AddHours(3) &&
+                   cappedBacklogWake > now &&
+                   scheduledTimer.Interval > TimeSpan.FromMilliseconds(1),
+                "A full 100-entry visible page with quiet hours must wait for " +
+                "a real future event instead of polling its overdue 101st entry.");
             Invoke(window, "AcknowledgeActiveReminder");
+            Assert(GetField<long>(
+                   window,
+                       "_totalReminderOccurrenceCount") == 21 &&
+                   ordinaryBacklog.DueAt ==
+                       cappedBacklogDueAt.AddMinutes(100),
+                "Confirming the first 100 visible entries must expose the " +
+                "remaining 21 without losing the authored minute offsets.");
         }
         finally
         {

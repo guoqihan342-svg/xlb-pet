@@ -13281,6 +13281,11 @@ public partial class MainWindow : Window
         }
 
         _scheduledTaskTimer.Stop();
+        if (SkipSuppressedScheduledTaskOccurrencesAt(now))
+        {
+            SaveScheduledTasks();
+        }
+
         var suspendedQuietPresentation =
             SuspendQuietScheduledTaskPresentationsAt(now);
         RebuildReminderQueueAt(now);
@@ -13439,7 +13444,7 @@ public partial class MainWindow : Window
         foreach (var item in _activeReminderBatch)
         {
             _queuedReminderIds.Add(item.Id);
-            var dueCount = CalculateDueOccurrenceCount(item, now);
+            var dueCount = CalculatePresentableDueOccurrenceCount(item, now);
             var observedCount =
                 _presentedReminderOccurrenceCounts.GetValueOrDefault(
                     item.Id);
@@ -13768,6 +13773,7 @@ public partial class MainWindow : Window
         _totalReminderOccurrenceCount = 0;
         _reminderQueue.Clear();
         _queuedReminderIds.Clear();
+        SkipSuppressedScheduledTaskOccurrencesAt(now);
         SaveScheduledTasks();
 
         RebuildReminderQueueAt(now);
@@ -13928,6 +13934,50 @@ public partial class MainWindow : Window
             : 1L;
     }
 
+    private static long CalculatePresentableDueOccurrenceCount(
+        ScheduledTaskItem item,
+        DateTimeOffset now)
+    {
+        var dueCount = CalculateDueOccurrenceCount(item, now);
+        if (!item.IsRecurring ||
+            item.QuietHours is null ||
+            dueCount <= 0)
+        {
+            return dueCount;
+        }
+
+        // A task always advances from its oldest unacknowledged occurrence.
+        // Expose only the contiguous non-quiet prefix. Once the user confirms
+        // that prefix, SkipSuppressedScheduledTaskOccurrencesAt advances over
+        // the following quiet prefix before rebuilding the next batch. This
+        // preserves older non-quiet reminders without ever displaying an
+        // occurrence authored inside quiet hours.
+        var scanCount = Math.Min(
+            dueCount,
+            MaximumVisibleReminderOccurrences);
+        for (long occurrenceOffset = 0;
+             occurrenceOffset < scanCount;
+             occurrenceOffset++)
+        {
+            if (!TryGetReminderOccurrenceDueAt(
+                    item,
+                    occurrenceOffset,
+                    out var occurrenceDueAt))
+            {
+                return occurrenceOffset;
+            }
+
+            if (ScheduledQuietHoursSchedule.IsQuietAt(
+                    item.QuietHours,
+                    occurrenceDueAt))
+            {
+                return occurrenceOffset;
+            }
+        }
+
+        return scanCount;
+    }
+
     private void ScheduleNextReminderAt(DateTimeOffset now)
     {
         _scheduledTaskTimer.Stop();
@@ -13968,6 +14018,21 @@ public partial class MainWindow : Window
                                 out var nextObservedOccurrence)
                     ? nextObservedOccurrence
                     : null;
+                if (candidate is { } blockedCandidate &&
+                    blockedCandidate <= now &&
+                    (observedCount >= MaximumVisibleReminderOccurrences ||
+                     ScheduledQuietHoursSchedule.IsQuietAt(
+                         item.QuietHours,
+                         blockedCandidate)))
+                {
+                    // Either the 100-entry visible page is full or a quiet
+                    // occurrence sits behind an unacknowledged non-quiet
+                    // prefix. Neither is an event worth retrying every
+                    // millisecond: confirmation advances the page/prefix,
+                    // while the next quiet start remains the only timer event
+                    // needed meanwhile. A genuinely future occurrence is kept.
+                    candidate = null;
+                }
             }
             else if (item.DueAt > now)
             {
@@ -14027,6 +14092,64 @@ public partial class MainWindow : Window
         DateTimeOffset now) =>
         item.IsRecurring &&
         ScheduledQuietHoursSchedule.IsQuietAt(item.QuietHours, now);
+
+    private bool SkipSuppressedScheduledTaskOccurrencesAt(
+        DateTimeOffset now)
+    {
+        var changed = false;
+        foreach (var item in _scheduledTasks.ToArray())
+        {
+            if (!item.IsRecurring)
+            {
+                continue;
+            }
+
+            while (item.DueAt <= now &&
+                   ScheduledQuietHoursSchedule.TryGetQuietEnd(
+                       item.QuietHours,
+                       item.DueAt,
+                       out var quietEnd))
+            {
+                // The interval is end-exclusive. Because the current head is
+                // itself quiet, every occurrence through this cutoff belongs
+                // to one continuous quiet prefix and is safe to discard. Never
+                // cross a non-quiet head: it may be an older unacknowledged
+                // reminder that must remain visible after quiet hours end.
+                var cutoff = now < quietEnd
+                    ? now
+                    : quietEnd.AddTicks(-1);
+                var skippedCount = CalculateDueOccurrenceCount(item, cutoff);
+                if (skippedCount <= 0)
+                {
+                    break;
+                }
+
+                var observedCount =
+                    _presentedReminderOccurrenceCounts.GetValueOrDefault(
+                        item.Id);
+                var remainingObservedCount = Math.Max(
+                    0,
+                    observedCount - skippedCount);
+                if (remainingObservedCount > 0)
+                {
+                    _presentedReminderOccurrenceCounts[item.Id] =
+                        remainingObservedCount;
+                }
+                else
+                {
+                    _presentedReminderOccurrenceCounts.Remove(item.Id);
+                }
+
+                _visibleReminderOccurrences.RemoveAll(
+                    occurrence => occurrence.TaskId == item.Id);
+                _scheduledTasks.Remove(item);
+                AdvanceAcknowledgedScheduledTask(item, skippedCount);
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
 
     private bool SuspendQuietScheduledTaskPresentationsAt(
         DateTimeOffset now)
