@@ -248,7 +248,7 @@ git status --short --ignored
 
 ## v1.0.80 发布验证
 
-本版继续收紧待办与定时任务的 Copy / Cut / Paste 正确性；以下自动化来自当前工作树，功能提交、EXE、标签和 GitHub Release 证据待真实发布后回填。
+本版继续收紧待办与定时任务的 Copy / Cut / Paste 正确性。源码、自动化、正式发布与独立回下载验真于 `2026-08-14` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
@@ -256,7 +256,9 @@ git status --short --ignored
 | Cut / Paste | Routed Cut 在剪贴板占用或 IME 组合期间不删除；写入后若选区、启用状态或 DataContext 变化则只复制。三处正文的 WPF Routed Paste 通过；两个循环次数框按实际 `FormatToApply` 接受 ASCII、拒绝全角/阿拉伯-印度数字、换行和空文本；未模拟物理按键或默认菜单点击 |
 | 重试与生命周期 | 最多 6 次、绝对 `300 ms` 不变；5 段名义退避累计 `240 ms`，截止尚未到达时允许第 6 次成功。跨窗口最新请求胜出；Todo Hide / Close 与两个编辑窗 Closed 会停止各自 pending / timer，关闭旧窗口不取消新窗口 generation |
 | 自动化与构建 | 最终功能快照的 `DesktopPet`、`TodoStoreChecks`、`UiStateChecks` Release 构建均为 `0 warning / 0 error`；`TodoStoreChecks`、`--todo-cut-only`（连续两轮）、`--todo-layout-only`、`--scheduled-editor-only`、`--todo-only`、`--reminder-only` 全部通过，完整 `UiStateChecks` 同一快照连续两轮通过 |
-| 源码与发布 | 待真实发布后回填：功能提交、tag / Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size / digest 与独立回下载复核 |
+| 源码与版本 | 功能提交 `737be9bfd616b18822e51a82de8bdadc8b2f77ae`；远端 `main`、annotated `v1.0.80` tag 剥离提交与 Release target 在发布时均精确指向该提交。`FileVersion=1.0.80.0`，`ProductVersion=1.0.80+737be9bfd616b18822e51a82de8bdadc8b2f77ae` |
+| EXE | 单文件框架依赖 EXE 为 `93,365,382` bytes，SHA-256 `97AE48621614499FBB1A1CB5B2CFBCFEAC35CA96041EAD668B6BB530B50FA798`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.80`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.80) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `93,365,382`、digest `sha256:97ae48621614499fbb1a1cb5b2cfbcfeac35ca96041ead668b6bb530b50fa798`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件，也未启动、停止或替换桌宠进程，用户定时任务 JSON 未被测试改写 |
 
 ## v1.0.79 发布验证
 
