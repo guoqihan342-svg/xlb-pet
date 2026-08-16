@@ -1,5 +1,8 @@
 # 小鲁班桌面宠物
 
+<img width="337" height="340" alt="image" src="https://github.com/user-attachments/assets/335ea7d5-3730-4fa1-9d3d-00ce41ce0e5e" />
+
+
 一款面向 Windows 11 的离线 WPF 桌面宠物。小鲁班会趴在枕头上打呼噜、响应点击、在屏幕边缘探头，支持待办事项、循环定时提醒、免打扰、开机自启、多屏和高 DPI。
 
 当前工作树源码版本：`v1.0.80`，基于用户指定的 `v1.0.48` 发布程序恢复并开发。程序不需要联网、账号或后台服务，当前版本也不会创建文件日志。GitHub Release 可能晚于源码；下载用户应以具体 Release 页的版本号和说明为准。
