@@ -43,7 +43,11 @@ WORK_MIN_FRAME_COUNTS = {
 }
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
 REQUIRED_ROAM_SEQUENCES = ("flight", "boarding")
-OPTIONAL_ROAM_SEQUENCES = ("wave",)
+OPTIONAL_ROAM_SEQUENCES = (
+    "wave",
+    "rocket-boarding",
+    "rocket-flight",
+)
 ROAM_FLIGHT_SEQUENCES = (
     *REQUIRED_ROAM_SEQUENCES,
     *OPTIONAL_ROAM_SEQUENCES,
@@ -52,6 +56,7 @@ ACTION_LOOP_FRAME_COUNT = 48
 EDGE_PEEK_FRAME_COUNT = 48
 MIN_ROAM_FRAME_COUNT = 48
 ROAM_FLIGHT_PAGE_FRAME_LIMIT = 32
+ROCKET_BOARDING_PAGE_FRAME_COUNTS = (30, 34)
 REMINDER_PAGE_FRAME_LIMIT = 32
 WORK_PAGE_FRAME_LIMIT = 32
 WAKE_PAGE_FRAME_LIMIT = 32
@@ -369,6 +374,17 @@ def roam_flight_resource_paths(root: Path, sequence: str) -> list[str]:
 
 def runtime_roam_sequences(root: Path) -> tuple[str, ...]:
     assets = root / "Assets"
+    has_rocket_boarding = any(
+        assets.glob("luban-roam-rocket-boarding-*.png")
+    )
+    has_rocket_flight = any(
+        assets.glob("luban-roam-rocket-flight-*.png")
+    )
+    if has_rocket_boarding != has_rocket_flight:
+        raise RuntimeError(
+            "Optional rocket roaming assets must contain both boarding and "
+            "flight sequences."
+        )
     optional = tuple(
         sequence
         for sequence in OPTIONAL_ROAM_SEQUENCES
@@ -387,23 +403,35 @@ def partition_roam_flight_resource_paths(
         )
 
     base_page_name = f"roam-{sequence}"
-    partitions = [
-        (
+    if sequence == "rocket-boarding":
+        if len(paths) != sum(ROCKET_BOARDING_PAGE_FRAME_COUNTS):
+            raise RuntimeError(
+                "Rocket boarding must contain exactly "
+                f"{sum(ROCKET_BOARDING_PAGE_FRAME_COUNTS)} frames, found "
+                f"{len(paths)}"
+            )
+        partition_sizes = ROCKET_BOARDING_PAGE_FRAME_COUNTS
+    else:
+        partition_sizes = tuple(
+            min(ROAM_FLIGHT_PAGE_FRAME_LIMIT, len(paths) - offset)
+            for offset in range(0, len(paths), ROAM_FLIGHT_PAGE_FRAME_LIMIT)
+        )
+    partitions: list[tuple[str, list[str]]] = []
+    offset = 0
+    for part_number, partition_size in enumerate(partition_sizes, start=1):
+        partitions.append((
             base_page_name
             if part_number == 1
             else f"{base_page_name}-part-{part_number:02d}",
-            list(paths[offset : offset + ROAM_FLIGHT_PAGE_FRAME_LIMIT]),
-        )
-        for part_number, offset in enumerate(
-            range(0, len(paths), ROAM_FLIGHT_PAGE_FRAME_LIMIT),
-            start=1,
-        )
-    ]
+            list(paths[offset : offset + partition_size]),
+        ))
+        offset += partition_size
     if (
         any(not partition_paths for _, partition_paths in partitions)
         or any(
             len(partition_paths) > ROAM_FLIGHT_PAGE_FRAME_LIMIT
             for _, partition_paths in partitions
+            if sequence != "rocket-boarding"
         )
         or [path for _, partition_paths in partitions for path in partition_paths]
         != paths
@@ -891,8 +919,9 @@ def page_resource_paths(root: Path) -> dict[str, list[str]]:
     for direction in RUNTIME_EDGE_DIRECTIONS:
         pages[f"edge-{direction}"] = edge_peek_resource_paths(root, direction)
     # Roaming pages stay independent from manual edge-peek pages. Boarding is
-    # a non-loop entry path; flight and wave are the two continuous panda
-    # loops. Each sequence keeps ordered <=32-frame partitions for prefetch.
+    # a non-loop entry path; flight and wave are the panda loops. The optional
+    # rocket boarding/flight pair is packed independently so runtime only keeps
+    # the selected vehicle hot. Each sequence keeps ordered <=32-frame pages.
     for sequence in runtime_roam_sequences(root):
         for page_name, partition_paths in partition_roam_flight_resource_paths(
             sequence,

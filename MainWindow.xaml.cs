@@ -53,6 +53,7 @@ public partial class MainWindow : Window
     // Code-only roaming tuning. Position is evaluated from the absolute visual
     // clock on every monitor refresh; these values do not create a UI slider.
     private const double EdgeRoamBaseSpeedDipsPerSecond = 160;
+    private const double RocketEdgeRoamBaseSpeedDipsPerSecond = 420;
     private const double EdgeRoamCornerRadiusDips = 48;
     private const double EdgeRoamSupportAnchorYRatio = 457d / 509d;
     private static readonly PointCollection CuteTailPointsRight = new()
@@ -271,9 +272,14 @@ public partial class MainWindow : Window
     private readonly SpriteFrame _todoFrame;
     private readonly SpriteFrame[] _edgeLeftFrames;
     private readonly SpriteFrame[] _edgeBottomFrames;
-    private readonly SpriteFrame[] _roamBoardingFrames;
-    private readonly SpriteFrame[] _roamFlightFrames;
-    private readonly SpriteFrame[] _roamWaveFrames;
+    private readonly SpriteFrame[] _pandaRoamBoardingFrames;
+    private readonly SpriteFrame[] _pandaRoamFlightFrames;
+    private readonly SpriteFrame[] _pandaRoamWaveFrames;
+    private readonly SpriteFrame[] _rocketRoamBoardingFrames;
+    private readonly SpriteFrame[] _rocketRoamFlightFrames;
+    private SpriteFrame[] _roamBoardingFrames;
+    private SpriteFrame[] _roamFlightFrames;
+    private SpriteFrame[] _roamWaveFrames;
     private readonly SpriteFrame[] _reminderEnterFrames;
     private readonly SpriteFrame[] _reminderHoldFrames;
     private readonly SpriteFrame[] _workEnterFrames;
@@ -433,6 +439,8 @@ public partial class MainWindow : Window
     private bool _edgeRoamBoardingPagesReady;
     private bool _edgeRoamFlightPagesReady;
     private bool _edgeRoamPreloadRequested;
+    private bool _edgeRoamVehicleSelectedForDue;
+    private bool _nextEdgeRoamUsesRocket = true;
     private bool _edgeRoamBoardingReverse;
     private bool _edgeRoamCurrentSupportPointValid;
     private bool _edgeRoamStopScheduleNext;
@@ -442,6 +450,7 @@ public partial class MainWindow : Window
     private int _edgeRoamDirection = 1;
     private int _edgeRoamBoardingStartIndex;
     private EdgeRoamPhase _edgeRoamPhase;
+    private EdgeRoamVehicle _edgeRoamVehicle;
     private double _edgeRoamRouteStartDistance;
     private double _edgeRoamRouteLength;
     private double _edgeRoamApproachLength;
@@ -630,23 +639,35 @@ public partial class MainWindow : Window
         _edgeBottomFrames = LoadEdgeFrameSequence(
             "edge-bottom",
             "Assets/luban-edge-bottom-smooth-");
-        _roamBoardingFrames = LoadNumberedFrameSequence(
+        _pandaRoamBoardingFrames = LoadNumberedFrameSequence(
             "roam-boarding",
             "Assets/luban-roam-boarding-");
-        _roamFlightFrames = LoadNumberedFrameSequence(
+        _pandaRoamFlightFrames = LoadNumberedFrameSequence(
             "roam-flight",
             "Assets/luban-roam-flight-");
-        _roamWaveFrames = LoadOptionalNumberedFrameSequence(
+        _pandaRoamWaveFrames = LoadOptionalNumberedFrameSequence(
             "roam-wave",
             "Assets/luban-roam-wave-");
-        if (_roamBoardingFrames.Length < 48 ||
-            _roamFlightFrames.Length < 48 ||
-            (_roamWaveFrames.Length > 0 && _roamWaveFrames.Length < 48))
+        _rocketRoamBoardingFrames = LoadNumberedFrameSequence(
+            "roam-rocket-boarding",
+            "Assets/luban-roam-rocket-boarding-",
+            expectedFrameCount: 64);
+        _rocketRoamFlightFrames = LoadNumberedFrameSequence(
+            "roam-rocket-flight",
+            "Assets/luban-roam-rocket-flight-",
+            expectedFrameCount: 64);
+        if (_pandaRoamBoardingFrames.Length < 48 ||
+            _pandaRoamFlightFrames.Length < 48 ||
+            (_pandaRoamWaveFrames.Length > 0 &&
+             _pandaRoamWaveFrames.Length < 48))
         {
             throw new InvalidOperationException(
                 "Roaming boarding/flight must contain at least 48 frames and " +
                 "an optional wave sequence cannot be shorter than 48 frames.");
         }
+        _roamBoardingFrames = _pandaRoamBoardingFrames;
+        _roamFlightFrames = _pandaRoamFlightFrames;
+        _roamWaveFrames = _pandaRoamWaveFrames;
         _reminderEnterFrames = LoadNumberedFrameSequence(
             "action-reminder-enter",
             "Assets/luban-reminder-enter-",
@@ -5983,9 +6004,16 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private void ScheduleNextEdgeRoam(long timestamp, TimeSpan delay)
+    private void ScheduleNextEdgeRoam(
+        long timestamp,
+        TimeSpan delay,
+        bool preserveVehicleSelection = false)
     {
         _edgeRoamPreloadRequested = false;
+        if (!preserveVehicleSelection)
+        {
+            _edgeRoamVehicleSelectedForDue = false;
+        }
         if (_isClosing || !_edgeRoamingEnabled)
         {
             _nextEdgeRoamDueTimestamp = 0;
@@ -6001,6 +6029,27 @@ public partial class MainWindow : Window
         _nextEdgeRoamDueTimestamp > 0 &&
         timestamp >= _nextEdgeRoamDueTimestamp;
 
+    private void SelectEdgeRoamVehicleForDue()
+    {
+        if (_edgeRoamVehicleSelectedForDue)
+        {
+            return;
+        }
+
+        var useRocket = _nextEdgeRoamUsesRocket;
+        _edgeRoamVehicle = useRocket
+            ? EdgeRoamVehicle.Rocket
+            : EdgeRoamVehicle.Panda;
+        _roamBoardingFrames = useRocket
+            ? _rocketRoamBoardingFrames
+            : _pandaRoamBoardingFrames;
+        _roamFlightFrames = useRocket
+            ? _rocketRoamFlightFrames
+            : _pandaRoamFlightFrames;
+        _roamWaveFrames = useRocket ? [] : _pandaRoamWaveFrames;
+        _edgeRoamVehicleSelectedForDue = true;
+    }
+
     private void StartEdgeRoamPreloadIfDue(long timestamp)
     {
         if (_edgeRoamPreloadRequested ||
@@ -6013,6 +6062,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        SelectEdgeRoamVehicleForDue();
         _edgeRoamPreloadRequested = true;
         ContinueEdgeRoamPreload();
     }
@@ -6177,6 +6227,8 @@ public partial class MainWindow : Window
         _edgeRoamPreloadRequested = false;
         CancelTodoOpenAfterEdgeRoamStop();
         _isEdgeRoaming = true;
+        _nextEdgeRoamUsesRocket =
+            _edgeRoamVehicle != EdgeRoamVehicle.Rocket;
 
         StopPillowBreathing();
         _automaticTimer.Stop();
@@ -6294,6 +6346,11 @@ public partial class MainWindow : Window
     private void CompleteEdgeRoamStop(bool restoreIdleFrame)
     {
         var wasRoaming = _isEdgeRoaming;
+        var idleFacingScaleX =
+            _edgeRoamPhase == EdgeRoamPhase.Disembarking &&
+            PetFacingScale.ScaleX < 0
+                ? -1d
+                : 1d;
         var scheduleNext = _edgeRoamStopScheduleNext;
         var interrupted = _edgeRoamStopInterrupted;
         var shouldOpenTodoAfterStop =
@@ -6334,6 +6391,11 @@ public partial class MainWindow : Window
             ResetPetVisualTransforms();
             if (restoreIdleFrame && !_isReminderActive)
             {
+                // boarding-001 and idle are byte-exact seam frames. Preserve
+                // the completed disembark's horizontal facing so replacing
+                // one with the other cannot visibly flip the pet in one frame.
+                _edgeRoamFacingScaleX = idleFacingScaleX;
+                PetFacingScale.ScaleX = idleFacingScaleX;
                 _nextFrameBlendDuration = TimeSpan.Zero;
                 ShowStableFrame(_idleFrame);
             }
@@ -6424,7 +6486,13 @@ public partial class MainWindow : Window
 
         if (!reverse)
         {
+            var boardingFacingScaleX =
+                _edgeRoamFacingScaleX < 0 ? -1d : 1d;
             ResetPetVisualTransforms();
+            // Keep the byte-exact idle/boarding seam in the same horizontal
+            // orientation when a later lap starts.
+            _edgeRoamFacingScaleX = boardingFacingScaleX;
+            PetFacingScale.ScaleX = boardingFacingScaleX;
             _edgeRoamDisembarkStartRotationDegrees = 0;
         }
         else
@@ -6587,7 +6655,7 @@ public partial class MainWindow : Window
         _edgeRoamStartedTimestamp = timestamp;
         _edgeRoamLastRenderingTimestamp = timestamp;
 
-        var speed = EdgeRoamBaseSpeedDipsPerSecond * AnimationPlaybackSpeed;
+        var speed = GetEdgeRoamSpeedDipsPerSecond() * AnimationPlaybackSpeed;
         var totalDistance = _edgeRoamApproachLength +
                             _edgeRoamRouteLength +
                             _edgeRoamReturnLength;
@@ -6648,7 +6716,7 @@ public partial class MainWindow : Window
     private void AdvanceEdgeRoamTravel(long timestamp)
     {
         var elapsedSeconds = AdvanceEdgeRoamClock(timestamp);
-        var speed = EdgeRoamBaseSpeedDipsPerSecond * AnimationPlaybackSpeed;
+        var speed = GetEdgeRoamSpeedDipsPerSecond() * AnimationPlaybackSpeed;
         var distance = elapsedSeconds * speed;
         var totalDistance = _edgeRoamApproachLength +
                             _edgeRoamRouteLength +
@@ -6751,6 +6819,11 @@ public partial class MainWindow : Window
         var flightIndex = (int)(absoluteFrame % _roamFlightFrames.Length);
         return _roamFlightFrames[flightIndex];
     }
+
+    private double GetEdgeRoamSpeedDipsPerSecond() =>
+        _edgeRoamVehicle == EdgeRoamVehicle.Rocket
+            ? RocketEdgeRoamBaseSpeedDipsPerSecond
+            : EdgeRoamBaseSpeedDipsPerSecond;
 
     private static long ResolveEdgeRoamPoseStep(
         double elapsedSeconds,
@@ -7390,7 +7463,10 @@ public partial class MainWindow : Window
             // A click animation or another short-lived visual state can overlap
             // the due instant. Retry soon instead of silently postponing the
             // whole ten-minute cycle.
-            ScheduleNextEdgeRoam(timestamp, EdgeRoamBusyRetryDelay);
+            ScheduleNextEdgeRoam(
+                timestamp,
+                EdgeRoamBusyRetryDelay,
+                preserveVehicleSelection: true);
         }
         else if (_edgeRoamPreloadRequested)
         {
@@ -11906,6 +11982,10 @@ public partial class MainWindow : Window
         }
         else
         {
+            if (!_isEdgeRoaming)
+            {
+                CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
+            }
             _edgeRoamPreloadRequested = false;
             StopEdgeRoaming(
                 scheduleNext: false,
@@ -14377,6 +14457,12 @@ public partial class MainWindow : Window
         Boarding,
         Traveling,
         Disembarking
+    }
+
+    private enum EdgeRoamVehicle
+    {
+        Panda,
+        Rocket
     }
 
     private enum EdgeDock

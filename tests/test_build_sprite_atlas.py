@@ -61,6 +61,19 @@ def make_complete_path_fixture(root: Path) -> None:
 
 
 class ReactionActionRemovalTests(unittest.TestCase):
+    def test_rocket_boarding_keeps_swap_frames_on_the_second_page(self) -> None:
+        paths = [
+            f"Assets/luban-roam-rocket-boarding-{number:03d}.png"
+            for number in range(1, 65)
+        ]
+        partitions = atlas.partition_roam_flight_resource_paths(
+            "rocket-boarding",
+            paths,
+        )
+        self.assertEqual([30, 34], [len(part) for _, part in partitions])
+        self.assertEqual(paths, [path for _, part in partitions for path in part])
+        self.assertEqual(paths[30], partitions[1][1][0])
+
     def test_removed_reactions_are_not_click_actions(self) -> None:
         self.assertEqual(
             ("cry", "cute", "like", "eat"),
@@ -248,6 +261,34 @@ class ReactionActionRemovalTests(unittest.TestCase):
             self.assertEqual(
                 [name for name in pages if name.startswith("roam-wave")],
                 ["roam-wave", "roam-wave-part-02"],
+            )
+
+    def test_optional_rocket_roaming_assets_must_be_a_complete_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets = root / "Assets"
+            assets.mkdir()
+
+            self.assertEqual(
+                atlas.runtime_roam_sequences(root),
+                atlas.REQUIRED_ROAM_SEQUENCES,
+            )
+
+            (assets / "luban-roam-rocket-boarding-001.png").touch()
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "must contain both boarding and flight",
+            ):
+                atlas.runtime_roam_sequences(root)
+
+            (assets / "luban-roam-rocket-flight-001.png").touch()
+            self.assertEqual(
+                atlas.runtime_roam_sequences(root),
+                (
+                    *atlas.REQUIRED_ROAM_SEQUENCES,
+                    "rocket-boarding",
+                    "rocket-flight",
+                ),
             )
 
     def test_reaction_wave_cli_and_generator_mappings_are_removed(self) -> None:

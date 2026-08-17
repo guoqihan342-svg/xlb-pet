@@ -41,6 +41,7 @@ build_sprite_atlas.py
 | 经甄选的透明打工锚点与四根手指触键姿势 | 坐在电脑前打工 | `luban-work-enter-*`、`luban-work-loop-*`、`luban-work-serious-loop-*`、`luban-work-serious-exit-*`；`pic/小鲁班9.png` 仅作上游角色参考 |
 | 高清边缘姿势 | 左/右/下探头 | `luban-edge-left-smooth-*`、`luban-edge-bottom-smooth-*`；右侧镜像左侧 |
 | 大头小鲁班与熊猫参考 | 熊猫坐骑巡游 | `luban-roam-boarding-*`、`luban-roam-flight-*`；`roam-wave` 可选 |
+| `tools/generated_sources/roam-rocket-luban-cloud-key-v2-alpha.png` | 加长萌火箭巡游 | `luban-roam-rocket-boarding-*`、`luban-roam-rocket-flight-*`，必须成对出现且各 64 帧 |
 
 `pic/` 是用户原始素材边界。任何生成、安装、QA 或清理脚本都不得覆盖或删除其中的文件。本文中已退役的打哈欠、普通挥手动作与熊猫巡游可选的 `roam-wave` 是互相独立的资源；退役动作不得因其他可选构建而重新进入运行时。
 
@@ -140,7 +141,17 @@ python .\tools\build_roam_flight_assets.py
 
 boarding 与 flight 从 `001` 连续编号并保持姿势唯一；`roam-wave` 是可选补充，不能用固定秒数强行切断 flight 主循环。人物和帽子保持正立，运行资源不得重新混入 `run`、`crawl` 或 `wriggle` 旧动作。
 
-### 5.5 生成侧边紧凑抓边手臂
+### 5.5 构建加长萌火箭素材
+
+```powershell
+python .\tools\build_roam_rocket_assets.py
+```
+
+生成器只读取已甄选的透明关键图，确定性输出 `64` 张 boarding 和 `64` 张 flight。火箭本体上限为约 `300 × 335 px` 并做 `1.18×` 横向拉长；三朵云均为 `60 × 55 px`，轨道间留透明间隙，按 `4` 帧爆发周期与每帧约 `7 px` 位移循环。全部 flight 四边必须保留透明像素，`idle == boarding-001`、`boarding-064 == flight-001` 必须逐字节相等；不得用整帧交叉淡化制造双角色鬼影。
+
+图集把 `roam-rocket-boarding` 与 `roam-rocket-flight` 视为成对能力：两者同时存在才可构建，缺少任一组立即失败。QA 同时检查三云可见面积、互不重叠、首尾爆发循环与 boarding / flight 接缝。
+
+### 5.6 生成侧边紧凑抓边手臂
 
 `v1.0.66` 要求“紧凑”不能退化为只有手掌和极短袖口：下手后的紫色前臂必须保持连续、短小、上弯的完整轮廓，从腕后自然延伸并收进脸下，同时避免 `v1.0.64` 的横向长管、扫描线条纹和近水平平切底边。右侧只允许运行时镜像左侧，Bottom 的文件字节和解码像素哈希必须保持不变。
 
@@ -154,7 +165,7 @@ python .\tools\fix_edge_side_arm_reveal.py --smooth-only
 
 脚本会清除旧拉伸留下的 x=0 重复横纹、袖口下半环和断连低 Alpha 碎点，再用原有紫色袖子像素形成与手腕连通的圆润轮廓；不得重新绘制人物或加入整图淡化。48 帧必须全部唯一，循环相邻 ROI Alpha IoU 不低于 `0.94`、面积变化不超过 `4%`、腕心和轮廓端点步进不超过 `2` 个源像素、量化后的近水平下缘连续长度不超过 `6` 个源像素。右侧运行时严格水平镜像同一左侧序列，不产生第二套 PNG；Bottom 的文件名、字节和解码像素哈希必须保持不变。报告默认写入忽略的 `.codex_tmp/edge-compact-grip-qa.json`，不得提交；图集继续保留 `DestinationX=-2` 的透明 gutter。
 
-### 5.6 生成打工素材
+### 5.7 生成打工素材
 
 打工素材由 `tools/build_work_animation.py` 从已甄选的透明锚点确定性生成：
 
@@ -237,7 +248,7 @@ python .\tools\qa_sprite_atlas_motion.py --contacts
 
 - 运行时只同步解码并永久固定首个待机页；起身续页和其他页面全部按动作需要预取。
 - 普通动作 resident LRU 软预算为 `52 MiB`。
-- 熊猫巡游预载或播放期间允许 `92 MiB` 预算；需求必须从当前清单与受限容量桶复用规则动态验证。
+- 火箭或熊猫巡游预载 / 播放期间允许 `92 MiB` 预算；需求必须分别从当前清单与受限容量桶复用规则动态验证，只保护当轮车辆，不把两套热集相加。
 - 动作结束保留 `20 秒`热缓存，稳定空闲后 resident 页和空闲缓冲池共同收敛到 `12 MiB`；只保留完整待机页，不固定第一张起身续页。
 - 边缘探头进入静止保持段后也允许执行上述收缩；运动帧期间继续禁止回收，完整边缘序列页始终受保护。
 - 单页解码不得超过清单声明的 24 MiB；像素缓冲池总上限为 `92 MiB`，按 `1 MiB`容量桶复用，并仅允许复用大 `1 MiB` 的最近桶。

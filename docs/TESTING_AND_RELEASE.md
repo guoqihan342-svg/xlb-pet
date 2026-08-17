@@ -1,4 +1,4 @@
-# v1.0.80 测试与发布
+# v1.0.81 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -63,8 +63,8 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--alt-tab-only` | 六个正式 WPF 窗口的真实 HWND 扩展样式；必须含 `WS_EX_TOOLWINDOW`、不含 `WS_EX_APPWINDOW`/`WS_EX_NOACTIVATE` 且不进入 Alt+Tab 候选集合，同时保持输入与焦点能力 |
 | `--edge-dock-only` | `12 DIP` 磁吸、快速越界、顶部可拖达但不吸附、左/右/下 `rest-first` 吸附、48 帧侧边支撑手臂像素接触、完整短弯前臂，以及待办/定时面板自动关闭与迟到回调防重开 |
 | `--pet-drag-preview` | 显示可由 Computer Use 识别的真实 WPF 拖动窗口；标题实时给出人物可见顶边、工作区顶边和物理像素误差 |
-| `--roam-source-only` | 绕屏状态机、路线、朝向、原地退场、延迟打开待办、负坐标副屏和资源契约 |
-| `--roam-interaction-only` | 真实 WPF 状态下的巡游交互，以及混合 DPI 拖拽的 32 位光标、不可变抓点、generation 失效、Loaded→ContextIdle 稳定校正、顶部 clamp 工作区切换、松手最多 3 次重试和失败关闭契约 |
+| `--roam-source-only` | 火箭 / 熊猫交替选择、预载冻结、路线速度、朝向、原地退场、延迟打开待办、负坐标副屏和资源契约 |
+| `--roam-interaction-only` | 真实 WPF 状态下的火箭 / 熊猫巡游交互、逐像素接缝与退出方向，以及混合 DPI 拖拽的 32 位光标、不可变抓点、generation 失效、Loaded→ContextIdle 稳定校正、顶部 clamp 工作区切换、松手最多 3 次重试和失败关闭契约 |
 | `--deadline-only` | 1 分钟原地动作、10 分钟巡游和 20 秒忙碌重试截止 |
 | `--pet-size-only` | 尺寸滑块手势、连续缩放和待办布局 |
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
@@ -103,6 +103,9 @@ python .\tools\fix_edge_side_arm_reveal.py
 # 生成打工帧并校验自然双手运动、认真循环和接缝
 python .\tools\build_work_animation.py
 
+# 生成 64 + 64 帧加长萌火箭与三云尾喷
+python .\tools\build_roam_rocket_assets.py
+
 # 源 PNG 连续性、Alpha、接触点和轮廓
 python .\tools\qa_dense_motion_assets.py --require-edge-peek --contacts
 
@@ -115,7 +118,7 @@ python .\tools\qa_sprite_atlas_motion.py --contacts
 
 许愿星、旧蝴蝶和失败的全人物 `star-cuddle` 均已退役。应确认 `Assets/luban-wish-star.png`、`Assets/luban-butterfly.png`、对应 WPF overlay、项目 Resource、ActionName、中文对白、人物图集页和运行时代码全部不存在。
 
-详细生成顺序和不变量见 [动画与图集管线](ANIMATION_PIPELINE.md)。`v1.0.65` 必须断言普通点击与自动袋的人物动作严格只含 `cry / cute / like / eat`；用户点击使用独立随机源并排除上次成功动作，启动失败不提交历史；空闲活动继续以独立袋洗牌四动作和一次待机。Todo 的完整 56 帧 `think` smooth 入场和稳定托腮姿势必须继续存在。最终图集、程序集和发布 EXE 不得包含 star-wish、butterfly ActionName、旧中文对白、失败的 `star-cuddle` 人物帧或图集页，也不得包含 `yawn`、`loop-cute`、`cute-smooth-057..090`、`loop-think` 页面、48 帧普通思考循环或普通 `luban-wave-*` 运行时资源；`pic/小鲁班1.jpg` 与 `pic/小鲁班8.png` 必须继续保留。最终清单必须保持 41 页、1240 个源帧和 1240 个分页帧。
+详细生成顺序和不变量见 [动画与图集管线](ANIMATION_PIPELINE.md)。`v1.0.65` 必须断言普通点击与自动袋的人物动作严格只含 `cry / cute / like / eat`；用户点击使用独立随机源并排除上次成功播放动作，启动失败不提交历史；空闲活动继续以独立袋洗牌四动作和一次待机。Todo 的完整 56 帧 `think` smooth 入场和稳定托腮姿势必须继续存在。最终图集、程序集和发布 EXE 不得包含 star-wish、butterfly ActionName、旧中文对白、失败的 `star-cuddle` 人物帧或图集页，也不得包含 `yawn`、`loop-cute`、`cute-smooth-057..090`、`loop-think` 页面、48 帧普通思考循环或普通 `luban-wave-*` 运行时资源；`pic/小鲁班1.jpg` 与 `pic/小鲁班8.png` 必须继续保留。`v1.0.81` 正式清单必须为 `45` 页、`1368` 个源帧和 `1368` 个分页帧，并包含成对的 `64 + 64` 火箭序列。
 
 `v1.0.66` 的侧边验收不能只看源 PNG、Alpha 接触数或放大 ROI：必须用最终图集和真实 WPF 显示路径，在 `190×242 DIP` 人物显示区域下，把用户缩放分别设为 `0.75` 与 `1.40`，逐一观察左、右浅探和深探。下手后必须保留完整、连续、短小且上弯的前臂并自然收进脸下；不得只剩手和袖口，不得出现 `v1.0.64` 的横向紫色长管、条纹或平切下缘。右侧必须是左侧精确水平镜像，Bottom 文件字节与解码像素哈希必须保持不变。
 
@@ -137,7 +140,7 @@ if ($manifest.version -ne 4 -or $manifest.compression -ne 'brotli') {
 }
 ```
 
-不要从 README 或旧测试复制其他版本的固定帧数。清单、实际分页、嵌入资源和源集指纹必须来自同一次构建；`v1.0.65` 删除的许愿星原本不占人物分页，因此本次正式清单仍应为 41 页、1240 个源帧和 1240 个分页帧。
+不要从 README 或旧测试复制其他版本的固定帧数。清单、实际分页、嵌入资源和源集指纹必须来自同一次构建；`v1.0.81` 新增四个火箭分页后，正式清单应为 `45` 页、`1368` 个源帧和 `1368` 个分页帧。
 
 ## 6. 发布单文件 EXE
 
@@ -215,7 +218,7 @@ if ($exe.Length -ge 100MB) {
 - 待办新增、`Ctrl+C / Ctrl+X / Ctrl+V`、F2 修改、拖拽排序和长文本全文窗正常；勾选中间项后该项移至末尾、其他项顺序不变，取消完成不自动上移，重启后顺序保持；普通/完成项悬停都应显示浅蓝填充与完整蓝色圆角框，相邻行不得出现上下横线。
 - 定时任务日期/秒级时间、循环、免打扰、修改、每页 5 条提醒和确认语义正常；免打扰内必须保持零提醒 UI/零喇叭动画且结束后不补发，区间外旧提醒在 end 后恢复、同秒 one-shot 正常。循环任务规则行仍应保留，但下一 occurrence 位于免打扰时只能显示“该时段不提醒”，不能显示“下次”或该静默时间；关闭免打扰及到达 end 同秒后，现有 WPF 行和 ToolTip 必须通过生产 remove/insert 路径恢复真实“下次”时间，读取文案本身不得推进 `DueAt` / `NextOrdinal`。展开循环的免打扰行后，任务列表应按新增行的真实高度收缩，滚动范围保持，最后一项可完整滚入可见区域；“可跨夜”在固定任务面板和最小宽度修改窗中均完整显示，无裁剪或省略。
 - 左、右、下边缘探头正常；在 75%、100%、125%、140% 大小下，人物可见像素可在一个物理像素内拖到工作区顶沿，但顶部中央不吸附、不探头。
-- 默认熊猫巡游可以被点击、拖动、右键和提醒抢占；静止左键以 Win32 `GetCursorPos` 的真实屏幕光标及按下时 DPI 判定，原生采样短暂失败时保持末次可信点，不受退场时窗口局部坐标漂移影响，完整逆播回到待机且不追加卖萌动作；真实物理位移超过阈值时拖动仍立即接管。全部绕屏页就绪后必须只丢弃 free decode arrays，resident 正播和逆播帧保持不动；受控 active roam resident 应从 baseline `82.00 MiB` 降至 candidate `79.53 MiB`，另测 idle resident 为 `11.00 → 10.86 MiB`。普通动作 `20 秒`缓存宽限、`52 / 92 / 12 / 8 MiB` 预算、图集、像素、帧率、时序和全部素材帧不变。右键只打开一次默认待办页，退出时无回跳、翻转或闪帧，竖边方向旋转正确。
+- 第一次自动巡游必须选择加长火箭，下一轮切回熊猫并持续交替；只有真正进入巡游才翻转下一轮，忙碌重试、预载失败或关闭开关不得提前消耗选择。火箭与熊猫都可以被点击、拖动、右键和提醒抢占；静止左键以 Win32 `GetCursorPos` 的真实屏幕光标及按下时 DPI 判定，完整逆播回到待机且不追加卖萌动作。火箭实际路线速度约 `525 DIP/s`、熊猫约 `200 DIP/s`；三朵等大软圆云需保持分离、轮廓清晰且呈短周期高速爆发。全部当轮绕屏页就绪后只丢弃 free decode arrays，resident 正播和逆播帧保持不动；两套车辆分别核算且都不超过 `92 MiB`，不得合并常驻。右键只打开一次默认待办页，退出时无回跳、翻转或闪帧，竖边方向旋转正确。
 - 负坐标副屏、100%/125%/150% DPI、任务栏避让和显示器热插拔正常。
 - 开机自启启用/关闭与旧路径修复正常，最终恢复测试前的真实注册表状态。
 - 通知区域右键菜单必须出现在光标附近，多屏和不同 DPI 下不得跑到屏幕左上角；“退出小鲁班”文字完整左对齐，点击桌面或其他应用必须自动关闭，连续右键不得闪出重复/错乱 Popup；正常退出保存数据并移除图标，运行前后都不生成 `log/` 文件夹。
@@ -245,6 +248,18 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.81 发布验证
+
+本版新增加长萌火箭巡游、确定性交替选择和退出方向修复。以下提交、EXE 与 GitHub Release 字段须在最终功能快照完成构建、发布和独立回下载后回填，不能提前沿用旧版本证据。
+
+| 项目 | 当前实测或待验证结果 |
+| --- | --- |
+| 素材与图集 | `64 + 64` 火箭序列、三朵等大不重叠软圆云、四边透明和两处逐字节接缝；Brotli v4 清单为 `45` 页、`1368 / 1368` 帧，四个 rocket 页均须通过清单长度、内容 SHA-256 与解码像素 QA |
+| 状态与缓存 | 首轮火箭、次轮熊猫；选择在预载前冻结且只在真实启动后翻转。点击、拖动、右键、提醒、禁用取消与忙碌重试不破坏交替；两种车辆最坏容量分别核算并均低于 `92 MiB`，只保护当轮页。新增页容量参与全局 best-fit 后，normal / serious 仍满足既有 `57 / 73 MiB` |
+| 自动化与构建 | 最终 Python 生成器 / 图集 / QA 单元测试 `45/45` 通过，最终 Atlas Motion QA 为 `45` 页、`1368` 帧、失败数 `0`；DesktopPet 与 UiStateChecks Release 构建均为 `0 warning / 0 error`，TodoStore / AppSettingsStore / ScheduledTaskStore 检查、`--roam-source-only`、`--roam-interaction-only`、`--resident-cache-only`、`--atlas-hash-only`、`--clip-clock-only`、`--pet-size-only` 与完整 `UiStateChecks.exe` 全部通过。普通 / 巡游容量为 `48.86 / 52 MiB`、`87.86 / 92 MiB` |
+| 源码与版本 | 待真实提交、推送与 tag 后回填；目标 `FileVersion=1.0.81.0`，ProductVersion 必须包含实际功能提交 SHA |
+| EXE 与 GitHub Release | 待真实单文件发布后回填 bytes、SHA-256、Authenticode、Release target、唯一附件 size / digest 与独立回下载复核；不得运行下载附件，也不得停止或替换用户现有桌宠进程 |
 
 ## v1.0.80 发布验证
 

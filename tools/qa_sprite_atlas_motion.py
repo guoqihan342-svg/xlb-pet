@@ -50,11 +50,16 @@ TODO_POSE_NAME = "think"
 SMOOTH_ACTION_NAMES = (*ACTION_NAMES, TODO_POSE_NAME)
 ACTION_SMOOTH_FRAME_COUNTS = {"cute": 56}
 RUNTIME_EDGE_DIRECTIONS = ("left", "bottom")
-ROAM_LOOP_SEQUENCES = ("flight", "wave")
-ROAM_NON_LOOP_SEQUENCES = ("boarding",)
+ROAM_LOOP_SEQUENCES = ("flight", "wave", "rocket-flight")
+ROAM_NON_LOOP_SEQUENCES = ("boarding", "rocket-boarding")
 ROAM_FLIGHT_SEQUENCES = (*ROAM_LOOP_SEQUENCES, *ROAM_NON_LOOP_SEQUENCES)
 ROAM_BOARDING_SEQUENCE = "roam.boarding"
-OPTIONAL_SEQUENCE_NAMES = frozenset(("roam.wave",))
+ROAM_BOARDING_SEQUENCES = frozenset(
+    (ROAM_BOARDING_SEQUENCE, "roam.rocket-boarding")
+)
+OPTIONAL_SEQUENCE_NAMES = frozenset(
+    ("roam.wave", "roam.rocket-boarding", "roam.rocket-flight")
+)
 MIN_ROAM_FRAME_COUNT = 48
 EDGE_PEEK_FRAME_COUNT = 48
 REMINDER_PHASE_FRAME_COUNTS = {"enter": 33, "hold": 48}
@@ -118,7 +123,32 @@ FLOAT_COMPARISON_EPSILON = 1e-9
 
 # A waiver must identify one sequence, one metric, and one exact transition.
 # There are intentionally no blanket action/sequence waivers.
-EXACT_PAIR_WAIVERS: dict[tuple[str, str, int, int], str] = {}
+EXACT_PAIR_WAIVERS: dict[tuple[str, str, int, int], str] = {
+    (
+        "roam.rocket-boarding",
+        "centroid_step_dip",
+        29,
+        30,
+    ): "opaque cloud burst deliberately expands the occupied silhouette",
+    (
+        "roam.rocket-boarding",
+        "head_center_step_dip",
+        29,
+        30,
+    ): "opaque six-frame cloud burst covers the authored vehicle swap",
+    (
+        "roam.rocket-boarding",
+        "centroid_step_dip",
+        35,
+        36,
+    ): "opaque cloud burst deliberately contracts before rocket arrival",
+    (
+        "roam.rocket-boarding",
+        "head_center_step_dip",
+        35,
+        36,
+    ): "rocket brim reappears after the opaque cloud burst",
+}
 EXACT_CENTER_WAIVERS: dict[tuple[str, str, int], str] = {}
 
 SEQUENCE_EXPRESSIONS = {
@@ -1098,6 +1128,21 @@ def validate_resource_contract(
                     numbers=page_numbers,
                 )
 
+    rocket_boarding_present = bool(
+        manifest_sequences.get("roam.rocket-boarding", [])
+    )
+    rocket_flight_present = bool(
+        manifest_sequences.get("roam.rocket-flight", [])
+    )
+    if rocket_boarding_present != rocket_flight_present:
+        add_failure(
+            failures,
+            "sequence.roam_pair",
+            "optional rocket roaming requires both boarding and flight",
+            boarding_present=rocket_boarding_present,
+            flight_present=rocket_flight_present,
+        )
+
     work_loop = manifest_sequences.get("work.loop", [])
     work_serious_loop = manifest_sequences.get("work.serious-loop", [])
     work_enter = manifest_sequences.get("work.enter", [])
@@ -1131,29 +1176,43 @@ def validate_resource_contract(
                     ),
                 )
 
-    boarding = manifest_sequences.get("roam.boarding", [])
-    flight = manifest_sequences.get("roam.flight", [])
     idle_resource = "Assets/luban-idle.png"
-    if boarding and flight and idle_resource in reader.locations:
-        idle_frame = reader.reconstruct(idle_resource)
-        boarding_first = reader.reconstruct(boarding[0])
-        boarding_last = reader.reconstruct(boarding[-1])
-        flight_first = reader.reconstruct(flight[0])
-        for boundary, first, second in (
-            ("idle_to_boarding", idle_frame, boarding_first),
-            ("boarding_to_flight", boarding_last, flight_first),
-        ):
-            if not np.array_equal(first, second):
-                add_failure(
-                    failures,
-                    "sequence.roam_boundary",
-                    "roaming entry boundary must be byte-exact",
-                    boundary=boundary,
-                    rgba_equal=False,
-                    alpha_equal=bool(
-                        np.array_equal(first[..., 3], second[..., 3])
-                    ),
-                )
+    for idle_boundary, flight_boundary, boarding_name, flight_name in (
+        (
+            "idle_to_boarding",
+            "boarding_to_flight",
+            "roam.boarding",
+            "roam.flight",
+        ),
+        (
+            "rocket_idle_to_boarding",
+            "rocket_boarding_to_flight",
+            "roam.rocket-boarding",
+            "roam.rocket-flight",
+        ),
+    ):
+        boarding = manifest_sequences.get(boarding_name, [])
+        flight = manifest_sequences.get(flight_name, [])
+        if boarding and flight and idle_resource in reader.locations:
+            idle_frame = reader.reconstruct(idle_resource)
+            boarding_first = reader.reconstruct(boarding[0])
+            boarding_last = reader.reconstruct(boarding[-1])
+            flight_first = reader.reconstruct(flight[0])
+            for boundary, first, second in (
+                (idle_boundary, idle_frame, boarding_first),
+                (flight_boundary, boarding_last, flight_first),
+            ):
+                if not np.array_equal(first, second):
+                    add_failure(
+                        failures,
+                        "sequence.roam_boundary",
+                        "roaming entry boundary must be byte-exact",
+                        boundary=boundary,
+                        rgba_equal=False,
+                        alpha_equal=bool(
+                            np.array_equal(first[..., 3], second[..., 3])
+                        ),
+                    )
     return manifest_sequences
 
 
@@ -1285,7 +1344,7 @@ def relative_step(first: float, second: float) -> float:
 
 
 def pair_gate_score(sequence_name: str, pair: dict[str, Any]) -> float:
-    if sequence_name == ROAM_BOARDING_SEQUENCE:
+    if sequence_name in ROAM_BOARDING_SEQUENCES:
         return max(
             pair["centroid_step_dip"] / MAX_BOARDING_CENTROID_STEP_DIP,
             pair["head_center_step_dip"] / MAX_BOARDING_HEAD_CENTER_STEP_DIP,
@@ -1323,7 +1382,7 @@ def analyze_surface(
     *,
     loop: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    is_boarding_transition = sequence_name == ROAM_BOARDING_SEQUENCE
+    is_boarding_transition = sequence_name in ROAM_BOARDING_SEQUENCES
     geometry = [frame_geometry(frame, surface) for frame in frames]
     pair_indexes = [(index, index + 1) for index in range(len(frames) - 1)]
     if loop:
@@ -2354,11 +2413,14 @@ def main() -> int:
             "head_second_difference_dip",
         ],
         "strict_profile_overrides": {
-            ROAM_BOARDING_SEQUENCE: [
-                "centroid_step_dip",
-                "head_center_step_dip",
-                "wide_translucent_trail_pixels",
-            ],
+            **{
+                name: [
+                    "centroid_step_dip",
+                    "head_center_step_dip",
+                    "wide_translucent_trail_pixels",
+                ]
+                for name in sorted(ROAM_BOARDING_SEQUENCES)
+            },
             **{
                 name: [
                     "head_micro_roundtrip",

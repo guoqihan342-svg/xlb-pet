@@ -187,5 +187,46 @@ class WorkTypingLoopContractTests(unittest.TestCase):
         self.assertEqual([], self._validate("loop", payloads))
 
 
+class OptionalRocketSequenceContractTests(unittest.TestCase):
+    def test_cloud_burst_waivers_are_exact_pair_and_metric_scoped(self) -> None:
+        expected = {
+            ("roam.rocket-boarding", "centroid_step_dip", 29, 30),
+            ("roam.rocket-boarding", "head_center_step_dip", 29, 30),
+            ("roam.rocket-boarding", "centroid_step_dip", 35, 36),
+            ("roam.rocket-boarding", "head_center_step_dip", 35, 36),
+        }
+        self.assertEqual(expected, set(motion_qa.EXACT_PAIR_WAIVERS))
+        self.assertEqual({}, motion_qa.EXACT_CENTER_WAIVERS)
+
+    def test_manifest_rejects_a_single_optional_rocket_sequence(self) -> None:
+        resource = "Assets/luban-roam-rocket-boarding-001.png"
+        reader = SimpleNamespace(
+            locations={resource: SimpleNamespace(page_name="roam-rocket-boarding")},
+            page_order={"roam-rocket-boarding": 0},
+            page_frame_order={"roam-rocket-boarding": [resource]},
+            reconstruct=lambda _resource: motion_qa.np.zeros(
+                (2, 2, 4),
+                dtype=motion_qa.np.uint8,
+            ),
+        )
+        disk_sequences = {
+            name: [] for name in motion_qa.SEQUENCE_EXPRESSIONS
+        }
+        disk_sequences["roam.rocket-boarding"] = [resource]
+        failures: list[dict[str, object]] = []
+
+        motion_qa.validate_resource_contract(
+            reader,
+            disk_sequences,
+            {resource},
+            failures,
+        )
+
+        self.assertIn(
+            "sequence.roam_pair",
+            {failure["code"] for failure in failures},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

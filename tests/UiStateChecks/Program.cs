@@ -3013,21 +3013,34 @@ internal static partial class Program
                 adjacentReuseWorstCaseBytes);
         }
 
-        var roamPageNames = pinnedPageNames
-            .Concat(PageNamesFromFrames(
-                GetField<Array>(window, "_roamBoardingFrames")))
-            .Concat(PageNamesFromFrames(
-                GetField<Array>(window, "_roamFlightFrames")))
-            .Concat(PageNamesFromFrames(
-                GetField<Array>(window, "_roamWaveFrames")))
-            .ToHashSet(StringComparer.Ordinal);
-        var maximumRoamBytes = roamPageNames.Sum(pageName =>
-            string.Equals(
-                pageName,
-                startupIdlePageName,
-                StringComparison.Ordinal)
-                ? CapacityOf(pageName)
-                : MaximumReusableCapacityOf(pageName));
+        long MaximumRoamProfileBytes(params string[] frameFieldNames)
+        {
+            var pageNames = pinnedPageNames.ToHashSet(StringComparer.Ordinal);
+            foreach (var frameFieldName in frameFieldNames)
+            {
+                pageNames.UnionWith(PageNamesFromFrames(
+                    GetField<Array>(window, frameFieldName)));
+            }
+
+            return pageNames.Sum(pageName =>
+                string.Equals(
+                    pageName,
+                    startupIdlePageName,
+                    StringComparison.Ordinal)
+                    ? CapacityOf(pageName)
+                    : MaximumReusableCapacityOf(pageName));
+        }
+
+        var maximumPandaRoamBytes = MaximumRoamProfileBytes(
+            "_pandaRoamBoardingFrames",
+            "_pandaRoamFlightFrames",
+            "_pandaRoamWaveFrames");
+        var maximumRocketRoamBytes = MaximumRoamProfileBytes(
+            "_rocketRoamBoardingFrames",
+            "_rocketRoamFlightFrames");
+        var maximumRoamBytes = Math.Max(
+            maximumPandaRoamBytes,
+            maximumRocketRoamBytes);
 
         Assert(reuseCapacityStepBytes == 1 * 1024 * 1024 &&
                maximumOrdinaryBytes == ExpectedMaximumOrdinarySpriteWorkingSetBytes &&
@@ -3039,7 +3052,7 @@ internal static partial class Program
         Assert(maximumRoamBytes == ExpectedMaximumRoamSpriteWorkingSetBytes &&
                maximumRoamBytes <= roamBudgetBytes &&
                GetProperty<long>(pool, "HardBudgetBytes") == roamBudgetBytes,
-            $"绕屏分页预算与池硬预算必须容纳全部boarding/flight/wave页以及" +
+            $"绕屏分页预算与池硬预算必须分别容纳熊猫或火箭的全部分页以及" +
             $"best-fit复用余量：需要 {maximumRoamBytes} bytes / " +
             $"{maximumRoamBytes / 1048576d:F2}MiB，" +
             $"预算 {roamBudgetBytes / 1048576d:F2}MiB");
@@ -3686,7 +3699,7 @@ internal static partial class Program
                                   pageMap,
                                   (string)entry.Key));
             Assert(exactHotSetBytes == 55_392_540L &&
-                   worstCaseHotSetBytes == 59_191_344L &&
+                    worstCaseHotSetBytes == 59_191_344L &&
                    worstCaseHotSetBytes > ordinaryBudgetBytes &&
                    worstCaseHotSetBytes <= workBudgetBytes &&
                    actualHotSetBytes >= exactHotSetBytes &&
@@ -7332,7 +7345,9 @@ internal static partial class Program
                 "edge-left",
                 "edge-bottom",
                 "roam-boarding",
-                "roam-flight"
+                "roam-flight",
+                "roam-rocket-boarding",
+                "roam-rocket-flight"
             }
             .Concat(new[] { "cry", "cute", "like", "eat", "think" }
                 .Select(action => $"action-{action}"))
@@ -7413,6 +7428,8 @@ internal static partial class Program
                 "清单包含可选roam-wave分页时，Assets必须提供连续且唯一的wave源帧");
             roamSequences.Add("wave");
         }
+        roamSequences.Add("rocket-boarding");
+        roamSequences.Add("rocket-flight");
         foreach (var roamSequence in roamSequences)
         {
             var basePageName = $"roam-{roamSequence}";
@@ -7438,14 +7455,25 @@ internal static partial class Program
                     .EnumerateObject()
                     .Select(frame => frame.Name))
                 .ToArray();
+            var actualPageFrameCounts = roamPages
+                .Select(page => page.Value
+                    .GetProperty("logicalFrameCount")
+                    .GetInt32())
+                .ToArray();
+            var pageFrameCountsAreValid =
+                string.Equals(
+                    roamSequence,
+                    "rocket-boarding",
+                    StringComparison.Ordinal)
+                    ? actualPageFrameCounts.SequenceEqual(new[] { 30, 34 })
+                    : actualPageFrameCounts.All(count => count is > 0 and <= 32);
             Assert(roamPages.Length >= 2 &&
                    roamPages.Select(page => page.Name)
                        .SequenceEqual(expectedRoamPageNames) &&
-                   roamPages.All(page =>
-                       page.Value.GetProperty("logicalFrameCount").GetInt32()
-                           is > 0 and <= 32) &&
+                   pageFrameCountsAreValid &&
                    actualRoamFrames.SequenceEqual(expectedRoamFrames),
-                $"熊猫坐骑必须使用{basePageName}连续动态分页，逐页不超过32帧，" +
+                $"巡游坐骑必须使用{basePageName}连续动态分页；火箭登乘固定30/34帧，" +
+                "其余分页逐页不超过32帧，" +
                 $"并完整覆盖{roamSequence}-001..{expectedRoamFrames.Length:000}；" +
                 "不得把巡游帧塞进点击动作、idle或手动edge分页");
         }
@@ -8548,6 +8576,11 @@ internal static partial class Program
             paths.AddRange(GetExpectedRoamFrameNames("wave", required: false)
                 .Select(name => $"Assets/{name}"));
         }
+        foreach (var sequence in new[] { "rocket-boarding", "rocket-flight" })
+        {
+            paths.AddRange(GetExpectedRoamFrameNames(sequence, required: true)
+                .Select(name => $"Assets/{name}"));
+        }
 
         foreach (var (phase, expectedFrameCount) in new[]
                  {
@@ -8637,8 +8670,9 @@ internal static partial class Program
         string sequence,
         bool required = true)
     {
-        Assert(sequence is "boarding" or "flight" or "wave",
-            $"不支持的熊猫坐骑序列：{sequence}");
+        Assert(sequence is "boarding" or "flight" or "wave" or
+                   "rocket-boarding" or "rocket-flight",
+            $"不支持的巡游坐骑序列：{sequence}");
         var assetsDirectory = Path.GetDirectoryName(
             FindWorkspaceFile("Assets", "luban-idle.png"))!;
         var actualNames = Directory.EnumerateFiles(
@@ -8661,7 +8695,7 @@ internal static partial class Program
 
         Assert(actualNames.Length >= MinimumRoamSequenceFrameCount &&
                actualNames.SequenceEqual(expectedNames),
-            $"熊猫坐骑{sequence}源资源必须从{sequence}-001开始连续编号，至少" +
+            $"巡游坐骑{sequence}源资源必须从{sequence}-001开始连续编号，至少" +
             $"{MinimumRoamSequenceFrameCount}帧；实际 {actualNames.Length} 帧");
 
         var uniqueContentHashes = actualNames
@@ -8669,7 +8703,7 @@ internal static partial class Program
             .Distinct(StringComparer.Ordinal)
             .Count();
         Assert(uniqueContentHashes == actualNames.Length,
-            $"熊猫坐骑{sequence}的{actualNames.Length}帧必须全部是独立姿势，" +
+            $"巡游坐骑{sequence}的{actualNames.Length}帧必须全部是独立姿势，" +
             $"实际只有{uniqueContentHashes}个不同PNG内容");
         return actualNames;
     }
@@ -9813,6 +9847,8 @@ internal static partial class Program
             FindWorkspaceFile("tools", "build_sprite_atlas.py"));
         var roamAssetBuilderSource = File.ReadAllText(
             FindWorkspaceFile("tools", "build_roam_flight_assets.py"));
+        var rocketAssetBuilderSource = File.ReadAllText(
+            FindWorkspaceFile("tools", "build_roam_rocket_assets.py"));
         var atlasMotionQaSource = File.ReadAllText(
             FindWorkspaceFile("tools", "qa_sprite_atlas_motion.py"));
 
@@ -9935,6 +9971,12 @@ internal static partial class Program
         var startRoamPreload = ExtractPrivateMethodSource(
             mainSource,
             "StartEdgeRoamPreloadIfDue");
+        var selectRoamVehicle = ExtractPrivateMethodSource(
+            mainSource,
+            "SelectEdgeRoamVehicleForDue");
+        var getRoamSpeed = ExtractPrivateMethodSource(
+            mainSource,
+            "GetEdgeRoamSpeedDipsPerSecond");
         var continueRoamPreload = ExtractPrivateMethodSource(
             mainSource,
             "ContinueEdgeRoamPreload");
@@ -9984,7 +10026,11 @@ internal static partial class Program
         Assert(readmeSource.Contains("大头熊猫", StringComparison.Ordinal) &&
                readmeSource.Contains("铃铛", StringComparison.Ordinal) &&
                readmeSource.Contains("竹筒", StringComparison.Ordinal) &&
+               readmeSource.Contains("火箭", StringComparison.Ordinal) &&
                mainSource.Contains("Assets/luban-roam-boarding-", StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "Assets/luban-roam-rocket-boarding-",
+                   StringComparison.Ordinal) &&
                !readmeSource.Contains(
                    legacyChineseMountName,
                    StringComparison.Ordinal) &&
@@ -9994,11 +10040,14 @@ internal static partial class Program
                !roamAssetBuilderSource.Contains(
                    legacyEnglishMountName,
                    StringComparison.OrdinalIgnoreCase) &&
+               !rocketAssetBuilderSource.Contains(
+                   legacyEnglishMountName,
+                   StringComparison.OrdinalIgnoreCase) &&
                !atlasMotionQaSource.Contains(
                    legacyEnglishMountPhrase,
                    StringComparison.OrdinalIgnoreCase),
-            "绕屏视觉必须统一为带铃铛和竹筒的大头熊猫坐骑，README、运行资源、" +
-            "生成器与QA不得残留旧版飞行坐骑描述");
+            "绕屏视觉必须提供带铃铛和竹筒的大头熊猫以及高速火箭，README、运行资源、" +
+            "两套生成器与QA不得残留旧版飞行坐骑描述");
         Assert(setRoamingToggle >= 0 &&
                todoSource[setRoamingToggle..].Contains(
                    "_settingEdgeRoamingEnabled = true",
@@ -10022,6 +10071,44 @@ internal static partial class Program
             "绕屏勾选必须位于TodoWindow，默认勾选且有无障碍名称；" +
             "程序加载设置时必须由保护位静默更新，不能反向触发重复保存");
 
+        var selectBeforePreload = startRoamPreload.IndexOf(
+            "SelectEdgeRoamVehicleForDue();",
+            StringComparison.Ordinal);
+        var armPreload = startRoamPreload.IndexOf(
+            "_edgeRoamPreloadRequested = true",
+            StringComparison.Ordinal);
+        var roamingStarted = startRoaming.IndexOf(
+            "_isEdgeRoaming = true",
+            StringComparison.Ordinal);
+        var vehicleAlternated = startRoaming.IndexOf(
+            "_nextEdgeRoamUsesRocket =",
+            StringComparison.Ordinal);
+        Assert(selectBeforePreload >= 0 && armPreload > selectBeforePreload &&
+               selectRoamVehicle.Contains(
+                   "_nextEdgeRoamUsesRocket",
+                   StringComparison.Ordinal) &&
+               selectRoamVehicle.Contains(
+                   "_roamWaveFrames = useRocket ? [] : _pandaRoamWaveFrames",
+                   StringComparison.Ordinal) &&
+               getRoamSpeed.Contains(
+                   "RocketEdgeRoamBaseSpeedDipsPerSecond",
+                   StringComparison.Ordinal) &&
+               getRoamSpeed.Contains(
+                   "EdgeRoamBaseSpeedDipsPerSecond",
+                   StringComparison.Ordinal) &&
+               scheduleNextEdgeRoam.Contains(
+                   "preserveVehicleSelection = false",
+                   StringComparison.Ordinal) &&
+               scheduleNextEdgeRoam.Contains(
+                   "if (!preserveVehicleSelection)",
+                   StringComparison.Ordinal) &&
+               roamingStarted >= 0 && vehicleAlternated > roamingStarted &&
+               roamingSettingChanged.Contains(
+                   "CancelEdgeRoamSpritePagePrefetch(includeBoarding: true)",
+                   StringComparison.Ordinal),
+            "每次自动绕屏必须在预载前冻结熊猫/火箭选择；只有真正进入路线后才能轮换，" +
+            "忙碌重试必须保留选择，关闭绕屏则取消未使用的预载");
+
         Assert(mainSource.Contains(
                    "\"Assets/luban-roam-boarding-\"",
                    StringComparison.Ordinal) &&
@@ -10031,7 +10118,16 @@ internal static partial class Program
                mainSource.Contains("\"roam-boarding\"", StringComparison.Ordinal) &&
                mainSource.Contains("\"roam-flight\"", StringComparison.Ordinal) &&
                mainSource.Contains(
-                   "_roamBoardingFrames.Length < 48",
+                   "_pandaRoamBoardingFrames.Length < 48",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "\"Assets/luban-roam-rocket-boarding-\"",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "\"Assets/luban-roam-rocket-flight-\"",
+                   StringComparison.Ordinal) &&
+               mainSource.Contains(
+                   "expectedFrameCount: 64",
                    StringComparison.Ordinal) &&
                (!mainSource.Contains("\"roam-wave\"", StringComparison.Ordinal) ||
                 mainSource.Contains(
@@ -10056,6 +10152,9 @@ internal static partial class Program
                atlasBuilderSource.Contains("\"flight\"", StringComparison.Ordinal) &&
                atlasBuilderSource.Contains(
                    "f\"roam-{sequence}\"",
+                   StringComparison.Ordinal) &&
+               atlasBuilderSource.Contains(
+                   "has_rocket_boarding != has_rocket_flight",
                    StringComparison.Ordinal) &&
                roamAssetBuilderSource.Contains(
                    "luban-roam-boarding",
@@ -10090,6 +10189,21 @@ internal static partial class Program
                roamAssetBuilderSource.Contains(
                    "len(pixel_hashes) != len(paths)",
                    StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "BOARDING_FRAME_COUNT = 64",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "FLIGHT_FRAME_COUNT = 64",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "ROCKET_MAXIMUM_SIZE = (300, 335)",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "Idle -> rocket boarding seam is not byte exact",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "Rocket boarding -> flight seam is not byte exact",
+                   StringComparison.Ordinal) &&
                atlasMotionQaSource.Contains(
                    "\"boarding\"",
                    StringComparison.Ordinal) &&
@@ -10098,10 +10212,10 @@ internal static partial class Program
                     "f\"roam.{sequence}\"",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
-                    "ROAM_LOOP_SEQUENCES = (\"flight\", \"wave\")",
+                    "ROAM_LOOP_SEQUENCES = (\"flight\", \"wave\", \"rocket-flight\")",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
-                    "ROAM_NON_LOOP_SEQUENCES = (\"boarding\",)",
+                    "ROAM_NON_LOOP_SEQUENCES = (\"boarding\", \"rocket-boarding\")",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
                     "ROAM_BOARDING_SEQUENCE = \"roam.boarding\"",
@@ -10126,7 +10240,7 @@ internal static partial class Program
                     "MAX_BOARDING_WIDE_TRANSLUCENT_TRAIL_RATIO = 0.010",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
-                    "is_boarding_transition = sequence_name == ROAM_BOARDING_SEQUENCE",
+                    "is_boarding_transition = sequence_name in ROAM_BOARDING_SEQUENCES",
                     StringComparison.Ordinal) &&
                 atlasMotionQaSource.Contains(
                     "if not is_boarding_transition and iou < MIN_ALPHA_IOU:",
@@ -10152,7 +10266,7 @@ internal static partial class Program
                 atlasMotionQaSource.Contains(
                     "violations.append(finding)",
                     StringComparison.Ordinal),
-            "熊猫坐骑必须从boarding-001正放登乘、停止时倒放，并使用flight-001连续主循环；" +
+            "熊猫与火箭必须从各自boarding-001正放登乘、停止时倒放，并使用flight-001连续主循环；" +
             "wave只能是可选补充，禁止固定7秒硬切。运行时不能硬编码总帧数或混用跑步、" +
             "爬行素材；最终图集QA必须让flight保持稳态Alpha IoU及帽子/躯干身形硬门槛，" +
             "boarding则使用非循环姿态转换专用的质心、头部单步位移和半透明拖影硬门槛，" +
@@ -10531,9 +10645,12 @@ internal static partial class Program
                stopRoaming.Contains(
                    "_nextEdgeRoamDueTimestamp <= 0",
                    StringComparison.Ordinal) &&
-               automaticTick.Contains(
-                   "ScheduleNextEdgeRoam(timestamp, EdgeRoamBusyRetryDelay)",
-                   StringComparison.Ordinal) &&
+                automaticTick.Contains(
+                    "EdgeRoamBusyRetryDelay",
+                    StringComparison.Ordinal) &&
+                automaticTick.Contains(
+                    "preserveVehicleSelection: true",
+                    StringComparison.Ordinal) &&
                restartAutomaticCountdown.Contains(
                    "_nextAutomaticActivityDueTimestamp = checked(",
                    StringComparison.Ordinal) &&
@@ -13083,6 +13200,146 @@ internal static partial class Program
             1d) ?? throw new InvalidOperationException(
             "生产绕屏朝向函数未返回缩放值"));
 
+    private static void AssertRocketRoamVehicleContract(MainWindow window)
+    {
+        var idleFrame = GetRawField(window, "_idleFrame")
+            ?? throw new InvalidOperationException("找不到待机帧");
+        var pandaBoardingFrames = GetField<Array>(
+            window,
+            "_pandaRoamBoardingFrames");
+        var pandaFlightFrames = GetField<Array>(
+            window,
+            "_pandaRoamFlightFrames");
+        var pandaWaveFrames = GetField<Array>(window, "_pandaRoamWaveFrames");
+        var rocketBoardingFrames = GetField<Array>(
+            window,
+            "_rocketRoamBoardingFrames");
+        var rocketFlightFrames = GetField<Array>(
+            window,
+            "_rocketRoamFlightFrames");
+        Assert(rocketBoardingFrames.Length == 64 &&
+               rocketFlightFrames.Length == 64,
+            "内置资源必须加载64帧火箭登乘与64帧火箭巡游动画");
+
+        var rocketBoardingFirst = rocketBoardingFrames.GetValue(0)
+            ?? throw new InvalidOperationException("找不到火箭登乘首帧");
+        var rocketBoardingLast = rocketBoardingFrames.GetValue(
+                rocketBoardingFrames.Length - 1)
+            ?? throw new InvalidOperationException("找不到火箭登乘末帧");
+        var rocketFlightFirst = rocketFlightFrames.GetValue(0)
+            ?? throw new InvalidOperationException("找不到火箭巡游首帧");
+
+        Invoke(window, "ResetPetVisualTransforms");
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+        var idlePixels = GetField<byte[]>(window, "_displayFramePixels").ToArray();
+        PrimeSpritePageForFrame(window, rocketBoardingFirst);
+        Invoke(window, "ShowStableFrame", rocketBoardingFirst);
+        var boardingFirstPixels = GetField<byte[]>(
+            window,
+            "_displayFramePixels").ToArray();
+        PrimeSpritePageForFrame(window, rocketBoardingLast);
+        Invoke(window, "ShowStableFrame", rocketBoardingLast);
+        var boardingLastPixels = GetField<byte[]>(
+            window,
+            "_displayFramePixels").ToArray();
+        PrimeSpritePageForFrame(window, rocketFlightFirst);
+        Invoke(window, "ShowStableFrame", rocketFlightFirst);
+        var flightFirstPixels = GetField<byte[]>(
+            window,
+            "_displayFramePixels").ToArray();
+        Assert(idlePixels.AsSpan().SequenceEqual(boardingFirstPixels) &&
+               boardingLastPixels.AsSpan().SequenceEqual(flightFirstPixels),
+            "火箭登乘首帧必须与idle逐像素一致，末帧必须与flight-001逐像素一致");
+
+        var rocketVehicle = GetNestedEnum("EdgeRoamVehicle", "Rocket");
+        var pandaVehicle = GetNestedEnum("EdgeRoamVehicle", "Panda");
+        SetField(window, "_edgeRoamVehicleSelectedForDue", false);
+        SetField(window, "_nextEdgeRoamUsesRocket", true);
+        Invoke(window, "SelectEdgeRoamVehicleForDue");
+        Assert(Equals(GetRawField(window, "_edgeRoamVehicle"), rocketVehicle) &&
+               ReferenceEquals(
+                   GetRawField(window, "_roamBoardingFrames"),
+                   rocketBoardingFrames) &&
+               ReferenceEquals(
+                   GetRawField(window, "_roamFlightFrames"),
+                   rocketFlightFrames) &&
+               GetField<Array>(window, "_roamWaveFrames").Length == 0 &&
+               Math.Abs((double)(Invoke(
+                   window,
+                   "GetEdgeRoamSpeedDipsPerSecond") ?? 0d) - 420d) <= 0.0001,
+            "首次到期必须冻结火箭资源，采用420 DIP/s基础速度（播放倍率后525 DIP/s），且不得混入熊猫wave分页");
+
+        var disembarkingPhase = GetNestedEnum(
+            "EdgeRoamPhase",
+            "Disembarking");
+        var noRoamPhase = GetNestedEnum("EdgeRoamPhase", "None");
+        var facingScale = GetField<ScaleTransform>(window, "PetFacingScale");
+        PrimeSpritePageForFrame(window, rocketBoardingFirst);
+        facingScale.ScaleX = -1;
+        SetField(window, "_edgeRoamFacingScaleX", -1d);
+        Invoke(window, "ShowStableFrame", rocketBoardingFirst);
+        var rightFacingRocketBoardingPixels = GetField<byte[]>(
+            window,
+            "_displayFramePixels").ToArray();
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(window, "_edgeRoamPhase", disembarkingPhase);
+        SetField(window, "_edgeRoamStopScheduleNext", false);
+        SetField(window, "_edgeRoamStopInterrupted", false);
+        Invoke(window, "CompleteEdgeRoamStop", true);
+        Assert(Math.Abs(facingScale.ScaleX + 1) <= 0.0001 &&
+               Equals(GetRawField(window, "_currentSpriteFrame"), idleFrame) &&
+               GetField<byte[]>(window, "_displayFramePixels")
+                   .AsSpan()
+                   .SequenceEqual(rightFacingRocketBoardingPixels),
+            "火箭倒放退场到idle时必须保持朝向与像素，不得在最后一帧翻面");
+
+        SetField(window, "_isEdgeRoaming", true);
+        SetField(window, "_edgeRoamPhase", noRoamPhase);
+        SetField(window, "_edgeRoamFacingScaleX", -1d);
+        Invoke(
+            window,
+            "StartEdgeRoamBoarding",
+            false,
+            Stopwatch.GetTimestamp());
+        Assert(Equals(
+                   GetRawField(window, "_currentSpriteFrame"),
+                   rocketBoardingFirst) &&
+               Math.Abs(facingScale.ScaleX + 1) <= 0.0001 &&
+               GetField<byte[]>(window, "_displayFramePixels")
+                   .AsSpan()
+                   .SequenceEqual(rightFacingRocketBoardingPixels),
+            "朝右idle进入下一次火箭登乘时必须沿用同一像素与镜像");
+        Invoke(window, "CompleteEdgeRoamStop", true);
+
+        SetField(window, "_edgeRoamVehicleSelectedForDue", false);
+        SetField(window, "_nextEdgeRoamUsesRocket", false);
+        Invoke(window, "SelectEdgeRoamVehicleForDue");
+        Assert(Equals(GetRawField(window, "_edgeRoamVehicle"), pandaVehicle) &&
+               ReferenceEquals(
+                   GetRawField(window, "_roamBoardingFrames"),
+                   pandaBoardingFrames) &&
+               ReferenceEquals(
+                   GetRawField(window, "_roamFlightFrames"),
+                   pandaFlightFrames) &&
+               ReferenceEquals(
+                   GetRawField(window, "_roamWaveFrames"),
+                   pandaWaveFrames) &&
+               Math.Abs((double)(Invoke(
+                   window,
+                   "GetEdgeRoamSpeedDipsPerSecond") ?? 0d) - 160d) <= 0.0001,
+            "下一次到期必须切回熊猫资源与160 DIP/s基础速度");
+
+        SetField(window, "_edgeRoamVehicleSelectedForDue", false);
+        SetField(window, "_nextEdgeRoamUsesRocket", true);
+        SetField(window, "_edgeRoamVehicle", pandaVehicle);
+        SetField(window, "_roamBoardingFrames", pandaBoardingFrames);
+        SetField(window, "_roamFlightFrames", pandaFlightFrames);
+        SetField(window, "_roamWaveFrames", pandaWaveFrames);
+        PrimeSpritePageForFrame(window, idleFrame);
+        Invoke(window, "ShowStableFrame", idleFrame);
+    }
+
     private static void AssertEdgeRoamInteractionContract(MainWindow window)
     {
         if (!window.IsVisible)
@@ -13090,6 +13347,8 @@ internal static partial class Program
             window.Show();
             PumpDispatcher(TimeSpan.FromMilliseconds(40));
         }
+
+        AssertRocketRoamVehicleContract(window);
 
         var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
         var petHost = GetField<FrameworkElement>(window, "PetHost");
@@ -14996,7 +15255,12 @@ internal static partial class Program
                 window,
                 "_nextAutomaticActivityDueTimestamp",
                 activitySentinel);
-            Invoke(window, "ScheduleNextEdgeRoam", timestamp, roamInterval);
+            Invoke(
+                window,
+                "ScheduleNextEdgeRoam",
+                timestamp,
+                roamInterval,
+                false);
             Assert(GetField<long>(
                        window,
                        "_nextAutomaticActivityDueTimestamp") ==
@@ -19628,6 +19892,8 @@ internal static partial class Program
             window,
             "_petSizePersistTimer");
         var originalWindowVisible = window.IsVisible;
+        var originalWindowLeft = window.Left;
+        var originalWindowTop = window.Top;
         var originalTodoVisible = todoWindow.IsVisible;
         var originalSuppressDeactivate = GetField<bool>(
             window,
@@ -19667,6 +19933,20 @@ internal static partial class Program
                 window.Show();
                 PumpDispatcher(TimeSpan.FromMilliseconds(30));
             }
+
+            // The production startup pose intentionally sits against the
+            // monitor edge. Move this isolated gesture fixture to the primary
+            // work-area center so an authored frame-boundary correction cannot
+            // be mistaken for a Slider geometry write.
+            var fixtureWorkArea = SystemParameters.WorkArea;
+            Invoke(
+                window,
+                "MoveMainWindowTo",
+                fixtureWorkArea.Left +
+                Math.Max(0, (fixtureWorkArea.Width - window.Width) / 2),
+                fixtureWorkArea.Top +
+                Math.Max(0, (fixtureWorkArea.Height - window.Height) / 2));
+            PumpDispatcher(TimeSpan.FromMilliseconds(120));
 
             Invoke(window, "ApplyPetSizeScale", 1d, false, false);
             SetField(todoWindow, "_petSizeAdjustmentActive", false);
@@ -19733,6 +20013,11 @@ internal static partial class Program
                 var envelopeHeight = window.Height;
                 var envelopeLeft = window.Left;
                 var envelopeTop = window.Top;
+                var windowHandle = new WindowInteropHelper(window).EnsureHandle();
+                Assert(GetTestWindowRect(
+                           windowHandle,
+                           out var envelopeNativeRect),
+                    "move-to-point回归必须读取手势前的真实HWND物理边界");
 
                 // Let WPF's real move-to-point class handler resolve the
                 // deterministic Win32 cursor position once, then let the real
@@ -19766,6 +20051,10 @@ internal static partial class Program
                 }
 
                 PumpDispatcher(TimeSpan.FromMilliseconds(180));
+                Assert(GetTestWindowRect(
+                           windowHandle,
+                           out var currentNativeRect),
+                    "move-to-point回归必须读取同值手势后的真实HWND物理边界");
                 Assert(GetField<bool>(
                            window,
                            "_petSizePreviewEnvelopePinnedForTodo") &&
@@ -19785,20 +20074,22 @@ internal static partial class Program
                        locationChangedCount == 0 &&
                        Math.Abs(window.Width - envelopeWidth) <= 0.001 &&
                        Math.Abs(window.Height - envelopeHeight) <= 0.001 &&
-                       Math.Abs(window.Left - envelopeLeft) <= 0.001 &&
-                       Math.Abs(window.Top - envelopeTop) <= 0.001 &&
+                       currentNativeRect.Equals(envelopeNativeRect) &&
                        scaleChangedCount == 0 &&
                        completedCount == 30 &&
                        !persistTimer.IsEnabled &&
                        GetField<int>(window, "_activeFrameIndex") >
                            frameBeforeNoOpStress,
-                    "Todo动画期间连续30次同值Track点击必须保持动画前进，且Width/Height/Left/Top零改写、零落盘提交；" +
+                    "Todo动画期间连续30次同值Track点击必须保持动画前进，且Width/Height/HWND物理边界零改写、零落盘提交；" +
                     $"pinned={GetField<bool>(window, "_petSizePreviewEnvelopePinnedForTodo")}, " +
                     $"todoActive={GetField<bool>(todoWindow, "_petSizeAdjustmentActive")}, " +
                     $"mainActive={GetField<bool>(window, "_isPetSizeAdjustmentActive")}, " +
                     $"session={GetField<bool>(window, "_isPetSizePreviewSessionActive")}, " +
                     $"prepared={GetField<bool>(window, "_petSizeEnvelopePrepared")}, " +
                     $"sizeChanged={sizeChangedCount}, locationChanged={locationChangedCount}, " +
+                    $"width={envelopeWidth}->{window.Width}, height={envelopeHeight}->{window.Height}, " +
+                    $"left={envelopeLeft}->{window.Left}, top={envelopeTop}->{window.Top}, " +
+                    $"native={envelopeNativeRect}->{currentNativeRect}, " +
                     $"scaleEvents={scaleChangedCount}, completed={completedCount}, " +
                     $"timer={persistTimer.IsEnabled}, frame={frameBeforeNoOpStress}->{GetField<int>(window, "_activeFrameIndex")}");
 
@@ -20163,6 +20454,14 @@ internal static partial class Program
             if (!originalWindowVisible)
             {
                 window.Hide();
+            }
+            else
+            {
+                Invoke(
+                    window,
+                    "MoveMainWindowTo",
+                    originalWindowLeft,
+                    originalWindowTop);
             }
 
             SetField(
@@ -28865,6 +29164,42 @@ internal static partial class Program
         public int X;
         public int Y;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct NativeWindowRect : IEquatable<NativeWindowRect>
+    {
+        public readonly int Left;
+        public readonly int Top;
+        public readonly int Right;
+        public readonly int Bottom;
+
+        public bool Equals(NativeWindowRect other) =>
+            Left == other.Left &&
+            Top == other.Top &&
+            Right == other.Right &&
+            Bottom == other.Bottom;
+
+        public override bool Equals(object? value) =>
+            value is NativeWindowRect other && Equals(other);
+
+        public override int GetHashCode() => HashCode.Combine(
+            Left,
+            Top,
+            Right,
+            Bottom);
+
+        public override string ToString() =>
+            $"({Left},{Top})-({Right},{Bottom})";
+    }
+
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "GetWindowRect",
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTestWindowRect(
+        IntPtr windowHandle,
+        out NativeWindowRect rect);
 
     [DllImport(
         "user32.dll",
