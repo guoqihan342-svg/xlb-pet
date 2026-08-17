@@ -251,15 +251,16 @@ git status --short --ignored
 
 ## v1.0.81 发布验证
 
-本版新增加长萌火箭巡游、确定性交替选择和退出方向修复。以下提交、EXE 与 GitHub Release 字段须在最终功能快照完成构建、发布和独立回下载后回填，不能提前沿用旧版本证据。
+本版新增加长萌火箭巡游、确定性交替选择和退出方向修复。源码、自动化、正式发布与独立回下载验真于 `2026-08-18` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
-| 素材与图集 | `64 + 64` 火箭序列、三朵等大不重叠软圆云、四边透明和两处逐字节接缝；Brotli v4 清单为 `45` 页、`1368 / 1368` 帧，四个 rocket 页均须通过清单长度、内容 SHA-256 与解码像素 QA |
+| 素材与图集 | `64 + 64` 火箭序列、三朵等大不重叠软圆云、四边透明和两处逐字节接缝；Brotli v4 清单为 `45` 页、`1368 / 1368` 帧，四个 rocket 页均已通过清单长度、内容 SHA-256 与解码像素 QA |
 | 状态与缓存 | 首轮火箭、次轮熊猫；选择在预载前冻结且只在真实启动后翻转。点击、拖动、右键、提醒、禁用取消与忙碌重试不破坏交替；两种车辆最坏容量分别核算并均低于 `92 MiB`，只保护当轮页。新增页容量参与全局 best-fit 后，normal / serious 仍满足既有 `57 / 73 MiB` |
 | 自动化与构建 | 最终 Python 生成器 / 图集 / QA 单元测试 `45/45` 通过，最终 Atlas Motion QA 为 `45` 页、`1368` 帧、失败数 `0`；DesktopPet 与 UiStateChecks Release 构建均为 `0 warning / 0 error`，TodoStore / AppSettingsStore / ScheduledTaskStore 检查、`--roam-source-only`、`--roam-interaction-only`、`--resident-cache-only`、`--atlas-hash-only`、`--clip-clock-only`、`--pet-size-only` 与完整 `UiStateChecks.exe` 全部通过。普通 / 巡游容量为 `48.86 / 52 MiB`、`87.86 / 92 MiB` |
-| 源码与版本 | 待真实提交、推送与 tag 后回填；目标 `FileVersion=1.0.81.0`，ProductVersion 必须包含实际功能提交 SHA |
-| EXE 与 GitHub Release | 待真实单文件发布后回填 bytes、SHA-256、Authenticode、Release target、唯一附件 size / digest 与独立回下载复核；不得运行下载附件，也不得停止或替换用户现有桌宠进程 |
+| 源码与版本 | 功能提交 `ff0edc637d7c2c98777e35e56c1096ce393ca261`；远端 `main`、annotated `v1.0.81` tag 剥离提交与 Release target 在发布时均精确指向该提交。`FileVersion=1.0.81.0`，`ProductVersion=1.0.81+ff0edc637d7c2c98777e35e56c1096ce393ca261` |
+| EXE | 单文件框架依赖 EXE 为 `101,320,326` bytes，SHA-256 `C97ED416638B0A862541F2C69A309474DEFD06EEEC1CCCE90A3A153E840B03B8`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.81`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.81) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `101,320,326`、digest `sha256:c97ed416638b0a862541f2c69a309474defd06eeec1ccce90a3a153e840b03b8`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件，系统内当时没有正在运行的 `LubanDesktopPet` 进程，因此也未启动、停止或替换任何桌宠进程 |
 
 ## v1.0.80 发布验证
 
