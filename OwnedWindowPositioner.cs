@@ -15,6 +15,7 @@ internal static class OwnedWindowPositioner
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoSendChanging = 0x0400;
     private const uint SwpNoOwnerZOrder = 0x0200;
     private static readonly uint MonitorInfoSize = (uint)Marshal.SizeOf<MonitorInfo>();
 
@@ -387,7 +388,28 @@ internal static class OwnedWindowPositioner
     internal static bool TrySetPosition(
         Window window,
         double logicalLeft,
-        double logicalTop)
+        double logicalTop) =>
+        TrySetPositionCore(
+            window,
+            logicalLeft,
+            logicalTop,
+            suppressWindowPosChanging: false);
+
+    internal static bool TrySetEdgeRoamPosition(
+        Window window,
+        double logicalLeft,
+        double logicalTop) =>
+        TrySetPositionCore(
+            window,
+            logicalLeft,
+            logicalTop,
+            suppressWindowPosChanging: true);
+
+    private static bool TrySetPositionCore(
+        Window window,
+        double logicalLeft,
+        double logicalTop,
+        bool suppressWindowPosChanging)
     {
         try
         {
@@ -423,6 +445,20 @@ internal static class OwnedWindowPositioner
                 return true;
             }
 
+            var flags =
+                SwpNoSize |
+                SwpNoZOrder |
+                SwpNoActivate |
+                SwpNoOwnerZOrder;
+            if (suppressWindowPosChanging)
+            {
+                // Edge-roam-only fixed-size path: skip WPF's layered-window
+                // pre-move render-thread SyncFlush. The route keeps its own
+                // authoritative logical coordinates and never uses this path
+                // for resize, SizeToContent or physical dragging.
+                flags |= SwpNoSendChanging;
+            }
+
             return SetWindowPos(
                 source.Handle,
                 IntPtr.Zero,
@@ -430,10 +466,7 @@ internal static class OwnedWindowPositioner
                 top,
                 0,
                 0,
-                SwpNoSize |
-                SwpNoZOrder |
-                SwpNoActivate |
-                SwpNoOwnerZOrder);
+                flags);
         }
         catch
         {

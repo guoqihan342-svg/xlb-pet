@@ -9839,6 +9839,8 @@ internal static partial class Program
     private static void AssertEdgeRoamingSourceContract()
     {
         var mainSource = File.ReadAllText(FindWorkspaceFile("MainWindow.xaml.cs"));
+        var positionerSource = File.ReadAllText(
+            FindWorkspaceFile("OwnedWindowPositioner.cs"));
         var todoSource = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml.cs"));
         var todoXaml = File.ReadAllText(FindWorkspaceFile("TodoWindow.xaml"));
         var readmeSource = File.ReadAllText(FindWorkspaceFile("README.md"));
@@ -9851,6 +9853,36 @@ internal static partial class Program
             FindWorkspaceFile("tools", "build_roam_rocket_assets.py"));
         var atlasMotionQaSource = File.ReadAllText(
             FindWorkspaceFile("tools", "qa_sprite_atlas_motion.py"));
+        var trySetPositionStart = positionerSource.IndexOf(
+            "internal static bool TrySetPosition(",
+            StringComparison.Ordinal);
+        var trySetEdgeRoamPositionStart = positionerSource.IndexOf(
+            "internal static bool TrySetEdgeRoamPosition(",
+            Math.Max(0, trySetPositionStart),
+            StringComparison.Ordinal);
+        var trySetPositionCoreStart = positionerSource.IndexOf(
+            "private static bool TrySetPositionCore(",
+            Math.Max(0, trySetEdgeRoamPositionStart),
+            StringComparison.Ordinal);
+        var tryGetPhysicalBoundsStart = positionerSource.IndexOf(
+            "internal static bool TryGetPhysicalBounds(",
+            Math.Max(0, trySetPositionCoreStart),
+            StringComparison.Ordinal);
+        var trySetPositionSource =
+            trySetPositionStart >= 0 &&
+            trySetEdgeRoamPositionStart > trySetPositionStart
+                ? positionerSource[trySetPositionStart..trySetEdgeRoamPositionStart]
+                : string.Empty;
+        var trySetEdgeRoamPositionSource =
+            trySetEdgeRoamPositionStart >= 0 &&
+            trySetPositionCoreStart > trySetEdgeRoamPositionStart
+                ? positionerSource[trySetEdgeRoamPositionStart..trySetPositionCoreStart]
+                : string.Empty;
+        var trySetPositionCoreSource =
+            trySetPositionCoreStart >= 0 &&
+            tryGetPhysicalBoundsStart > trySetPositionCoreStart
+                ? positionerSource[trySetPositionCoreStart..tryGetPhysicalBoundsStart]
+                : string.Empty;
 
         var startRoaming = ExtractPrivateMethodSource(mainSource, "StartEdgeRoaming");
         var stopRoaming = ExtractPrivateMethodSource(mainSource, "StopEdgeRoaming");
@@ -9876,6 +9908,9 @@ internal static partial class Program
         var applyRoamingPosition = ExtractPrivateMethodSource(
             mainSource,
             "ApplyEdgeRoamingPosition");
+        var moveMainWindow = ExtractPrivateMethodSource(
+            mainSource,
+            "MoveMainWindowTo");
         var getRoamingSupportOffset = ExtractPrivateMethodSource(
             mainSource,
             "GetEdgeRoamSupportOffset");
@@ -10467,6 +10502,74 @@ internal static partial class Program
                    StringComparison.Ordinal),
             "熊猫坐骑位置与姿势必须由唯一Rendering绝对时钟推进；逻辑坐标保持double精度，" +
             "最终Left/Top才对齐物理像素，热路径不得使用定时器、日志、I/O、Task或LINQ分配");
+        var suppressGuard = trySetPositionCoreSource.IndexOf(
+            "if (suppressWindowPosChanging)",
+            StringComparison.Ordinal);
+        var suppressFlagWrite = trySetPositionCoreSource.IndexOf(
+            "flags |= SwpNoSendChanging",
+            StringComparison.Ordinal);
+        var scopedMoveChoice = moveMainWindow.IndexOf(
+            "var moved = _isApplyingEdgeRoamPosition",
+            StringComparison.Ordinal);
+        var scopedMoveCall = moveMainWindow.IndexOf(
+            "TrySetEdgeRoamPosition",
+            StringComparison.Ordinal);
+        var ordinaryMoveCall = moveMainWindow.IndexOf(
+            "TrySetPosition",
+            Math.Max(0, scopedMoveCall + 1),
+            StringComparison.Ordinal);
+        var applyingRoamTrue = applyRoamingPosition.IndexOf(
+            "_isApplyingEdgeRoamPosition = true",
+            StringComparison.Ordinal);
+        var applyingRoamTry = applyRoamingPosition.IndexOf(
+            "try",
+            Math.Max(0, applyingRoamTrue),
+            StringComparison.Ordinal);
+        var applyingRoamMove = applyRoamingPosition.IndexOf(
+            "MoveMainWindowTo",
+            Math.Max(0, applyingRoamTry),
+            StringComparison.Ordinal);
+        var applyingRoamFinally = applyRoamingPosition.IndexOf(
+            "finally",
+            Math.Max(0, applyingRoamMove),
+            StringComparison.Ordinal);
+        var applyingRoamFalse = applyRoamingPosition.IndexOf(
+            "_isApplyingEdgeRoamPosition = false",
+            Math.Max(0, applyingRoamFinally),
+            StringComparison.Ordinal);
+        Assert(positionerSource.Contains(
+                   "private const uint SwpNoSendChanging = 0x0400",
+                   StringComparison.Ordinal) &&
+               trySetPositionSource.Contains(
+                   "suppressWindowPosChanging: false",
+                   StringComparison.Ordinal) &&
+               !trySetPositionSource.Contains(
+                   "SwpNoSendChanging",
+                   StringComparison.Ordinal) &&
+               trySetEdgeRoamPositionSource.Contains(
+                   "suppressWindowPosChanging: true",
+                   StringComparison.Ordinal) &&
+               trySetPositionCoreSource.Contains(
+                   "GetWindowRect(source.Handle, out var currentBounds)",
+                   StringComparison.Ordinal) &&
+               suppressGuard >= 0 &&
+               suppressFlagWrite > suppressGuard &&
+               scopedMoveChoice >= 0 &&
+               scopedMoveCall > scopedMoveChoice &&
+               ordinaryMoveCall > scopedMoveCall &&
+               applyingRoamTrue >= 0 &&
+               applyingRoamTry > applyingRoamTrue &&
+               applyingRoamMove > applyingRoamTry &&
+               applyingRoamFinally > applyingRoamMove &&
+               applyingRoamFalse > applyingRoamFinally &&
+               mainSource.Split(
+                   "TrySetEdgeRoamPosition",
+                   StringSplitOptions.None).Length == 2 &&
+               positionerSource.Split(
+                   "SwpNoSendChanging",
+                   StringSplitOptions.None).Length == 3,
+            "SWP_NOSENDCHANGING必须只用于绕屏逐帧定位，" +
+            "普通移动、缩放与物理拖拽仍走原消息契约");
 
         var stopBeforeDrag = pointerDown.IndexOf(
             "StopEdgeRoaming(",

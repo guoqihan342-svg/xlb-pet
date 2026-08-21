@@ -2437,10 +2437,16 @@ public partial class MainWindow : Window
 
     private void MoveMainWindowTo(double logicalLeft, double logicalTop)
     {
-        if (OwnedWindowPositioner.TrySetPosition(
+        var moved = _isApplyingEdgeRoamPosition
+            ? OwnedWindowPositioner.TrySetEdgeRoamPosition(
                 this,
                 logicalLeft,
-                logicalTop))
+                logicalTop)
+            : OwnedWindowPositioner.TrySetPosition(
+                this,
+                logicalLeft,
+                logicalTop);
+        if (moved)
         {
             return;
         }
