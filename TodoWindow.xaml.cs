@@ -112,6 +112,7 @@ public partial class TodoWindow : Window
             sliderFace: Color.FromRgb(0xA7, 0x64, 0x35));
 
     private bool _settingEdgeRoamingEnabled;
+    private bool _settingAlwaysOnTop;
     private bool _settingStartupEnabled;
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
@@ -371,6 +372,9 @@ public partial class TodoWindow : Window
 
     public bool IsTodoDragInProgress => _todoDragInProgress;
 
+    public bool IsAlwaysOnTop =>
+        Topmost && TopmostToggleButton.IsChecked == true;
+
     public bool IsTransientPopupOpen =>
         _isScheduledDatePickerPopupOpen ||
         _isScheduledTimePickerPopupOpen ||
@@ -507,6 +511,8 @@ public partial class TodoWindow : Window
     public event Action? TransientInteractionCompleted;
 
     public event Action<bool>? EdgeRoamingEnabledChanged;
+
+    public event Action<bool>? AlwaysOnTopChanged;
 
     public event Action<bool>? StartupEnabledChanged;
 
@@ -771,6 +777,20 @@ public partial class TodoWindow : Window
         return textBox.SelectionLength > 0
             ? textBox.SelectedText
             : null;
+    }
+
+    public void SetAlwaysOnTop(bool enabled)
+    {
+        _settingAlwaysOnTop = true;
+        try
+        {
+            Topmost = enabled;
+            TopmostToggleButton.IsChecked = enabled;
+        }
+        finally
+        {
+            _settingAlwaysOnTop = false;
+        }
     }
 
     public void SetEdgeRoamingEnabled(bool enabled)
@@ -4955,6 +4975,14 @@ public partial class TodoWindow : Window
             IsWithin(captured, PetSizeSlider))
         {
             Mouse.Capture(null);
+        }
+    }
+
+    private void TopmostToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_settingAlwaysOnTop)
+        {
+            AlwaysOnTopChanged?.Invoke(TopmostToggleButton.IsChecked == true);
         }
     }
 

@@ -433,6 +433,7 @@ public partial class MainWindow : Window
     private long _edgePeekFrameDeadlineTimestamp;
     private EdgeDock _edgeDock;
     private bool _edgeRoamingEnabled = true;
+    private bool _alwaysOnTop = true;
     private bool _isEdgeRoaming;
     private bool _isApplyingEdgeRoamPosition;
     private bool _edgeRoamClockStarted;
@@ -781,6 +782,7 @@ public partial class MainWindow : Window
         _todoWindow.PetSizeAdjustmentCompleted += TodoWindow_PetSizeAdjustmentCompleted;
         _todoWindow.EdgeRoamingEnabledChanged +=
             TodoWindow_EdgeRoamingEnabledChanged;
+        _todoWindow.AlwaysOnTopChanged += TodoWindow_AlwaysOnTopChanged;
         _todoWindow.StartupEnabledChanged += TodoWindow_StartupEnabledChanged;
         _todoWindow.CloseRequested += TodoWindow_CloseRequested;
         _todoWindow.ExitRequested += TodoWindow_ExitRequested;
@@ -812,11 +814,13 @@ public partial class MainWindow : Window
 
         var settings = _settingsStore.Load();
         _edgeRoamingEnabled = settings.EdgeRoamingEnabled;
+        _alwaysOnTop = settings.AlwaysOnTop;
         _petSizeScale = NormalizePetSizeScale(settings.PetSizeScale);
         _persistedPetSizeScale = _petSizeScale;
         _petSizeTargetScale = _petSizeScale;
         _todoWindow.SetPetSizeScale(_petSizeScale);
         _todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled);
+        ApplyAlwaysOnTop(_alwaysOnTop);
         ApplyPetSizeScale(_petSizeScale, persist: false, preservePosition: false);
 
         _automaticTimer = new DispatcherTimer
@@ -12004,6 +12008,39 @@ public partial class MainWindow : Window
         RestartAutomaticCountdown();
     }
 
+    private void TodoWindow_AlwaysOnTopChanged(bool enabled)
+    {
+        if (_alwaysOnTop == enabled)
+        {
+            ApplyAlwaysOnTop(enabled);
+            return;
+        }
+
+        var previousValue = _alwaysOnTop;
+        _alwaysOnTop = enabled;
+        ApplyAlwaysOnTop(enabled);
+        if (SaveSettings())
+        {
+            return;
+        }
+
+        _alwaysOnTop = previousValue;
+        ApplyAlwaysOnTop(previousValue);
+    }
+
+    private void ApplyAlwaysOnTop(bool enabled)
+    {
+        if (enabled)
+        {
+            Topmost = true;
+            _todoWindow.SetAlwaysOnTop(true);
+            return;
+        }
+
+        _todoWindow.SetAlwaysOnTop(false);
+        Topmost = false;
+    }
+
     private void TodoWindow_StartupEnabledChanged(bool enabled)
     {
         if (_startupRegistration is null)
@@ -13084,11 +13121,11 @@ public partial class MainWindow : Window
     {
         var scaleToPersist = NormalizePetSizeScale(
             _petSizeSettingsDirty ? _petSizeTargetScale : _petSizeScale);
-        var saved = _settingsStore.Save(new AppSettings
-        {
-            EdgeRoamingEnabled = _edgeRoamingEnabled,
-            PetSizeScale = scaleToPersist
-        });
+        var settings = _settingsStore.Load();
+        settings.EdgeRoamingEnabled = _edgeRoamingEnabled;
+        settings.AlwaysOnTop = _alwaysOnTop;
+        settings.PetSizeScale = scaleToPersist;
+        var saved = _settingsStore.Save(settings);
         if (saved)
         {
             _persistedPetSizeScale = scaleToPersist;

@@ -16203,6 +16203,50 @@ internal static partial class Program
     {
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
+        var applyAlwaysOnTopSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ApplyAlwaysOnTop");
+        var alwaysOnTopChangedSource = ExtractPrivateMethodSource(
+            mainSource,
+            "TodoWindow_AlwaysOnTopChanged");
+        var saveSettingsSource = ExtractPrivateMethodSource(
+            mainSource,
+            "SaveSettings");
+        var hydrateTopmostIndex = mainSource.IndexOf(
+            "_alwaysOnTop = settings.AlwaysOnTop;",
+            StringComparison.Ordinal);
+        var applyHydratedTopmostIndex = mainSource.IndexOf(
+            "ApplyAlwaysOnTop(_alwaysOnTop);",
+            StringComparison.Ordinal);
+        Assert(
+            applyAlwaysOnTopSource.IndexOf(
+                "Topmost = true;",
+                StringComparison.Ordinal) <
+            applyAlwaysOnTopSource.IndexOf(
+                "_todoWindow.SetAlwaysOnTop(true);",
+                StringComparison.Ordinal) &&
+            applyAlwaysOnTopSource.IndexOf(
+                "_todoWindow.SetAlwaysOnTop(false);",
+                StringComparison.Ordinal) <
+            applyAlwaysOnTopSource.IndexOf(
+                "Topmost = false;",
+                StringComparison.Ordinal) &&
+            alwaysOnTopChangedSource.Contains(
+                "if (SaveSettings())",
+                StringComparison.Ordinal) &&
+            alwaysOnTopChangedSource.Contains(
+                "_alwaysOnTop = previousValue;",
+                StringComparison.Ordinal) &&
+            saveSettingsSource.Contains(
+                "var settings = _settingsStore.Load();",
+                StringComparison.Ordinal) &&
+            saveSettingsSource.Contains(
+                "settings.AlwaysOnTop = _alwaysOnTop;",
+                StringComparison.Ordinal) &&
+            hydrateTopmostIndex >= 0 &&
+            applyHydratedTopmostIndex > hydrateTopmostIndex,
+            "任务小屋置顶按钮必须同步控制桌宠与Owned窗口、持久化用户选择；" +
+            "启停顺序必须避免短暂层级反转，保存失败时必须回滚，启动时必须先读取再应用");
         var rightButtonUpSource = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseRightButtonUp");
@@ -16283,6 +16327,81 @@ internal static partial class Program
             Assert(ReferenceEquals(todoWindow.Owner, window),
                 "待办窗口必须是 MainWindow 的 Owned Window");
             Assert(!todoWindow.IsVisible, "待办窗口不得在主窗口启动时自动显示");
+            Invoke(window, "ApplyAlwaysOnTop", true);
+            SetField(window, "_alwaysOnTop", true);
+            var settingsStore = GetField<AppSettingsStore>(window, "_settingsStore");
+            var originalEdgeRoamingEnabled = GetField<bool>(
+                window,
+                "_edgeRoamingEnabled");
+            var originalPetSizeScale = GetField<double>(window, "_petSizeScale");
+            Assert(settingsStore.Save(new AppSettings
+                   {
+                       EdgeRoamingEnabled = originalEdgeRoamingEnabled,
+                       AlwaysOnTop = true,
+                       PetSizeScale = originalPetSizeScale
+                   }),
+                "置顶按钮端到端测试必须能建立独立设置基线");
+            var ownedTopmostToggle = todoWindow.FindName("TopmostToggleButton") as ToggleButton ??
+                throw new InvalidOperationException("找不到 Owned TodoWindow 的置顶按钮");
+
+            var blockedSettingsPath = Path.Combine(
+                Path.GetDirectoryName(settingsStore.FilePath)!,
+                "blocked-topmost-settings.json");
+            Directory.CreateDirectory(blockedSettingsPath);
+            SetField(
+                window,
+                "_settingsStore",
+                new AppSettingsStore(blockedSettingsPath));
+            try
+            {
+                ownedTopmostToggle.IsChecked = false;
+                ownedTopmostToggle.RaiseEvent(
+                    new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert(window.Topmost &&
+                       todoWindow.Topmost &&
+                       todoWindow.IsAlwaysOnTop &&
+                       GetField<bool>(window, "_alwaysOnTop") &&
+                       ownedTopmostToggle.IsChecked == true,
+                    "置顶设置保存失败时必须原子回滚两窗、按钮和控制器状态");
+            }
+            finally
+            {
+                SetField(window, "_settingsStore", settingsStore);
+            }
+
+            ownedTopmostToggle.IsChecked = false;
+            ownedTopmostToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var disabledSettings = settingsStore.Load();
+            Assert(!window.Topmost &&
+                   !todoWindow.Topmost &&
+                   !todoWindow.IsAlwaysOnTop &&
+                   !GetField<bool>(window, "_alwaysOnTop") &&
+                   !disabledSettings.AlwaysOnTop &&
+                   disabledSettings.EdgeRoamingEnabled == originalEdgeRoamingEnabled &&
+                   Math.Abs(disabledSettings.PetSizeScale - originalPetSizeScale) < 0.0005 &&
+                   ReferenceEquals(todoWindow.Owner, window),
+                "真实生产事件链取消置顶时必须贯通两窗状态与持久化，且不能改动其他设置");
+            todoWindow.Hide();
+            todoWindow.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            Assert(!window.Topmost &&
+                   !todoWindow.Topmost &&
+                   !todoWindow.IsAlwaysOnTop &&
+                   ownedTopmostToggle.IsChecked == false,
+                "任务小屋收起再显示后必须保留取消置顶状态");
+            todoWindow.Hide();
+            ownedTopmostToggle.IsChecked = true;
+            ownedTopmostToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var enabledSettings = settingsStore.Load();
+            Assert(window.Topmost &&
+                   todoWindow.Topmost &&
+                   todoWindow.IsAlwaysOnTop &&
+                   GetField<bool>(window, "_alwaysOnTop") &&
+                   enabledSettings.AlwaysOnTop &&
+                   enabledSettings.EdgeRoamingEnabled == originalEdgeRoamingEnabled &&
+                   Math.Abs(enabledSettings.PetSizeScale - originalPetSizeScale) < 0.0005 &&
+                   ReferenceEquals(todoWindow.Owner, window),
+                "真实生产事件链恢复置顶时必须贯通两窗状态与持久化，且不能改动其他设置");
 
             var reactionClip = GetField<Array>(window, "_reactionClips").GetValue(0)!;
             var wakeFrameCount = GetField<Array>(window, "_wakeFrames").Length;
@@ -18083,7 +18202,8 @@ internal static partial class Program
                  {
                      "Todos",
                      "IsImeComposing",
-                     "IsTodoDragInProgress"
+                     "IsTodoDragInProgress",
+                     "IsAlwaysOnTop"
                  })
         {
             Assert(type.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public) is not null,
@@ -18093,6 +18213,7 @@ internal static partial class Program
         foreach (var methodName in new[]
                  {
                      "FocusInput",
+                     "SetAlwaysOnTop",
                      "SetEdgeRoamingEnabled",
                      "SetPetSizeScale"
                  })
@@ -18109,6 +18230,7 @@ internal static partial class Program
                      "TodoMoveRequested",
                      "TodoDragCompleted",
                      "DeleteRequested",
+                     "AlwaysOnTopChanged",
                      "EdgeRoamingEnabledChanged",
                      "PetSizeScaleChanged",
                      "CloseRequested",
@@ -18143,6 +18265,48 @@ internal static partial class Program
                 "TodoWindow 必须为透明背景、无边框且不占任务栏；" +
                 $"style={todoWindow.WindowStyle}, allowsTransparency={todoWindow.AllowsTransparency}, " +
                 $"taskbar={todoWindow.ShowInTaskbar}, background={todoWindow.Background}");
+            var topmostToggle = todoWindow.FindName("TopmostToggleButton") as ToggleButton ??
+                throw new InvalidOperationException(
+                    "找不到任务小屋标题栏的 TopmostToggleButton");
+            Assert(topmostToggle.Width <= 28 &&
+                   topmostToggle.Height <= 28 &&
+                   !topmostToggle.Focusable &&
+                   !topmostToggle.IsTabStop &&
+                   AutomationProperties.GetHelpText(topmostToggle).Contains(
+                       "桌宠和任务小屋",
+                       StringComparison.Ordinal),
+                "任务小屋标题栏必须提供不抢键盘焦点的萌系小置顶按钮");
+            Assert(todoWindow.Topmost &&
+                   todoWindow.IsAlwaysOnTop &&
+                   topmostToggle.IsChecked == true &&
+                   AutomationProperties.GetItemStatus(topmostToggle) == "已开启" &&
+                   AutomationProperties.GetName(topmostToggle).Contains(
+                       "取消置顶",
+                       StringComparison.Ordinal) &&
+                   topmostToggle.ToolTip?.ToString()?.Contains(
+                       "已置顶",
+                       StringComparison.Ordinal) == true,
+                "置顶按钮初始状态必须和既有 Topmost=true 行为一致");
+            var alwaysOnTopChanges = new List<bool>();
+            todoWindow.AlwaysOnTopChanged += alwaysOnTopChanges.Add;
+            todoWindow.SetAlwaysOnTop(false);
+            Assert(!todoWindow.Topmost &&
+                   !todoWindow.IsAlwaysOnTop &&
+                   alwaysOnTopChanges.Count == 0 &&
+                   AutomationProperties.GetItemStatus(topmostToggle) == "已关闭" &&
+                   AutomationProperties.GetName(topmostToggle).Contains(
+                       "置顶桌宠和任务小屋",
+                       StringComparison.Ordinal) &&
+                   topmostToggle.ToolTip?.ToString()?.Contains(
+                       "置顶桌宠和任务小屋",
+                       StringComparison.Ordinal) == true,
+                "主窗静默同步置顶状态时不得反向触发用户设置事件");
+            topmostToggle.IsChecked = true;
+            topmostToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Assert(!todoWindow.Topmost &&
+                   !todoWindow.IsAlwaysOnTop &&
+                   alwaysOnTopChanges.SequenceEqual(new[] { true }),
+                "独立TodoWindow点击只发布一次用户意图，实际Topmost必须由MainWindow唯一控制器同步");
             var copyBindings = todoWindow.CommandBindings
                 .OfType<CommandBinding>()
                 .Where(binding => ReferenceEquals(binding.Command, ApplicationCommands.Copy))
@@ -18161,6 +18325,39 @@ internal static partial class Program
                        StringComparison.Ordinal),
                 "待办行必须保留可单独验证的 TodoRowBorder");
             var todoXamlDocument = XDocument.Parse(todoXaml);
+            var topmostToggleElement = todoXamlDocument.Root!
+                .Descendants()
+                .Single(element =>
+                    element.Name.LocalName == "ToggleButton" &&
+                    element.Attributes().Any(attribute =>
+                        attribute.Name.LocalName == "Name" &&
+                        attribute.Value == "TopmostToggleButton"));
+            var topmostStyle = todoXamlDocument.Root!
+                .Descendants()
+                .Single(element =>
+                    element.Name.LocalName == "Style" &&
+                    element.Attributes().Any(attribute =>
+                        attribute.Name.LocalName == "Key" &&
+                        attribute.Value == "CuteTopmostToggleStyle"));
+            Assert(
+                (string?)topmostToggleElement.Attribute("IsChecked") == "True" &&
+                (string?)topmostToggleElement.Attribute("Click") ==
+                    "TopmostToggleButton_Click" &&
+                topmostToggleElement.Attributes().Any(attribute =>
+                    attribute.Name.LocalName == "Grid.Column" &&
+                    attribute.Value == "2") &&
+                topmostStyle.Descendants().Count(element =>
+                    element.Name.LocalName == "Ellipse") >= 4 &&
+                topmostStyle.Descendants().Any(element =>
+                    element.Name.LocalName == "Path" &&
+                    element.Attributes().Any(attribute =>
+                        attribute.Name.LocalName == "Name" &&
+                        attribute.Value == "TopmostStatusSpark")) &&
+                topmostStyle.Descendants().Any(element =>
+                    element.Name.LocalName == "Path" &&
+                    (string?)element.Attribute("Data") is not null),
+                "置顶按钮必须放在标题栏弹性空白列、走受保护事件，" +
+                "并使用带眼睛和腮红的矢量萌图钉而非字体Emoji");
             var todoRowHoverBackgroundBrush = todoXamlDocument.Root!
                 .Descendants()
                 .Single(element =>

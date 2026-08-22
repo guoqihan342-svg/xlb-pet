@@ -150,6 +150,142 @@
             </Setter>
         </Style>
 
+        <Style x:Key="CuteTopmostToggleStyle"
+               TargetType="{x:Type ToggleButton}">
+            <Setter Property="Width" Value="27" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="#FFFFF7F2" />
+            <Setter Property="BorderBrush" Value="#E7C7C2" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#B88796" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="ToolTip" Value="始终置顶桌宠和任务小屋" />
+            <Setter Property="AutomationProperties.Name"
+                    Value="置顶桌宠和任务小屋" />
+            <Setter Property="AutomationProperties.ItemStatus"
+                    Value="已关闭" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <Grid x:Name="TopmostButtonRoot"
+                              Background="Transparent"
+                              RenderTransformOrigin="0.5,0.5">
+                            <Border x:Name="TopmostButtonChrome"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="10" />
+                            <Grid x:Name="TopmostPinFace"
+                                  Width="16"
+                                  Height="16"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"
+                                  RenderTransformOrigin="0.5,0.5">
+                                <Grid.RenderTransform>
+                                    <RotateTransform x:Name="TopmostPinRotation"
+                                                     Angle="-8" />
+                                </Grid.RenderTransform>
+                                <Path Data="M4.4,2.2 C4.4,1.55 4.92,1.05 5.56,1.05 H10.44 C11.08,1.05 11.6,1.55 11.6,2.2 V5.05 L13.42,7.36 C13.76,7.79 13.45,8.42 12.9,8.42 H8.92 V12.56 L8,14.82 L7.08,12.56 V8.42 H3.1 C2.55,8.42 2.24,7.79 2.58,7.36 L4.4,5.05 Z"
+                                      Fill="{TemplateBinding Foreground}"
+                                      Stroke="#865E6C"
+                                      StrokeThickness="0.75"
+                                      StrokeLineJoin="Round" />
+                                <Ellipse Width="1.15"
+                                         Height="1.35"
+                                         Margin="0,0,3.5,7.4"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         Fill="#523D45" />
+                                <Ellipse Width="1.15"
+                                         Height="1.35"
+                                         Margin="3.5,0,0,7.4"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         Fill="#523D45" />
+                                <Path Margin="0,0,0,4.4"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Data="M6.9,5.45 Q8,6.35 9.1,5.45"
+                                      Fill="Transparent"
+                                      Stroke="#6E4E59"
+                                      StrokeEndLineCap="Round"
+                                      StrokeThickness="0.65" />
+                                <Ellipse Width="1.35"
+                                         Height="0.75"
+                                         Margin="0,0,6.2,4.7"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         Fill="#FFFFD4DE" />
+                                <Ellipse Width="1.35"
+                                         Height="0.75"
+                                         Margin="6.2,0,0,4.7"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         Fill="#FFFFD4DE" />
+                                <Path x:Name="TopmostStatusSpark"
+                                      Data="M12.6,0.9 L13.25,2.35 L14.7,3 L13.25,3.65 L12.6,5.1 L11.95,3.65 L10.5,3 L11.95,2.35 Z"
+                                      Fill="#FFFFC96B"
+                                      Stroke="#D58C35"
+                                      StrokeThickness="0.45"
+                                      StrokeLineJoin="Round"
+                                      Opacity="0" />
+                            </Grid>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="TopmostPinFace"
+                                        Property="RenderTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="0" />
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="TopmostStatusSpark"
+                                        Property="Opacity"
+                                        Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="TopmostButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.86" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="TopmostButtonRoot"
+                                        Property="Opacity"
+                                        Value="0.42" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="#FFFFEAF1" />
+                    <Setter Property="BorderBrush" Value="#EFAFC3" />
+                    <Setter Property="Foreground" Value="#EC668E" />
+                    <Setter Property="ToolTip" Value="桌宠和任务小屋已置顶 · 点击取消" />
+                    <Setter Property="AutomationProperties.Name"
+                            Value="取消置顶桌宠和任务小屋" />
+                    <Setter Property="AutomationProperties.ItemStatus"
+                            Value="已开启" />
+                </Trigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FFFFEEE8" />
+                    <Setter Property="BorderBrush" Value="#DEAFA8" />
+                </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsChecked" Value="True" />
+                        <Condition Property="IsMouseOver" Value="True" />
+                    </MultiTrigger.Conditions>
+                    <Setter Property="Background" Value="#FFFFDDE9" />
+                    <Setter Property="BorderBrush" Value="#E78EAD" />
+                </MultiTrigger>
+            </Style.Triggers>
+        </Style>
+
         <Style x:Key="TaskRowIconButtonStyle"
                TargetType="{x:Type Button}">
             <Setter Property="Width" Value="24" />
@@ -1008,6 +1144,13 @@
                             </ControlTemplate>
                         </RadioButton.Template>
                     </RadioButton>
+                    <ToggleButton x:Name="TopmostToggleButton"
+                                  Grid.Column="2"
+                                  HorizontalAlignment="Right"
+                                  AutomationProperties.HelpText="让桌宠和任务小屋保持在其他窗口上方"
+                                  IsChecked="True"
+                                  Click="TopmostToggleButton_Click"
+                                  Style="{StaticResource CuteTopmostToggleStyle}" />
                     <Button x:Name="CollapseButton"
                             Grid.Column="3"
                             Width="38"

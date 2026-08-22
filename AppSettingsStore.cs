@@ -10,6 +10,8 @@ public sealed class AppSettings
 {
     public bool EdgeRoamingEnabled { get; set; } = true;
 
+    public bool AlwaysOnTop { get; set; } = true;
+
     public double PetSizeScale { get; set; } = 1.0;
 }
 
