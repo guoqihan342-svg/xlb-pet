@@ -251,14 +251,16 @@ git status --short --ignored
 
 ## v1.0.83 发布验证
 
-本版将火箭尾部三朵软圆云统一放大为 `64 × 64 px`，并保持互不重叠、透明边界、4 帧喷射节拍与既有路线/缓存边界。源码与自动化已完成；真实提交、标签、Release、EXE 和独立回下载证据须在实际发布后回填。
+本版将火箭尾部三朵软圆云统一放大为 `64 × 64 px`，并保持互不重叠、透明边界、4 帧喷射节拍与既有路线/缓存边界。源码、自动化、正式发布、独立回下载与用户 `dist` 更新于 `2026-08-22` 完成。
 
 | 项目 | 当前实测或待验证结果 |
 | --- | --- |
 | 素材与图集 | `64 + 64` 火箭序列；三朵 `64 × 64 px` 云固定相隔 `1 px`，首云相对火箭最大包围至少露出 `12 px`，最右侧保留透明列。图集为 `45` 页、`1368 / 1368` 帧，受影响运行时分页为三个 |
 | 自动化与构建 | Python 生成器 / 图集 / QA 单元测试 `46/46` 通过；Atlas Motion QA 为 `45` 页、`1368` 帧、失败数 `0`；DesktopPet 与 UiStateChecks Release 构建均为 `0 warning / 0 error`。`--atlas-hash-only`、`--roam-source-only`、`--roam-interaction-only`、`--resident-cache-only`、`--memory-profile`、`--todo-only`、`--deadline-only` 与完整 UiStateChecks 均通过 |
 | 状态与缓存 | 普通 / 巡游容量仍为 `48.86 / 52 MiB`、`87.86 / 92 MiB`；idle 深裁仍为 `10.86 MiB` resident。火箭/熊猫交替、实际速度、绝对时序、点击/拖动/右键接管、任务小屋固定和 1 分钟公平调度均保持原合同 |
-| 源码与发布 | 待真实提交与发布后回填：功能提交、annotated tag、Release target、EXE bytes、SHA-256、FileVersion、ProductVersion、Authenticode、附件 size/digest、独立回下载与用户 `dist` 更新 |
+| 源码与版本 | 功能提交 `414cad92b934ddb45021f8c169a341045d279463`；功能发布时远端 `main`、annotated `v1.0.83` tag 剥离提交与 Release target 均精确指向该提交。`FileVersion=1.0.83.0`，`ProductVersion=1.0.83+414cad92b934ddb45021f8c169a341045d279463` |
+| 发布 EXE | 单文件框架依赖 EXE 为 `101,373,062` bytes，SHA-256 `B9109D8D37CD396A3AB67F7A3E7E60892F53D133F500737CC2B9E3B590D6F7E8`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.83`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.83) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `101,373,062`、digest `sha256:b9109d8d37cd396a3ab67f7a3e7e60892f53d133f500737cc2b9e3b590d6f7e8`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件。用户 `dist` 已替换同哈希 v1.0.83 并保持单实例响应，替换前备份仍在 gitignored 目录，三个用户数据文件哈希不变 |
 
 ## v1.0.82 发布验证
 
