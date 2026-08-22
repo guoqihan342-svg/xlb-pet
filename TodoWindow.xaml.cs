@@ -112,7 +112,7 @@ public partial class TodoWindow : Window
             sliderFace: Color.FromRgb(0xA7, 0x64, 0x35));
 
     private bool _settingEdgeRoamingEnabled;
-    private bool _settingAlwaysOnTop;
+    private bool _settingWindowPinned;
     private bool _settingStartupEnabled;
     private bool _settingPetSizeScale;
     private bool _petSizeAdjustmentActive;
@@ -372,8 +372,7 @@ public partial class TodoWindow : Window
 
     public bool IsTodoDragInProgress => _todoDragInProgress;
 
-    public bool IsAlwaysOnTop =>
-        Topmost && TopmostToggleButton.IsChecked == true;
+    public bool IsWindowPinned => WindowPinToggleButton.IsChecked == true;
 
     public bool IsTransientPopupOpen =>
         _isScheduledDatePickerPopupOpen ||
@@ -512,7 +511,7 @@ public partial class TodoWindow : Window
 
     public event Action<bool>? EdgeRoamingEnabledChanged;
 
-    public event Action<bool>? AlwaysOnTopChanged;
+    public event Action<bool>? WindowPinnedChanged;
 
     public event Action<bool>? StartupEnabledChanged;
 
@@ -779,17 +778,16 @@ public partial class TodoWindow : Window
             : null;
     }
 
-    public void SetAlwaysOnTop(bool enabled)
+    public void SetWindowPinned(bool enabled)
     {
-        _settingAlwaysOnTop = true;
+        _settingWindowPinned = true;
         try
         {
-            Topmost = enabled;
-            TopmostToggleButton.IsChecked = enabled;
+            WindowPinToggleButton.IsChecked = enabled;
         }
         finally
         {
-            _settingAlwaysOnTop = false;
+            _settingWindowPinned = false;
         }
     }
 
@@ -4978,11 +4976,11 @@ public partial class TodoWindow : Window
         }
     }
 
-    private void TopmostToggleButton_Click(object sender, RoutedEventArgs e)
+    private void WindowPinToggleButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!_settingAlwaysOnTop)
+        if (!_settingWindowPinned)
         {
-            AlwaysOnTopChanged?.Invoke(TopmostToggleButton.IsChecked == true);
+            WindowPinnedChanged?.Invoke(WindowPinToggleButton.IsChecked == true);
         }
     }
 

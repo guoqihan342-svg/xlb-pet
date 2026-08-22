@@ -1,4 +1,4 @@
-# v1.0.81 测试与发布
+# v1.0.82 测试与发布
 
 本文给出可重复的本地测试入口、发布命令和人工验收边界。仓库当前没有 CI；任何“已通过”都必须来自本机命令或实机检查，不能写成云端自动验证。
 
@@ -55,7 +55,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | --- | --- |
 | `--todo-layout-only` | 待办布局、主题、输入法、修改、拖拽、`360 × 280 DIP` 长文预览、负坐标/窄屏工作区夹紧、右键菜单 transient 生命周期、悬停像素和滚动 |
 | `--todo-cut-only` | 三个窗口的 CommandBinding 与代表性 Routed Copy / Cut、ContextMenu PlacementTarget、剪贴板占用 fail-closed、选区/绑定重入及 IME 组合复核、同锁 generation + sequence 提交路径、名义累计 `240 ms` / 绝对 `300 ms` / 最多 6 次边界，Todo Hide / Close 与两个编辑窗 Closed 生命周期，以及三处正文、两个 ASCII 数字框的真实 WPF Routed Paste；不模拟物理快捷键或默认菜单点击 |
-| `--todo-only` | Owned Window、箭头、多屏、隐藏面板半尺寸/离屏恢复、待办完成自动移底、取消完成保留位置、拖拽排序、定时选项卡、免打扰展开后的列表真实收缩与末项滚动，以及尾部提示在固定面板和最小宽度修改窗中的完整排版 |
+| `--todo-only` | Owned Window、箭头、多屏、隐藏面板半尺寸/离屏恢复、默认关闭的任务小屋固定按钮、真实失焦/排队回调/宠物点击/显式收起/保存失败回滚、待办完成自动移底、取消完成保留位置、拖拽排序、定时选项卡、免打扰展开后的列表真实收缩与末项滚动，以及尾部提示在固定面板和最小宽度修改窗中的完整排版 |
 | `--todo-arrow-only` | 气泡箭头在多屏/DPI/换边时指向人物 |
 | `--scheduled-editor-only` | 定时任务新增与修改组件，以及免打扰 occurrence 在真实任务行和 ToolTip 中的显示投影、关闭免打扰后的绑定刷新与 end-exclusive 边界 |
 | `--reminder-only` | 提醒堆叠、分页、关闭语义；免打扰区间内零弹窗且不补发、区间外旧提醒在 end 后恢复、同秒 one-shot 正常，以及离线跨静默窗只保留两侧非静默 occurrence |
@@ -65,7 +65,7 @@ dotnet run --project .\tests\UiStateChecks\UiStateChecks.csproj `
 | `--pet-drag-preview` | 显示可由 Computer Use 识别的真实 WPF 拖动窗口；标题实时给出人物可见顶边、工作区顶边和物理像素误差 |
 | `--roam-source-only` | 火箭 / 熊猫交替选择、预载冻结、路线速度、朝向、原地退场、延迟打开待办、负坐标副屏和资源契约 |
 | `--roam-interaction-only` | 真实 WPF 状态下的火箭 / 熊猫巡游交互、逐像素接缝与退出方向，以及混合 DPI 拖拽的 32 位光标、不可变抓点、generation 失效、Loaded→ContextIdle 稳定校正、顶部 clamp 工作区切换、松手最多 3 次重试和失败关闭契约 |
-| `--deadline-only` | 1 分钟原地动作、10 分钟巡游和 20 秒忙碌重试截止 |
+| `--deadline-only` | 独立的 1 分钟原地动作与 1 分钟巡游截止、巡游后立即补跑已到期动作的公平顺序，以及 20 秒忙碌重试 |
 | `--pet-size-only` | 尺寸滑块手势、连续缩放和待办布局 |
 | `--reaction-random-only` | 许愿星资源彻底退役、四个保留动作、用户点击随机且不连续重复、失败不提交历史，以及自动洗牌袋独立 |
 | `--clip-clock-only` | 单缓冲预乘 Alpha、冷页时钟、四种普通动作的绝对时间轴、精确完整水平镜像 6 种尺寸及真实窗口矩阵的逐字节旧路径等价，以及非目标矩阵严格回退 |
@@ -248,6 +248,16 @@ git status --short --ignored
 4. 提交和推送源码、清单与正式素材，不提交 EXE。
 5. 创建与项目版本一致的 Git 标签和 GitHub Release。
 6. 将 EXE 作为 Release 附件上传，并在干净目录重新下载核对 SHA-256。
+
+## v1.0.82 发布验证
+
+| 项目 | 结果 |
+| --- | --- |
+| 功能范围 | 任务小屋默认关闭的萌系固定按钮；外部失焦、排队关闭、宠物点击、显式收起与保存失败回滚；窗口 `Topmost` 不变；独立 1 分钟普通动作/巡游截止与巡游后补跑已到期动作的公平顺序 |
+| 自动化 | 最终功能快照的 `DesktopPet` 与 `UiStateChecks` Release 构建均为 `0 warning / 0 error`；TodoStore / AppSettingsStore / ScheduledTaskStore 检查通过，`--deadline-only` 通过，完整 `UiStateChecks` 输出 `UI state checks passed.`；完整套件同时覆盖 `--todo-layout-only`、`--todo-cut-only`、`--todo-only`、`--roam-source-only` 及相关缓存、动画、DPI、提醒和打工回归 |
+| 源码与版本 | 待真实提交与发布后回填功能提交、标签、`FileVersion`、`ProductVersion` 与 Release target |
+| 发布 EXE | 待真实发布后回填文件字节数、SHA-256 与 Authenticode 状态 |
+| GitHub Release | 待真实发布后回填唯一附件的 size/digest，以及独立新目录回下载复核；验真不得运行附件或替换用户正在运行的旧进程 |
 
 ## v1.0.81 发布验证
 

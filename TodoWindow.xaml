@@ -150,109 +150,132 @@
             </Setter>
         </Style>
 
-        <Style x:Key="CuteTopmostToggleStyle"
+        <Style x:Key="CuteWindowPinToggleStyle"
                TargetType="{x:Type ToggleButton}">
-            <Setter Property="Width" Value="27" />
-            <Setter Property="Height" Value="28" />
+            <Setter Property="Width" Value="29" />
+            <Setter Property="Height" Value="29" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Background" Value="#FFFFF7F2" />
-            <Setter Property="BorderBrush" Value="#E7C7C2" />
+            <Setter Property="Background" Value="#FFFFF8F5" />
+            <Setter Property="BorderBrush" Value="#E8CEC8" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="#B88796" />
+            <Setter Property="Foreground" Value="#BC7E91" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
             <Setter Property="IsTabStop" Value="False" />
-            <Setter Property="ToolTip" Value="始终置顶桌宠和任务小屋" />
+            <Setter Property="ToolTip" Value="固定任务小屋（点击外部也不会收起）" />
             <Setter Property="AutomationProperties.Name"
-                    Value="置顶桌宠和任务小屋" />
+                    Value="固定任务小屋" />
             <Setter Property="AutomationProperties.ItemStatus"
-                    Value="已关闭" />
+                    Value="未固定" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type ToggleButton}">
-                        <Grid x:Name="TopmostButtonRoot"
+                        <Grid x:Name="WindowPinButtonRoot"
                               Background="Transparent"
                               RenderTransformOrigin="0.5,0.5">
-                            <Border x:Name="TopmostButtonChrome"
-                                    Background="{TemplateBinding Background}"
+                            <Border Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}"
                                     BorderThickness="{TemplateBinding BorderThickness}"
-                                    CornerRadius="10" />
-                            <Grid x:Name="TopmostPinFace"
-                                  Width="16"
-                                  Height="16"
+                                    CornerRadius="14" />
+                            <Border Margin="2"
+                                    Background="#55FFFFFF"
+                                    BorderBrush="#7FFFFFFF"
+                                    BorderThickness="1"
+                                    CornerRadius="12" />
+                            <Grid x:Name="WindowPinMascot"
+                                  Width="19"
+                                  Height="20"
                                   HorizontalAlignment="Center"
                                   VerticalAlignment="Center"
-                                  RenderTransformOrigin="0.5,0.5">
+                                  RenderTransformOrigin="0.5,0.55">
                                 <Grid.RenderTransform>
-                                    <RotateTransform x:Name="TopmostPinRotation"
-                                                     Angle="-8" />
+                                    <RotateTransform Angle="-12" />
                                 </Grid.RenderTransform>
-                                <Path Data="M4.4,2.2 C4.4,1.55 4.92,1.05 5.56,1.05 H10.44 C11.08,1.05 11.6,1.55 11.6,2.2 V5.05 L13.42,7.36 C13.76,7.79 13.45,8.42 12.9,8.42 H8.92 V12.56 L8,14.82 L7.08,12.56 V8.42 H3.1 C2.55,8.42 2.24,7.79 2.58,7.36 L4.4,5.05 Z"
-                                      Fill="{TemplateBinding Foreground}"
-                                      Stroke="#865E6C"
-                                      StrokeThickness="0.75"
-                                      StrokeLineJoin="Round" />
-                                <Ellipse Width="1.15"
-                                         Height="1.35"
-                                         Margin="0,0,3.5,7.4"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"
-                                         Fill="#523D45" />
-                                <Ellipse Width="1.15"
-                                         Height="1.35"
-                                         Margin="3.5,0,0,7.4"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"
-                                         Fill="#523D45" />
-                                <Path Margin="0,0,0,4.4"
-                                      HorizontalAlignment="Center"
-                                      VerticalAlignment="Center"
-                                      Data="M6.9,5.45 Q8,6.35 9.1,5.45"
-                                      Fill="Transparent"
-                                      Stroke="#6E4E59"
-                                      StrokeEndLineCap="Round"
-                                      StrokeThickness="0.65" />
-                                <Ellipse Width="1.35"
-                                         Height="0.75"
-                                         Margin="0,0,6.2,4.7"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"
-                                         Fill="#FFFFD4DE" />
-                                <Ellipse Width="1.35"
-                                         Height="0.75"
-                                         Margin="6.2,0,0,4.7"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"
-                                         Fill="#FFFFD4DE" />
-                                <Path x:Name="TopmostStatusSpark"
-                                      Data="M12.6,0.9 L13.25,2.35 L14.7,3 L13.25,3.65 L12.6,5.1 L11.95,3.65 L10.5,3 L11.95,2.35 Z"
-                                      Fill="#FFFFC96B"
-                                      Stroke="#D58C35"
-                                      StrokeThickness="0.45"
-                                      StrokeLineJoin="Round"
-                                      Opacity="0" />
+                                <Canvas Width="19" Height="20">
+                                    <Ellipse Canvas.Left="2.1"
+                                             Canvas.Top="1"
+                                             Width="6"
+                                             Height="6"
+                                             Fill="#FFFFE8ED"
+                                             Stroke="{TemplateBinding Foreground}"
+                                             StrokeThickness="0.8" />
+                                    <Ellipse Canvas.Left="10.9"
+                                             Canvas.Top="1"
+                                             Width="6"
+                                             Height="6"
+                                             Fill="#FFFFE8ED"
+                                             Stroke="{TemplateBinding Foreground}"
+                                             StrokeThickness="0.8" />
+                                    <Ellipse Canvas.Left="1"
+                                             Canvas.Top="3.3"
+                                             Width="17"
+                                             Height="13.5"
+                                             Fill="#FFFFFDFB"
+                                             Stroke="{TemplateBinding Foreground}"
+                                             StrokeThickness="0.9" />
+                                    <Ellipse Canvas.Left="5.2"
+                                             Canvas.Top="8"
+                                             Width="1.45"
+                                             Height="1.75"
+                                             Fill="#60434B" />
+                                    <Ellipse Canvas.Left="12.35"
+                                             Canvas.Top="8"
+                                             Width="1.45"
+                                             Height="1.75"
+                                             Fill="#60434B" />
+                                    <Ellipse Canvas.Left="3.25"
+                                             Canvas.Top="11"
+                                             Width="2.8"
+                                             Height="1.25"
+                                             Fill="#FFFFCAD8" />
+                                    <Ellipse Canvas.Left="12.95"
+                                             Canvas.Top="11"
+                                             Width="2.8"
+                                             Height="1.25"
+                                             Fill="#FFFFCAD8" />
+                                    <Path Data="M7.45,10.55 Q9.5,12.35 11.55,10.55"
+                                          Fill="Transparent"
+                                          Stroke="#7A5260"
+                                          StrokeEndLineCap="Round"
+                                          StrokeThickness="0.75" />
+                                    <Path Data="M7.2,15.1 L11.8,15.1 L10.1,17.15 L10.1,19.2 L9.5,19.8 L8.9,19.2 L8.9,17.15 Z"
+                                          Fill="{TemplateBinding Foreground}"
+                                          Stroke="#8F6271"
+                                          StrokeLineJoin="Round"
+                                          StrokeThickness="0.55" />
+                                </Canvas>
                             </Grid>
+                            <Path x:Name="WindowPinStatusHeart"
+                                  Width="7"
+                                  Height="7"
+                                  Margin="0,2.3,2.5,0"
+                                  HorizontalAlignment="Right"
+                                  VerticalAlignment="Top"
+                                  Data="M3.5,6.2 C2.8,5.55 0.65,4.1 0.65,2.35 C0.65,0.7 2.75,0.2 3.5,1.55 C4.25,0.2 6.35,0.7 6.35,2.35 C6.35,4.1 4.2,5.55 3.5,6.2 Z"
+                                  Fill="#FFFF7FA7"
+                                  Stroke="#D95782"
+                                  StrokeThickness="0.45"
+                                  Opacity="0" />
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="TopmostPinFace"
+                                <Setter TargetName="WindowPinMascot"
                                         Property="RenderTransform">
                                     <Setter.Value>
                                         <RotateTransform Angle="0" />
                                     </Setter.Value>
                                 </Setter>
-                                <Setter TargetName="TopmostStatusSpark"
+                                <Setter TargetName="WindowPinStatusHeart"
                                         Property="Opacity"
                                         Value="1" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="TopmostButtonRoot"
+                                <Setter TargetName="WindowPinButtonRoot"
                                         Property="Opacity"
-                                        Value="0.86" />
+                                        Value="0.84" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="TopmostButtonRoot"
+                                <Setter TargetName="WindowPinButtonRoot"
                                         Property="Opacity"
                                         Value="0.42" />
                             </Trigger>
@@ -262,26 +285,26 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="#FFFFEAF1" />
-                    <Setter Property="BorderBrush" Value="#EFAFC3" />
-                    <Setter Property="Foreground" Value="#EC668E" />
-                    <Setter Property="ToolTip" Value="桌宠和任务小屋已置顶 · 点击取消" />
+                    <Setter Property="Background" Value="#FFFFE7F1" />
+                    <Setter Property="BorderBrush" Value="#EF9FBA" />
+                    <Setter Property="Foreground" Value="#E96891" />
+                    <Setter Property="ToolTip" Value="任务小屋已固定 · 点击恢复自动收起" />
                     <Setter Property="AutomationProperties.Name"
-                            Value="取消置顶桌宠和任务小屋" />
+                            Value="取消固定任务小屋" />
                     <Setter Property="AutomationProperties.ItemStatus"
-                            Value="已开启" />
+                            Value="已固定" />
                 </Trigger>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FFFFEEE8" />
-                    <Setter Property="BorderBrush" Value="#DEAFA8" />
+                    <Setter Property="Background" Value="#FFFFEEE7" />
+                    <Setter Property="BorderBrush" Value="#E2ADA2" />
                 </Trigger>
                 <MultiTrigger>
                     <MultiTrigger.Conditions>
                         <Condition Property="IsChecked" Value="True" />
                         <Condition Property="IsMouseOver" Value="True" />
                     </MultiTrigger.Conditions>
-                    <Setter Property="Background" Value="#FFFFDDE9" />
-                    <Setter Property="BorderBrush" Value="#E78EAD" />
+                    <Setter Property="Background" Value="#FFFFD9E8" />
+                    <Setter Property="BorderBrush" Value="#E886A8" />
                 </MultiTrigger>
             </Style.Triggers>
         </Style>
@@ -1144,13 +1167,13 @@
                             </ControlTemplate>
                         </RadioButton.Template>
                     </RadioButton>
-                    <ToggleButton x:Name="TopmostToggleButton"
+                    <ToggleButton x:Name="WindowPinToggleButton"
                                   Grid.Column="2"
                                   HorizontalAlignment="Right"
-                                  AutomationProperties.HelpText="让桌宠和任务小屋保持在其他窗口上方"
-                                  IsChecked="True"
-                                  Click="TopmostToggleButton_Click"
-                                  Style="{StaticResource CuteTopmostToggleStyle}" />
+                                  AutomationProperties.HelpText="固定后，点击任务小屋以外的位置也不会自动收起"
+                                  IsChecked="False"
+                                  Click="WindowPinToggleButton_Click"
+                                  Style="{StaticResource CuteWindowPinToggleStyle}" />
                     <Button x:Name="CollapseButton"
                             Grid.Column="3"
                             Width="38"

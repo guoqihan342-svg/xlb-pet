@@ -215,7 +215,7 @@ public partial class MainWindow : Window
             DisplayFrameByteCount,
             maxArraysPerBucket: 1);
     private static readonly TimeSpan AutomaticAnimationInterval = TimeSpan.FromMinutes(1);
-    private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan EdgeRoamInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan EdgeRoamBusyRetryDelay =
         TimeSpan.FromSeconds(20);
     private static readonly TimeSpan EdgeRoamMaximumClockGap =
@@ -433,7 +433,7 @@ public partial class MainWindow : Window
     private long _edgePeekFrameDeadlineTimestamp;
     private EdgeDock _edgeDock;
     private bool _edgeRoamingEnabled = true;
-    private bool _alwaysOnTop = true;
+    private bool _keepTodoWindowOpenOnOutsideClick;
     private bool _isEdgeRoaming;
     private bool _isApplyingEdgeRoamPosition;
     private bool _edgeRoamClockStarted;
@@ -782,7 +782,7 @@ public partial class MainWindow : Window
         _todoWindow.PetSizeAdjustmentCompleted += TodoWindow_PetSizeAdjustmentCompleted;
         _todoWindow.EdgeRoamingEnabledChanged +=
             TodoWindow_EdgeRoamingEnabledChanged;
-        _todoWindow.AlwaysOnTopChanged += TodoWindow_AlwaysOnTopChanged;
+        _todoWindow.WindowPinnedChanged += TodoWindow_WindowPinnedChanged;
         _todoWindow.StartupEnabledChanged += TodoWindow_StartupEnabledChanged;
         _todoWindow.CloseRequested += TodoWindow_CloseRequested;
         _todoWindow.ExitRequested += TodoWindow_ExitRequested;
@@ -814,13 +814,14 @@ public partial class MainWindow : Window
 
         var settings = _settingsStore.Load();
         _edgeRoamingEnabled = settings.EdgeRoamingEnabled;
-        _alwaysOnTop = settings.AlwaysOnTop;
+        _keepTodoWindowOpenOnOutsideClick =
+            settings.KeepTodoWindowOpenOnOutsideClick;
         _petSizeScale = NormalizePetSizeScale(settings.PetSizeScale);
         _persistedPetSizeScale = _petSizeScale;
         _petSizeTargetScale = _petSizeScale;
         _todoWindow.SetPetSizeScale(_petSizeScale);
         _todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled);
-        ApplyAlwaysOnTop(_alwaysOnTop);
+        _todoWindow.SetWindowPinned(_keepTodoWindowOpenOnOutsideClick);
         ApplyPetSizeScale(_petSizeScale, persist: false, preservePosition: false);
 
         _automaticTimer = new DispatcherTimer
@@ -2217,7 +2218,8 @@ public partial class MainWindow : Window
             CancelTodoOpenAfterWorkExit();
         }
 
-        if (_bubbleMode != BubbleMode.Todo)
+        if (_bubbleMode != BubbleMode.Todo ||
+            _keepTodoWindowOpenOnOutsideClick)
         {
             return;
         }
@@ -2259,6 +2261,7 @@ public partial class MainWindow : Window
     private void ScheduleOutsideTodoClose()
     {
         if (_isClosing || _suppressTodoWindowDeactivate ||
+            _keepTodoWindowOpenOnOutsideClick ||
             _bubbleMode != BubbleMode.Todo)
         {
             return;
@@ -2281,6 +2284,7 @@ public partial class MainWindow : Window
         _outsideTodoCloseQueued = false;
         if (_isClosing ||
             _outsideTodoCloseScheduledGeneration != _outsideTodoCloseGeneration ||
+             _keepTodoWindowOpenOnOutsideClick ||
              _bubbleMode != BubbleMode.Todo ||
              _todoWindow.IsImeComposing ||
              _todoWindow.IsTransientPopupOpen ||
@@ -2950,8 +2954,13 @@ public partial class MainWindow : Window
         var wasSimpleClick = _pointerDown && !_dragStarted;
         var workClickCount = _workPointerClickCount;
         var wasWorkInteraction = _workState != WorkState.Idle;
+        var keepPinnedTodoOpen =
+            wasSimpleClick &&
+            _bubbleMode == BubbleMode.Todo &&
+            _keepTodoWindowOpenOnOutsideClick;
         var shouldActCute = wasSimpleClick &&
                             !wasWorkInteraction &&
+                            !keepPinnedTodoOpen &&
                             _edgeDock == EdgeDock.None &&
                             !_suppressClickReactionAfterRoamInterruption;
         _pointerDown = false;
@@ -2964,12 +2973,18 @@ public partial class MainWindow : Window
         _workPointerClickCount = 0;
         PetHost.ReleaseMouseCapture();
 
-        if (wasSimpleClick && _bubbleMode == BubbleMode.Todo)
+        if (wasSimpleClick &&
+            _bubbleMode == BubbleMode.Todo &&
+            !_keepTodoWindowOpenOnOutsideClick)
         {
             SetBubbleMode(BubbleMode.None);
         }
 
-        if (wasSimpleClick && wasWorkInteraction)
+        if (keepPinnedTodoOpen)
+        {
+            RestartAutomaticCountdown();
+        }
+        else if (wasSimpleClick && wasWorkInteraction)
         {
             HandleWorkPetClick(workClickCount);
         }
@@ -5989,7 +6004,7 @@ public partial class MainWindow : Window
             // visible roam decode so the two page sets cannot repeatedly
             // preempt one another. Preserve the original roam deadline: once
             // the reaction finishes, the existing automatic wake path resumes
-            // preload immediately instead of shifting the ten-minute cadence.
+            // preload immediately instead of shifting the one-minute cadence.
             _edgeRoamPreloadRequested = false;
             CancelEdgeRoamSpritePagePrefetch(includeBoarding: true);
         }
@@ -6424,8 +6439,22 @@ public partial class MainWindow : Window
 
         if (wasRoaming)
         {
-            RequestIdleSpritePageTrim(immediate: true);
-            RestartAutomaticCountdown();
+            if (!interrupted && _nextAutomaticActivityDueTimestamp > 0)
+            {
+                // A one-minute roam and the independent automatic activity
+                // deadline can mature together. Preserve that deadline across
+                // a natural trip: an overdue activity runs after disembarking,
+                // while a future activity still runs at its authored instant.
+                // Keep the ordinary idle grace too: deep-trimming here could
+                // evict pages shortly before the scheduled activity.
+                DeferIdleSpritePageTrim();
+                ArmAutomaticWakeTimer(Stopwatch.GetTimestamp());
+            }
+            else
+            {
+                RequestIdleSpritePageTrim(immediate: true);
+                RestartAutomaticCountdown();
+            }
             UpdateVisualClockSubscription();
         }
 
@@ -7472,7 +7501,7 @@ public partial class MainWindow : Window
 
             // A click animation or another short-lived visual state can overlap
             // the due instant. Retry soon instead of silently postponing the
-            // whole ten-minute cycle.
+            // whole one-minute cycle.
             ScheduleNextEdgeRoam(
                 timestamp,
                 EdgeRoamBusyRetryDelay,
@@ -11683,6 +11712,7 @@ public partial class MainWindow : Window
         {
             _todoWindow.SetPetSizeScale(_petSizeScale);
             _todoWindow.SetEdgeRoamingEnabled(_edgeRoamingEnabled);
+            _todoWindow.SetWindowPinned(_keepTodoWindowOpenOnOutsideClick);
             if (!_todoWindow.IsVisible)
             {
                 _todoWindow.ShowDefaultTab();
@@ -12008,37 +12038,36 @@ public partial class MainWindow : Window
         RestartAutomaticCountdown();
     }
 
-    private void TodoWindow_AlwaysOnTopChanged(bool enabled)
+    private void TodoWindow_WindowPinnedChanged(bool enabled)
     {
-        if (_alwaysOnTop == enabled)
+        if (_keepTodoWindowOpenOnOutsideClick == enabled)
         {
-            ApplyAlwaysOnTop(enabled);
+            _todoWindow.SetWindowPinned(enabled);
             return;
         }
 
-        var previousValue = _alwaysOnTop;
-        _alwaysOnTop = enabled;
-        ApplyAlwaysOnTop(enabled);
+        var previousValue = _keepTodoWindowOpenOnOutsideClick;
+        _keepTodoWindowOpenOnOutsideClick = enabled;
+        _todoWindow.SetWindowPinned(enabled);
+        if (enabled)
+        {
+            _outsideTodoCloseGeneration++;
+        }
+
         if (SaveSettings())
         {
             return;
         }
 
-        _alwaysOnTop = previousValue;
-        ApplyAlwaysOnTop(previousValue);
-    }
-
-    private void ApplyAlwaysOnTop(bool enabled)
-    {
-        if (enabled)
+        _keepTodoWindowOpenOnOutsideClick = previousValue;
+        _todoWindow.SetWindowPinned(previousValue);
+        if (!previousValue)
         {
-            Topmost = true;
-            _todoWindow.SetAlwaysOnTop(true);
-            return;
+            // Enabling the pin invalidates a close that may already be queued.
+            // If persistence fails, restore the unpinned policy with a fresh
+            // generation so the stale callback cannot keep the panel open.
+            ScheduleOutsideTodoClose();
         }
-
-        _todoWindow.SetAlwaysOnTop(false);
-        Topmost = false;
     }
 
     private void TodoWindow_StartupEnabledChanged(bool enabled)
@@ -13123,7 +13152,8 @@ public partial class MainWindow : Window
             _petSizeSettingsDirty ? _petSizeTargetScale : _petSizeScale);
         var settings = _settingsStore.Load();
         settings.EdgeRoamingEnabled = _edgeRoamingEnabled;
-        settings.AlwaysOnTop = _alwaysOnTop;
+        settings.KeepTodoWindowOpenOnOutsideClick =
+            _keepTodoWindowOpenOnOutsideClick;
         settings.PetSizeScale = scaleToPersist;
         var saved = _settingsStore.Save(settings);
         if (saved)

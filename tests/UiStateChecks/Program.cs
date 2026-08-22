@@ -463,6 +463,8 @@ internal static partial class Program
                         () => AssertHiddenTodoWindowRecoveryContract(window));
                     RunCheck(nameof(AssertOwnedTodoWindowContract),
                         () => AssertOwnedTodoWindowContract(window));
+                    RunCheck(nameof(AssertTodoPinRetentionContract),
+                        AssertTodoPinRetentionContract);
                     RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
                         () => AssertTodoArrowPositionMatrixContract(window));
                     RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
@@ -539,6 +541,8 @@ internal static partial class Program
                     nameof(AssertHiddenTodoWindowRecoveryContract),
                     () => AssertHiddenTodoWindowRecoveryContract(window));
                 RunCheck(nameof(AssertOwnedTodoWindowContract), () => AssertOwnedTodoWindowContract(window));
+                RunCheck(nameof(AssertTodoPinRetentionContract),
+                    AssertTodoPinRetentionContract);
                 RunCheck(nameof(AssertTodoArrowPositionMatrixContract),
                     () => AssertTodoArrowPositionMatrixContract(window));
                 RunCheck(nameof(AssertTodoWindowLayoutApiAndIme), AssertTodoWindowLayoutApiAndIme);
@@ -2143,6 +2147,16 @@ internal static partial class Program
         SetField(window, "_openTodoAfterEdgeRoamStopRequested", false);
         SetField(window, "_pointerDown", false);
         SetField(window, "_dragInteractionActive", false);
+        var ordinaryDeadlineBeforeRoamCompletion = checked(
+            Stopwatch.GetTimestamp() +
+            ToProductionStopwatchTicks(TimeSpan.FromSeconds(30)));
+        SetField(
+            window,
+            "_nextAutomaticActivityDueTimestamp",
+            ordinaryDeadlineBeforeRoamCompletion);
+        var idleTrimGracePeriod = (TimeSpan)(typeof(MainWindow).GetField(
+                "SpritePageIdleTrimGracePeriod",
+                StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
         SetField(window, "_isInsideVisualRenderingCallback", true);
         try
         {
@@ -2151,13 +2165,18 @@ internal static partial class Program
                 window,
                 "_spritePageIdleTrimTimer");
             Assert(idleTrimTimer.IsEnabled &&
-                   idleTrimTimer.Interval == TimeSpan.Zero &&
+                   idleTrimTimer.Interval == idleTrimGracePeriod &&
+                   GetField<long>(
+                       window,
+                       "_nextAutomaticActivityDueTimestamp") ==
+                       ordinaryDeadlineBeforeRoamCompletion &&
                    GetField<long>(window, "_residentSpritePageBytes") ==
                    activeRoamResidentBytes &&
                    GetProperty<long>(profiledPool, "AllocatedBytes") ==
                    activeRoamPoolBytes,
-                "Roaming completion inside Rendering must only post the " +
-                "zero-delay dispatcher trim.");
+                "Natural roaming completion must preserve the independent " +
+                "ordinary deadline and defer deep trimming for the idle " +
+                "grace period, even inside Rendering.");
         }
         finally
         {
@@ -5588,13 +5607,24 @@ internal static partial class Program
         SetField(window, "_openTodoAfterEdgeRoamStopRequested", false);
         SetField(window, "_pointerDown", false);
         SetField(window, "_dragInteractionActive", false);
+        var ordinaryDeadlineBeforeRoamCompletion = checked(
+            Stopwatch.GetTimestamp() +
+            ToProductionStopwatchTicks(TimeSpan.FromSeconds(30)));
+        SetField(
+            window,
+            "_nextAutomaticActivityDueTimestamp",
+            ordinaryDeadlineBeforeRoamCompletion);
         SetField(window, "_isInsideVisualRenderingCallback", true);
         try
         {
             Invoke(window, "CompleteEdgeRoamStop", true);
             Assert(!GetField<bool>(window, "_isEdgeRoaming") &&
                    idleTrimTimer.IsEnabled &&
-                   idleTrimTimer.Interval == TimeSpan.Zero &&
+                   idleTrimTimer.Interval == idleTrimGracePeriod &&
+                   GetField<long>(
+                       window,
+                       "_nextAutomaticActivityDueTimestamp") ==
+                       ordinaryDeadlineBeforeRoamCompletion &&
                    GetField<long>(window, "_residentSpritePageBytes") ==
                    roamResidentBytesBefore &&
                    GetProperty<long>(spritePageBufferPool, "AllocatedBytes") ==
@@ -5602,9 +5632,10 @@ internal static partial class Program
                    roamResidentNamesBefore.SetEquals(
                        GetDictionaryEntries(residentPages)
                            .Select(entry => (string)entry.Key)),
-                "Completing roaming inside Rendering may only post a " +
-                "zero-delay idle trim; it must not evict resident pages or " +
-                "mutate the LRU-backed resident set in the render callback.");
+                "Natural roaming completion inside Rendering must preserve " +
+                "the ordinary deadline and defer idle trim; it must not " +
+                "evict resident pages or mutate the LRU-backed resident set " +
+                "in the render callback.");
         }
         finally
         {
@@ -10737,8 +10768,33 @@ internal static partial class Program
         var roamPreloadWatchdogInterval = (TimeSpan)(typeof(MainWindow).GetField(
                 "EdgeRoamPreloadWatchdogInterval",
                 StaticFlags)!.GetValue(null) ?? TimeSpan.Zero);
+        var automaticRoamDueCheck = automaticTick.IndexOf(
+            "if (IsEdgeRoamDue(timestamp))",
+            StringComparison.Ordinal);
+        var automaticActivityDueCheck = automaticTick.IndexOf(
+            "if (_nextAutomaticActivityDueTimestamp <= 0",
+            StringComparison.Ordinal);
+        var naturalRoamFairFinishGuard = completeRoamStop.IndexOf(
+            "if (!interrupted && _nextAutomaticActivityDueTimestamp > 0)",
+            StringComparison.Ordinal);
+        var fairFinishDeferredTrim = completeRoamStop.IndexOf(
+            "DeferIdleSpritePageTrim();",
+            naturalRoamFairFinishGuard,
+            StringComparison.Ordinal);
+        var fairFinishWake = completeRoamStop.IndexOf(
+            "ArmAutomaticWakeTimer(Stopwatch.GetTimestamp());",
+            fairFinishDeferredTrim,
+            StringComparison.Ordinal);
+        var fallbackImmediateTrim = completeRoamStop.IndexOf(
+            "RequestIdleSpritePageTrim(immediate: true);",
+            fairFinishWake,
+            StringComparison.Ordinal);
+        var fallbackRestart = completeRoamStop.IndexOf(
+            "RestartAutomaticCountdown();",
+            fallbackImmediateTrim,
+            StringComparison.Ordinal);
         Assert(automaticInterval == TimeSpan.FromMinutes(1) &&
-               roamInterval == TimeSpan.FromMinutes(10) &&
+               roamInterval == TimeSpan.FromMinutes(1) &&
                roamBusyRetryDelay == TimeSpan.FromSeconds(20) &&
                roamPreloadLeadTime == TimeSpan.FromSeconds(2) &&
                roamPreloadWatchdogInterval == TimeSpan.FromMilliseconds(250) &&
@@ -10783,9 +10839,18 @@ internal static partial class Program
                    StringComparison.Ordinal) &&
                continueRoamPreload.Contains(
                    "ArmAutomaticWakeTimer(Stopwatch.GetTimestamp())",
-                   StringComparison.Ordinal),
-            "普通可爱动作必须独立按1分钟截止，绕屏默认明确按10分钟截止；" +
+                   StringComparison.Ordinal) &&
+               automaticRoamDueCheck >= 0 &&
+               automaticActivityDueCheck > automaticRoamDueCheck &&
+               naturalRoamFairFinishGuard >= 0 &&
+               fairFinishDeferredTrim > naturalRoamFairFinishGuard &&
+               fairFinishWake > fairFinishDeferredTrim &&
+               fallbackImmediateTrim > fairFinishWake &&
+               fallbackRestart > fallbackImmediateTrim,
+            "普通可爱动作与绕屏都必须明确按1分钟独立截止；" +
             "非绕屏Stop(scheduleNext:true)只能在尚无due时补计划，不能把已有截止后移；" +
+            "共同到期时必须先完成巡游，正常退场保留普通deadline、延后idle裁剪并立即唤醒补跑；" +
+            "只有中断或没有普通deadline才允许立即裁剪并重启1分钟倒计时；" +
             "到点但忙碌时必须20秒后重试，共享唤醒timer只选择最早绝对截止时间");
         Assert(!mainSource.Contains("EdgeDock.Top", StringComparison.Ordinal) &&
                !mainSource.Contains("\"edge-top\"", StringComparison.Ordinal) &&
@@ -15309,6 +15374,11 @@ internal static partial class Program
         var timer = GetField<DispatcherTimer>(window, "_automaticTimer");
         var timerWasEnabled = timer.IsEnabled;
         var originalTimerInterval = timer.Interval;
+        var idleTrimTimer = GetField<DispatcherTimer>(
+            window,
+            "_spritePageIdleTrimTimer");
+        var idleTrimTimerWasEnabled = idleTrimTimer.IsEnabled;
+        var originalIdleTrimTimerInterval = idleTrimTimer.Interval;
         var originalClosing = GetField<bool>(window, "_isClosing");
         var originalSessionInactive = GetField<bool>(window, "_sessionInactive");
         var originalAutomaticEnabled = GetField<bool>(
@@ -15319,7 +15389,9 @@ internal static partial class Program
             "_edgeRoamingEnabled");
         var originalReminderActive = GetField<bool>(window, "_isReminderActive");
         var originalDragActive = GetField<bool>(window, "_dragInteractionActive");
+        var originalWorkState = GetRawField(window, "_workState")!;
         var originalRoaming = GetField<bool>(window, "_isEdgeRoaming");
+        var originalRoamPhase = GetRawField(window, "_edgeRoamPhase")!;
         var originalRoamPreloadRequested =
             GetField<bool>(window, "_edgeRoamPreloadRequested");
         var originalActiveClip = GetRawField(window, "_activeClip");
@@ -15335,6 +15407,9 @@ internal static partial class Program
             window,
             "_pillowBreathingDueTimestamp");
 
+        Assert(roamInterval == TimeSpan.FromMinutes(1),
+            $"绕屏绝对截止必须使用1分钟周期，实际 {roamInterval}");
+
         try
         {
             timer.Stop();
@@ -15344,12 +15419,39 @@ internal static partial class Program
             SetField(window, "_edgeRoamingEnabled", true);
             SetField(window, "_isReminderActive", false);
             SetField(window, "_dragInteractionActive", false);
+            SetField(window, "_workState", GetNestedEnum("WorkState", "Idle"));
             SetField(window, "_isEdgeRoaming", false);
             SetField(window, "_edgeRoamPreloadRequested", false);
             SetField(window, "_activeClip", null);
             SetField(window, "_bubbleMode", GetNestedEnum("BubbleMode", "None"));
             SetField(window, "_edgeDock", GetNestedEnum("EdgeDock", "None"));
             SetField(window, "_pillowBreathingDueTimestamp", 0L);
+
+            var fairFinishStart = Stopwatch.GetTimestamp();
+            var fairFinishDeadline = checked(fairFinishStart - 1L);
+            SetField(window, "_isEdgeRoaming", true);
+            SetField(
+                window,
+                "_edgeRoamPhase",
+                GetNestedEnum("EdgeRoamPhase", "Traveling"));
+            SetField(window, "_edgeRoamStopScheduleNext", false);
+            SetField(window, "_edgeRoamStopInterrupted", false);
+            SetField(
+                window,
+                "_nextAutomaticActivityDueTimestamp",
+                fairFinishDeadline);
+            SetField(window, "_nextEdgeRoamDueTimestamp", 0L);
+            Invoke(window, "CompleteEdgeRoamStop", true);
+            Assert(!GetField<bool>(window, "_isEdgeRoaming") &&
+                   GetField<long>(
+                       window,
+                       "_nextAutomaticActivityDueTimestamp") ==
+                       fairFinishDeadline &&
+                   timer.IsEnabled &&
+                   timer.Interval == TimeSpan.FromMilliseconds(1),
+                "正常巡游必须先完成退场，再原样保留已到期的普通deadline并以1ms重新唤醒；" +
+                "不得把到期普通动作重排到下一分钟");
+            timer.Stop();
 
             var timestamp = Stopwatch.GetTimestamp();
             var activitySentinel = checked(
@@ -15371,7 +15473,7 @@ internal static partial class Program
                    GetField<long>(window, "_nextEdgeRoamDueTimestamp") ==
                        checked(timestamp +
                                ToProductionStopwatchTicks(roamInterval)),
-                "安排 10 分钟绕屏不得改写普通动作的独立截止时间");
+                "安排 1 分钟绕屏不得改写普通动作的独立截止时间");
 
             var roamSentinel = checked(
                 timestamp + ToProductionStopwatchTicks(TimeSpan.FromSeconds(45)));
@@ -15447,6 +15549,7 @@ internal static partial class Program
         finally
         {
             timer.Stop();
+            idleTrimTimer.Stop();
             SetField(window, "_isClosing", originalClosing);
             SetField(window, "_sessionInactive", originalSessionInactive);
             SetField(
@@ -15456,7 +15559,9 @@ internal static partial class Program
             SetField(window, "_edgeRoamingEnabled", originalRoamingEnabled);
             SetField(window, "_isReminderActive", originalReminderActive);
             SetField(window, "_dragInteractionActive", originalDragActive);
+            SetField(window, "_workState", originalWorkState);
             SetField(window, "_isEdgeRoaming", originalRoaming);
+            SetField(window, "_edgeRoamPhase", originalRoamPhase);
             SetField(
                 window,
                 "_edgeRoamPreloadRequested",
@@ -15477,6 +15582,11 @@ internal static partial class Program
             if (timerWasEnabled)
             {
                 timer.Start();
+            }
+            idleTrimTimer.Interval = originalIdleTrimTimerInterval;
+            if (idleTrimTimerWasEnabled)
+            {
+                idleTrimTimer.Start();
             }
         }
     }
@@ -16203,50 +16313,6 @@ internal static partial class Program
     {
         var workspace = Path.GetDirectoryName(FindWorkspaceFile("DesktopPet.csproj"))!;
         var mainSource = File.ReadAllText(Path.Combine(workspace, "MainWindow.xaml.cs"));
-        var applyAlwaysOnTopSource = ExtractPrivateMethodSource(
-            mainSource,
-            "ApplyAlwaysOnTop");
-        var alwaysOnTopChangedSource = ExtractPrivateMethodSource(
-            mainSource,
-            "TodoWindow_AlwaysOnTopChanged");
-        var saveSettingsSource = ExtractPrivateMethodSource(
-            mainSource,
-            "SaveSettings");
-        var hydrateTopmostIndex = mainSource.IndexOf(
-            "_alwaysOnTop = settings.AlwaysOnTop;",
-            StringComparison.Ordinal);
-        var applyHydratedTopmostIndex = mainSource.IndexOf(
-            "ApplyAlwaysOnTop(_alwaysOnTop);",
-            StringComparison.Ordinal);
-        Assert(
-            applyAlwaysOnTopSource.IndexOf(
-                "Topmost = true;",
-                StringComparison.Ordinal) <
-            applyAlwaysOnTopSource.IndexOf(
-                "_todoWindow.SetAlwaysOnTop(true);",
-                StringComparison.Ordinal) &&
-            applyAlwaysOnTopSource.IndexOf(
-                "_todoWindow.SetAlwaysOnTop(false);",
-                StringComparison.Ordinal) <
-            applyAlwaysOnTopSource.IndexOf(
-                "Topmost = false;",
-                StringComparison.Ordinal) &&
-            alwaysOnTopChangedSource.Contains(
-                "if (SaveSettings())",
-                StringComparison.Ordinal) &&
-            alwaysOnTopChangedSource.Contains(
-                "_alwaysOnTop = previousValue;",
-                StringComparison.Ordinal) &&
-            saveSettingsSource.Contains(
-                "var settings = _settingsStore.Load();",
-                StringComparison.Ordinal) &&
-            saveSettingsSource.Contains(
-                "settings.AlwaysOnTop = _alwaysOnTop;",
-                StringComparison.Ordinal) &&
-            hydrateTopmostIndex >= 0 &&
-            applyHydratedTopmostIndex > hydrateTopmostIndex,
-            "任务小屋置顶按钮必须同步控制桌宠与Owned窗口、持久化用户选择；" +
-            "启停顺序必须避免短暂层级反转，保存失败时必须回滚，启动时必须先读取再应用");
         var rightButtonUpSource = ExtractPrivateMethodSource(
             mainSource,
             "PetHost_MouseRightButtonUp");
@@ -16327,81 +16393,6 @@ internal static partial class Program
             Assert(ReferenceEquals(todoWindow.Owner, window),
                 "待办窗口必须是 MainWindow 的 Owned Window");
             Assert(!todoWindow.IsVisible, "待办窗口不得在主窗口启动时自动显示");
-            Invoke(window, "ApplyAlwaysOnTop", true);
-            SetField(window, "_alwaysOnTop", true);
-            var settingsStore = GetField<AppSettingsStore>(window, "_settingsStore");
-            var originalEdgeRoamingEnabled = GetField<bool>(
-                window,
-                "_edgeRoamingEnabled");
-            var originalPetSizeScale = GetField<double>(window, "_petSizeScale");
-            Assert(settingsStore.Save(new AppSettings
-                   {
-                       EdgeRoamingEnabled = originalEdgeRoamingEnabled,
-                       AlwaysOnTop = true,
-                       PetSizeScale = originalPetSizeScale
-                   }),
-                "置顶按钮端到端测试必须能建立独立设置基线");
-            var ownedTopmostToggle = todoWindow.FindName("TopmostToggleButton") as ToggleButton ??
-                throw new InvalidOperationException("找不到 Owned TodoWindow 的置顶按钮");
-
-            var blockedSettingsPath = Path.Combine(
-                Path.GetDirectoryName(settingsStore.FilePath)!,
-                "blocked-topmost-settings.json");
-            Directory.CreateDirectory(blockedSettingsPath);
-            SetField(
-                window,
-                "_settingsStore",
-                new AppSettingsStore(blockedSettingsPath));
-            try
-            {
-                ownedTopmostToggle.IsChecked = false;
-                ownedTopmostToggle.RaiseEvent(
-                    new RoutedEventArgs(ButtonBase.ClickEvent));
-                Assert(window.Topmost &&
-                       todoWindow.Topmost &&
-                       todoWindow.IsAlwaysOnTop &&
-                       GetField<bool>(window, "_alwaysOnTop") &&
-                       ownedTopmostToggle.IsChecked == true,
-                    "置顶设置保存失败时必须原子回滚两窗、按钮和控制器状态");
-            }
-            finally
-            {
-                SetField(window, "_settingsStore", settingsStore);
-            }
-
-            ownedTopmostToggle.IsChecked = false;
-            ownedTopmostToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            var disabledSettings = settingsStore.Load();
-            Assert(!window.Topmost &&
-                   !todoWindow.Topmost &&
-                   !todoWindow.IsAlwaysOnTop &&
-                   !GetField<bool>(window, "_alwaysOnTop") &&
-                   !disabledSettings.AlwaysOnTop &&
-                   disabledSettings.EdgeRoamingEnabled == originalEdgeRoamingEnabled &&
-                   Math.Abs(disabledSettings.PetSizeScale - originalPetSizeScale) < 0.0005 &&
-                   ReferenceEquals(todoWindow.Owner, window),
-                "真实生产事件链取消置顶时必须贯通两窗状态与持久化，且不能改动其他设置");
-            todoWindow.Hide();
-            todoWindow.Show();
-            PumpDispatcher(TimeSpan.FromMilliseconds(20));
-            Assert(!window.Topmost &&
-                   !todoWindow.Topmost &&
-                   !todoWindow.IsAlwaysOnTop &&
-                   ownedTopmostToggle.IsChecked == false,
-                "任务小屋收起再显示后必须保留取消置顶状态");
-            todoWindow.Hide();
-            ownedTopmostToggle.IsChecked = true;
-            ownedTopmostToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            var enabledSettings = settingsStore.Load();
-            Assert(window.Topmost &&
-                   todoWindow.Topmost &&
-                   todoWindow.IsAlwaysOnTop &&
-                   GetField<bool>(window, "_alwaysOnTop") &&
-                   enabledSettings.AlwaysOnTop &&
-                   enabledSettings.EdgeRoamingEnabled == originalEdgeRoamingEnabled &&
-                   Math.Abs(enabledSettings.PetSizeScale - originalPetSizeScale) < 0.0005 &&
-                   ReferenceEquals(todoWindow.Owner, window),
-                "真实生产事件链恢复置顶时必须贯通两窗状态与持久化，且不能改动其他设置");
 
             var reactionClip = GetField<Array>(window, "_reactionClips").GetValue(0)!;
             var wakeFrameCount = GetField<Array>(window, "_wakeFrames").Length;
@@ -16782,6 +16773,524 @@ internal static partial class Program
             window.IsHitTestVisible = originalMainHitTestVisible;
             todoWindow.IsHitTestVisible = originalTodoHitTestVisible;
             SetField(window, "_suppressTodoWindowDeactivate", false);
+        }
+    }
+
+    private static void AssertTodoPinRetentionContract()
+    {
+        var workspace = Path.GetDirectoryName(
+            FindWorkspaceFile("DesktopPet.csproj"))!;
+        var mainSource = File.ReadAllText(
+            Path.Combine(workspace, "MainWindow.xaml.cs"));
+        var pinChangedSource = ExtractPrivateMethodSource(
+            mainSource,
+            "TodoWindow_WindowPinnedChanged");
+        var scheduleOutsideCloseSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ScheduleOutsideTodoClose");
+        var processOutsideCloseSource = ExtractPrivateMethodSource(
+            mainSource,
+            "ProcessOutsideTodoClose");
+        var previewMouseDownSource = ExtractPrivateMethodSource(
+            mainSource,
+            "Window_PreviewMouseDown");
+        var petMouseUpSource = ExtractPrivateMethodSource(
+            mainSource,
+            "PetHost_MouseLeftButtonUp");
+        var saveSettingsSource = ExtractPrivateMethodSource(
+            mainSource,
+            "SaveSettings");
+        var settingsLoadIndex = mainSource.IndexOf(
+            "var settings = _settingsStore.Load();",
+            StringComparison.Ordinal);
+        var hydratePinIndex = mainSource.IndexOf(
+            "_keepTodoWindowOpenOnOutsideClick =",
+            settingsLoadIndex,
+            StringComparison.Ordinal);
+        var readPinSettingIndex = mainSource.IndexOf(
+            "settings.KeepTodoWindowOpenOnOutsideClick",
+            hydratePinIndex,
+            StringComparison.Ordinal);
+        var synchronizePinIndex = mainSource.IndexOf(
+            "_todoWindow.SetWindowPinned(_keepTodoWindowOpenOnOutsideClick);",
+            readPinSettingIndex,
+            StringComparison.Ordinal);
+        Assert(settingsLoadIndex >= 0 &&
+               hydratePinIndex > settingsLoadIndex &&
+               readPinSettingIndex > hydratePinIndex &&
+               synchronizePinIndex > readPinSettingIndex &&
+               pinChangedSource.Contains(
+                   "if (SaveSettings())",
+                   StringComparison.Ordinal) &&
+               pinChangedSource.Contains(
+                   "_keepTodoWindowOpenOnOutsideClick = previousValue",
+                   StringComparison.Ordinal) &&
+               pinChangedSource.Contains(
+                   "_outsideTodoCloseGeneration++",
+                   StringComparison.Ordinal) &&
+               !pinChangedSource.Contains(
+                   "Topmost",
+                   StringComparison.Ordinal) &&
+               scheduleOutsideCloseSource.Contains(
+                   "_keepTodoWindowOpenOnOutsideClick",
+                   StringComparison.Ordinal) &&
+               processOutsideCloseSource.Contains(
+                   "_keepTodoWindowOpenOnOutsideClick",
+                   StringComparison.Ordinal) &&
+               previewMouseDownSource.Contains(
+                   "_keepTodoWindowOpenOnOutsideClick",
+                   StringComparison.Ordinal) &&
+               petMouseUpSource.Contains(
+                   "_keepTodoWindowOpenOnOutsideClick",
+                   StringComparison.Ordinal) &&
+               saveSettingsSource.Contains(
+                   "settings.KeepTodoWindowOpenOnOutsideClick =",
+                   StringComparison.Ordinal),
+            "固定任务小屋必须先加载设置再同步按钮，统一保护外点排队、迟到回调、" +
+            "主窗预览点击和宠物点击；保存失败必须回滚，且整个路径不得写Topmost");
+        Assert(!new AppSettings().KeepTodoWindowOpenOnOutsideClick,
+            "新设置缺失或损坏时必须默认不固定任务小屋");
+
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"xlb-pet-window-pin-{Guid.NewGuid():N}");
+        MainWindow? windowForCleanup = null;
+        Window? focusProbeForCleanup = null;
+        TodoWindow? todoWindowForCleanup = null;
+        EventHandler? mainDeactivatedHandler = null;
+        EventHandler? todoDeactivatedHandler = null;
+        KeyboardFocusChangedEventHandler? todoLostFocusHandler = null;
+
+        try
+        {
+            Directory.CreateDirectory(tempDirectory);
+            var window = new MainWindow
+            {
+                Left = -10000,
+                Top = -10000,
+                ShowActivated = false
+            };
+            windowForCleanup = window;
+            var todoWindow = GetField<TodoWindow>(window, "_todoWindow");
+            todoWindowForCleanup = todoWindow;
+            var settingsStore = new AppSettingsStore(
+                Path.Combine(tempDirectory, "settings.json"));
+            SetField(window, "_settingsStore", settingsStore);
+            SetField(
+                window,
+                "_todoStore",
+                new TodoStore(Path.Combine(tempDirectory, "todos.json")));
+            SetField(
+                window,
+                "_scheduledTaskStore",
+                new ScheduledTaskStore(
+                    Path.Combine(tempDirectory, "scheduled-tasks.json")));
+            GetField<ObservableCollection<TodoItem>>(window, "_todos").Clear();
+            GetField<ObservableCollection<ScheduledTaskItem>>(
+                window,
+                "_scheduledTasks").Clear();
+            GetField<Queue<ScheduledTaskItem>>(
+                window,
+                "_reminderQueue").Clear();
+            GetField<HashSet<Guid>>(
+                window,
+                "_queuedReminderIds").Clear();
+            GetField<DispatcherTimer>(window, "_scheduledTaskTimer").Stop();
+
+            var originalEdgeRoamingEnabled = GetField<bool>(
+                window,
+                "_edgeRoamingEnabled");
+            var originalPetSizeScale = GetField<double>(
+                window,
+                "_petSizeScale");
+            Assert(settingsStore.Save(new AppSettings
+                   {
+                       EdgeRoamingEnabled = originalEdgeRoamingEnabled,
+                       KeepTodoWindowOpenOnOutsideClick = false,
+                       PetSizeScale = originalPetSizeScale
+                   }),
+                "固定窗口端到端测试必须能建立隔离设置基线");
+            SetField(
+                window,
+                "_keepTodoWindowOpenOnOutsideClick",
+                false);
+            todoWindow.SetWindowPinned(false);
+            SetField(window, "_suppressTodoWindowDeactivate", false);
+
+            var windowPinToggle =
+                todoWindow.FindName("WindowPinToggleButton") as ToggleButton ??
+                throw new InvalidOperationException(
+                    "找不到真实任务小屋固定按钮");
+            var todoInput = GetField<TextBox>(todoWindow, "TodoInput");
+            var petHost = GetField<Grid>(window, "PetHost");
+            var collapseButton = GetField<Button>(todoWindow, "CollapseButton");
+            var noneMode = GetNestedEnum("BubbleMode", "None");
+            var todoMode = GetNestedEnum("BubbleMode", "Todo");
+
+            var mainDeactivatedCount = 0;
+            var todoDeactivatedCount = 0;
+            var todoLostFocusCount = 0;
+            mainDeactivatedHandler = (_, _) => mainDeactivatedCount++;
+            todoDeactivatedHandler = (_, _) => todoDeactivatedCount++;
+            todoLostFocusHandler = (_, _) => todoLostFocusCount++;
+            window.Deactivated += mainDeactivatedHandler;
+            todoWindow.Deactivated += todoDeactivatedHandler;
+            todoWindow.LostKeyboardFocus += todoLostFocusHandler;
+
+            window.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Invoke(window, "SetBubbleMode", todoMode);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(window.IsVisible &&
+                   todoWindow.IsVisible &&
+                   ReferenceEquals(todoWindow.Owner, window) &&
+                   !todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == false,
+                "隔离固定窗口夹具必须从可见、未固定的真实Owned Todo状态开始");
+
+            var mainHandle = new WindowInteropHelper(window).Handle;
+            var originalMainTopmost = window.Topmost;
+            var originalTodoTopmost = todoWindow.Topmost;
+            Assert(mainHandle != IntPtr.Zero,
+                "固定窗口测试必须创建真实主窗口HWND");
+
+            void AssertMainPetStillVisible(string stage)
+            {
+                Assert(window.IsVisible &&
+                       window.Visibility == Visibility.Visible &&
+                       window.Opacity > 0.99 &&
+                       petHost.Visibility == Visibility.Visible &&
+                       petHost.Opacity > 0.99 &&
+                       new WindowInteropHelper(window).Handle == mainHandle &&
+                       window.Topmost == originalMainTopmost &&
+                       todoWindow.Topmost == originalTodoTopmost,
+                    $"{stage}不得隐藏、关闭、透明化桌宠或动态修改任一Topmost窗口层级");
+            }
+
+            void AssertStableSettings(bool expectedPinned, string stage)
+            {
+                var loaded = settingsStore.Load();
+                Assert(loaded.KeepTodoWindowOpenOnOutsideClick == expectedPinned &&
+                       loaded.EdgeRoamingEnabled == originalEdgeRoamingEnabled &&
+                       Math.Abs(
+                           loaded.PetSizeScale - originalPetSizeScale) < 0.0005,
+                    $"{stage}必须只持久化固定状态，不能改动绕屏或桌宠尺寸设置");
+            }
+
+            void ClickWindowPin(bool enabled)
+            {
+                windowPinToggle.IsChecked = enabled;
+                windowPinToggle.RaiseEvent(
+                    new RoutedEventArgs(
+                        ButtonBase.ClickEvent,
+                        windowPinToggle));
+            }
+
+            void EnsureTodoOpen()
+            {
+                if (GetRawField(window, "_bubbleMode")?.ToString() != "Todo")
+                {
+                    Invoke(window, "OpenTodoFromPetRightClick");
+                    PumpDispatcher(TimeSpan.FromMilliseconds(50));
+                }
+
+                Assert(todoWindow.IsVisible &&
+                       GetRawField(window, "_bubbleMode")?.ToString() == "Todo",
+                    "固定窗口场景必须能通过生产入口重新打开任务小屋");
+            }
+
+            void FocusTodoInput()
+            {
+                EnsureTodoOpen();
+                todoWindow.Activate();
+                todoInput.Focus();
+                Keyboard.Focus(todoInput);
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                Assert(todoInput.IsKeyboardFocusWithin,
+                    "失焦测试必须先把真实键盘焦点放入TodoInput");
+            }
+
+            void RaisePetClick()
+            {
+                window.Activate();
+                var down = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent = UIElement.MouseLeftButtonDownEvent,
+                    Source = petHost
+                };
+                Invoke(
+                    window,
+                    "PetHost_MouseLeftButtonDown",
+                    petHost,
+                    down);
+                Assert(GetField<bool>(window, "_pointerDown"),
+                    "宠物点击夹具必须真实进入生产PointerDown状态，不能因捕获失败假绿");
+                var up = new MouseButtonEventArgs(
+                    Mouse.PrimaryDevice,
+                    Environment.TickCount,
+                    MouseButton.Left)
+                {
+                    RoutedEvent = UIElement.MouseLeftButtonUpEvent,
+                    Source = petHost
+                };
+                Invoke(window, "PetHost_MouseLeftButtonUp", petHost, up);
+                PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            }
+
+            ClickWindowPin(true);
+            Assert(todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == true &&
+                   GetField<bool>(
+                       window,
+                       "_keepTodoWindowOpenOnOutsideClick"),
+                "真实固定按钮点击必须同步按钮和MainWindow控制器状态");
+            AssertStableSettings(true, "固定按钮开启");
+            AssertMainPetStillVisible("固定按钮开启");
+
+            FocusTodoInput();
+            var pinnedTodoDeactivateBefore = todoDeactivatedCount;
+            var pinnedLostFocusBefore = todoLostFocusCount;
+            var focusProbeInput = new TextBox
+            {
+                Text = "outside focus probe"
+            };
+            var focusProbe = new Window
+            {
+                Width = 120,
+                Height = 80,
+                Left = -9800,
+                Top = -9800,
+                ShowInTaskbar = false,
+                Topmost = true,
+                WindowStyle = WindowStyle.None,
+                Content = focusProbeInput
+            };
+            focusProbeForCleanup = focusProbe;
+            focusProbe.Show();
+            focusProbe.Activate();
+            focusProbeInput.Focus();
+            Keyboard.Focus(focusProbeInput);
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(todoDeactivatedCount > pinnedTodoDeactivateBefore &&
+                   todoLostFocusCount > pinnedLostFocusBefore &&
+                   todoWindow.IsVisible &&
+                   GetRawField(window, "_bubbleMode")?.ToString() == "Todo",
+                "固定后必须经历真实TodoWindow.Deactivated与LostKeyboardFocus，" +
+                "但ApplicationIdle回调不得收起任务小屋");
+
+            window.Activate();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+            var pinnedMainDeactivateBefore = mainDeactivatedCount;
+            focusProbe.Activate();
+            focusProbeInput.Focus();
+            Keyboard.Focus(focusProbeInput);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(mainDeactivatedCount > pinnedMainDeactivateBefore &&
+                   todoWindow.IsVisible,
+                "固定后真实MainWindow.Deactivated也不得收起任务小屋");
+
+            var relatedItem = new TodoItem { Text = "固定状态相关编辑窗草稿" };
+            Invoke(todoWindow, "OpenTodoItemEditor", relatedItem);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            var relatedEditor = GetField<TaskTextEditWindow>(
+                todoWindow,
+                "_taskTextEditWindow");
+            var relatedEditorInput = GetField<TextBox>(
+                relatedEditor,
+                "EditorTextBox");
+            relatedEditorInput.Text = "固定状态下必须保留的未确认草稿";
+            var relatedEditorTopmost = relatedEditor.Topmost;
+            focusProbe.Activate();
+            focusProbeInput.Focus();
+            Keyboard.Focus(focusProbeInput);
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(todoWindow.IsVisible &&
+                   relatedEditor.IsVisible &&
+                   relatedEditorInput.Text ==
+                       "固定状态下必须保留的未确认草稿" &&
+                   relatedEditor.Topmost == relatedEditorTopmost,
+                "固定后切到无关窗口必须同时保留任务小屋、相关编辑窗和未确认草稿");
+            relatedEditor.CloseWithoutSaving();
+            PumpDispatcher(TimeSpan.FromMilliseconds(20));
+
+            ClickWindowPin(false);
+            Assert(!todoWindow.IsWindowPinned &&
+                   !GetField<bool>(
+                       window,
+                       "_keepTodoWindowOpenOnOutsideClick"),
+                "排队竞态准备必须先真实取消固定");
+            AssertStableSettings(false, "竞态准备取消固定");
+            EnsureTodoOpen();
+            var generationBeforeQueue = GetField<int>(
+                window,
+                "_outsideTodoCloseGeneration");
+            Invoke(window, "ScheduleOutsideTodoClose");
+            Invoke(window, "ScheduleOutsideTodoClose");
+            Invoke(window, "ScheduleOutsideTodoClose");
+            Assert(GetField<bool>(window, "_outsideTodoCloseQueued") &&
+                   GetField<int>(window, "_outsideTodoCloseGeneration") >=
+                       generationBeforeQueue + 3,
+                "Main/Todo/LostFocus同一轮失焦必须合并为一个可失效的ApplicationIdle回调");
+            var queuedGeneration = GetField<int>(
+                window,
+                "_outsideTodoCloseScheduledGeneration");
+            ClickWindowPin(true);
+            Assert(GetField<int>(window, "_outsideTodoCloseGeneration") >
+                       queuedGeneration,
+                "排队后点击固定必须立即推进代际，使迟到外点回调失效");
+            PumpDispatcher(TimeSpan.FromMilliseconds(50));
+            Assert(todoWindow.IsVisible &&
+                   todoWindow.IsWindowPinned &&
+                   !GetField<bool>(window, "_outsideTodoCloseQueued"),
+                "排队后固定再到ApplicationIdle时不得误收起任务小屋");
+            AssertStableSettings(true, "排队后固定");
+
+            var blockedSettingsPath = Path.Combine(
+                tempDirectory,
+                "blocked-window-pin-settings.json");
+            Directory.CreateDirectory(blockedSettingsPath);
+            SetField(
+                window,
+                "_settingsStore",
+                new AppSettingsStore(blockedSettingsPath));
+            try
+            {
+                ClickWindowPin(false);
+            }
+            finally
+            {
+                SetField(window, "_settingsStore", settingsStore);
+            }
+
+            Assert(todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == true &&
+                   GetField<bool>(
+                       window,
+                       "_keepTodoWindowOpenOnOutsideClick"),
+                "固定设置保存失败时必须原子回滚按钮和MainWindow控制器状态");
+            AssertStableSettings(true, "固定设置保存失败");
+            Invoke(window, "ScheduleOutsideTodoClose");
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(todoWindow.IsVisible,
+                "保存失败回滚到固定后，外点排队策略也必须一并回滚");
+            AssertMainPetStillVisible("固定设置保存失败回滚");
+
+            collapseButton.RaiseEvent(
+                new RoutedEventArgs(ButtonBase.ClickEvent, collapseButton));
+            PumpDispatcher(TimeSpan.FromMilliseconds(40));
+            Assert(!todoWindow.IsVisible &&
+                   GetRawField(window, "_bubbleMode")?.ToString() == "None" &&
+                   todoWindow.IsWindowPinned,
+                "固定只阻止外点自动收起，显式Collapse必须仍能关闭且保留固定选择");
+            AssertMainPetStillVisible("固定状态显式Collapse");
+            EnsureTodoOpen();
+            Assert(todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == true,
+                "显式Collapse后重新打开必须恢复已持久化的固定按钮状态");
+
+            RaisePetClick();
+            Assert(todoWindow.IsVisible &&
+                   GetRawField(window, "_bubbleMode")?.ToString() == "Todo" &&
+                   todoWindow.IsWindowPinned,
+                "固定状态点击宠物其他区域不得关闭任务小屋或切换卖萌气泡");
+            AssertMainPetStillVisible("固定状态宠物点击");
+
+            ClickWindowPin(false);
+            Assert(!todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == false &&
+                   !GetField<bool>(
+                       window,
+                       "_keepTodoWindowOpenOnOutsideClick"),
+                "真实取消固定必须同步按钮和MainWindow控制器状态");
+            AssertStableSettings(false, "取消固定");
+            RaisePetClick();
+            Assert(!todoWindow.IsVisible &&
+                   GetRawField(window, "_bubbleMode")?.ToString() != "Todo",
+                "取消固定后点击宠物应只收起任务小屋");
+            AssertMainPetStillVisible("取消固定后宠物点击");
+
+            EnsureTodoOpen();
+            Assert(!todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == false,
+                "取消固定后Hide/Show不得偷偷恢复固定状态");
+            FocusTodoInput();
+            var unpinnedTodoDeactivateBefore = todoDeactivatedCount;
+            var unpinnedLostFocusBefore = todoLostFocusCount;
+            focusProbe.Activate();
+            focusProbeInput.Focus();
+            Keyboard.Focus(focusProbeInput);
+            PumpDispatcher(TimeSpan.FromMilliseconds(60));
+            Assert(todoDeactivatedCount > unpinnedTodoDeactivateBefore &&
+                   todoLostFocusCount > unpinnedLostFocusBefore &&
+                   !todoWindow.IsVisible &&
+                   GetRawField(window, "_bubbleMode")?.ToString() != "Todo" &&
+                   !GetField<bool>(window, "_outsideTodoCloseQueued"),
+                "取消固定后真实Deactivated/LostKeyboardFocus必须在ApplicationIdle统一收起任务小屋");
+            AssertMainPetStillVisible("取消固定后真实外点收起");
+            AssertStableSettings(false, "取消固定外点收起");
+
+            Invoke(window, "SetBubbleMode", noneMode);
+            AssertMainPetStillVisible("固定窗口测试最终状态");
+        }
+        finally
+        {
+            if (windowForCleanup is { } window)
+            {
+                if (mainDeactivatedHandler is not null)
+                {
+                    window.Deactivated -= mainDeactivatedHandler;
+                }
+
+                if (todoWindowForCleanup is { } todoWindow)
+                {
+                    if (todoDeactivatedHandler is not null)
+                    {
+                        todoWindow.Deactivated -= todoDeactivatedHandler;
+                    }
+
+                    if (todoLostFocusHandler is not null)
+                    {
+                        todoWindow.LostKeyboardFocus -= todoLostFocusHandler;
+                    }
+                }
+
+                SetField(window, "_suppressTodoWindowDeactivate", true);
+                SetField(
+                    window,
+                    "_outsideTodoCloseGeneration",
+                    checked(
+                        GetField<int>(
+                            window,
+                            "_outsideTodoCloseGeneration") + 1));
+            }
+
+            try
+            {
+                if (focusProbeForCleanup?.IsLoaded == true)
+                {
+                    focusProbeForCleanup.Close();
+                }
+            }
+            finally
+            {
+                if (windowForCleanup?.IsLoaded == true)
+                {
+                    windowForCleanup.Close();
+                }
+
+                PumpDispatcher(TimeSpan.FromMilliseconds(30));
+                try
+                {
+                    Directory.Delete(tempDirectory, recursive: true);
+                }
+                catch
+                {
+                    // 隔离设置、待办和定时任务文件清理失败不应掩盖固定窗口契约结果。
+                }
+            }
         }
     }
 
@@ -17709,10 +18218,11 @@ internal static partial class Program
                     staleGeneration,
                     staleSequence
                 ]);
+            var clipboardAfterStaleWrite = ReadClipboardTextWithRetry();
             Assert(staleWriteResult?.ToString() == "Superseded" &&
-                   ReadClipboardTextWithRetry() ==
-                   "external-after-sequence-check",
-                "原子剪贴板事务必须在持有同一native lock后复核sequence，外部新内容不得被旧请求覆盖");
+                   clipboardAfterStaleWrite == "external-after-sequence-check",
+                "原子剪贴板事务必须在持有同一native lock后复核sequence，外部新内容不得被旧请求覆盖；" +
+                $"result={staleWriteResult}, clipboard={clipboardAfterStaleWrite}");
 
             WriteClipboardTextWithRetry("sequence-baseline");
             using (HoldClipboardOpenForTest())
@@ -17875,8 +18385,13 @@ internal static partial class Program
                 string clipboardText)
             {
                 WriteClipboardTextWithRetry(clipboardText);
+                var targetWindow = Window.GetWindow(target);
+                targetWindow?.Activate();
                 target.Focus();
                 Keyboard.Focus(target);
+                PumpDispatcher(TimeSpan.FromMilliseconds(10));
+                Assert(target.IsKeyboardFocusWithin,
+                    $"{target.Name}必须先取得真实键盘焦点再验证WPF Paste路由");
                 Assert(ApplicationCommands.Paste.CanExecute(null, target),
                     $"{target.Name}必须保留WPF原生Paste命令");
                 ApplicationCommands.Paste.Execute(null, target);
@@ -18203,7 +18718,7 @@ internal static partial class Program
                      "Todos",
                      "IsImeComposing",
                      "IsTodoDragInProgress",
-                     "IsAlwaysOnTop"
+                     "IsWindowPinned"
                  })
         {
             Assert(type.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public) is not null,
@@ -18213,7 +18728,7 @@ internal static partial class Program
         foreach (var methodName in new[]
                  {
                      "FocusInput",
-                     "SetAlwaysOnTop",
+                     "SetWindowPinned",
                      "SetEdgeRoamingEnabled",
                      "SetPetSizeScale"
                  })
@@ -18230,7 +18745,7 @@ internal static partial class Program
                      "TodoMoveRequested",
                      "TodoDragCompleted",
                      "DeleteRequested",
-                     "AlwaysOnTopChanged",
+                     "WindowPinnedChanged",
                      "EdgeRoamingEnabledChanged",
                      "PetSizeScaleChanged",
                      "CloseRequested",
@@ -18265,48 +18780,50 @@ internal static partial class Program
                 "TodoWindow 必须为透明背景、无边框且不占任务栏；" +
                 $"style={todoWindow.WindowStyle}, allowsTransparency={todoWindow.AllowsTransparency}, " +
                 $"taskbar={todoWindow.ShowInTaskbar}, background={todoWindow.Background}");
-            var topmostToggle = todoWindow.FindName("TopmostToggleButton") as ToggleButton ??
+            var windowPinToggle = todoWindow.FindName("WindowPinToggleButton") as ToggleButton ??
                 throw new InvalidOperationException(
-                    "找不到任务小屋标题栏的 TopmostToggleButton");
-            Assert(topmostToggle.Width <= 28 &&
-                   topmostToggle.Height <= 28 &&
-                   !topmostToggle.Focusable &&
-                   !topmostToggle.IsTabStop &&
-                   AutomationProperties.GetHelpText(topmostToggle).Contains(
-                       "桌宠和任务小屋",
+                    "找不到任务小屋标题栏的 WindowPinToggleButton");
+            Assert(windowPinToggle.Width <= 30 &&
+                   windowPinToggle.Height <= 30 &&
+                   !windowPinToggle.Focusable &&
+                   !windowPinToggle.IsTabStop &&
+                   AutomationProperties.GetHelpText(windowPinToggle).Contains(
+                       "不会自动收起",
                        StringComparison.Ordinal),
-                "任务小屋标题栏必须提供不抢键盘焦点的萌系小置顶按钮");
+                "任务小屋标题栏必须提供不抢键盘焦点的萌系固定按钮");
             Assert(todoWindow.Topmost &&
-                   todoWindow.IsAlwaysOnTop &&
-                   topmostToggle.IsChecked == true &&
-                   AutomationProperties.GetItemStatus(topmostToggle) == "已开启" &&
-                   AutomationProperties.GetName(topmostToggle).Contains(
-                       "取消置顶",
+                   !todoWindow.IsWindowPinned &&
+                   windowPinToggle.IsChecked == false &&
+                   !new AppSettings().KeepTodoWindowOpenOnOutsideClick &&
+                   AutomationProperties.GetItemStatus(windowPinToggle) == "未固定" &&
+                   AutomationProperties.GetName(windowPinToggle).Contains(
+                       "固定任务小屋",
                        StringComparison.Ordinal) &&
-                   topmostToggle.ToolTip?.ToString()?.Contains(
-                       "已置顶",
+                   windowPinToggle.ToolTip?.ToString()?.Contains(
+                       "点击外部也不会收起",
                        StringComparison.Ordinal) == true,
-                "置顶按钮初始状态必须和既有 Topmost=true 行为一致");
-            var alwaysOnTopChanges = new List<bool>();
-            todoWindow.AlwaysOnTopChanged += alwaysOnTopChanges.Add;
-            todoWindow.SetAlwaysOnTop(false);
-            Assert(!todoWindow.Topmost &&
-                   !todoWindow.IsAlwaysOnTop &&
-                   alwaysOnTopChanges.Count == 0 &&
-                   AutomationProperties.GetItemStatus(topmostToggle) == "已关闭" &&
-                   AutomationProperties.GetName(topmostToggle).Contains(
-                       "置顶桌宠和任务小屋",
+                "固定按钮必须默认关闭，同时不得改变任务小屋既有Topmost窗口层级");
+            var originalTopmost = todoWindow.Topmost;
+            var windowPinnedChanges = new List<bool>();
+            todoWindow.WindowPinnedChanged += windowPinnedChanges.Add;
+            todoWindow.SetWindowPinned(true);
+            Assert(todoWindow.Topmost == originalTopmost &&
+                   todoWindow.IsWindowPinned &&
+                   windowPinnedChanges.Count == 0 &&
+                   AutomationProperties.GetItemStatus(windowPinToggle) == "已固定" &&
+                   AutomationProperties.GetName(windowPinToggle).Contains(
+                       "取消固定任务小屋",
                        StringComparison.Ordinal) &&
-                   topmostToggle.ToolTip?.ToString()?.Contains(
-                       "置顶桌宠和任务小屋",
+                   windowPinToggle.ToolTip?.ToString()?.Contains(
+                       "恢复自动收起",
                        StringComparison.Ordinal) == true,
-                "主窗静默同步置顶状态时不得反向触发用户设置事件");
-            topmostToggle.IsChecked = true;
-            topmostToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            Assert(!todoWindow.Topmost &&
-                   !todoWindow.IsAlwaysOnTop &&
-                   alwaysOnTopChanges.SequenceEqual(new[] { true }),
-                "独立TodoWindow点击只发布一次用户意图，实际Topmost必须由MainWindow唯一控制器同步");
+                "主窗静默同步固定状态时不得反向触发用户设置事件或修改Topmost");
+            windowPinToggle.IsChecked = false;
+            windowPinToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Assert(todoWindow.Topmost == originalTopmost &&
+                   !todoWindow.IsWindowPinned &&
+                   windowPinnedChanges.SequenceEqual(new[] { false }),
+                "独立TodoWindow点击必须只发布一次固定意图，且绝不能动态修改Topmost");
             var copyBindings = todoWindow.CommandBindings
                 .OfType<CommandBinding>()
                 .Where(binding => ReferenceEquals(binding.Command, ApplicationCommands.Copy))
@@ -18325,39 +18842,49 @@ internal static partial class Program
                        StringComparison.Ordinal),
                 "待办行必须保留可单独验证的 TodoRowBorder");
             var todoXamlDocument = XDocument.Parse(todoXaml);
-            var topmostToggleElement = todoXamlDocument.Root!
+            var windowPinToggleElement = todoXamlDocument.Root!
                 .Descendants()
                 .Single(element =>
                     element.Name.LocalName == "ToggleButton" &&
                     element.Attributes().Any(attribute =>
                         attribute.Name.LocalName == "Name" &&
-                        attribute.Value == "TopmostToggleButton"));
-            var topmostStyle = todoXamlDocument.Root!
+                        attribute.Value == "WindowPinToggleButton"));
+            var windowPinStyle = todoXamlDocument.Root!
                 .Descendants()
                 .Single(element =>
                     element.Name.LocalName == "Style" &&
                     element.Attributes().Any(attribute =>
                         attribute.Name.LocalName == "Key" &&
-                        attribute.Value == "CuteTopmostToggleStyle"));
+                        attribute.Value == "CuteWindowPinToggleStyle"));
             Assert(
-                (string?)topmostToggleElement.Attribute("IsChecked") == "True" &&
-                (string?)topmostToggleElement.Attribute("Click") ==
-                    "TopmostToggleButton_Click" &&
-                topmostToggleElement.Attributes().Any(attribute =>
+                (string?)windowPinToggleElement.Attribute("IsChecked") == "False" &&
+                (string?)windowPinToggleElement.Attribute("Click") ==
+                    "WindowPinToggleButton_Click" &&
+                windowPinToggleElement.Attributes().Any(attribute =>
                     attribute.Name.LocalName == "Grid.Column" &&
                     attribute.Value == "2") &&
-                topmostStyle.Descendants().Count(element =>
-                    element.Name.LocalName == "Ellipse") >= 4 &&
-                topmostStyle.Descendants().Any(element =>
+                windowPinStyle.Descendants().Any(element =>
+                    element.Name.LocalName == "Canvas") &&
+                windowPinStyle.Descendants().Count(element =>
+                    element.Name.LocalName == "Ellipse") >= 7 &&
+                windowPinStyle.Descendants().Count(element =>
+                    element.Name.LocalName == "Path" &&
+                    (string?)element.Attribute("Data") is not null) >= 3 &&
+                windowPinStyle.Descendants().Any(element =>
                     element.Name.LocalName == "Path" &&
                     element.Attributes().Any(attribute =>
                         attribute.Name.LocalName == "Name" &&
-                        attribute.Value == "TopmostStatusSpark")) &&
-                topmostStyle.Descendants().Any(element =>
-                    element.Name.LocalName == "Path" &&
-                    (string?)element.Attribute("Data") is not null),
-                "置顶按钮必须放在标题栏弹性空白列、走受保护事件，" +
-                "并使用带眼睛和腮红的矢量萌图钉而非字体Emoji");
+                        attribute.Value == "WindowPinStatusHeart")) &&
+                !windowPinStyle.Descendants().Any(element =>
+                    element.Name.LocalName == "TextBlock") &&
+                !AutomationProperties.GetHelpText(windowPinToggle).Contains(
+                    "置顶",
+                    StringComparison.Ordinal) &&
+                !AutomationProperties.GetHelpText(windowPinToggle).Contains(
+                    "其他窗口上方",
+                    StringComparison.Ordinal),
+                "固定按钮必须放在标题栏弹性空白列、默认关闭并走受保护事件，" +
+                "使用带耳朵、眼睛、腮红和爱心状态的矢量萌物而非字体Emoji，且文案不得再表达置顶语义");
             var todoRowHoverBackgroundBrush = todoXamlDocument.Root!
                 .Descendants()
                 .Single(element =>
@@ -18551,6 +19078,25 @@ internal static partial class Program
             var autoScrollSource = ExtractPrivateMethodSource(
                 todoSource,
                 "AutoScrollTodoList");
+            var setWindowPinnedStart = todoSource.IndexOf(
+                "public void SetWindowPinned(",
+                StringComparison.Ordinal);
+            var setWindowPinnedEnd = todoSource.IndexOf(
+                "\n    public void SetEdgeRoamingEnabled(",
+                setWindowPinnedStart + 1,
+                StringComparison.Ordinal);
+            var setWindowPinnedSource =
+                setWindowPinnedStart >= 0 &&
+                setWindowPinnedEnd > setWindowPinnedStart
+                    ? todoSource[setWindowPinnedStart..setWindowPinnedEnd]
+                    : string.Empty;
+            Assert(setWindowPinnedSource.Contains(
+                       "WindowPinToggleButton.IsChecked = enabled",
+                       StringComparison.Ordinal) &&
+                   !setWindowPinnedSource.Contains(
+                       "Topmost",
+                       StringComparison.Ordinal),
+                "固定状态同步只能更新按钮，不得重新引入动态Window.Topmost语义");
             Assert(todoSource.Contains(
                        "IsVisibleChanged += TodoWindow_IsVisibleChanged",
                        StringComparison.Ordinal) &&
@@ -23012,7 +23558,7 @@ internal static partial class Program
                    "ScheduleNextEdgeRoam(",
                    StringComparison.Ordinal),
             "reaction接管两秒roam预载时必须只取消未显示预取，保留既有due/cadence，" +
-            "不能把十分钟计划改成busy retry");
+            "不能把一分钟计划改成busy retry");
         Assert(residentPrefetchCheck >= 0 &&
                busyPrefetchCheck > residentPrefetchCheck &&
                duplicatePrefetchCheck > busyPrefetchCheck &&
