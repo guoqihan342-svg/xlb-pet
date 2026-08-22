@@ -251,13 +251,15 @@ git status --short --ignored
 
 ## v1.0.82 发布验证
 
+本版把任务小屋标题栏按钮修正为默认关闭的“固定打开”策略，并将巡游周期调整为独立 1 分钟且保留普通动作公平性。源码、自动化、正式发布、独立回下载与用户 `dist` 更新于 `2026-08-22` 完成。
+
 | 项目 | 结果 |
 | --- | --- |
 | 功能范围 | 任务小屋默认关闭的萌系固定按钮；外部失焦、排队关闭、宠物点击、显式收起与保存失败回滚；窗口 `Topmost` 不变；独立 1 分钟普通动作/巡游截止与巡游后补跑已到期动作的公平顺序 |
 | 自动化 | 最终功能快照的 `DesktopPet` 与 `UiStateChecks` Release 构建均为 `0 warning / 0 error`；TodoStore / AppSettingsStore / ScheduledTaskStore 检查通过，`--deadline-only` 通过，完整 `UiStateChecks` 输出 `UI state checks passed.`；完整套件同时覆盖 `--todo-layout-only`、`--todo-cut-only`、`--todo-only`、`--roam-source-only` 及相关缓存、动画、DPI、提醒和打工回归 |
-| 源码与版本 | 待真实提交与发布后回填功能提交、标签、`FileVersion`、`ProductVersion` 与 Release target |
-| 发布 EXE | 待真实发布后回填文件字节数、SHA-256 与 Authenticode 状态 |
-| GitHub Release | 待真实发布后回填唯一附件的 size/digest，以及独立新目录回下载复核；验真不得运行附件或替换用户正在运行的旧进程 |
+| 源码与版本 | 功能提交 `b980e6f52579827ac69eea862c0088fccae2f648`；功能发布时远端 `main`、annotated `v1.0.82` tag 剥离提交与 Release target 均精确指向该提交。`FileVersion=1.0.82.0`，`ProductVersion=1.0.82+b980e6f52579827ac69eea862c0088fccae2f648` |
+| 发布 EXE | 单文件框架依赖 EXE 为 `101,324,422` bytes，SHA-256 `89E3DDDE253C13013DA4694C943D8F34C76914028093E387058952B763EC6A89`；Authenticode 状态为 `NotSigned` |
+| GitHub Release | [`v1.0.82`](https://github.com/guoqihan342-svg/xlb-pet/releases/tag/v1.0.82) 为非 Draft、非 prerelease，只有一个 `LubanDesktopPet.exe` 附件；附件状态 `uploaded`、size `101,324,422`、digest `sha256:89e3ddde253c13013da4694c943d8f34c76914028093e387058952b763ec6a89`。独立全新 gitignored 目录回下载后，文件集合、大小、SHA-256、FileVersion、ProductVersion 与签名状态逐项一致；验真未运行附件。用户 `dist` 已替换同哈希 v1.0.82 并保持单实例响应，替换前备份仍在 gitignored 目录，三个用户数据文件哈希不变 |
 
 ## v1.0.81 发布验证
 
