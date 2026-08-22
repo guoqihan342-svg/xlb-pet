@@ -10265,6 +10265,15 @@ internal static partial class Program
                    "ROCKET_MAXIMUM_SIZE = (300, 335)",
                    StringComparison.Ordinal) &&
                rocketAssetBuilderSource.Contains(
+                   "CLOUD_COUNT = 3",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "CLOUD_SIZE = (64, 64)",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
+                   "CLOUD_REARWARD_BURST_PIXELS = 2",
+                   StringComparison.Ordinal) &&
+               rocketAssetBuilderSource.Contains(
                    "Idle -> rocket boarding seam is not byte exact",
                    StringComparison.Ordinal) &&
                rocketAssetBuilderSource.Contains(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -86,12 +87,21 @@ class RocketRoamingAssetContractTests(unittest.TestCase):
             max(cloud.width for cloud in cloud_sources),
         )
         self.assertEqual(rocket.CLOUD_COUNT, len(cloud_sources))
+        self.assertEqual((64, 64), rocket.CLOUD_SIZE)
         self.assertEqual(
             [rocket.CLOUD_SIZE] * rocket.CLOUD_COUNT,
             [cloud.size for cloud in clouds],
         )
         for cloud in clouds:
-            self.assertIsNotNone(cloud.getchannel("A").getbbox())
+            alpha = np.asarray(cloud.getchannel("A"), dtype=np.uint8)
+            self.assertEqual(
+                (0, 0, *rocket.CLOUD_SIZE),
+                cloud.getchannel("A").getbbox(),
+            )
+            self.assertGreaterEqual(
+                int(np.count_nonzero(alpha >= rocket.VISIBLE_ALPHA_THRESHOLD)),
+                2800,
+            )
         rocket_bounds = normalized_rocket.getchannel("A").getbbox()
         self.assertIsNotNone(rocket_bounds)
         assert rocket_bounds is not None
@@ -109,7 +119,10 @@ class RocketRoamingAssetContractTests(unittest.TestCase):
             ordered = sorted(layout)
             for x, y, opacity in ordered:
                 self.assertGreaterEqual(x, 0)
-                self.assertLessEqual(x + rocket.CLOUD_SIZE[0], rocket.RUNTIME_SIZE[0])
+                self.assertLessEqual(
+                    x + rocket.CLOUD_SIZE[0],
+                    rocket.RUNTIME_SIZE[0] - 1,
+                )
                 self.assertGreaterEqual(y, 0)
                 self.assertLessEqual(y + rocket.CLOUD_SIZE[1], rocket.RUNTIME_SIZE[1])
                 self.assertGreaterEqual(opacity, 218)
@@ -117,7 +130,7 @@ class RocketRoamingAssetContractTests(unittest.TestCase):
             for left, right in zip(ordered, ordered[1:]):
                 self.assertGreaterEqual(
                     right[0] - left[0],
-                    rocket.CLOUD_SIZE[0],
+                    rocket.CLOUD_SIZE[0] + 1,
                 )
 
             rocket_right = rocket.ROCKET_LEFT + rocket.ROCKET_MAXIMUM_SIZE[0]
@@ -134,8 +147,59 @@ class RocketRoamingAssetContractTests(unittest.TestCase):
                     (frame_index + 1) % rocket.FLIGHT_FRAME_COUNT
                 ][cloud_index][0]
                 deltas.append(next_x - current_x)
-            self.assertEqual({-7, 2, 3}, set(deltas))
-            self.assertEqual(16, deltas.count(-7))
+            self.assertEqual({-2, 0, 1}, set(deltas))
+            self.assertEqual(16, deltas.count(-2))
+            self.assertEqual(16, deltas.count(0))
+            self.assertEqual(-2, deltas[-1])
+
+    def test_enlarged_clouds_stay_visible_after_the_rocket_is_composited(self) -> None:
+        rocket_source, cloud_sources = rocket.split_generated_key(
+            rocket.DEFAULT_SOURCE
+        )
+        normalized_rocket = rocket.normalize_rocket_key(rocket_source)
+        clouds = rocket.normalize_cloud_keys(cloud_sources)
+        visible_counts: list[list[int]] = [[] for _ in clouds]
+
+        for frame_index in range(rocket.FLIGHT_FRAME_COUNT):
+            phase = math.tau * frame_index / rocket.FLIGHT_FRAME_COUNT
+            rocket_frame = rocket.transformed(
+                normalized_rocket,
+                scale=1.0 + 0.003 * math.sin(phase * 2),
+                angle=0.65 * math.sin(phase + math.pi / 2),
+                dx=round(math.sin(phase * 2)),
+                dy=round(2.0 * math.sin(phase)),
+            )
+            rocket_visible = (
+                np.asarray(rocket_frame.getchannel("A"), dtype=np.uint8)
+                >= rocket.VISIBLE_ALPHA_THRESHOLD
+            )
+
+            for cloud_index, (cloud, (x, y, opacity)) in enumerate(
+                zip(
+                    clouds,
+                    rocket.cloud_layout_for_frame(frame_index),
+                    strict=True,
+                )
+            ):
+                cloud_alpha = np.asarray(
+                    rocket.with_opacity(cloud, opacity).getchannel("A"),
+                    dtype=np.uint8,
+                )
+                cloud_visible = np.zeros(
+                    (rocket.RUNTIME_SIZE[1], rocket.RUNTIME_SIZE[0]),
+                    dtype=bool,
+                )
+                cloud_visible[
+                    y : y + cloud_alpha.shape[0],
+                    x : x + cloud_alpha.shape[1],
+                ] = cloud_alpha >= rocket.VISIBLE_ALPHA_THRESHOLD
+                visible_counts[cloud_index].append(
+                    int(np.count_nonzero(cloud_visible & ~rocket_visible))
+                )
+
+        self.assertGreaterEqual(min(visible_counts[0]), 2250)
+        self.assertGreaterEqual(min(visible_counts[1]), 2800)
+        self.assertGreaterEqual(min(visible_counts[2]), 2800)
 
 
 if __name__ == "__main__":
